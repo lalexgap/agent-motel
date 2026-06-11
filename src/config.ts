@@ -12,6 +12,11 @@ export interface Config {
   // claude.ai/code and the Claude mobile app. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
+  // macOS bundle id notifications are posted as (icon + click target), e.g.
+  // "com.mitchellh.ghostty" or "com.googlecode.iterm2". Requires
+  // terminal-notifier (brew install terminal-notifier); without it — or with
+  // this unset — notifications fall back to osascript (Script Editor icon).
+  notifySender?: string;
 }
 
 const DEFAULTS: Config = {

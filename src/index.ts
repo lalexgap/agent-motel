@@ -12,6 +12,7 @@ import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
 import { capturePane, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
+import { expandHome } from "./paths";
 import { daemonCommand } from "./commands/daemon";
 import { sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
@@ -135,10 +136,15 @@ async function pickerFlow(): Promise<void> {
       if (snapshot) return [`(last screen — ${displayStatus(agent)})`, ...snapshot];
       return [`(no live session — ${displayStatus(agent)})`];
     },
-    // ctrl-n in the picker: spawn in the directory `am` was launched from.
-    create: async (name: string, task?: string) => {
-      await newCommand({ name, message: task, jump: false, quiet: true });
+    create: async (name: string, task: string | undefined, dir: string | undefined) => {
+      await newCommand({ name, message: task, dir: dir ? expandHome(dir) : undefined, jump: false, quiet: true });
       return name;
+    },
+    // Dir prompt prefill: the highlighted agent's dir (related work usually
+    // lives in the same project), else where `am` was launched from.
+    defaultDir: (highlighted: string | null) => {
+      const agent = highlighted ? readAgent(highlighted) : null;
+      return shortenHome(agent?.dir ?? process.cwd());
     },
   };
 

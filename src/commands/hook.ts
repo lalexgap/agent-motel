@@ -17,12 +17,22 @@ async function readStdinPayload(): Promise<Record<string, unknown>> {
 }
 
 export function notifyMac(title: string, message: string): void {
-  const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-  Bun.spawnSync([
-    "osascript",
-    "-e",
-    `display notification "${esc(message)}" with title "${esc(title)}"`,
-  ]);
+  // terminal-notifier can post as another app (-sender): the notification
+  // gets that app's icon and clicking it focuses the app — osascript
+  // notifications are stuck attributed to Script Editor.
+  //
+  // Fire-and-forget either way: hooks run these, and a notifier that blocks
+  // (terminal-notifier is known to linger) must never stall a hook.
+  const sender = loadConfig().notifySender;
+  const cmd =
+    sender && Bun.which("terminal-notifier")
+      ? ["terminal-notifier", "-title", title, "-message", message, "-sender", sender, "-group", `am-${title}`]
+      : [
+          "osascript",
+          "-e",
+          `display notification "${message.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}" with title "${title.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
+        ];
+  Bun.spawn({ cmd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
 }
 
 export function formatDuration(seconds: number): string {

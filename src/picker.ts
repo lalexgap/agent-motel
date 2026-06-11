@@ -18,7 +18,10 @@ export interface PickerHandlers {
   preview?: (name: string) => string[];
   // Create a new agent; resolves to its name, which the picker then jumps to
   // (or selects, in persistent mode).
-  create?: (name: string, task?: string) => Promise<string>;
+  create?: (name: string, task: string | undefined, dir: string | undefined) => Promise<string>;
+  // Prefill for the create flow's directory prompt, given the currently
+  // highlighted agent (related work usually lives in the same project).
+  defaultDir?: (highlighted: string | null) => string;
   // Persistent mode (am ui sidebar): enter calls select instead of resolving
   // the picker, esc calls quit, and the picker keeps running. Returns
   // optional footer feedback.
@@ -148,7 +151,7 @@ interface Cell {
   style?: string;
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task";
+type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir";
 
 export async function pick(
   load: () => PickerItem[],
@@ -170,6 +173,7 @@ export async function pick(
   let mode: Mode = "list";
   let newName = "";
   let newTask = "";
+  let newDir = "";
   let creating = false;
   let lastHighlighted: string | null = null;
 
@@ -211,7 +215,9 @@ export async function pick(
         ? { text: `new agent name: ${newName}▌` }
         : mode === "new-task"
           ? { text: `task (optional): ${newTask}▌` }
-          : mode === "filter"
+          : mode === "new-dir"
+            ? { text: `dir: ${newDir}▌` }
+            : mode === "filter"
             ? { text: `filter: ${filter}▌` }
             : filter
               ? { text: `filter: ${filter} · ⌫ clears` }
@@ -310,13 +316,14 @@ export async function pick(
       if (creating || !handlers.create) return;
       creating = true;
       render();
-      handlers.create(newName, newTask || undefined).then(
+      handlers.create(newName, newTask || undefined, newDir.trim() || undefined).then(
         (created) => {
           if (!handlers.select) return finish(created);
           creating = false;
           mode = "list";
           newName = "";
           newTask = "";
+          newDir = "";
           feedback = handlers.select(created);
           items = load();
           render();
@@ -381,6 +388,7 @@ export async function pick(
           mode = "list";
           newName = "";
           newTask = "";
+          newDir = "";
           feedback = null;
         } else if (key === "\r" || key === "\n") {
           if (mode === "new-name") {
@@ -390,15 +398,20 @@ export async function pick(
               feedback = null;
               mode = "new-task";
             }
+          } else if (mode === "new-task") {
+            mode = "new-dir";
+            newDir = handlers.defaultDir?.(cursorName) ?? "";
           } else {
             return submitCreate(); // renders itself
           }
         } else if (key === "\x7f" || key === "\b") {
           if (mode === "new-name") newName = newName.slice(0, -1);
-          else newTask = newTask.slice(0, -1);
+          else if (mode === "new-task") newTask = newTask.slice(0, -1);
+          else newDir = newDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (mode === "new-name") newName += key;
-          else newTask += key;
+          else if (mode === "new-task") newTask += key;
+          else newDir += key;
         }
         return render();
       }

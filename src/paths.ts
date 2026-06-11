@@ -2,6 +2,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 
+export function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}
+
 // AGENTMGR_HOME override exists so tests can run against a throwaway dir.
 export function baseDir(): string {
   return process.env.AGENTMGR_HOME ?? join(homedir(), ".agent-manager");

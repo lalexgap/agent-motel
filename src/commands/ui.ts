@@ -1,6 +1,7 @@
 import { listAgents, readAgent, recordAttached } from "../state";
 import { attachOrSwitch, hasSession, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
+import { expandHome } from "../paths";
 import { pick, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -173,9 +174,15 @@ export async function sidebarCommand(): Promise<void> {
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
     },
-    create: async (name: string, task?: string) => {
-      await newCommand({ name, message: task, jump: false, quiet: true });
+    create: async (name: string, task: string | undefined, dir: string | undefined) => {
+      await newCommand({ name, message: task, dir: dir ? expandHome(dir) : undefined, jump: false, quiet: true });
       return name;
+    },
+    // Dir prompt prefill: the highlighted agent's dir (related work usually
+    // lives in the same project), else the hub's launch dir.
+    defaultDir: (highlighted: string | null) => {
+      const agent = highlighted ? readAgent(highlighted) : null;
+      return shortenHome(agent?.dir ?? process.cwd());
     },
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
