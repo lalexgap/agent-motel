@@ -9,10 +9,10 @@ import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
-import { resumeCommand } from "./commands/resume";
+import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
-import { capturePane, insideTmux } from "./tmux";
+import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
 import { daemonCommand } from "./commands/daemon";
@@ -167,6 +167,9 @@ async function pickerFlow(): Promise<void> {
   while (true) {
     const chosen = await pick(load, handlers, cameFrom);
     if (!chosen) break;
+    // Picking an exited/dead agent revives it before jumping in.
+    const picked = readAgent(chosen);
+    if (picked && !hasSession(picked.tmuxSession)) await reviveAgent(picked);
     jumpCommand(chosen);
     if (insideTmux()) break;
     if (load().length === 0) break;

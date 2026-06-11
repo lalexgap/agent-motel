@@ -7,6 +7,7 @@ import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
 import { newCommand } from "./new";
 import { destroyAgent, stopAgent } from "./rm";
+import { reviveAgent } from "./resume";
 import { readLastAttached } from "../state";
 
 // Persistent split view: a hub tmux session whose left pane runs the sidebar
@@ -111,9 +112,24 @@ export async function sidebarCommand(): Promise<void> {
 
     if (!hasSession(agent.tmuxSession)) {
       shown = null;
-      tmux("respawn-pane", "-k", "-t", pane,
-        messageCommand(`${name}: no live session (${displayStatus(agent)})`));
-      return focus ? `"${name}" has no live session — \`am resume ${name}\`` : null;
+      if (!focus) {
+        tmux("respawn-pane", "-k", "-t", pane,
+          messageCommand(`${name}: no live session (${displayStatus(agent)})`));
+        return null;
+      }
+      // Enter on a dead agent revives it, then re-enters to attach the pane.
+      tmux("respawn-pane", "-k", "-t", pane, messageCommand(`reviving ${name}…`));
+      reviveAgent(agent).then(
+        () => showAgent(name, true),
+        (error: Error) => {
+          const failPane = ensureRightPane();
+          if (failPane) {
+            tmux("respawn-pane", "-k", "-t", failPane,
+              messageCommand(`revive failed: ${error.message}`));
+          }
+        },
+      );
+      return `reviving ${name}…`;
     }
 
     if (shown !== name) {
