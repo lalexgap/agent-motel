@@ -9,7 +9,10 @@ import { queueCommand } from "./commands/queue";
 import { rmCommand } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
+import { daemonCommand } from "./commands/daemon";
+import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
+import { runForegroundDaemon } from "./daemon";
 
 const HELP = `am — manage and jump between Claude Code agents
 
@@ -25,6 +28,9 @@ usage:
   am interrupt <name> <msg>   abort current turn (Esc), then send message
   am queue <name> [--clear]   show or clear an agent's pending queue
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
+  am watch                    live status table (via the daemon)
+  am daemon [start|stop|status]
+                              manage the background daemon (auto-started by am new)
 `;
 
 interface ParsedArgs {
@@ -97,7 +103,7 @@ async function main(): Promise<void> {
       await pickerFlow();
       break;
     case "new":
-      newCommand({
+      await newCommand({
         name: requirePositional(args, 0, "agent name"),
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         dir: args.flags.dir as string | undefined,
@@ -134,6 +140,15 @@ async function main(): Promise<void> {
     case "hook":
       await hookCommand(requirePositional(args, 0, "hook event"));
       break;
+    case "daemon":
+      await daemonCommand(args.positional[0]);
+      break;
+    case "watch":
+      await watchCommand();
+      break;
+    case "__daemon":
+      runForegroundDaemon();
+      return; // keep the process alive serving the socket
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));
       break;

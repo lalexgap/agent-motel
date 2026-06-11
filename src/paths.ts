@@ -27,6 +27,14 @@ export function hookSettingsFile(): string {
   return join(baseDir(), "hook-settings.json");
 }
 
+export function daemonSocket(): string {
+  return join(baseDir(), "daemon.sock");
+}
+
+export function daemonPidFile(): string {
+  return join(baseDir(), "daemon.pid");
+}
+
 export function ensureDirs(): void {
   for (const dir of [agentsDir(), queueDir(), worktreesDir()]) {
     mkdirSync(dir, { recursive: true });

@@ -32,30 +32,41 @@ export function shortenHome(path: string): string {
   return path.startsWith(homedir()) ? "~" + path.slice(homedir().length) : path;
 }
 
-export function lsCommand(opts: { json: boolean }): void {
-  const agents = listAgents();
-  const rows = agents.map((a) => ({
+export interface AgentRow {
+  name: string;
+  status: DisplayStatus;
+  queued: number;
+  updatedAt: string;
+  dir: string;
+}
+
+export function agentRows(): AgentRow[] {
+  return listAgents().map((a) => ({
     ...a,
     status: displayStatus(a),
     queued: queueDepth(a.name),
   }));
+}
 
+export function formatRows(rows: AgentRow[]): string[] {
+  if (rows.length === 0) return ["no agents — create one with `am new <name>`"];
+  const nameWidth = Math.max(4, ...rows.map((r) => r.name.length));
+  const statusWidth = Math.max(6, ...rows.map((r) => r.status.length));
+  const lines = [`  ${"NAME".padEnd(nameWidth)}  ${"STATUS".padEnd(statusWidth)}  QUEUED  ACTIVITY  DIR`];
+  for (const r of rows) {
+    const queued = r.queued > 0 ? String(r.queued) : "–";
+    lines.push(
+      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(statusWidth)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
+    );
+  }
+  return lines;
+}
+
+export function lsCommand(opts: { json: boolean }): void {
+  const rows = agentRows();
   if (opts.json) {
     console.log(JSON.stringify(rows, null, 2));
     return;
   }
-  if (rows.length === 0) {
-    console.log("no agents — create one with `am new <name>`");
-    return;
-  }
-
-  const nameWidth = Math.max(4, ...rows.map((r) => r.name.length));
-  const statusWidth = Math.max(6, ...rows.map((r) => r.status.length));
-  console.log(`  ${"NAME".padEnd(nameWidth)}  ${"STATUS".padEnd(statusWidth)}  QUEUED  ACTIVITY  DIR`);
-  for (const r of rows) {
-    const queued = r.queued > 0 ? String(r.queued) : "–";
-    console.log(
-      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(statusWidth)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
-    );
-  }
+  console.log(formatRows(rows).join("\n"));
 }

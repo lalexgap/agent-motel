@@ -4,6 +4,7 @@ import { ensureDirs, worktreesDir } from "../paths";
 import { readAgent, writeAgent, type AgentState } from "../state";
 import { hasSession, newSession, sessionName } from "../tmux";
 import { writeHookSettings } from "../settings";
+import { ensureDaemon } from "../daemon";
 
 function git(dir: string, ...args: string[]): { exitCode: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(["git", "-C", dir, ...args]);
@@ -36,7 +37,7 @@ export interface NewOptions {
   worktree?: string;
 }
 
-export function newCommand(opts: NewOptions): void {
+export async function newCommand(opts: NewOptions): Promise<void> {
   const { name } = opts;
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error("agent name must be alphanumeric with dashes/underscores");
@@ -48,6 +49,9 @@ export function newCommand(opts: NewOptions): void {
 
   ensureDirs();
   const settingsFile = writeHookSettings();
+  if (!(await ensureDaemon())) {
+    console.error("warning: daemon failed to start — falling back to hook-only delivery");
+  }
 
   let dir = resolve(opts.dir ?? process.cwd());
   let worktreePath: string | undefined;

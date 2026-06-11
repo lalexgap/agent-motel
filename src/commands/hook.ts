@@ -1,6 +1,7 @@
 import { setStatus, readAgent } from "../state";
 import { queueDepth } from "../queue";
 import { spawnDeliver } from "../deliver";
+import { notifyDaemon } from "../daemon";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -36,7 +37,11 @@ export async function hookCommand(event: string): Promise<void> {
       break;
     case "stop":
       setStatus(name, "idle");
-      if (queueDepth(name) > 0) spawnDeliver(name);
+      // Prefer the daemon as scheduler; fall back to a detached one-shot
+      // delivery process when it isn't running.
+      if (queueDepth(name) > 0 && !(await notifyDaemon(name, "stop"))) {
+        spawnDeliver(name);
+      }
       break;
     case "notification": {
       setStatus(name, "needs-attention");
