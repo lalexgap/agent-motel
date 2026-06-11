@@ -22,18 +22,19 @@ const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 const CLEAR_LINE = "\x1b[2K";
 
-const HELP = "(type to filter · ↑/↓ · enter jumps · ctrl-x stop · ctrl-d remove · esc)";
+const HELP = "(type to filter · ↑/↓ · enter jumps (ctrl-q returns) · ctrl-x stop · ctrl-d remove · esc)";
 
 export async function pick(
   load: () => PickerItem[],
   handlers: PickerHandlers = {},
+  initial?: string,
 ): Promise<string | null> {
   let items = load();
   if (items.length === 0) return null;
   if (!process.stdin.isTTY) throw new Error("interactive picker needs a TTY (use `am ls` / `am j <name>`)");
 
   let filter = "";
-  let cursor = 0;
+  let cursor = Math.max(0, items.findIndex((i) => i.name === initial));
   let renderedLines = 0;
   let feedback: string | null = null;
   let confirmRemove: string | null = null;

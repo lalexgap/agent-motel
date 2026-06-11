@@ -10,7 +10,7 @@ import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
-import { capturePane } from "./tmux";
+import { capturePane, insideTmux } from "./tmux";
 import { daemonCommand } from "./commands/daemon";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
@@ -103,24 +103,36 @@ async function pickerFlow(): Promise<void> {
     console.log("no agents — create one with `am new <name>`");
     return;
   }
-  const chosen = await pick(load, {
-    stop: (name) => {
+  const handlers = {
+    stop: (name: string) => {
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
     },
-    remove: (name) => {
+    remove: (name: string) => {
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
     },
-    preview: (name) => {
+    preview: (name: string) => {
       const agent = readAgent(name);
       if (!agent) return [];
       return capturePane(agent.tmuxSession) ?? [`(no live session — ${displayStatus(agent)})`];
     },
-  });
-  if (chosen) jumpCommand(chosen);
+  };
+
+  // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),
+  // then the picker reopens on the agent they just left. Inside tmux,
+  // switch-client returns immediately, so jump once and exit instead.
+  let cameFrom: string | undefined;
+  while (true) {
+    const chosen = await pick(load, handlers, cameFrom);
+    if (!chosen) break;
+    jumpCommand(chosen);
+    if (insideTmux()) break;
+    if (load().length === 0) break;
+    cameFrom = chosen;
+  }
 }
 
 async function main(): Promise<void> {

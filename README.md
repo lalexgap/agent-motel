@@ -57,7 +57,7 @@ am daemon status         # the daemon is auto-started by `am new`
 
 ### Leaving an agent without killing it
 
-Inside an agent's session, detach with **`ctrl-b d`** (tmux's detach binding) — the agent keeps working in the background. `ctrl-b s` shows a session picker and `ctrl-b (` / `)` cycle sessions if you'd rather hop straight to another agent. Exiting Claude Code itself (`/exit` or ctrl-d twice) ends the session; the agent shows as `exited` in `am ls` and can be brought back with `am resume`, which reopens the same conversation (hooks record Claude's session id).
+Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps working) and, when you arrived via the `am` picker, drops you straight back into the picker with that agent highlighted. The binding lives in a per-session tmux key table, so it only applies to agent sessions. Plain tmux detach (`ctrl-b d`) works too, as do `ctrl-b s` / `ctrl-b (` / `)` for hopping between sessions natively. Exiting Claude Code itself (`/exit` or ctrl-d twice) ends the session; the agent shows as `exited` in `am ls` and can be brought back with `am resume`, which reopens the same conversation (hooks record Claude's session id).
 
 ## How it works
 
