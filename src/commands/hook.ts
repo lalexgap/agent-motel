@@ -2,6 +2,9 @@ import { readAgent, writeAgent, type AgentStatus } from "../state";
 import { queueDepth } from "../queue";
 import { spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
+import { loadConfig, shouldNotifyIdle } from "../config";
+import { writeSnapshot } from "../snapshots";
+import { capturePane, hasAttachedClient } from "../tmux";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -13,13 +16,19 @@ async function readStdinPayload(): Promise<Record<string, unknown>> {
   }
 }
 
-function notifyMac(title: string, message: string): void {
+export function notifyMac(title: string, message: string): void {
   const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
   Bun.spawnSync([
     "osascript",
     "-e",
     `display notification "${esc(message)}" with title "${esc(title)}"`,
   ]);
+}
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 export interface HookEffects {
@@ -60,14 +69,41 @@ export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   const effects = hookEffects(event, payload);
 
+  const workedSeconds = agent.workingSince
+    ? Math.max(0, (Date.now() - Date.parse(agent.workingSince)) / 1000)
+    : 0;
+
   agent.status = effects.status;
   if (typeof payload.session_id === "string") agent.claudeSessionId = payload.session_id;
+  if (event === "user-prompt-submit" && !agent.workingSince) {
+    agent.workingSince = new Date().toISOString();
+  }
+  if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
 
+  // Keep a last-screen snapshot so the picker can preview dead agents.
+  if (event === "stop" || event === "session-end") {
+    const pane = capturePane(agent.tmuxSession);
+    if (pane && pane.length > 0) writeSnapshot(name, pane);
+  }
+
   if (effects.notify) notifyMac(`am: ${name}`, effects.notify);
-  if (effects.drainQueue && queueDepth(name) > 0) {
-    // Prefer the daemon as scheduler; fall back to a detached one-shot
-    // delivery process when it isn't running.
-    if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
+
+  if (effects.drainQueue) {
+    const depth = queueDepth(name);
+    if (depth > 0) {
+      // Prefer the daemon as scheduler; fall back to a detached one-shot
+      // delivery process when it isn't running.
+      if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
+    } else if (
+      shouldNotifyIdle({
+        config: loadConfig(),
+        workedSeconds,
+        queueDepth: depth,
+        attached: hasAttachedClient(agent.tmuxSession),
+      })
+    ) {
+      notifyMac(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`);
+    }
   }
 }

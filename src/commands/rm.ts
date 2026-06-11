@@ -1,5 +1,6 @@
 import { removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear } from "../queue";
+import { removeSnapshot } from "../snapshots";
 import { hasSession, killSession } from "../tmux";
 
 // Stop = kill the tmux session but keep state, so `am resume` still works.
@@ -25,6 +26,7 @@ export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void 
   }
 
   queueClear(agent.name);
+  removeSnapshot(agent.name);
   removeAgent(agent.name);
 }
 

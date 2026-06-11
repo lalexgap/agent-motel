@@ -151,6 +151,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     worktreePath,
     worktreeBranch: opts.worktree,
     repoRoot,
+    task: opts.message,
     createdAt: now,
     updatedAt: now,
   };

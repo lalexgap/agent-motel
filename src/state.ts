@@ -21,6 +21,11 @@ export interface AgentState {
   // Claude Code conversation id, captured from hook payloads — lets
   // `am resume` reopen the exact conversation after the session exits.
   claudeSessionId?: string;
+  // The initial -m message: what this agent is for. Searchable in the picker.
+  task?: string;
+  // Set when a turn starts, used to measure the work stint for idle
+  // notifications.
+  workingSince?: string;
   createdAt: string;
   updatedAt: string;
 }

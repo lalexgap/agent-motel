@@ -1,6 +1,8 @@
 export interface PickerItem {
   name: string;
   label: string;
+  // Extra text the filter matches against (task, dir) besides the name.
+  search?: string;
 }
 
 export interface PickerHandlers {
@@ -41,7 +43,8 @@ export async function pick(
 
   const out = (s: string) => process.stdout.write(s);
 
-  const filtered = () => items.filter((i) => i.name.includes(filter));
+  const filtered = () =>
+    items.filter((i) => `${i.name} ${i.search ?? ""}`.toLowerCase().includes(filter.toLowerCase()));
 
   const render = () => {
     if (renderedLines > 0) out(`\x1b[${renderedLines}A`);
@@ -85,6 +88,7 @@ export async function pick(
 
   process.stdin.setRawMode(true);
   process.stdin.resume();
+  out("\x1b]0;am\x07"); // tab title; agent sessions set their own via tmux set-titles
   out(HIDE_CURSOR);
   render();
 

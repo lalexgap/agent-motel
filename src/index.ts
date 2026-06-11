@@ -11,6 +11,7 @@ import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
 import { capturePane, insideTmux } from "./tmux";
+import { readSnapshot } from "./snapshots";
 import { daemonCommand } from "./commands/daemon";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
@@ -96,6 +97,7 @@ async function pickerFlow(): Promise<void> {
       return {
         name: a.name,
         label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status.padEnd(15)} ${queued > 0 ? `${queued} queued` : ""}`,
+        search: `${a.task ?? ""} ${a.dir}`,
       };
     });
   };
@@ -117,7 +119,12 @@ async function pickerFlow(): Promise<void> {
     preview: (name: string) => {
       const agent = readAgent(name);
       if (!agent) return [];
-      return capturePane(agent.tmuxSession) ?? [`(no live session — ${displayStatus(agent)})`];
+      const header = agent.task ? [`task: ${agent.task}`] : [];
+      const live = capturePane(agent.tmuxSession);
+      if (live) return [...header, ...live];
+      const snapshot = readSnapshot(name);
+      if (snapshot) return [...header, `(last screen — ${displayStatus(agent)})`, ...snapshot];
+      return [...header, `(no live session — ${displayStatus(agent)})`];
     },
   };
 

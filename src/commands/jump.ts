@@ -1,5 +1,5 @@
 import { readLastAttached, recordAttached, resolveAgent } from "../state";
-import { attachOrSwitch, hasSession, installDetachKey } from "../tmux";
+import { attachOrSwitch, hasSession, configureAgentSession } from "../tmux";
 
 export function jumpCommand(prefix: string): void {
   const agent = resolveAgent(prefix);
@@ -7,8 +7,8 @@ export function jumpCommand(prefix: string): void {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
   }
   recordAttached(agent.name);
-  // Retrofits the ctrl-q detach binding onto sessions created before it existed.
-  installDetachKey(agent.tmuxSession);
+  // Retrofits ctrl-q + title options onto sessions created before they existed.
+  configureAgentSession(agent.tmuxSession);
   attachOrSwitch(agent.tmuxSession);
 }
 

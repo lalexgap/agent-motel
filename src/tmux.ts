@@ -36,21 +36,23 @@ export function newSession(opts: {
   if (result.exitCode !== 0) {
     throw new Error(`tmux new-session failed: ${result.stderr.trim()}`);
   }
-  installDetachKey(opts.session);
+  configureAgentSession(opts.session);
 }
 
 export function killSession(session: string): void {
   tmux("kill-session", "-t", `=${session}`);
 }
 
-// ctrl-q detaches from agent sessions (no prefix needed). The binding lives
-// in a custom key table applied per-session, so other tmux sessions on the
-// same server keep their normal root bindings.
-export function installDetachKey(session: string): void {
+// Per-session setup for agent sessions: ctrl-q detaches (the binding lives in
+// a custom key table so other tmux sessions keep their root bindings), and
+// the terminal tab/window title shows the agent's name while attached.
+export function configureAgentSession(session: string): void {
   tmux("bind-key", "-T", "agentmgr", "C-q", "detach-client");
   // Like send-keys, set-option rejects a bare `=name` target — it needs the
   // `=name:` form for an exact match.
   tmux("set-option", "-t", `=${session}:`, "key-table", "agentmgr");
+  tmux("set-option", "-t", `=${session}:`, "set-titles", "on");
+  tmux("set-option", "-t", `=${session}:`, "set-titles-string", session.slice(SESSION_PREFIX.length));
 }
 
 // send-keys targets a pane: the `=` exact-match prefix only resolves there
@@ -79,6 +81,11 @@ export function capturePane(session: string): string[] | null {
 
 export function insideTmux(): boolean {
   return !!process.env.TMUX;
+}
+
+export function hasAttachedClient(session: string): boolean {
+  const result = tmux("list-clients", "-t", `=${session}:`);
+  return result.exitCode === 0 && result.stdout.trim() !== "";
 }
 
 export function attachOrSwitch(session: string): void {
