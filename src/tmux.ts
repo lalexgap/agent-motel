@@ -53,6 +53,20 @@ export function configureAgentSession(session: string): void {
   tmux("set-option", "-t", `=${session}:`, "key-table", "agentmgr");
   tmux("set-option", "-t", `=${session}:`, "set-titles", "on");
   tmux("set-option", "-t", `=${session}:`, "set-titles-string", session.slice(SESSION_PREFIX.length));
+
+  // Modifier-free text selection: mouse mode is on for agent sessions only
+  // (session option). Drag always starts a tmux selection — deliberately not
+  // forwarded to the app, whose mouse reporting is what breaks native
+  // selection — and release pipes it to pbcopy. Wheel still scrolls the app.
+  tmux("set-option", "-t", `=${session}:`, "mouse", "on");
+  tmux("bind-key", "-T", "agentmgr", "MouseDrag1Pane", "copy-mode", "-M");
+  const appWantsMouse = "#{||:#{pane_in_mode},#{mouse_any_flag}}";
+  tmux("bind-key", "-T", "agentmgr", "WheelUpPane", "if", "-Ft=", appWantsMouse, "send-keys -M", "copy-mode -e");
+  tmux("bind-key", "-T", "agentmgr", "WheelDownPane", "if", "-Ft=", appWantsMouse, "send-keys -M");
+  // Release = copied to the system clipboard (these tables are server-global,
+  // but clipboard-on-copy is what anyone wants on macOS).
+  tmux("bind-key", "-T", "copy-mode", "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-and-cancel", "pbcopy");
+  tmux("bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-and-cancel", "pbcopy");
 }
 
 // send-keys targets a pane: the `=` exact-match prefix only resolves there

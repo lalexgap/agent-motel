@@ -55,6 +55,10 @@ am watch                 # live status table, fed by the daemon
 am daemon status         # the daemon is auto-started by `am new`
 ```
 
+### Copying text
+
+Just drag — agent sessions run with tmux mouse mode on, so a click-drag selects via tmux (Claude Code's own mouse handling can't swallow it) and releasing copies the selection straight to the macOS clipboard. No modifier keys, no ⌘C. Wheel scrolling still goes to Claude Code. Mouse mode is per-session, so your other tmux sessions are unaffected.
+
 ### Leaving an agent without killing it
 
 Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps working) and, when you arrived via the `am` picker, drops you straight back into the picker with that agent highlighted. The binding lives in a per-session tmux key table, so it only applies to agent sessions. Plain tmux detach (`ctrl-b d`) works too, as do `ctrl-b s` / `ctrl-b (` / `)` for hopping between sessions natively. Exiting Claude Code itself (`/exit` or ctrl-d twice) ends the session; the agent shows as `exited` in `am ls` and can be brought back with `am resume`, which reopens the same conversation (hooks record Claude's session id).
