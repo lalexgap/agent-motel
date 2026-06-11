@@ -1,6 +1,8 @@
 export interface PickerItem {
   name: string;
   label: string;
+  // Right-aligned text at the row's end (status, queue depth).
+  right?: string;
   // Extra text the filter matches against (task, dir) besides the name.
   search?: string;
   // Already-formatted detail lines shown in the sidebar under the list for
@@ -119,7 +121,25 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
 
-const HELP = "type to filter · ↑/↓ · enter jumps (ctrl-q returns) · ctrl-n new · ctrl-x stop · ctrl-d remove · esc";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · x stop · d remove · q/esc quit";
+
+// Pack " · "-separated help tokens into lines that fit the width, so narrow
+// panes (the am ui sidebar) show all the keys instead of a clipped line.
+export function wrapTokens(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const token of text.split(" · ")) {
+    const candidate = line ? `${line} · ${token}` : token;
+    if (line && candidate.length > width) {
+      lines.push(line);
+      line = token;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
 
 // A sidebar cell: plain text plus an optional style applied after clipping
 // and padding, so the width math never has to account for escape codes.
@@ -128,7 +148,7 @@ interface Cell {
   style?: string;
 }
 
-type Mode = "list" | "new-name" | "new-task";
+type Mode = "list" | "filter" | "new-name" | "new-task";
 
 export async function pick(
   load: () => PickerItem[],
@@ -164,7 +184,15 @@ export async function pick(
     const showPreview = !!handlers.preview && cols >= 28 + MIN_PREVIEW_WIDTH + 2;
     const sidebarWidth = sidebarWidthFor(cols, showPreview);
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
-    const bodyRows = Math.max(1, rows - 1); // last row is the footer
+
+    const footerLines = creating
+      ? [`\x1b[33mcreating "${newName}"…\x1b[0m`]
+      : confirmRemove
+        ? [`\x1b[31mremove "${confirmRemove}"? d again to confirm\x1b[0m`]
+        : feedback
+          ? [`\x1b[33m${clipLine(feedback, cols)}\x1b[0m`]
+          : wrapTokens(handlers.help ?? HELP, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
+    const bodyRows = Math.max(1, rows - footerLines.length);
 
     const matches = filtered();
     const tracked = cursorName ? matches.findIndex((i) => i.name === cursorName) : -1;
@@ -183,7 +211,11 @@ export async function pick(
         ? { text: `new agent name: ${newName}▌` }
         : mode === "new-task"
           ? { text: `task (optional): ${newTask}▌` }
-          : { text: `filter: ${filter}▌` };
+          : mode === "filter"
+            ? { text: `filter: ${filter}▌` }
+            : filter
+              ? { text: `filter: ${filter} · ⌫ clears` }
+              : { text: `agents (${matches.length}) · f filters`, style: DIM };
 
     // The meta block is sized to the largest meta across ALL items, not the
     // selected one — otherwise the list capacity (and every row below the
@@ -210,7 +242,10 @@ export async function pick(
     const side: Cell[] = [header];
     matches.slice(start, start + listCapacity).forEach((item, i) => {
       const idx = start + i;
-      const text = `${idx === cursor ? "❯ " : "  "}${item.label}`;
+      const prefix = idx === cursor ? "❯ " : "  ";
+      const right = item.right ?? "";
+      const labelWidth = Math.max(1, sidebarWidth - prefix.length - (right ? right.length + 1 : 0));
+      const text = prefix + clipLine(item.label, labelWidth).padEnd(labelWidth) + (right ? " " + right : "");
       side.push(idx === cursor ? { text, style: INVERSE } : { text });
     });
     if (matches.length === 0) {
@@ -237,14 +272,7 @@ export async function pick(
       lines.push(line);
     }
 
-    const footer = creating
-      ? `\x1b[33mcreating "${newName}"…\x1b[0m`
-      : confirmRemove
-        ? `\x1b[31mremove "${confirmRemove}"? ctrl-d again to confirm\x1b[0m`
-        : feedback
-          ? `\x1b[33m${clipLine(feedback, cols)}\x1b[0m`
-          : `${DIM}${clipLine(handlers.help ?? HELP, cols)}${RESET}`;
-    lines.push(footer);
+    lines.push(...footerLines);
 
     // No trailing newline: the footer sits on the last row and writing past
     // it would scroll the alternate screen.
@@ -326,8 +354,26 @@ export async function pick(
       }
     };
 
+    const moveCursor = (delta: number) => {
+      const matches = filtered();
+      cursor = Math.min(Math.max(0, cursor + delta), Math.max(0, matches.length - 1));
+      cursorName = matches[cursor]?.name ?? null;
+    };
+
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
+
+      if (mode === "filter") {
+        if (key === "\x1b") {
+          filter = "";
+          mode = "list";
+        } else if (key === "\r" || key === "\n") mode = "list";
+        else if (key === "\x1b[A") moveCursor(-1);
+        else if (key === "\x1b[B") moveCursor(1);
+        else if (key === "\x7f" || key === "\b") filter = filter.slice(0, -1);
+        else if (key >= " " && !key.startsWith("\x1b")) filter += key;
+        return render();
+      }
 
       if (mode !== "list") {
         if (creating) return;
@@ -360,8 +406,8 @@ export async function pick(
       const pendingConfirm = confirmRemove;
       confirmRemove = null;
 
-      if (key === "\x1b") {
-        // esc: in persistent mode hand off to quit (detach) and keep running.
+      if (key === "\x1b" || key === "q") {
+        // esc/q: in persistent mode hand off to quit (detach) and keep running.
         if (handlers.quit) handlers.quit();
         else return finish(null);
       } else if (key === "\r" || key === "\n" || (key === "\x1b[C" && !!handlers.select)) {
@@ -373,26 +419,24 @@ export async function pick(
           feedback = handlers.select(match.name);
           items = load();
         }
-      } else if (key === "\x0e" && handlers.create) {
-        // ctrl-n
+      } else if (key === "f" || key === "/") {
+        mode = "filter";
+        feedback = null;
+      } else if ((key === "\x0e" || key === "n") && handlers.create) {
         mode = "new-name";
         newName = "";
         newTask = "";
         feedback = null;
-      } else if (key === "\x18" && handlers.stop) {
-        // ctrl-x
+      } else if ((key === "\x18" || key === "x") && handlers.stop) {
         runAction(handlers.stop);
-      } else if (key === "\x04" && handlers.remove) {
-        // ctrl-d, twice on the same item to confirm
+      } else if ((key === "\x04" || key === "d") && handlers.remove) {
+        // twice on the same item to confirm
         const target = filtered()[cursor];
         if (target && pendingConfirm === target.name) runAction(handlers.remove);
         else if (target) confirmRemove = target.name;
-      } else if (key === "\x1b[A" || key === "\x1b[B") {
-        const matches = filtered();
-        cursor = key === "\x1b[A" ? Math.max(0, cursor - 1) : Math.min(matches.length - 1, cursor + 1);
-        cursorName = matches[cursor]?.name ?? null;
-      } else if (key === "\x7f" || key === "\b") filter = filter.slice(0, -1);
-      else if (key >= " " && !key.startsWith("\x1b")) filter += key;
+      } else if (key === "\x1b[A" || key === "k") moveCursor(-1);
+      else if (key === "\x1b[B" || key === "j") moveCursor(1);
+      else if (key === "\x7f" || key === "\b") filter = "";
       render();
     };
 

@@ -4,16 +4,17 @@ A small CLI for running multiple [Claude Code](https://claude.com/claude-code) a
 
 ```
 $ am
-filter: ▌                              │ ⏺ Updating src/api/client.ts…
-❯ ● api-refactor  working · 2 queued   │ ✻ Churning (12s · 8.2k tokens)
-  ⚠ bugfix-381    needs-attention      │
-  ○ docs-pass     idle                 │
-                                       │
-status   working (2 queued)            │
-dir      ~/code/api                    │
-task     refactor the api layer        │
-updated  12s ago                       │
-type to filter · ↑/↓ · enter jumps · ctrl-n new · ctrl-x stop · ctrl-d remove
+agents (3) · f filters         │ ⏺ Updating src/api/client.ts…
+❯ ● api-refactor   working 2q  │ ✻ Churning (12s · 8.2k tokens)
+  ⚠ bugfix-381  needs-attention│
+  ○ docs-pass             idle │
+                               │
+status   working (2 queued)    │
+dir      ~/code/api            │
+task     refactor the api layer│
+updated  12s ago               │
+f filter · ↑/↓/j/k preview     │
+enter/→ lock in · n new        │
 ```
 
 The picker is a full-screen split view: agents and their details in the left

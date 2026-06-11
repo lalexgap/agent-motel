@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipAnsi, splitKeys, visibleWidth } from "../src/picker";
+import { clipAnsi, splitKeys, visibleWidth, wrapTokens } from "../src/picker";
 
 const RED = "\x1b[31m";
 const BG = "\x1b[48;5;236m";
@@ -27,6 +27,17 @@ describe("splitKeys", () => {
   test("application-mode (SS3) arrows normalize to CSI form", () => {
     expect(splitKeys("\x1bOC")).toEqual(["\x1b[C"]);
     expect(splitKeys("\x1bOA\x1bOB")).toEqual(["\x1b[A", "\x1b[B"]);
+  });
+});
+
+describe("wrapTokens", () => {
+  test("packs separator-delimited tokens into width-bounded lines", () => {
+    expect(wrapTokens("a · b · c", 80)).toEqual(["a · b · c"]);
+    expect(wrapTokens("aaaa · bbbb · cccc", 11)).toEqual(["aaaa · bbbb", "cccc"]);
+  });
+
+  test("an oversized single token still gets its own line", () => {
+    expect(wrapTokens("tiny · enormous-token-here", 10)).toEqual(["tiny", "enormous-token-here"]);
   });
 });
 

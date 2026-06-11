@@ -15,7 +15,7 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "↑/↓ preview · enter/→ lock in · ctrl-q back · ctrl-n new · ctrl-x stop · ctrl-d remove · esc detach · ctrl-c quit";
+const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · x stop · d remove · q/esc detach · ctrl-c quit";
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -133,14 +133,16 @@ export async function sidebarCommand(): Promise<void> {
 
   const load = () => {
     const agents = listAgents();
-    const nameWidth = Math.max(0, ...agents.map((a) => a.name.length));
     return agents.map((a) => {
       const status = displayStatus(a);
       const queued = queueDepth(a.name);
       return {
         name: a.name,
-        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status}${queued > 0 ? ` · ${queued}q` : ""}`,
-        search: `${a.task ?? ""} ${a.dir}`,
+        label: `${STATUS_ICONS[status]} ${a.name}`,
+        right: queued > 0 ? `${status} ${queued}q` : status,
+        // shortenHome: a raw /Users/... prefix would make filters like
+        // "ser" match every agent.
+        search: `${a.task ?? ""} ${shortenHome(a.dir)}`,
         meta: [
           `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
           `dir      ${shortenHome(a.dir)}`,

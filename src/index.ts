@@ -96,14 +96,14 @@ function messageFrom(args: ParsedArgs): string {
 async function pickerFlow(): Promise<void> {
   const load = () => {
     const agents = listAgents();
-    const nameWidth = Math.max(0, ...agents.map((a) => a.name.length));
     return agents.map((a) => {
       const status = displayStatus(a);
       const queued = queueDepth(a.name);
       return {
         name: a.name,
-        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status}${queued > 0 ? ` · ${queued} queued` : ""}`,
-        search: `${a.task ?? ""} ${a.dir}`,
+        label: `${STATUS_ICONS[status]} ${a.name}`,
+        right: queued > 0 ? `${status} · ${queued} queued` : status,
+        search: `${a.task ?? ""} ${shortenHome(a.dir)}`,
         meta: [
           `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
           `dir      ${shortenHome(a.dir)}`,
