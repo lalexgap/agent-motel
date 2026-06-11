@@ -42,6 +42,8 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
     case "session-start":
       return { status: "idle" };
     case "user-prompt-submit":
+    case "pre-tool-use":
+    case "post-tool-use":
       return { status: "working" };
     case "stop":
       return { status: "idle", drainQueue: true };

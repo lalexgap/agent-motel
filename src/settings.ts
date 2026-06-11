@@ -6,6 +6,12 @@ import { ensureDirs, hookSettingsFile } from "./paths";
 export const HOOK_EVENTS: Record<string, string> = {
   SessionStart: "session-start",
   UserPromptSubmit: "user-prompt-submit",
+  // Tool events mark the agent working mid-turn. Crucially, PostToolUse is
+  // what un-sticks needs-attention: approving a permission prompt fires no
+  // event of its own, so without these the stale ⚠ lingers until the turn
+  // ends.
+  PreToolUse: "pre-tool-use",
+  PostToolUse: "post-tool-use",
   Stop: "stop",
   Notification: "notification",
   SessionEnd: "session-end",
