@@ -63,10 +63,14 @@ export function configureAgentSession(session: string): void {
   const appWantsMouse = "#{||:#{pane_in_mode},#{mouse_any_flag}}";
   tmux("bind-key", "-T", "agentmgr", "WheelUpPane", "if", "-Ft=", appWantsMouse, "send-keys -M", "copy-mode -e");
   tmux("bind-key", "-T", "agentmgr", "WheelDownPane", "if", "-Ft=", appWantsMouse, "send-keys -M");
-  // Release = copied to the system clipboard (these tables are server-global,
-  // but clipboard-on-copy is what anyone wants on macOS).
-  tmux("bind-key", "-T", "copy-mode", "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-and-cancel", "pbcopy");
-  tmux("bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-and-cancel", "pbcopy");
+  // Release = copied to the system clipboard, and the highlight persists
+  // like native macOS selection (no-clear). A plain click dismisses it and
+  // returns to the live view. These tables are server-global, but
+  // clipboard-on-copy and click-to-dismiss are what anyone wants on macOS.
+  for (const table of ["copy-mode", "copy-mode-vi"]) {
+    tmux("bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-no-clear", "pbcopy");
+    tmux("bind-key", "-T", table, "MouseDown1Pane", "send-keys", "-X", "cancel");
+  }
 }
 
 // send-keys targets a pane: the `=` exact-match prefix only resolves there
