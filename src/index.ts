@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
-import { listAgents } from "./state";
+import { listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
 import { pick } from "./picker";
 import { newCommand } from "./commands/new";
 import { lsCommand, displayStatus, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
 import { queueCommand } from "./commands/queue";
-import { rmCommand } from "./commands/rm";
+import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
@@ -32,6 +32,7 @@ usage:
   am send <name> <msg> --now  type it into the session immediately (steer)
   am interrupt <name> <msg>   abort current turn (Esc), then send message
   am queue <name> [--clear]   show or clear an agent's pending queue
+  am stop <name>              kill the session but keep state (resumable)
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
@@ -85,21 +86,34 @@ function messageFrom(args: ParsedArgs): string {
 }
 
 async function pickerFlow(): Promise<void> {
-  const agents = listAgents();
-  if (agents.length === 0) {
+  const load = () => {
+    const agents = listAgents();
+    const nameWidth = Math.max(0, ...agents.map((a) => a.name.length));
+    return agents.map((a) => {
+      const status = displayStatus(a);
+      const queued = queueDepth(a.name);
+      return {
+        name: a.name,
+        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status.padEnd(15)} ${queued > 0 ? `${queued} queued` : ""}`,
+      };
+    });
+  };
+  if (load().length === 0) {
     console.log("no agents — create one with `am new <name>`");
     return;
   }
-  const nameWidth = Math.max(...agents.map((a) => a.name.length));
-  const items = agents.map((a) => {
-    const status = displayStatus(a);
-    const queued = queueDepth(a.name);
-    return {
-      name: a.name,
-      label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status.padEnd(15)} ${queued > 0 ? `${queued} queued` : ""}`,
-    };
+  const chosen = await pick(load, {
+    stop: (name) => {
+      const agent = readAgent(name);
+      if (agent) stopAgent(agent);
+      return `stopped ${name} (resume with \`am resume ${name}\`)`;
+    },
+    remove: (name) => {
+      const agent = readAgent(name);
+      if (agent) destroyAgent(agent, { clean: false });
+      return `removed ${name}`;
+    },
   });
-  const chosen = await pick(items);
   if (chosen) jumpCommand(chosen);
 }
 
@@ -150,6 +164,12 @@ async function main(): Promise<void> {
     case "q":
       queueCommand(requirePositional(args, 0, "agent name"), { clear: !!args.flags.clear });
       break;
+    case "stop": {
+      const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      stopAgent(agent);
+      console.log(`stopped "${agent.name}" — resume with \`am resume ${agent.name}\``);
+      break;
+    }
     case "rm":
       rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean });
       break;

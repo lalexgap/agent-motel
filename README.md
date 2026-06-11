@@ -7,7 +7,7 @@ $ am
 ❯ ● api-refactor   working     2 queued
   ⚠ bugfix-381     needs-attention
   ○ docs-pass      idle
-  (type to filter · ↑/↓ · enter jumps · esc cancels)
+  (type to filter · ↑/↓ · enter jumps · ctrl-x stop · ctrl-d remove · esc)
 ```
 
 ## Install
@@ -41,6 +41,7 @@ am send api --now "prefer the v2 endpoint" # typed in immediately (steers curren
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 
 am queue api             # show pending messages (--clear to drop them)
+am stop api              # kill the session but keep state (resumable)
 am resume api            # restart an exited agent, resuming its conversation
 am rm api                # kill session + state (--clean also removes the worktree)
 
