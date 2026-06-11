@@ -1,15 +1,18 @@
 import { readAgent } from "./state";
-import { queuePop } from "./queue";
+import { queuePeek, queuePop } from "./queue";
 import { hasSession, sendText } from "./tmux";
 import { cliEntrypoint } from "./settings";
 
-// Pop the queue head and type it into the agent's session.
+// Type the queue head into the agent's session. Peek → send → pop, so a
+// failed send leaves the message queued for the next attempt instead of
+// dropping it.
 export function deliverNext(name: string): boolean {
   const agent = readAgent(name);
   if (!agent || !hasSession(agent.tmuxSession)) return false;
-  const message = queuePop(name);
+  const message = queuePeek(name);
   if (message === null) return false;
   sendText(agent.tmuxSession, message);
+  queuePop(name);
   return true;
 }
 

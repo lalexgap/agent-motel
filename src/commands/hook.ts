@@ -44,8 +44,15 @@ export async function hookCommand(event: string): Promise<void> {
       }
       break;
     case "notification": {
-      setStatus(name, "needs-attention");
       const message = typeof payload.message === "string" ? payload.message : "needs attention";
+      // Claude Code also sends a notification after ~60s of idleness; that
+      // isn't "needs attention" — treating it as such would make sends queue
+      // forever (no turn → no Stop hook to drain them).
+      if (/waiting for .*input/i.test(message)) {
+        setStatus(name, "idle");
+        break;
+      }
+      setStatus(name, "needs-attention");
       notifyMac(`am: ${name}`, message);
       break;
     }

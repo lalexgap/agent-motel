@@ -37,7 +37,13 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         const { agent, event } = (await req.json()) as { agent?: string; event?: string };
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
         if (event === "stop" && queueDepth(agent) > 0) {
-          setTimeout(() => deliverNext(agent), DELIVERY_DELAY_MS);
+          setTimeout(() => {
+            try {
+              deliverNext(agent);
+            } catch (error) {
+              console.error(`delivery to ${agent} failed:`, error);
+            }
+          }, DELIVERY_DELAY_MS);
         }
         return Response.json({ ok: true });
       }
@@ -46,11 +52,21 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   });
 
   // Sessions can die without a SessionEnd hook (tmux kill, reboot) — sweep
-  // them to exited so status stays honest.
+  // them to exited so status stays honest. Also self-heal queues that got
+  // stranded while an agent was idle (e.g. a send racing a status change):
+  // an idle agent fires no Stop hook, so nothing else would drain them.
   const reconciler = setInterval(() => {
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited");
+        continue;
+      }
+      if (agent.status === "idle" && queueDepth(agent.name) > 0) {
+        try {
+          deliverNext(agent.name);
+        } catch (error) {
+          console.error(`delivery to ${agent.name} failed:`, error);
+        }
       }
     }
   }, RECONCILE_INTERVAL_MS);

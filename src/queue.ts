@@ -28,6 +28,11 @@ export function queueDepth(name: string): number {
   return readLines(name).length;
 }
 
+export function queuePeek(name: string): string | null {
+  const head = readLines(name)[0];
+  return head === undefined ? null : (JSON.parse(head) as { message: string }).message;
+}
+
 // Pop the head atomically: rewrite the remainder to a tmp file, then rename over.
 export function queuePop(name: string): string | null {
   const lines = readLines(name);

@@ -42,13 +42,20 @@ export function killSession(session: string): void {
   tmux("kill-session", "-t", `=${session}`);
 }
 
+// send-keys targets a pane: the `=` exact-match prefix only resolves there
+// when the session name ends with `:`.
+function paneTarget(session: string): string {
+  return `=${session}:`;
+}
+
 export function sendText(session: string, text: string): void {
-  tmux("send-keys", "-t", `=${session}`, "-l", "--", text);
-  tmux("send-keys", "-t", `=${session}`, "Enter");
+  const sent = tmux("send-keys", "-t", paneTarget(session), "-l", "--", text);
+  if (sent.exitCode !== 0) throw new Error(`tmux send-keys failed: ${sent.stderr.trim()}`);
+  tmux("send-keys", "-t", paneTarget(session), "Enter");
 }
 
 export function sendEscape(session: string): void {
-  tmux("send-keys", "-t", `=${session}`, "Escape");
+  tmux("send-keys", "-t", paneTarget(session), "Escape");
 }
 
 export function insideTmux(): boolean {
