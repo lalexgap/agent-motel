@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir } from "../paths";
-import { readAgent, writeAgent, type AgentState } from "../state";
-import { hasSession, newSession, sessionName } from "../tmux";
+import { readAgent, recordAttached, writeAgent, type AgentState } from "../state";
+import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { writeHookSettings } from "../settings";
 import { ensureDaemon } from "../daemon";
 
@@ -87,6 +87,11 @@ export interface NewOptions {
   // Claude Code's interactive session picker inside the new agent.
   resume?: string | boolean;
   continue?: boolean;
+  // Attach to the new session after spawning. Defaults to true when run from
+  // a terminal; always false for non-TTY callers (agents spawning agents).
+  jump?: boolean;
+  // Suppress console output (used by the picker, which owns the screen).
+  quiet?: boolean;
 }
 
 export function conversationArgs(opts: NewOptions): string[] {
@@ -157,6 +162,13 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   };
   writeAgent(state);
 
-  console.log(`started agent "${name}" in ${dir}`);
-  console.log(`  jump to it:  am j ${name}`);
+  if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);
+
+  const jump = opts.jump ?? (!!process.stdout.isTTY && !!process.stdin.isTTY);
+  if (jump) {
+    recordAttached(name);
+    attachOrSwitch(session);
+  } else if (!opts.quiet) {
+    console.log(`  jump to it:  am j ${name}`);
+  }
 }

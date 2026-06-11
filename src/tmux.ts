@@ -80,8 +80,10 @@ export function sendEscape(session: string): void {
   tmux("send-keys", "-t", paneTarget(session), "Escape");
 }
 
-export function capturePane(session: string): string[] | null {
-  const result = tmux("capture-pane", "-t", paneTarget(session), "-p");
+export function capturePane(session: string, opts: { colors?: boolean } = {}): string[] | null {
+  // -e keeps SGR escape sequences so previews render in full color.
+  const flags = opts.colors ? ["-p", "-e"] : ["-p"];
+  const result = tmux("capture-pane", "-t", paneTarget(session), ...flags);
   if (result.exitCode !== 0) return null;
   const lines = result.stdout.split("\n");
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();

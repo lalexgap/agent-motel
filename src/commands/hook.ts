@@ -85,7 +85,7 @@ export async function hookCommand(event: string): Promise<void> {
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
   if (event === "stop" || event === "session-end") {
-    const pane = capturePane(agent.tmuxSession);
+    const pane = capturePane(agent.tmuxSession, { colors: true });
     if (pane && pane.length > 0) writeSnapshot(name, pane);
   }
 

@@ -1,20 +1,26 @@
 # am — Claude agent manager
 
-A small CLI for running multiple [Claude Code](https://claude.com/claude-code) agents at once and jumping between them fast. Each agent is a real interactive `claude` session in its own tmux session; Claude Code hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle.
+A small CLI for running multiple [Claude Code](https://claude.com/claude-code) agents at once and jumping between them fast. Each agent is a real interactive `claude` session in its own tmux session; Claude Code hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle. An idle agent whose screen shows a scheduled wake-up or a running background task is displayed as `waiting` (◐) instead — best-effort, detected from the pane content since hooks carry no such signal.
 
 ```
 $ am
-❯ ● api-refactor   working     2 queued
-  ⚠ bugfix-381     needs-attention
-  ○ docs-pass      idle
-  (type to filter · ↑/↓ · enter jumps · ctrl-x stop · ctrl-d remove · esc)
-  ──────────────────────────────── api-refactor
-  ⏺ Updating src/api/client.ts…
-  ✻ Churning (12s · 8.2k tokens)
+filter: ▌                              │ ⏺ Updating src/api/client.ts…
+❯ ● api-refactor  working · 2 queued   │ ✻ Churning (12s · 8.2k tokens)
+  ⚠ bugfix-381    needs-attention      │
+  ○ docs-pass     idle                 │
+                                       │
+status   working (2 queued)            │
+dir      ~/code/api                    │
+task     refactor the api layer        │
+updated  12s ago                       │
+type to filter · ↑/↓ · enter jumps · ctrl-n new · ctrl-x stop · ctrl-d remove
 ```
 
-The picker shows a live preview of the highlighted agent's screen, refreshed
-every second — peek at what each agent is doing without attaching.
+The picker is a full-screen split view: agents and their details in the left
+sidebar, a live preview of the highlighted agent's screen on the right,
+refreshed every second — peek at what each agent is doing without attaching.
+`ctrl-n` spawns a new agent right from the picker (it prompts for a name and
+an optional task, then jumps into the new session).
 
 ## Install
 
@@ -30,8 +36,9 @@ bun link
 ## Usage
 
 ```sh
-am new api-refactor -m "refactor the api layer"   # spawn in current dir
+am new api-refactor -m "refactor the api layer"   # spawn in current dir and jump in
 am new bugfix --dir ~/code/other-repo             # spawn elsewhere
+am new quiet-one --no-jump                        # spawn without attaching
 am new perf --worktree perf-tuning                # spawn in a fresh git worktree
 am new triage --resume                            # adopt an existing conversation
                                                   # (opens Claude's session picker;

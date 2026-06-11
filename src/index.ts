@@ -3,7 +3,7 @@ import { listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
 import { pick } from "./picker";
 import { newCommand } from "./commands/new";
-import { lsCommand, displayStatus, STATUS_ICONS } from "./commands/ls";
+import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
@@ -20,11 +20,12 @@ import { runForegroundDaemon } from "./daemon";
 const HELP = `am — manage and jump between Claude Code agents
 
 usage:
-  am                          interactive picker: filter, enter to jump
+  am                          interactive picker: filter, enter to jump, ctrl-n new
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]
-                              spawn a new agent in tmux
+                              spawn a new agent in tmux and jump into it
+                              (--no-jump to stay; non-TTY callers never jump)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens Claude's session picker)
@@ -96,15 +97,19 @@ async function pickerFlow(): Promise<void> {
       const queued = queueDepth(a.name);
       return {
         name: a.name,
-        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status.padEnd(15)} ${queued > 0 ? `${queued} queued` : ""}`,
+        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status}${queued > 0 ? ` · ${queued} queued` : ""}`,
         search: `${a.task ?? ""} ${a.dir}`,
+        meta: [
+          `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
+          `dir      ${shortenHome(a.dir)}`,
+          ...(a.worktreeBranch ? [`branch   ${a.worktreeBranch}`] : []),
+          ...(a.task ? [`task     ${a.task}`] : []),
+          `updated  ${relativeTime(a.updatedAt)}`,
+          `created  ${relativeTime(a.createdAt)}`,
+        ],
       };
     });
   };
-  if (load().length === 0) {
-    console.log("no agents — create one with `am new <name>`");
-    return;
-  }
   const handlers = {
     stop: (name: string) => {
       const agent = readAgent(name);
@@ -119,12 +124,16 @@ async function pickerFlow(): Promise<void> {
     preview: (name: string) => {
       const agent = readAgent(name);
       if (!agent) return [];
-      const header = agent.task ? [`task: ${agent.task}`] : [];
-      const live = capturePane(agent.tmuxSession);
-      if (live) return [...header, ...live];
+      const live = capturePane(agent.tmuxSession, { colors: true });
+      if (live) return live;
       const snapshot = readSnapshot(name);
-      if (snapshot) return [...header, `(last screen — ${displayStatus(agent)})`, ...snapshot];
-      return [...header, `(no live session — ${displayStatus(agent)})`];
+      if (snapshot) return [`(last screen — ${displayStatus(agent)})`, ...snapshot];
+      return [`(no live session — ${displayStatus(agent)})`];
+    },
+    // ctrl-n in the picker: spawn in the directory `am` was launched from.
+    create: async (name: string, task?: string) => {
+      await newCommand({ name, message: task, jump: false, quiet: true });
+      return name;
     },
   };
 
@@ -158,6 +167,7 @@ async function main(): Promise<void> {
         worktree: args.flags.worktree as string | undefined,
         resume: args.flags.resume as string | boolean | undefined,
         continue: !!args.flags.continue,
+        jump: args.flags["no-jump"] ? false : undefined,
       });
       break;
     case "resume":

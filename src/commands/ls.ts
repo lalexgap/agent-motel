@@ -1,22 +1,44 @@
 import { homedir } from "node:os";
 import { listAgents, type AgentState } from "../state";
 import { queueDepth } from "../queue";
-import { hasSession } from "../tmux";
+import { capturePane, hasSession } from "../tmux";
 
-export type DisplayStatus = AgentState["status"] | "dead";
+export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
 export const STATUS_ICONS: Record<DisplayStatus, string> = {
   starting: "◌",
   idle: "○",
+  waiting: "◐",
   working: "●",
   "needs-attention": "⚠",
   exited: "✔",
   dead: "✕",
 };
 
+// Claude Code fires no hook when a session goes idle while waiting on a
+// timer (scheduled wake-ups) or a background task — from the hooks' view
+// that's plain idle. Best-effort detection: scrape the visible bottom of the
+// pane for the indicators Claude Code renders in those states. Patterns may
+// need tuning as Claude Code's UI strings evolve.
+const WAITING_PATTERNS = [
+  /\bwake-?up\b/i, // scheduled wake-up countdowns (/loop, ScheduleWakeup)
+  /\bbackground task/i,
+  /\bbash(es)? running/i,
+];
+const WAITING_TAIL_LINES = 12;
+
+export function paneLooksWaiting(lines: string[]): boolean {
+  const tail = lines.slice(-WAITING_TAIL_LINES).join("\n");
+  return WAITING_PATTERNS.some((re) => re.test(tail));
+}
+
 // State files can outlive their tmux session (machine reboot, manual kill).
 export function displayStatus(agent: AgentState): DisplayStatus {
   if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) return "dead";
+  if (agent.status === "idle") {
+    const pane = capturePane(agent.tmuxSession);
+    if (pane && paneLooksWaiting(pane)) return "waiting";
+  }
   return agent.status;
 }
 
