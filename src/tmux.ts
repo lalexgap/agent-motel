@@ -4,7 +4,7 @@ export function sessionName(agent: string): string {
   return SESSION_PREFIX + agent;
 }
 
-function tmux(...args: string[]): { exitCode: number; stdout: string; stderr: string } {
+export function tmux(...args: string[]): { exitCode: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(["tmux", ...args]);
   return {
     exitCode: result.exitCode,

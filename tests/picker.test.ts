@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipAnsi, visibleWidth } from "../src/picker";
+import { clipAnsi, splitKeys, visibleWidth } from "../src/picker";
 
 const RED = "\x1b[31m";
 const BG = "\x1b[48;5;236m";
@@ -10,6 +10,18 @@ describe("visibleWidth", () => {
     expect(visibleWidth("plain")).toBe(5);
     expect(visibleWidth(`${RED}red${RESET} text`)).toBe(8);
     expect(visibleWidth(`${BG}${RED}x${RESET}`)).toBe(1);
+  });
+});
+
+describe("splitKeys", () => {
+  test("splits batched arrows, printables, and enter", () => {
+    expect(splitKeys("\x1b[A\x1b[A\r")).toEqual(["\x1b[A", "\x1b[A", "\r"]);
+    expect(splitKeys("abc")).toEqual(["a", "b", "c"]);
+  });
+
+  test("bare esc stays a single key and CRLF collapses to one enter", () => {
+    expect(splitKeys("\x1b")).toEqual(["\x1b"]);
+    expect(splitKeys("\r\n")).toEqual(["\r"]);
   });
 });
 

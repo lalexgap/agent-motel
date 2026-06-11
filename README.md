@@ -45,6 +45,9 @@ am new triage --resume                            # adopt an existing conversati
                                                   #  --resume <id> / --continue also work)
 
 am                       # interactive picker → jump
+am ui                    # persistent split view: sidebar + live agent pane
+                         # (enter shows an agent, ctrl-q toggles focus,
+                         #  esc detaches, ctrl-c quits)
 am j api                 # jump by prefix
 am -                     # jump back to the previous agent
 am ls                    # status table (--json for scripting)

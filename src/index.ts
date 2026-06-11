@@ -13,6 +13,7 @@ import { resumeCommand } from "./commands/resume";
 import { capturePane, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { daemonCommand } from "./commands/daemon";
+import { sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
@@ -21,6 +22,9 @@ const HELP = `am — manage and jump between Claude Code agents
 
 usage:
   am                          interactive picker: filter, enter to jump, ctrl-n new
+  am ui                       persistent split view: sidebar + live agent pane
+                              (enter shows an agent, ctrl-q toggles focus,
+                               esc detaches, ctrl-c quits)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]
@@ -216,6 +220,12 @@ async function main(): Promise<void> {
       break;
     case "watch":
       await watchCommand();
+      break;
+    case "ui":
+      uiCommand();
+      break;
+    case "__sidebar":
+      await sidebarCommand();
       break;
     case "__daemon":
       runForegroundDaemon();

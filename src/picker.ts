@@ -14,8 +14,16 @@ export interface PickerHandlers {
   remove?: (name: string) => string;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
-  // Create a new agent; resolves to its name, which the picker then jumps to.
+  // Create a new agent; resolves to its name, which the picker then jumps to
+  // (or selects, in persistent mode).
   create?: (name: string, task?: string) => Promise<string>;
+  // Persistent mode (am ui sidebar): enter calls select instead of resolving
+  // the picker, esc calls quit, and the picker keeps running. Returns
+  // optional footer feedback.
+  select?: (name: string) => string | null;
+  quit?: () => void;
+  // Footer help text override (persistent mode has different key semantics).
+  help?: string;
 }
 
 export function clipLine(line: string, width: number): string {
@@ -26,6 +34,33 @@ const SGR_RE = /\x1b\[[0-9;]*m/g;
 
 export function visibleWidth(line: string): number {
   return line.replace(SGR_RE, "").length;
+}
+
+// Raw stdin can batch several keys into one chunk (key repeat, paste,
+// send-keys) — split it into individual keys so none get dropped.
+export function splitKeys(data: string): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < data.length; ) {
+    if (data[i] === "\x1b") {
+      const match = /^\x1b\[[0-9;]*[A-Za-z~]/.exec(data.slice(i));
+      if (match) {
+        keys.push(match[0]);
+        i += match[0].length;
+        continue;
+      }
+      keys.push("\x1b");
+      i++;
+      continue;
+    }
+    if (data[i] === "\r" && data[i + 1] === "\n") {
+      keys.push("\r");
+      i += 2;
+      continue;
+    }
+    keys.push(data[i]!);
+    i++;
+  }
+  return keys;
 }
 
 // clipLine for lines carrying SGR color codes (tmux capture-pane -e):
@@ -167,7 +202,7 @@ export async function pick(
         ? `\x1b[31mremove "${confirmRemove}"? ctrl-d again to confirm\x1b[0m`
         : feedback
           ? `\x1b[33m${clipLine(feedback, cols)}\x1b[0m`
-          : `${DIM}${clipLine(HELP, cols)}${RESET}`;
+          : `${DIM}${clipLine(handlers.help ?? HELP, cols)}${RESET}`;
     lines.push(footer);
 
     // No trailing newline: the footer sits on the last row and writing past
@@ -190,7 +225,9 @@ export async function pick(
   process.stdout.on("resize", onResize);
 
   const result = await new Promise<string | null>((resolve) => {
+    let finished = false;
     const finish = (value: string | null) => {
+      finished = true;
       clearInterval(refresh);
       process.stdout.off("resize", onResize);
       process.stdin.off("data", onData);
@@ -205,7 +242,16 @@ export async function pick(
       creating = true;
       render();
       handlers.create(newName, newTask || undefined).then(
-        (created) => finish(created),
+        (created) => {
+          if (!handlers.select) return finish(created);
+          creating = false;
+          mode = "list";
+          newName = "";
+          newTask = "";
+          feedback = handlers.select(created);
+          items = load();
+          render();
+        },
         (error: Error) => {
           // Back to the name prompt with the input intact so it can be fixed.
           creating = false;
@@ -226,7 +272,13 @@ export async function pick(
     };
 
     const onData = (data: Buffer) => {
-      const key = data.toString();
+      for (const key of splitKeys(data.toString())) {
+        if (finished) return;
+        handleKey(key);
+      }
+    };
+
+    const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
 
       if (mode !== "list") {
@@ -260,10 +312,17 @@ export async function pick(
       const pendingConfirm = confirmRemove;
       confirmRemove = null;
 
-      if (key === "\x1b") return finish(null); // esc
-      if (key === "\r" || key === "\n") {
+      if (key === "\x1b") {
+        // esc: in persistent mode hand off to quit (detach) and keep running.
+        if (handlers.quit) handlers.quit();
+        else return finish(null);
+      } else if (key === "\r" || key === "\n") {
         const match = filtered()[cursor];
-        if (match) return finish(match.name);
+        if (match) {
+          if (!handlers.select) return finish(match.name);
+          feedback = handlers.select(match.name);
+          items = load();
+        }
       } else if (key === "\x0e" && handlers.create) {
         // ctrl-n
         mode = "new-name";
