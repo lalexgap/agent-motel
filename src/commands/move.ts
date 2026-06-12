@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import {
   agentProvider,
   agentSessionId,
@@ -17,6 +17,7 @@ import { sendText } from "../tmux";
 import { enterDelayMs } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
+import { worktreesDir } from "../paths";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -109,6 +110,7 @@ export function migrationBrief(opts: {
   oldDir: string;
   newDir: string;
   clone: boolean;
+  branchNote?: string;
 }): string {
   return [
     opts.clone
@@ -119,6 +121,7 @@ export function migrationBrief(opts: {
     `- the working tree here may differ from the source machine's (uncommitted changes never travel)`,
     `- processes, dev servers, and shell state from before are gone`,
     `- OS, installed tools, and credentials may differ`,
+    ...(opts.branchNote ? [`- ${opts.branchNote}`] : []),
     `Briefly re-verify the repo/file state before continuing your work.`,
   ].join("\n");
 }
@@ -178,23 +181,64 @@ async function remoteHome(host: string): Promise<string> {
 
 async function pushAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
   const agent = resolveAgent(name);
-  if (agent.worktreePath && !opts.dir) {
-    throw new Error("worktree agents can't be auto-mapped — pass --dir <plain checkout on the target>");
-  }
 
   const targetHomeDir = await remoteHome(host);
-  const targetDir = opts.dir ?? mapHomeDir(agent.dir, homedir(), targetHomeDir);
-  if (!targetDir) {
-    throw new Error(`${agent.dir} is not under $HOME — pass --dir <target dir on ${host}>`);
+  let canonicalDir: string;
+  let branchNote: string | undefined;
+  let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
+
+  if (agent.worktreePath && agent.repoRoot && !opts.dir) {
+    // Worktree agent: recreate its worktree against the same repo on the
+    // target. Commits travel via origin when possible; uncommitted changes
+    // never do.
+    const repoTarget = mapHomeDir(agent.repoRoot, homedir(), targetHomeDir);
+    if (!repoTarget) {
+      throw new Error(`${agent.repoRoot} is not under $HOME — pass --dir <target dir on ${host}>`);
+    }
+    if ((await sshRunAsync(host, `test -d ${shq(repoTarget)}`, { timeoutMs: 8000 })).exitCode !== 0) {
+      throw new Error(`repo missing on ${host}: ${repoTarget} — clone it first, or pass --dir`);
+    }
+    const branch = agent.worktreeBranch ?? `am/${agent.name}`;
+    const pushed =
+      (await runAsync(["git", "-C", agent.worktreePath, "push", "origin", branch], { timeoutMs: 60000 }))
+        .exitCode === 0;
+    branchNote = pushed
+      ? `your branch ${branch} was pushed to origin and is checked out here`
+      : `your branch could not be pushed to origin — unpushed commits did NOT travel (branch recreated on the target)`;
+
+    const canonicalRepo =
+      (await sshRunAsync(host, `realpath ${shq(repoTarget)}`, { timeoutMs: 8000 })).stdout.trim() || repoTarget;
+    const wtPath = `${targetHomeDir}/.agent-manager/worktrees/${basename(canonicalRepo)}/${agent.name}`;
+    const addScript = [
+      `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
+      `mkdir -p ${shq(dirname(wtPath))}`,
+      `if git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/heads/${branch}; then ` +
+        `git -C ${shq(canonicalRepo)} worktree add ${shq(wtPath)} ${shq(branch)}; ` +
+        `elif git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/remotes/origin/${branch}; then ` +
+        `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} origin/${branch}; ` +
+        `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
+    ].join(" && ");
+    const added = await sshRunAsync(host, addScript, { timeoutMs: 30000 });
+    if (added.exitCode !== 0) {
+      throw new Error(`could not create worktree on ${host}: ${added.stderr.trim()}`);
+    }
+    canonicalDir =
+      (await sshRunAsync(host, `realpath ${shq(wtPath)}`, { timeoutMs: 8000 })).stdout.trim() || wtPath;
+    targetWorktree = { path: canonicalDir, branch, repoRoot: canonicalRepo };
+  } else {
+    const targetDir = opts.dir ?? mapHomeDir(agent.dir, homedir(), targetHomeDir);
+    if (!targetDir) {
+      throw new Error(`${agent.dir} is not under $HOME — pass --dir <target dir on ${host}>`);
+    }
+    if ((await sshRunAsync(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 })).exitCode !== 0) {
+      throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
+    }
+    // Canonicalize on the TARGET: claude resolves symlinks when keying
+    // transcripts by project dir (~/code/x → /mnt/.../x), so the slug and the
+    // stored dir must use the real path or resume finds no conversation.
+    canonicalDir =
+      (await sshRunAsync(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
   }
-  if ((await sshRunAsync(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 })).exitCode !== 0) {
-    throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
-  }
-  // Canonicalize on the TARGET: claude resolves symlinks when keying
-  // transcripts by project dir (~/code/x → /mnt/.../x), so the slug and the
-  // stored dir must use the real path or resume finds no conversation.
-  const canonicalDir =
-    (await sshRunAsync(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
 
   if (!opts.clone) {
     await settleBeforeMove(agent.name, host); // let a working agent wrap up first
@@ -224,9 +268,9 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
       status: "exited",
       workingSince: undefined,
       transcriptPath: remoteTranscriptPath,
-      worktreePath: undefined,
-      worktreeBranch: undefined,
-      repoRoot: undefined,
+      worktreePath: targetWorktree?.path,
+      worktreeBranch: targetWorktree?.branch,
+      repoRoot: targetWorktree?.repoRoot,
     },
     queue: [
       migrationBrief({
@@ -235,6 +279,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         oldDir: agent.dir,
         newDir: canonicalDir,
         clone: !!opts.clone,
+        branchNote,
       }),
       ...queueList(agent.name).map((m) => m.message),
     ],
@@ -246,8 +291,8 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
 
   if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
   let message = opts.clone
-    ? `cloned "${agent.name}" → ${host}:${targetDir} (original still here)`
-    : `moved "${agent.name}" → ${host}:${targetDir}${opts.copy ? " (local copy kept)" : ""}`;
+    ? `cloned "${agent.name}" → ${host}:${canonicalDir} (original still here)`
+    : `moved "${agent.name}" → ${host}:${canonicalDir}${opts.copy ? " (local copy kept)" : ""}`;
 
   if (opts.start) {
     const resumed = await sshAmAsync(host, ["resume", agent.name], { timeoutMs: 30000 });
@@ -273,16 +318,60 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     transcript: { path: string; codexRelative: string | null } | null;
   };
 
-  const targetDir = opts.dir ?? mapHomeDir(remote.state.dir, remote.home, homedir());
-  if (!targetDir) {
-    throw new Error(`${remote.state.dir} is not under the remote $HOME — pass --dir <local dir>`);
+  let canonicalDir: string;
+  let branchNote: string | undefined;
+  let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
+
+  if (remote.state.worktreePath && remote.state.repoRoot && !opts.dir) {
+    // Worktree agent on the far side: recreate its worktree against the
+    // local clone of the same repo.
+    const localRepo = mapHomeDir(remote.state.repoRoot, remote.home, homedir());
+    if (!localRepo) {
+      throw new Error(`${remote.state.repoRoot} is not under the remote $HOME — pass --dir <local dir>`);
+    }
+    if (!existsSync(localRepo)) {
+      throw new Error(`repo missing locally: ${localRepo} — clone it first, or pass --dir`);
+    }
+    const branch = remote.state.worktreeBranch ?? `am/${name}`;
+    const pushed =
+      (
+        await sshRunAsync(host, `git -C ${shq(remote.state.worktreePath)} push origin ${shq(branch)}`, {
+          timeoutMs: 60000,
+        })
+      ).exitCode === 0;
+    branchNote = pushed
+      ? `your branch ${branch} was pushed to origin and is checked out here`
+      : `your branch could not be pushed to origin — unpushed commits did NOT travel (branch recreated here)`;
+
+    const canonicalRepo = realpathSync(localRepo);
+    const wtPath = join(worktreesDir(), basename(canonicalRepo), name);
+    Bun.spawnSync(["mkdir", "-p", dirname(wtPath)]);
+    await runAsync(["git", "-C", canonicalRepo, "fetch", "origin", branch], { timeoutMs: 30000 });
+    const haveLocal =
+      (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0;
+    const haveOrigin =
+      (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`])).exitCode === 0;
+    const addArgs = haveLocal
+      ? ["worktree", "add", wtPath, branch]
+      : haveOrigin
+        ? ["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`]
+        : ["worktree", "add", "-b", branch, wtPath];
+    const added = await runAsync(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
+    if (added.exitCode !== 0) throw new Error(`could not create local worktree: ${added.stderr.trim()}`);
+    canonicalDir = realpathSync(wtPath);
+    targetWorktree = { path: canonicalDir, branch, repoRoot: canonicalRepo };
+  } else {
+    const targetDir = opts.dir ?? mapHomeDir(remote.state.dir, remote.home, homedir());
+    if (!targetDir) {
+      throw new Error(`${remote.state.dir} is not under the remote $HOME — pass --dir <local dir>`);
+    }
+    if (!existsSync(targetDir)) {
+      throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
+    }
+    // Same symlink hazard as push, local side: claude keys transcripts by the
+    // resolved path.
+    canonicalDir = realpathSync(targetDir);
   }
-  if (!existsSync(targetDir)) {
-    throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
-  }
-  // Same symlink hazard as push, local side: claude keys transcripts by the
-  // resolved path.
-  const canonicalDir = realpathSync(targetDir);
 
   // Stop it remotely before copying the conversation so the file is final
   // (clones leave the original running and accept a snapshot).
@@ -304,7 +393,14 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
 
   importPayload(
     JSON.stringify({
-      state: { ...remote.state, dir: canonicalDir, transcriptPath: localTranscriptPath },
+      state: {
+        ...remote.state,
+        dir: canonicalDir,
+        transcriptPath: localTranscriptPath,
+        worktreePath: targetWorktree?.path,
+        worktreeBranch: targetWorktree?.branch,
+        repoRoot: targetWorktree?.repoRoot,
+      },
       queue: [
         migrationBrief({
           from: host,
@@ -312,6 +408,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
           oldDir: remote.state.dir,
           newDir: canonicalDir,
           clone: !!opts.clone,
+          branchNote,
         }),
         ...remote.queue,
       ],
@@ -321,7 +418,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
   let message = opts.clone
     ? `cloned "${name}" ← ${host} (original still on ${host})`
-    : `moved "${name}" ← ${host} (now in ${targetDir})${opts.copy ? " (remote copy kept)" : ""}`;
+    : `moved "${name}" ← ${host} (now in ${canonicalDir})${opts.copy ? " (remote copy kept)" : ""}`;
 
   if (opts.start) {
     const { reviveAgent } = await import("./resume");

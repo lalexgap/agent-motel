@@ -4,6 +4,7 @@ import { ensureDirs, worktreesDir } from "../paths";
 import { readAgent, recordAttached, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
+import { loadConfig } from "../config";
 import { queueAppend } from "../queue";
 import {
   agentSystemPrompt,
@@ -27,10 +28,19 @@ function git(dir: string, ...args: string[]): { exitCode: number; stdout: string
   };
 }
 
-function createWorktree(name: string, branch: string): { path: string; repoRoot: string } {
-  const top = git(process.cwd(), "rev-parse", "--show-toplevel");
-  if (top.exitCode !== 0) throw new Error("--worktree requires running inside a git repository");
-  const repoRoot = top.stdout;
+export function isGitRepo(dir: string): boolean {
+  return git(dir, "rev-parse", "--git-dir").exitCode === 0;
+}
+
+function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
+  // --git-common-dir resolves through nested worktrees to the main repo, so
+  // spawning "from" another agent's worktree still files the new one under
+  // the real repo's name.
+  const common = git(baseDir, "rev-parse", "--git-common-dir");
+  if (common.exitCode !== 0) {
+    throw new Error("worktree spawning requires a git repository (--in-place runs in the dir as-is)");
+  }
+  const repoRoot = dirname(resolve(baseDir, common.stdout));
   const path = join(worktreesDir(), basename(repoRoot), name);
   if (existsSync(path)) throw new Error(`worktree path already exists: ${path}`);
   mkdirSync(dirname(path), { recursive: true });
@@ -64,6 +74,8 @@ export interface NewOptions {
   jump?: boolean;
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
+  // Run directly in the target dir instead of a fresh worktree.
+  inPlace?: boolean;
   // Suppress console output (used by the picker, which owns the screen).
   quiet?: boolean;
 }
@@ -78,8 +90,6 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
-  if (opts.dir && opts.worktree) throw new Error("--dir and --worktree are mutually exclusive");
-
   const provider = opts.provider ?? "claude";
 
   ensureDirs();
@@ -91,15 +101,21 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
 
   let dir = resolve(opts.dir ?? process.cwd());
+  if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
   let worktreePath: string | undefined;
   let repoRoot: string | undefined;
-  if (opts.worktree) {
-    const wt = createWorktree(name, opts.worktree);
+  let worktreeBranch = opts.worktree;
+  // Agents get their own worktree by default — they shouldn't assume
+  // ownership of a checkout that other agents (or the human) may be using.
+  if (!worktreeBranch && !opts.inPlace && loadConfig().worktreeByDefault && isGitRepo(dir)) {
+    worktreeBranch = `am/${name}`;
+  }
+  if (worktreeBranch) {
+    const wt = createWorktree(name, worktreeBranch, dir);
     dir = wt.path;
     worktreePath = wt.path;
     repoRoot = wt.repoRoot;
   }
-  if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
 
   const plan = buildLaunchCommand(provider, name, opts);
   // Queue before the session starts so the SessionStart hook finds it.
@@ -115,7 +131,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     tmuxSession: session,
     provider,
     worktreePath,
-    worktreeBranch: opts.worktree,
+    worktreeBranch,
     repoRoot,
     task: opts.message,
     createdAt: now,

@@ -38,10 +38,13 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg] [--dir path | --worktree branch] [--codex] [--remote | --no-remote]
+  am new <name> [-m msg] [--dir path] [--codex] [--remote | --no-remote]
                               spawn a new agent in tmux and jump into it
                               (--no-jump to stay; non-TTY callers never jump;
                                --codex runs Codex instead of Claude Code)
+                              git repos get a fresh worktree on branch am/<name>
+                              by default — --in-place uses the dir as-is,
+                              --worktree <branch> picks the branch
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens the provider's session picker)
@@ -280,6 +283,7 @@ async function main(): Promise<void> {
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+        inPlace: !!args.flags["in-place"],
       });
       break;
     case "resume":

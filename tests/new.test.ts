@@ -112,3 +112,13 @@ describe("visibleItems", () => {
     expect(visibleItems(items, "gon", false).map((i) => i.name)).toEqual(["gone"]);
   });
 });
+
+describe("splitKeys mouse sequences", () => {
+  test("SGR mouse reports stay whole and don't shed hotkey chars", async () => {
+    const { splitKeys } = await import("../src/picker");
+    expect(splitKeys("\x1b[<64;5;3M")).toEqual(["\x1b[<64;5;3M"]);
+    expect(splitKeys("\x1b[<0;12;4M\x1b[<0;12;4m")).toEqual(["\x1b[<0;12;4M", "\x1b[<0;12;4m"]);
+    // regular keys around a mouse event survive
+    expect(splitKeys("j\x1b[<65;1;1Mk")).toEqual(["j", "\x1b[<65;1;1M", "k"]);
+  });
+});

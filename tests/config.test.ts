@@ -20,12 +20,12 @@ afterEach(() => {
 
 describe("loadConfig", () => {
   test("defaults when no file exists", () => {
-    expect(loadConfig()).toEqual({ notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1" });
+    expect(loadConfig()).toEqual({ notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true });
   });
 
   test("file values override defaults, missing keys keep defaults", () => {
     writeFileSync(configFile(), JSON.stringify({ idleNotifyMinSeconds: 120, remoteControl: false }));
-    expect(loadConfig()).toEqual({ notifyOnIdle: true, idleNotifyMinSeconds: 120, remoteControl: false, apiPort: 8787, apiBind: "127.0.0.1" });
+    expect(loadConfig()).toEqual({ notifyOnIdle: true, idleNotifyMinSeconds: 120, remoteControl: false, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true });
   });
 
   test("corrupt file falls back to defaults", () => {
@@ -35,7 +35,7 @@ describe("loadConfig", () => {
 });
 
 describe("shouldNotifyIdle", () => {
-  const config: Config = { notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1" };
+  const config: Config = { notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true };
   const base = { config, workedSeconds: 60, queueDepth: 0, attached: false };
 
   test("notifies after a real unattended stint", () => {

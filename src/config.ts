@@ -24,6 +24,10 @@ export interface Config {
   // ssh host aliases whose agents appear alongside local ones in ls, the
   // picker, and the hub (each must have am installed and on PATH).
   remotes?: string[];
+  // Spawn agents into a fresh git worktree (branch am/<name>) when the
+  // target dir is a repo, instead of assuming ownership of the checkout.
+  // Per-agent opt-out: am new --in-place.
+  worktreeByDefault: boolean;
   // `am serve` (the HTTP API + PWA for phones) listens here. Bind defaults to
   // loopback — point it at a tailnet IP, or keep loopback and front it with
   // Caddy/tailscale serve. NEVER 0.0.0.0 without a network gate: the API can
@@ -38,6 +42,7 @@ const DEFAULTS: Config = {
   remoteControl: true,
   apiPort: 8787,
   apiBind: "127.0.0.1",
+  worktreeByDefault: true,
 };
 
 export function loadConfig(): Config {

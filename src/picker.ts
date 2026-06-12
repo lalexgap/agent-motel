@@ -67,6 +67,15 @@ export function splitKeys(data: string): string[] {
   const keys: string[] = [];
   for (let i = 0; i < data.length; ) {
     if (data[i] === "\x1b") {
+      // SGR mouse reports (ESC [ < b;x;y M/m) must stay whole tokens: split
+      // apart, their trailing M/m would fire hotkeys and digits would type
+      // into inputs — wheel-scrolling over the sidebar was triggering moves.
+      const mouse = /^\x1b\[<[0-9;]+[Mm]/.exec(data.slice(i));
+      if (mouse) {
+        keys.push(mouse[0]);
+        i += mouse[0].length;
+        continue;
+      }
       const csi = /^\x1b\[[0-9;]*[A-Za-z~]/.exec(data.slice(i));
       if (csi) {
         keys.push(csi[0]);
@@ -459,6 +468,18 @@ export async function pick(
 
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
+
+      // Mouse: the wheel scrolls the list; every other mouse event is
+      // swallowed so clicks/drags never alias into hotkeys.
+      const mouse = /^\x1b\[<([0-9]+);/.exec(key);
+      if (mouse) {
+        const button = Number(mouse[1]);
+        if (key.endsWith("M") && (button === 64 || button === 65)) {
+          moveCursor(button === 64 ? -1 : 1);
+          render();
+        }
+        return;
+      }
 
       if (mode === "filter") {
         if (key === "\x1b") {

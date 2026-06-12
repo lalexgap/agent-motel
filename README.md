@@ -114,6 +114,12 @@ Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps w
 - **Daemon**: a small background process (auto-started by `am new`) serving HTTP over a unix socket at `~/.agent-manager/daemon.sock`. It schedules queue delivery, sweeps dead sessions, and feeds `am watch`. It's an accelerator, not a requirement — if it's down, hooks fall back to handling delivery themselves, so nothing breaks.
 - **Notifications**: macOS notifications fire when an agent needs your attention (permission prompts), and when one goes idle after real background work — filtered so you're not pinged for agents you're currently watching, quick replies (default threshold 30s of work, tune `idleNotifyMinSeconds` in `~/.agent-manager/config.json`), or agents about to receive a queued message. Notifications come from the hooks, so they work even with no `am` process or daemon running.
 - **Remote control**: agents launch with [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control) enabled by default, so every agent appears in claude.ai/code and the Claude mobile app's session list and can be driven from there — the session keeps running locally with all its tools. Disable globally with `"remoteControl": false` in `~/.agent-manager/config.json`, or per agent with `--no-remote` (`--remote` forces it on). Note: with remote control on, the initial `-m` message is delivered via the queue at session start, since the flag would otherwise swallow it as the remote session's name.
+- **Worktrees by default**: spawning an agent into a git repo gives it a
+  fresh worktree on branch `am/<name>` instead of taking over the checkout —
+  agents are guests, not owners. `--in-place` runs in the dir as-is,
+  `--worktree <branch>` picks the branch, `"worktreeByDefault": false` turns
+  it off. Moves recreate the worktree on the target (pushing the branch to
+  origin when possible so commits travel).
 - **Fleet across machines**: list ssh hosts in `"remotes"` in
   `~/.agent-manager/config.json` and their agents appear alongside local ones
   in `am ls` (HOST column), the picker, and the hub — where selecting a
