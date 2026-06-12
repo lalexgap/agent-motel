@@ -26,12 +26,14 @@ export function isForwardable(command: string | undefined): boolean {
 }
 
 export function remoteExec(host: string, argv: string[]): never {
-  // Login shell so ~/.bun/bin lands on PATH for non-interactive ssh; argv is
-  // re-quoted to survive both ssh's argument join and the remote shell.
+  // Login shell so ~/.bun/bin lands on PATH for non-interactive ssh; bash
+  // rather than sh because profiles routinely use bashisms (`source`) that
+  // dash chokes on. argv is re-quoted to survive both ssh's argument join
+  // and the remote shell.
   const remote = ["am", ...stripHostArgs(argv)].map(shQuote).join(" ");
   const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY;
   const result = Bun.spawnSync(
-    ["ssh", ...(interactive ? ["-t"] : []), host, "--", `sh -lc ${shQuote(remote)}`],
+    ["ssh", ...(interactive ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remote)}`],
     { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
   );
   process.exit(result.exitCode);
