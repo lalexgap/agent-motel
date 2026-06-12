@@ -1,0 +1,22 @@
+# systemd user unit for the am daemon — optional; `am new` auto-starts the
+# daemon anyway, this just brings it up at boot before any login.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp docs/am-daemon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now am-daemon
+#   loginctl enable-linger $USER   # user units run without an active login
+#
+# sh -l so PATH picks up ~/.bun/bin from the profile.
+
+[Unit]
+Description=am agent-manager daemon
+
+[Service]
+Type=forking
+PIDFile=%h/.agent-manager/daemon.pid
+ExecStart=/bin/sh -lc 'am daemon start'
+ExecStop=/bin/sh -lc 'am daemon stop'
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

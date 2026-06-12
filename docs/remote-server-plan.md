@@ -20,8 +20,21 @@ Two complementary access paths, both already supported by the tool:
 
 1. **SSH + the `am` hub.** `ssh -t server am` renders the full split-view UI in
    the laptop terminal. tmux does all the heavy lifting; nothing about the hub
-   assumes locality. Recommend an alias on the laptop (`alias sam='ssh -t
-   server am'`) and optionally mosh for flaky connections.
+   assumes locality. The friction goal is "no different from local": with
+   `export AM_HOST=server` in the laptop shell profile, every `am` command —
+   bare `am`, `am new`, `am send` — runs on the server transparently
+   (`-L/--local` for a one-off local run). Make repeated commands feel
+   local-speed with SSH connection reuse in the laptop's `~/.ssh/config`:
+
+   ```
+   Host server
+     ControlMaster auto
+     ControlPath ~/.ssh/cm-%r@%h:%p
+     ControlPersist 10m
+   ```
+
+   Optionally mosh for flaky connections (mosh carries the interactive hub;
+   `am send`-style one-shots still go over plain ssh).
 2. **Claude Remote Control.** Agents already launch with `--remote-control`
    (config `remoteControl: true`), so every server agent appears in
    claude.ai/code and the mobile app and can be prompted from anywhere with
@@ -41,26 +54,26 @@ Two complementary access paths, both already supported by the tool:
   over SSH untouched. Same for cmd+click on URLs/OSC-8 links — detection is
   terminal-local.
 
-## Code changes needed (small, do these on the server and PR them)
+## Code changes — DONE on the `remote-support` branch (verify on linux, then merge)
 
-1. **`notifyMac` (src/commands/hook.ts) is macOS-only** (osascript /
-   terminal-notifier). Make it platform-aware:
-   - Add a `notifyCommand` config value (`~/.agent-manager/config.json`): a
-     command template run with title/message (env vars `AM_TITLE`,
-     `AM_MESSAGE`). When set, it wins on any platform.
-   - On linux with nothing configured: try `notify-send` if present, else
-     no-op silently. Never let a notifier block a hook (spawn unref'd, as now).
-   - Recommended server setup: [ntfy.sh](https://ntfy.sh) — `notifyCommand`
-     posting to a private topic gives Alex push notifications on the phone for
-     needs-attention/idle events. Ask Alex for a topic name before wiring.
-2. **URL click handler (src/commands/click.ts) calls `open`** — on a headless
-   server that's wrong twice (no browser, wrong machine). Use
-   `xdg-open`-if-present, but better: when `process.platform !== "darwin"` and
-   no display, change the click binding to copy the URL to the tmux buffer and
-   `display-message` it instead. (Cmd+click in Ghostty already opens URLs
-   laptop-side over SSH, so plain-click open matters much less remotely.)
-3. **Grep for anything else darwin-flavored** before assuming this list is
-   complete. As of writing, these two functions are the only ones.
+Already implemented; the server-side job is to TEST these on the real machine:
+
+1. **Notifications are platform-aware** (`src/notify.ts`): `notifyCommand`
+   config wins everywhere (run via `sh -c` with `$AM_TITLE`/`$AM_MESSAGE` —
+   point it at ntfy.sh for phone push; ask Alex for a topic name), then
+   macOS terminal-notifier/osascript, then linux `notify-send`, then silent
+   no-op. Never blocks a hook.
+2. **URL clicks are headless-safe** (`src/commands/click.ts`): `open` on
+   macOS, `xdg-open` when a display exists, otherwise the URL is copied to
+   the tmux buffer with a `display-message` note. (Cmd/shift-click in the
+   local terminal still opens URLs laptop-side over SSH.)
+3. **Remote CLI** (`src/remote.ts`): `am -H <host> <cmd>` forwards over ssh
+   (`sh -lc` on the far end so `~/.bun/bin` is on PATH); `AM_HOST` makes
+   remote the default, `-L/--local` escapes it; internal commands
+   (hook/__deliver/__click/__daemon) never forward.
+4. **systemd user unit example** at `docs/am-daemon.service`.
+
+Still grep for darwin-flavored assumptions before trusting this list.
 
 ## Server checklist (verify, install what's missing)
 

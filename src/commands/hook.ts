@@ -3,6 +3,7 @@ import { queueDepth } from "../queue";
 import { spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
+import { notify } from "../notify";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient } from "../tmux";
 
@@ -14,25 +15,6 @@ async function readStdinPayload(): Promise<Record<string, unknown>> {
   } catch {
     return {};
   }
-}
-
-export function notifyMac(title: string, message: string): void {
-  // terminal-notifier can post as another app (-sender): the notification
-  // gets that app's icon and clicking it focuses the app — osascript
-  // notifications are stuck attributed to Script Editor.
-  //
-  // Fire-and-forget either way: hooks run these, and a notifier that blocks
-  // (terminal-notifier is known to linger) must never stall a hook.
-  const sender = loadConfig().notifySender;
-  const cmd =
-    sender && Bun.which("terminal-notifier")
-      ? ["terminal-notifier", "-title", title, "-message", message, "-sender", sender, "-group", `am-${title}`]
-      : [
-          "osascript",
-          "-e",
-          `display notification "${message.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}" with title "${title.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
-        ];
-  Bun.spawn({ cmd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
 }
 
 export function formatDuration(seconds: number): string {
@@ -110,7 +92,7 @@ export async function hookCommand(event: string): Promise<void> {
     if (pane && pane.length > 0) writeSnapshot(name, pane);
   }
 
-  if (effects.notify) notifyMac(`am: ${name}`, effects.notify);
+  if (effects.notify) notify(`am: ${name}`, effects.notify);
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);
@@ -127,7 +109,7 @@ export async function hookCommand(event: string): Promise<void> {
         attached: hasAttachedClient(agent.tmuxSession),
       })
     ) {
-      notifyMac(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`);
+      notify(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`);
     }
   }
 }

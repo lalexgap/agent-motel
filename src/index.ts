@@ -13,6 +13,7 @@ import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
+import { isForwardable, remoteExec, stripHostArgs } from "./remote";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
@@ -55,6 +56,12 @@ usage:
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
+
+remote (agents running on a server, am on your laptop):
+  am -H <host> <command...>   run any am command on <host> over ssh
+                              (bare \`am -H box\` opens the full hub UI remotely)
+  export AM_HOST=<host>       make every am command remote by default;
+                              -L / --local forces a one-off local run
 `;
 
 interface ParsedArgs {
@@ -62,7 +69,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -179,7 +186,19 @@ async function pickerFlow(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [command, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+
+  // -H/--host (or AM_HOST, for an alias like `alias sam='AM_HOST=server am'`)
+  // forwards the whole command to a remote am over ssh. Checked on the raw
+  // argv since the flag may precede the command (`am -H server ls`).
+  const hostIdx = argv.findIndex((a) => a === "--host" || a === "-H");
+  const forceLocal = argv.includes("--local") || argv.includes("-L");
+  const host = (hostIdx >= 0 ? argv[hostIdx + 1] : undefined) ?? process.env.AM_HOST;
+  if (hostIdx >= 0 && !host) throw new Error("flag --host requires a value");
+  const localArgv = stripHostArgs(argv);
+  const [command, ...rest] = localArgv;
+  if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
+
   const args = parseArgs(rest);
 
   switch (command) {

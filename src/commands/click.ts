@@ -16,6 +16,20 @@ export function extractUrlAt(line: string, x: number): string | null {
   return null;
 }
 
+export interface OpenerEnv {
+  platform: NodeJS.Platform;
+  has: (binary: string) => boolean;
+  display: boolean;
+}
+
+// On a headless server there's no browser (and "opening" would happen on the
+// wrong machine anyway) — null means fall back to the tmux buffer.
+export function chooseOpener(env: OpenerEnv): string | null {
+  if (env.platform === "darwin") return "open";
+  if (env.display && env.has("xdg-open")) return "xdg-open";
+  return null;
+}
+
 export function clickCommand(paneId: string, x: number, y: number): void {
   if (!/^%\d+$/.test(paneId) || x < 0 || y < 0) return;
   const captured = tmux("capture-pane", "-p", "-t", paneId);
@@ -25,5 +39,18 @@ export function clickCommand(paneId: string, x: number, y: number): void {
   const line = captured.stdout.split("\n")[y] ?? "";
   const url = extractUrlAt(line, x);
   if (!url) return;
-  Bun.spawn({ cmd: ["open", url], stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+
+  const opener = chooseOpener({
+    platform: process.platform,
+    has: (binary) => !!Bun.which(binary),
+    display: !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
+  });
+  if (opener) {
+    Bun.spawn({ cmd: [opener, url], stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+    return;
+  }
+  // Headless: stash the URL in the tmux buffer and say so. (When connected
+  // over SSH, cmd/shift-click in the local terminal opens URLs laptop-side.)
+  tmux("set-buffer", "--", url);
+  tmux("display-message", "-t", paneId, `am: copied to tmux buffer — ${url}`);
 }
