@@ -1,4 +1,4 @@
-import { agentRows, relativeTime, shortenHome, STATUS_ICONS, type AgentRow } from "./commands/ls";
+import { agentRows, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { loadConfig } from "./config";
 import { sshAm, sshAmAsync, sshRun } from "./remote";
 import type { PickerItem } from "./picker";
@@ -156,14 +156,19 @@ export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
   const items = rows.map((r) => {
     const hostBadge = r.host ? `@${shortHost(r.host)}` : "";
+    // The colored glyph carries the status, so the badge drops the redundant
+    // status word and keeps only host/provider/queue. Queue stands out: a
+    // compact ▸N, yellow when backed up.
+    const queueBadge = r.queued > 0 ? `▸${r.queued}` : "";
     return {
       name: fleetKey(r),
       section: r.host ?? "local",
       secondary: r.status === "exited",
-      label: `${STATUS_ICONS[r.status]} ${r.name}`,
-      right: [hostBadge, r.provider === "codex" ? "codex" : "", r.status, r.queued > 0 ? `· ${r.queued} queued` : ""]
-        .filter(Boolean)
-        .join(" "),
+      icon: STATUS_ICONS[r.status],
+      iconStyle: STATUS_COLORS[r.status],
+      label: r.name,
+      right: [hostBadge, r.provider === "codex" ? "codex" : "", queueBadge].filter(Boolean).join(" "),
+      rightStyle: r.queued > 0 ? "\x1b[33m" : "\x1b[2m", // yellow when queued, else dim
       search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.host ?? "local"}`,
       meta: [
         `status   ${r.status}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
@@ -182,8 +187,11 @@ export function fleetPickerItems(): PickerItem[] {
       name: `${host}:`,
       section: host,
       secondary: false,
-      label: `✕ (${shortHost(host)} unreachable)`,
+      icon: "✕",
+      iconStyle: "\x1b[31;2m", // dim red
+      label: `(${shortHost(host)} unreachable)`,
       right: "",
+      rightStyle: "\x1b[2m",
       search: host,
       meta: [`host     ${host}`, `status   unreachable`],
     });

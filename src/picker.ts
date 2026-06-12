@@ -1,8 +1,15 @@
 export interface PickerItem {
   name: string;
   label: string;
-  // Right-aligned text at the row's end (status, queue depth).
+  // Leading status glyph, colored (iconStyle) independently of the label so
+  // state reads at a glance. On the highlighted row the inverse bar owns the
+  // colors, so the glyph there renders plain.
+  icon?: string;
+  iconStyle?: string;
+  // Right-aligned text at the row's end (host, provider, queue depth), with an
+  // optional color applied on non-highlighted rows.
   right?: string;
+  rightStyle?: string;
   // Extra text the filter matches against (task, dir) besides the name.
   search?: string;
   // Already-formatted detail lines shown in the sidebar under the list for
@@ -367,9 +374,20 @@ export async function pick(
       }
       const prefix = idx === cursor ? "❯ " : "  ";
       const right = item.right ?? "";
-      const labelWidth = Math.max(1, sidebarWidth - prefix.length - (right ? right.length + 1 : 0));
-      const text = prefix + clipLine(item.label, labelWidth).padEnd(labelWidth) + (right ? " " + right : "");
-      side.push(idx === cursor ? { text, style: INVERSE } : { text });
+      const icon = item.icon ?? "";
+      const iconWidth = icon ? visibleWidth(icon) + 1 : 0; // glyph + space
+      const labelWidth = Math.max(1, sidebarWidth - prefix.length - iconWidth - (right ? right.length + 1 : 0));
+      const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
+      if (idx === cursor) {
+        // The inverse bar highlights the whole row; keep it free of inner
+        // color/RESETs (a RESET would cut the inverse off mid-line).
+        const text = prefix + (icon ? icon + " " : "") + label + (right ? " " + right : "");
+        side.push({ text, style: INVERSE });
+      } else {
+        const iconSeg = icon ? (item.iconStyle ?? "") + icon + RESET + " " : "";
+        const rightSeg = right ? " " + (item.rightStyle ?? "") + right + RESET : "";
+        side.push({ text: prefix + iconSeg + label + rightSeg });
+      }
     });
     if (matches.length === 0) {
       side.push({
@@ -385,7 +403,10 @@ export async function pick(
     const lines: string[] = [];
     for (let r = 0; r < bodyRows; r++) {
       const cell = side[r] ?? { text: "" };
-      const padded = clipLine(cell.text, sidebarWidth).padEnd(sidebarWidth);
+      // Cells may carry embedded SGR (colored status glyph): clip and pad by
+      // VISIBLE width so escape codes don't throw off the column math.
+      const clipped = visibleWidth(cell.text) > sidebarWidth ? clipAnsi(cell.text, sidebarWidth) : cell.text;
+      const padded = clipped + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(clipped)));
       let line = cell.style ? cell.style + padded + RESET : padded;
       if (showPreview) {
         // Preview lines keep their own colors; RESET stops any unclosed

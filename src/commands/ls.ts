@@ -15,6 +15,19 @@ export const STATUS_ICONS: Record<DisplayStatus, string> = {
   dead: "✕",
 };
 
+// SGR color for the picker's leading status glyph, so state reads at a glance
+// without crowding the row. Active = green, needs-eyes = yellow, quiet = dim,
+// gone = dim red.
+export const STATUS_COLORS: Record<DisplayStatus, string> = {
+  starting: "\x1b[2m", // dim
+  idle: "\x1b[2m",
+  waiting: "\x1b[33m", // yellow
+  working: "\x1b[32m", // green
+  "needs-attention": "\x1b[33m",
+  exited: "\x1b[31;2m", // dim red
+  dead: "\x1b[31;2m",
+};
+
 // Claude Code fires no hook when a session goes idle while waiting on a
 // timer (scheduled wake-ups) or a background task — from the hooks' view
 // that's plain idle. Best-effort detection: scrape the pane's STATUS REGION
