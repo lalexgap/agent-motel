@@ -98,6 +98,11 @@ Environment — much of this Alex says is already done; verify rather than redo:
       on demand from the picker (enter on a dead agent) or `am resume`.
 - [ ] Project workspaces the agents will work in: repos cloned, secrets/env
       files in place, language toolchains installed, dev servers start.
+- [x] Terminal terminfo: Ghostty's `xterm-ghostty` entry is NOT in stock
+      terminfo databases, so `ssh -t … am` dies with "missing or unsuitable
+      terminal" until it's installed. Done for gapserver via
+      `infocmp -x xterm-ghostty | ssh <host> -- tic -x -` (run once per
+      client terminal type / server).
 - [ ] Folder trust: run `claude` once interactively in each workspace dir (or
       spawn a throwaway agent and accept the prompt) — otherwise headless
       spawns sit at the trust dialog ("starting", no activity). `am` docs note
