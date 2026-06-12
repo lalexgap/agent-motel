@@ -185,7 +185,7 @@ const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YE
 // Errors carry detail (ssh stderr) worth more room than a routine toast.
 const ERROR_FEEDBACK_LINES = 10;
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · r cd · q/esc quit";
+const HELP = "↑/↓/j/k · enter jumps (ctrl-q returns) · f filter · g group · a all · n new · e edit… · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -256,7 +256,24 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "cd-dir";
+type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "cd-dir" | "edit";
+
+export function hasEditActions(handlers: PickerHandlers): boolean {
+  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
+}
+
+// The edit menu's footer line, built from whichever actions are wired.
+export function editMenuHelp(handlers: PickerHandlers): string {
+  const keys = [
+    handlers.move && "m move",
+    handlers.clone && "c clone",
+    handlers.handoff && "h handoff",
+    handlers.cd && "r cd",
+    handlers.stop && "x stop",
+    handlers.remove && "d remove",
+  ].filter(Boolean);
+  return [...keys, "esc back"].join(" · ");
+}
 
 export async function pick(
   load: () => PickerItem[],
@@ -303,7 +320,11 @@ export async function pick(
       : confirmRemove
         ? { text: `remove "${confirmRemove}"? d again to confirm`, level: "warn" }
         : feedback;
-    const footerLines = wrapTokens(handlers.help ?? HELP, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
+    const footerHelp =
+      mode === "edit"
+        ? `edit ${visibleItems(items, filter, showAll)[cursor]?.name ?? ""}: ${editMenuHelp(handlers)}`
+        : (handlers.help ?? HELP);
+    const footerLines = wrapTokens(footerHelp, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
     const bodyRows = Math.max(1, rows - footerLines.length);
     const bannerBlock: Cell[] = active ? feedbackBanner(active, sidebarWidth) : [];
 
@@ -562,6 +583,40 @@ export async function pick(
         return render();
       }
 
+      if (mode === "edit") {
+        const target = filtered()[cursor];
+        const pending = confirmRemove;
+        confirmRemove = null;
+        if (key === "\x1b" || key === "q" || !target) {
+          mode = "list";
+        } else if (key === "m" && handlers.move) {
+          mode = "list";
+          runDeferred("moving", handlers.move);
+        } else if (key === "c" && handlers.clone) {
+          mode = "list";
+          runDeferred("cloning", handlers.clone);
+        } else if (key === "h" && handlers.handoff) {
+          mode = "list";
+          runDeferred("handing off", handlers.handoff);
+        } else if (key === "r" && handlers.cd) {
+          mode = "cd-dir";
+          cdTarget = target.name;
+          cdDir = handlers.cdPrefill?.(target.name) ?? "";
+        } else if (key === "x" && handlers.stop) {
+          mode = "list";
+          runAction(handlers.stop);
+        } else if (key === "d" && handlers.remove) {
+          // twice on the same item to confirm
+          if (pending === target.name) {
+            mode = "list";
+            runAction(handlers.remove);
+          } else {
+            confirmRemove = target.name;
+          }
+        }
+        return render();
+      }
+
       if (mode !== "list") {
         if (creating) return;
         if (key === "\x1b") {
@@ -646,33 +701,19 @@ export async function pick(
         newName = "";
         newTask = "";
         feedback = null;
-      } else if ((key === "\x18" || key === "x") && handlers.stop) {
-        runAction(handlers.stop);
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;
       } else if (key === "g" && handlers.regroup) {
         feedback = asFeedback(handlers.regroup());
         items = load();
-      } else if (key === "r" && handlers.cd) {
-        const target = filtered()[cursor];
-        if (target) {
-          mode = "cd-dir";
-          cdTarget = target.name;
-          cdDir = handlers.cdPrefill?.(target.name) ?? "";
+      } else if (key === "e" && hasEditActions(handlers)) {
+        // Agent-mutating actions live one level down: e opens the edit menu
+        // for the highlighted agent, keeping the top level to view keys.
+        if (filtered()[cursor]) {
+          mode = "edit";
           feedback = null;
         }
-      } else if (key === "m" && handlers.move) {
-        runDeferred("moving", handlers.move);
-      } else if (key === "h" && handlers.handoff) {
-        runDeferred("handing off", handlers.handoff);
-      } else if (key === "c" && handlers.clone) {
-        runDeferred("cloning", handlers.clone);
-      } else if ((key === "\x04" || key === "d") && handlers.remove) {
-        // twice on the same item to confirm
-        const target = filtered()[cursor];
-        if (target && pendingConfirm === target.name) runAction(handlers.remove);
-        else if (target) confirmRemove = target.name;
       } else if (key === "\x1b[A" || key === "k") moveCursor(-1);
       else if (key === "\x1b[B" || key === "j") moveCursor(1);
       else if (key === "\x7f" || key === "\b") filter = "";
