@@ -105,39 +105,66 @@ section headers, exited hidden behind `a`. Gaps at scale:
 
 - No scroll indicator: with a windowed list you can't tell there are more agents
   above/below. Add `↑3 more` / `↓5 more` affordances (or a scrollbar column).
-- Section headers always render in fleet order; no within-section sort (e.g.
-  working agents first, idle/exited last) — a busy host buries the active agent.
+- Grouping now toggles host ↔ directory (`g`, shipped on main), but **within** a
+  section rows still render in fleet order — a busy host/project buries the
+  active agent below idle/exited ones.
 - `a` toggles *all* exited globally; no per-section collapse.
 
 **Proposed fixes (pick as needed).**
 
 - Sort within section by status priority (needs-attention > working > waiting >
-  idle > exited), stable on name. Most impactful, smallest change.
+  idle > exited), stable on name. Most impactful, smallest change — composes with
+  both `g` grouping modes.
 - Add the `↑/↓ N more` edge hints when `start > 0` / `end < matches.length`.
 
 ---
 
 ## P4 — Footer ergonomics in 38 cols
 
-The help line already wraps via `wrapTokens`, which is good. Smaller polish:
+**Largely addressed on main** by the `e` edit-menu reorg (see "Now on main"
+below): mutating keys moved behind `e`, so the top-level help is short and the
+key list is already grouped by kind (view/lifecycle top-level, agent actions in
+the menu). The edit menu wraps via `wrapTokens`, so all of `m/c/h/r/x/d` stay
+visible at 38 cols. Remaining polish, lower priority:
 
-- The help spends 6+ lines when shown, shrinking the list. Consider a single
-  `? help` hint by default that expands the full key list on demand, reclaiming
-  rows for the list.
-- Group keys by kind (nav / actions / lifecycle) so the wrapped block scans.
+- The top-level help still spends a few lines at the bottom. A single `? help`
+  toggle that expands on demand would reclaim list rows — smaller win now that
+  the line is shorter.
+- The edit menu echoes the highlighted name (`edit agent-comms: …`); fine, but
+  on a confirm-remove it stacks with the P0 banner (`⚠ remove …? d again`). Worth
+  an eyeball that the two reads don't compete in a short pane.
 
 ---
+
+## Now on main (from agent-man-improvements)
+
+A key reorg landed on main and is merged into `am/am-ui`:
+
+- **`e` edit menu.** Agent-mutating actions (`m` move, `c` clone, `h` handoff,
+  `r` cd, `x` stop, `d` remove) moved one level down behind `e`; `esc`/`q` backs
+  out. View keys (`f` filter, `g` group, `a` all) and `n` new stay top-level. The
+  menu renders as a wrapped footer (`edit <name>: …`) so all keys show at 38 cols.
+- **`g` group** toggles host ↔ directory sections (project basename).
+- **`r` cd / `am cd <name> <dir>`** relocates an agent to a new directory.
+
+These compose well with the shipped P0/P1: edit-menu actions surface their result
+in the P0 banner, and `r cd` / `g` already return `Feedback`-typed messages.
+**Implication for the remaining work:** the e-menu removed most of the original
+P4 motivation, and any *new* destructive action should be added inside the edit
+menu (and return a tagged `Feedback`), not as a new top-level key.
 
 ## Suggested order
 
 1. ✅ **P0 (a)+(b)+(c)** — error color/glyph, banner under header, truncation
-   ceiling. *(shipped — banner renders red ✕ / yellow ⚠ / green ✓ / dim, errors
-   get 10 lines, ssh control bytes stripped.)*
+   ceiling. *(shipped.)*
 2. ✅ **P1** — colored status glyph + trimmed badge + ▸N queue badge. *(shipped.)*
 3. **P2** — create-flow step indicator + live validation + provider toggle.
-4. **P3 / P4** — sort-within-section, scroll hints, collapsible help.
+   (Could mirror the e-menu's transient-mode + wrapped-footer pattern.)
+4. **P3** — sort-within-section (composes with `g`), scroll hints.
+5. **P4** — mostly addressed by the e-menu; optional `? help` toggle remains.
 
-P0 + P1 are on `am/am-ui` (pushed); P2–P4 await a go-ahead.
+P0 + P1 and the merged e-menu/`g`/`r` work are on `am/am-ui` (== main); P2–P4
+await a go-ahead.
 
 Each lands as its own commit on `am/am-ui` with tsc + tests green. P0 and P1 add
 unit tests (feedback level → SGR, status → color); the rest extend picker.test.ts.
