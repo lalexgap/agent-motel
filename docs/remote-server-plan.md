@@ -92,7 +92,16 @@ Environment — much of this Alex says is already done; verify rather than redo:
 
 ## Exposing dev servers (wrinkle 2)
 
-Default answer: **don't expose anything publicly — use the tailnet.**
+**The server already runs Caddy with URLs exposed — do not disturb that
+setup.** Tailscale coexists with it (separate interface; no inbound
+interception): keep Caddy as the front door for anything deliberately public,
+and use the tailnet for private access. Audit what Caddy already exposes
+before adding anything; prefer NOT using `tailscale serve`/`funnel` at all on
+this box since Caddy fills that role. If a private-but-nice URL is wanted,
+bind a Caddy site to the tailscale interface instead.
+
+For everything not already behind Caddy: **don't expose it publicly — use the
+tailnet.**
 
 - Any port an agent's dev server binds (e.g. 5001) is reachable from the
   laptop as `http://<server-tailnet-name>:5001` with zero config, as long as
