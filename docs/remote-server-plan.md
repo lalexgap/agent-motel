@@ -54,7 +54,7 @@ Two complementary access paths, both already supported by the tool:
   over SSH untouched. Same for cmd+click on URLs/OSC-8 links — detection is
   terminal-local.
 
-## Code changes — DONE on the `remote-support` branch (verify on linux, then merge)
+## Code changes — DONE (merged to main)
 
 Already implemented; the server-side job is to TEST these on the real machine:
 
