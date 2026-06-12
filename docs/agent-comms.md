@@ -124,13 +124,14 @@ Three layers, weakest (advisory) to strongest (enforced):
 2. **Auto-report hop ceiling (enforced).** Backstop reports increment the hop
    count of whatever woke the agent; past a ceiling (default 3) the Stop hook
    suppresses the auto-report. This kills automatic A→B→A chains hard.
-3. **Per-pair rate limiter (enforced, the real backstop).** A small file ledger
-   (`comms/<from>__<to>.jsonl` under the am home) records send timestamps per
-   *ordered* pair. More than N sends (default 5) in a window (default 60s) from
-   the same sender to the same target → the send is dropped with a warning on
-   stderr. This caps runaway loops regardless of whether they're agent-authored
-   or automatic, and regardless of LLM cooperation. The ledger does double duty
-   as the "did X already message Y this stint?" lookup for the backstop.
+3. **Per-pair rate limiter (enforced, the real backstop).** One append-only
+   ledger (`comms.jsonl` under the am home) records every attributed message as
+   `{at, from, to, kind, body}`. More than N sends (default 5) in a window
+   (default 60s) from the same sender to the same *ordered* pair → the send is
+   dropped with a warning on stderr. This caps runaway loops regardless of
+   whether they're agent-authored or automatic, and regardless of LLM
+   cooperation. The single log does triple duty: rate limiting, the "did X
+   already message Y this stint?" lookup for the backstop, and `am comms`.
 
 Self-sends (`from === to`) skip attribution entirely and are left as-is (an
 agent talking to itself is just a normal queue message).
@@ -221,5 +222,6 @@ shippable.
 | `src/config.ts` | `commsMaxPerMinute`, `commsMaxHops` |
 | `src/providers.ts` | primer etiquette block |
 | `src/index.ts` | `--from` flag + forward injection, `am report` wiring |
-| `src/paths.ts` | `commsDir()` for the ledger |
+| `src/paths.ts` | `commsLogFile()` for the ledger |
+| `src/commands/ls.ts`, `src/fleet.ts` | `→ reportTo` in picker meta |
 | `docs/`, `README.md` | document the feature |

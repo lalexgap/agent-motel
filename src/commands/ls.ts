@@ -66,6 +66,7 @@ export interface AgentRow {
   task?: string;
   worktreeBranch?: string;
   createdAt?: string;
+  reportTo?: string;
 }
 
 export function agentRows(): AgentRow[] {

@@ -35,6 +35,12 @@ export interface AgentState {
   // Set when a turn starts, used to measure the work stint for idle
   // notifications.
   workingSince?: string;
+  // Standing report relationship: this agent keeps `reportTo` posted. Drives
+  // the primer briefing and the Stop-hook backstop heads-up.
+  reportTo?: string;
+  // The agent that ran `am new` to create this one (AGENTMGR_AGENT at spawn).
+  // Lets `--report` / a bare report target default to "whoever made me".
+  spawnedBy?: string;
   createdAt: string;
   updatedAt: string;
 }

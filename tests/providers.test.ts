@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  agentSystemPrompt,
   buildLaunchCommand,
   buildResumeCommand,
   codexConversationArgs,
@@ -20,7 +21,28 @@ describe("codexConversationArgs", () => {
   });
 });
 
+describe("agentSystemPrompt", () => {
+  test("always teaches the attribution etiquette", () => {
+    const prompt = agentSystemPrompt("worker");
+    expect(prompt).toContain("[am · from X]");
+    expect(prompt).toContain("am send X");
+    expect(prompt).not.toContain("You are reporting to");
+  });
+
+  test("adds the reporting briefing only when a target is set", () => {
+    const prompt = agentSystemPrompt("worker", { reportTo: "lead" });
+    expect(prompt).toContain('You are reporting to "lead"');
+    expect(prompt).toContain('am send lead');
+  });
+});
+
 describe("buildLaunchCommand", () => {
+  test("threads reportTo into the claude system prompt", () => {
+    const plan = buildLaunchCommand("claude", "worker", { reportTo: "lead", remote: false });
+    const idx = plan.command.indexOf("--append-system-prompt");
+    expect(plan.command[idx + 1]).toContain('reporting to "lead"');
+  });
+
   test("claude keeps the hook settings file and system prompt flags", () => {
     const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: false });
     expect(plan.command[0]).toBe("claude");

@@ -59,6 +59,9 @@ am send api "then update the changelog"    # queued; delivered when idle
 am send api --now "prefer the v2 endpoint" # typed in immediately (steers current turn)
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 
+am report api --to lead   # api now reports progress to lead (see below)
+am comms api              # recent messages to/from api
+
 am transcript api        # render the agent's conversation as markdown
                          # (--full keeps complete tool output; --out <file>)
 am handoff api           # hand the work to a fresh agent on the OTHER provider,
@@ -76,6 +79,36 @@ am serve                 # HTTP API + installable PWA to watch/message the fleet
                          # from a phone (token-gated; put it behind a tailnet)
 am token                 # print the bearer token to paste into the PWA
 ```
+
+### Agents talking to each other
+
+Agents can message each other with the same `am send` you use — and `am` adds
+the structure that makes a conversation work:
+
+- **Attribution is automatic.** A send from inside an agent's session is stamped
+  with who sent it, so the recipient sees `[am · from api] tests are green` and
+  knows it's a peer (not you, the operator). Replying is just
+  `am send api "..."` — it routes back wherever `api` runs, across machines.
+  Cross-host senders are qualified (`[am · from laptop:api]`) so the reply still
+  finds them. A question and its answer close with nothing extra.
+
+- **Standing report relationships.** Give an agent a lead to keep posted:
+
+  ```sh
+  am new worker -m "…" --report-to lead   # report to a named agent
+  am new worker -m "…" --report           # …to whoever spawned it
+  am report worker --to lead              # set/change later (--clear to drop)
+  ```
+
+  The agent is briefed to post its own summaries with `am send lead`. As a
+  backstop, when it finishes a real work stint without reporting, `am` sends
+  `lead` a terse "went idle after 4m · task: …" so the lead always hears
+  something.
+
+- **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
+  `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A
+  chatter with a warning. `am comms <name>` shows the recent traffic the limiter
+  sees.
 
 ### Phone access (PWA)
 

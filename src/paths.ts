@@ -41,6 +41,12 @@ export function snapshotsDir(): string {
   return join(baseDir(), "snapshots");
 }
 
+// Append-only ledger of inter-agent messages: powers the rate limiter, the
+// "did X already report this stint?" backstop check, and `am comms`.
+export function commsLogFile(): string {
+  return join(baseDir(), "comms.jsonl");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }

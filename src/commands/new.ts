@@ -76,6 +76,10 @@ export interface NewOptions {
   remote?: boolean;
   // Run directly in the target dir instead of a fresh worktree.
   inPlace?: boolean;
+  // Standing report relationship: the agent this one keeps posted. `report`
+  // (no explicit target) means "the agent that spawned me".
+  reportTo?: string;
+  report?: boolean;
   // Suppress console output (used by the picker, which owns the screen).
   quiet?: boolean;
 }
@@ -117,7 +121,15 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     repoRoot = wt.repoRoot;
   }
 
-  const plan = buildLaunchCommand(provider, name, opts);
+  // Who created this agent? Any `am` call inside a managed session carries
+  // AGENTMGR_AGENT — lets `--report` default to "whoever made me".
+  const spawnedBy = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const reportTo = opts.reportTo ?? (opts.report ? spawnedBy : undefined);
+  if (opts.report && !reportTo && !opts.quiet) {
+    console.error("warning: --report but no spawning agent — set a target with --report-to <name>");
+  }
+
+  const plan = buildLaunchCommand(provider, name, { ...opts, reportTo });
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
 
@@ -134,6 +146,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     worktreeBranch,
     repoRoot,
     task: opts.message,
+    reportTo,
+    spawnedBy,
     createdAt: now,
     updatedAt: now,
   };

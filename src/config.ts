@@ -34,6 +34,16 @@ export interface Config {
   // spawn agents and run commands.
   apiPort: number;
   apiBind: string;
+  // Inter-agent comms loop guard: at most this many attributed messages from
+  // the same sender to the same target within commsWindowSeconds. Excess sends
+  // are dropped with a warning — the hard backstop against A→B→A ping-pong.
+  commsMaxPerWindow: number;
+  commsWindowSeconds: number;
+  // What other machines call THIS host (its alias in their config.remotes).
+  // When set, sends forwarded to another host carry `--from <hostAlias>:<name>`
+  // so the recipient can address a reply back. Unset → bare name + global
+  // fleet resolution (fine as long as agent names are unique across the fleet).
+  hostAlias?: string;
 }
 
 const DEFAULTS: Config = {
@@ -43,6 +53,8 @@ const DEFAULTS: Config = {
   apiPort: 8787,
   apiBind: "127.0.0.1",
   worktreeByDefault: true,
+  commsMaxPerWindow: 5,
+  commsWindowSeconds: 60,
 };
 
 export function loadConfig(): Config {

@@ -1,0 +1,126 @@
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { commsLogFile, ensureDirs } from "./paths";
+import { loadConfig } from "./config";
+
+// Inter-agent communication: attribution, the envelope recipients see, and a
+// file-backed ledger that powers loop protection + the `am comms` audit view.
+// Built on top of the existing queue/deliver path — nothing here moves bytes,
+// it only decides what gets stamped onto a message and whether it's allowed.
+
+export type CommsKind = "send" | "now" | "interrupt" | "report";
+
+export interface CommsEntry {
+  at: string;
+  from: string; // sender, possibly host-qualified (e.g. "laptop:api")
+  to: string; // local target name
+  kind: CommsKind;
+  body: string;
+}
+
+// The sender of a message originating inside a managed session: any `am`
+// invocation there runs with AGENTMGR_AGENT set. An explicit --from wins (the
+// daemon, the HTTP API, and ssh-forwarded sends set it because the env doesn't
+// survive those hops).
+export function resolveSender(explicit?: string): string | undefined {
+  const from = explicit ?? process.env.AGENTMGR_AGENT;
+  return from && from.trim() ? from.trim() : undefined;
+}
+
+// A send is a "self send" — no attribution — only when an unqualified sender
+// equals the local target. A host-qualified sender is always a peer.
+export function isSelfSend(from: string, target: string): boolean {
+  return !from.includes(":") && from === target;
+}
+
+// The prefix recipients (LLMs) see. Terse on purpose; the primer teaches what
+// it means and how to reply. Host-qualified senders keep their qualifier so the
+// reply can be addressed across machines.
+export function formatEnvelope(from: string, body: string): string {
+  return `[am · from ${from}] ${body}`;
+}
+
+function readLog(): CommsEntry[] {
+  const file = commsLogFile();
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .map((l) => JSON.parse(l) as CommsEntry);
+}
+
+export function recordComms(entry: CommsEntry): void {
+  ensureDirs();
+  appendFileSync(commsLogFile(), JSON.stringify(entry) + "\n");
+}
+
+// How many messages this sender has sent this target within the window.
+export function sendsInWindow(from: string, to: string, windowMs: number): number {
+  const cutoff = Date.now() - windowMs;
+  return readLog().filter(
+    (e) => e.from === from && e.to === to && Date.parse(e.at) >= cutoff,
+  ).length;
+}
+
+// Has `from` messaged `to` at or after `since`? Used by the report backstop to
+// skip the auto heads-up when the agent already reported itself this stint.
+export function hasMessagedSince(from: string, to: string, since: string): boolean {
+  const sinceMs = Date.parse(since);
+  return readLog().some(
+    (e) => e.from === from && e.to === to && Date.parse(e.at) >= sinceMs,
+  );
+}
+
+export interface Attribution {
+  // The body to actually deliver — wrapped in the envelope, or unchanged for a
+  // self/anonymous send.
+  body: string;
+  // False → over the rate limit; the caller must drop the message.
+  allowed: boolean;
+  // True when the message was attributed (and logged to the ledger).
+  attributed: boolean;
+}
+
+// Decide how a message is delivered: attribute + rate-limit when it comes from
+// a peer, pass through untouched otherwise. Records the ledger entry on the way
+// through so the rate limiter and `am comms` stay in sync.
+export function attribute(
+  from: string | undefined,
+  target: string,
+  body: string,
+  kind: CommsKind,
+): Attribution {
+  if (!from || isSelfSend(from, target)) {
+    return { body, allowed: true, attributed: false };
+  }
+  const cfg = loadConfig();
+  const windowMs = cfg.commsWindowSeconds * 1000;
+  if (sendsInWindow(from, target, windowMs) >= cfg.commsMaxPerWindow) {
+    return { body, allowed: false, attributed: true };
+  }
+  recordComms({ at: new Date().toISOString(), from, to: target, kind, body });
+  return { body: formatEnvelope(from, body), allowed: true, attributed: true };
+}
+
+// Backstop gate: fire the Stop-hook heads-up only for a real work stint where
+// the agent didn't already report itself. Pure — IO (the ledger lookup that
+// sets alreadyReported) stays in the caller.
+export function shouldReport(opts: {
+  reportTo?: string;
+  workedSeconds: number;
+  minSeconds: number;
+  alreadyReported: boolean;
+}): boolean {
+  return (
+    !!opts.reportTo && opts.workedSeconds >= opts.minSeconds && !opts.alreadyReported
+  );
+}
+
+// Recent ledger entries touching `name` in either direction, newest last.
+export function commsFor(name: string, limit = 20): CommsEntry[] {
+  const base = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
+  const entries = readLog().filter((e) => {
+    const fromBase = e.from.includes(":") ? e.from.slice(e.from.indexOf(":") + 1) : e.from;
+    return fromBase === base || e.to === base;
+  });
+  return entries.slice(-limit);
+}
