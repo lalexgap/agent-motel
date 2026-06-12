@@ -87,6 +87,11 @@ export function createHub(): void {
   // intercepts ctrl-q before the nested agent session (whose own ctrl-q
   // binding means detach) ever sees it.
   tmux("set-option", "-t", hubTarget(), "status", "off");
+  // The terminal tab title follows whichever agent the right pane shows
+  // (showAgent updates the string); direct `am j` attaches get theirs from
+  // the per-agent session titles instead.
+  tmux("set-option", "-t", hubTarget(), "set-titles", "on");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
   tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-l");
   tmux("set-option", "-t", hubTarget(), "key-table", "am-hub");
@@ -138,6 +143,7 @@ export async function sidebarCommand(): Promise<void> {
         }
       }
       if (shown !== key) {
+        tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name}@${shortHost(host)}`);
         sshRun(host, `tmux set-option -t '=agentmgr-${name}:' status off`, { timeoutMs: 4000 });
         const attach = `env -u TMUX ssh -t ${shQuote(host)} -- ${shQuote(`tmux attach-session -t '=agentmgr-${name}'`)}`;
         const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
@@ -174,6 +180,7 @@ export async function sidebarCommand(): Promise<void> {
     }
 
     if (shown !== key) {
+      tmux("set-option", "-t", hubTarget(), "set-titles-string", name);
       // The nested attach needs TMUX unset, or the inner tmux refuses to
       // start. The inner session's status bar is noise inside the pane.
       tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
