@@ -23,10 +23,10 @@ function uniqueName(base: string): string {
 // handoff renders the source conversation to markdown (the native JSONL stays
 // the source of truth) and briefs a fresh agent on the target provider with
 // it. The source agent keeps running — stop it yourself if it shouldn't.
-export async function handoffCommand(
+export async function handoffAgent(
   prefix: string,
-  opts: { newName?: string; to?: string; full?: boolean; jump?: boolean },
-): Promise<void> {
+  opts: { newName?: string; to?: string; full?: boolean; jump?: boolean; quiet?: boolean },
+): Promise<{ name: string; target: Provider; file: string }> {
   const agent = resolveAgent(prefix);
   const source = agentProvider(agent);
   const target = targetProvider(source, opts.to);
@@ -53,12 +53,21 @@ export async function handoffCommand(
     ...(agent.task ? ["", `The original task was: ${agent.task}`] : []),
   ].join("\n");
 
-  console.log(`handoff transcript: ${handoffFile}`);
   await newCommand({
     name,
     message,
     dir: agent.dir,
     provider: target,
     jump: opts.jump,
+    quiet: opts.quiet,
   });
+  return { name, target, file: handoffFile };
+}
+
+export async function handoffCommand(
+  prefix: string,
+  opts: { newName?: string; to?: string; full?: boolean; jump?: boolean },
+): Promise<void> {
+  const result = await handoffAgent(prefix, opts);
+  console.log(`handoff transcript: ${result.file}`);
 }

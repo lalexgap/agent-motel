@@ -4,6 +4,7 @@ import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey } from "../fleet";
 import { sshAm, sshRun } from "../remote";
+import { handoffHandler, moveHandler } from "./fleetActions";
 import { pick, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -19,7 +20,7 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · x stop · d remove · q/esc detach · ctrl-c quit";
+const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · m move · h handoff · x stop · d remove · q/esc detach · ctrl-c quit";
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -230,6 +231,8 @@ export async function sidebarCommand(): Promise<void> {
       const agent = !host && name ? readAgent(name) : null;
       return shortenHome(agent?.dir ?? process.cwd());
     },
+    move: moveHandler,
+    handoff: handoffHandler,
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },

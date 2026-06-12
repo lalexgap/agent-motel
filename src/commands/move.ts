@@ -113,7 +113,7 @@ function remoteHome(host: string): string {
   return home;
 }
 
-async function pushAgent(name: string, host: string, opts: MoveOptions): Promise<void> {
+async function pushAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
   const agent = resolveAgent(name);
   if (agent.worktreePath && !opts.dir) {
     throw new Error("worktree agents can't be auto-mapped — pass --dir <plain checkout on the target>");
@@ -174,19 +174,19 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   }
 
   if (!opts.copy) destroyAgent(agent, { clean: false });
-  console.log(`moved "${agent.name}" → ${host}:${targetDir}${opts.copy ? " (local copy kept)" : ""}`);
+  let message = `moved "${agent.name}" → ${host}:${targetDir}${opts.copy ? " (local copy kept)" : ""}`;
 
   if (opts.start) {
     const resumed = sshAm(host, ["resume", agent.name], { timeoutMs: 30000 });
-    if (resumed.exitCode !== 0) {
-      console.error(`warning: remote resume failed: ${resumed.stderr.trim()} — \`am -H ${host} resume ${agent.name}\``);
-    } else {
-      console.log(`  running on ${host} — jump with \`am j ${agent.name}\``);
-    }
+    message +=
+      resumed.exitCode !== 0
+        ? ` — remote resume failed: ${resumed.stderr.trim()}`
+        : ` — running`;
   }
+  return message;
 }
 
-async function pullAgent(name: string, host: string, opts: MoveOptions): Promise<void> {
+async function pullAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
   if (readAgent(name)) throw new Error(`agent "${name}" already exists locally`);
 
   const exported = sshAm(host, ["__export", name], { timeoutMs: 20000 });
@@ -230,17 +230,31 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   );
 
   if (!opts.copy) sshAm(host, ["rm", name], { timeoutMs: 15000 });
-  console.log(`moved "${name}" ← ${host} (now in ${targetDir})${opts.copy ? " (remote copy kept)" : ""}`);
+  let message = `moved "${name}" ← ${host} (now in ${targetDir})${opts.copy ? " (remote copy kept)" : ""}`;
 
   if (opts.start) {
     const { reviveAgent } = await import("./resume");
     await reviveAgent(readAgent(name)!);
-    console.log(`  running locally — jump with \`am j ${name}\``);
+    message += " — running";
   }
+  return message;
 }
 
 function shq(arg: string): string {
   return `'${arg.replaceAll("'", `'\\''`)}'`;
+}
+
+// Quiet core, usable from the sidebar (returns the outcome instead of
+// printing — the picker owns the screen).
+export async function moveAgent(
+  first: string,
+  second: string | undefined,
+  opts: MoveOptions,
+): Promise<string> {
+  const spec = parseMoveSpec(first, second);
+  return spec.direction === "push"
+    ? pushAgent(spec.name, spec.host, opts)
+    : pullAgent(spec.name, spec.host, opts);
 }
 
 export async function moveCommand(
@@ -248,9 +262,21 @@ export async function moveCommand(
   second: string | undefined,
   opts: MoveOptions,
 ): Promise<void> {
-  const spec = parseMoveSpec(first, second);
-  if (spec.direction === "push") await pushAgent(spec.name, spec.host, opts);
-  else await pullAgent(spec.name, spec.host, opts);
+  console.log(await moveAgent(first, second, opts));
+}
+
+// Where `m` in the sidebar sends the highlighted agent: remote agents pull
+// home; local agents push to the single configured remote. With several
+// remotes the choice is ambiguous — point at the CLI.
+export function defaultMoveTarget(
+  key: string,
+  remotes: string[],
+): { first: string; second?: string; describe: string } | { error: string } {
+  const { host, name } = splitFleetKey(key);
+  if (host && name) return { first: `${host}:${name}`, describe: `${name} → local` };
+  if (remotes.length === 1) return { first: name, second: remotes[0], describe: `${name} → ${remotes[0]}` };
+  if (remotes.length === 0) return { error: "no remotes configured (~/.agent-manager/config.json)" };
+  return { error: `multiple remotes — use \`am move ${name} <host>\`` };
 }
 
 // `am __export <name>`: everything the other side needs, on stdout.

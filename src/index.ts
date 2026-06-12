@@ -14,6 +14,7 @@ import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { exportCommand, importCommand, moveCommand } from "./commands/move";
+import { handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost } from "./fleet";
 import { loadConfig } from "./config";
@@ -206,6 +207,8 @@ async function pickerFlow(): Promise<void> {
       const agent = !host && name ? readAgent(name) : null;
       return shortenHome(agent?.dir ?? process.cwd());
     },
+    move: moveHandler,
+    handoff: handoffHandler,
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  defaultMoveTarget,
   dirtyGitFiles,
   importPayload,
   mapHomeDir,
@@ -49,6 +50,23 @@ describe("targetTranscriptPath", () => {
       targetTranscriptPath("codex", "/home/lagap", "/home/lagap/code/x", "abc", "sessions/2026/06/12/rollout-abc.jsonl"),
     ).toBe("/home/lagap/.codex/sessions/2026/06/12/rollout-abc.jsonl");
     expect(() => targetTranscriptPath("codex", "/h", "/h/x", "abc", null)).toThrow(/rollout/);
+  });
+});
+
+describe("defaultMoveTarget", () => {
+  test("remote rows pull home; local rows push to the single remote", () => {
+    expect(defaultMoveTarget("home.alexgap.ca:demo", ["home.alexgap.ca"])).toMatchObject({
+      first: "home.alexgap.ca:demo",
+    });
+    expect(defaultMoveTarget("demo", ["home.alexgap.ca"])).toMatchObject({
+      first: "demo",
+      second: "home.alexgap.ca",
+    });
+  });
+
+  test("zero or many remotes yield guidance", () => {
+    expect(defaultMoveTarget("demo", [])).toMatchObject({ error: expect.stringContaining("no remotes") });
+    expect(defaultMoveTarget("demo", ["a", "b"])).toMatchObject({ error: expect.stringContaining("multiple") });
   });
 });
 

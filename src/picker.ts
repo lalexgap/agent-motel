@@ -8,6 +8,9 @@ export interface PickerItem {
   // Already-formatted detail lines shown in the sidebar under the list for
   // the highlighted item.
   meta?: string[];
+  // Group label ("local", a remote host): a dim header row is rendered at
+  // each section change when the list spans more than one section.
+  section?: string;
 }
 
 export interface PickerHandlers {
@@ -31,6 +34,10 @@ export interface PickerHandlers {
   // this to make the agent pane follow the scroll). Debouncing is the
   // handler's job.
   highlight?: (name: string) => void;
+  // Slow actions (ssh moves, provider handoffs): the resolved string lands
+  // in the footer when done; rejections surface their message there too.
+  move?: (name: string) => string | Promise<string>;
+  handoff?: (name: string) => string | Promise<string>;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -124,7 +131,7 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · x stop · d remove · q/esc quit";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · h handoff · x stop · d remove · q/esc quit";
 
 // Pack " · "-separated help tokens into lines that fit the width, so narrow
 // panes (the am ui sidebar) show all the keys instead of a clipped line.
@@ -238,16 +245,30 @@ export async function pick(
         ]
       : [];
 
+    // Section headers are rendered only when the matches span more than one
+    // section (a lone "local" header is noise); they consume list rows, so
+    // capacity shrinks by the section count.
+    const sections = [...new Set(matches.map((i) => i.section ?? ""))];
+    const showSections = sections.length > 1;
+    const headerRows = showSections ? sections.length : 0;
+
     // Window the list around the cursor so long agent lists stay navigable.
-    const listCapacity = Math.max(1, bodyRows - 1 - metaBlock.length);
+    const listCapacity = Math.max(1, bodyRows - 1 - metaBlock.length - headerRows);
     let start = 0;
     if (matches.length > listCapacity) {
       start = Math.min(Math.max(0, cursor - Math.floor(listCapacity / 2)), matches.length - listCapacity);
     }
 
     const side: Cell[] = [header];
+    let lastSection: string | null = null;
     matches.slice(start, start + listCapacity).forEach((item, i) => {
       const idx = start + i;
+      if (showSections && (item.section ?? "") !== lastSection) {
+        lastSection = item.section ?? "";
+        const title = ` ${lastSection || "local"} `;
+        const dashes = "─".repeat(Math.max(0, sidebarWidth - title.length - 1));
+        side.push({ text: `─${title}${dashes}`, style: DIM });
+      }
       const prefix = idx === cursor ? "❯ " : "  ";
       const right = item.right ?? "";
       const labelWidth = Math.max(1, sidebarWidth - prefix.length - (right ? right.length + 1 : 0));
@@ -347,6 +368,27 @@ export async function pick(
       if (items.length === 0 && !handlers.create) return finish(null);
     };
 
+    // Slow actions (ssh move, handoff): show progress in the footer, resolve
+    // into it when done — the picker stays interactive throughout.
+    const runDeferred = (working: string, handler: (name: string) => string | Promise<string>) => {
+      const target = filtered()[cursor];
+      if (!target) return;
+      feedback = `${working} ${target.name}…`;
+      Promise.resolve()
+        .then(() => handler(target.name))
+        .then(
+          (message) => {
+            feedback = message;
+            items = load();
+            if (!finished) render();
+          },
+          (error: Error) => {
+            feedback = error.message;
+            if (!finished) render();
+          },
+        );
+    };
+
     const onData = (data: Buffer) => {
       for (const key of splitKeys(data.toString())) {
         if (finished) return;
@@ -442,6 +484,10 @@ export async function pick(
         feedback = null;
       } else if ((key === "\x18" || key === "x") && handlers.stop) {
         runAction(handlers.stop);
+      } else if (key === "m" && handlers.move) {
+        runDeferred("moving", handlers.move);
+      } else if (key === "h" && handlers.handoff) {
+        runDeferred("handing off", handlers.handoff);
       } else if ((key === "\x04" || key === "d") && handlers.remove) {
         // twice on the same item to confirm
         const target = filtered()[cursor];

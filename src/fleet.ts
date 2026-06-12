@@ -158,6 +158,7 @@ export function fleetPickerItems(): PickerItem[] {
     const hostBadge = r.host ? `@${shortHost(r.host)}` : "";
     return {
       name: fleetKey(r),
+      section: r.host ?? "local",
       label: `${STATUS_ICONS[r.status]} ${r.name}`,
       right: [hostBadge, r.provider === "codex" ? "codex" : "", r.status, r.queued > 0 ? `· ${r.queued} queued` : ""]
         .filter(Boolean)
@@ -178,6 +179,7 @@ export function fleetPickerItems(): PickerItem[] {
   for (const host of unreachable) {
     items.push({
       name: `${host}:`,
+      section: host,
       label: `✕ (${shortHost(host)} unreachable)`,
       right: "",
       search: host,
