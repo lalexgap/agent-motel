@@ -11,6 +11,15 @@ export interface PickerItem {
   // Group label ("local", a remote host): a dim header row is rendered at
   // each section change when the list spans more than one section.
   section?: string;
+  // Hidden by default (exited agents); shown when toggled with `a` or when a
+  // text filter is active — explicitly searching should find everything.
+  secondary?: boolean;
+}
+
+export function visibleItems(items: PickerItem[], filter: string, showAll: boolean): PickerItem[] {
+  return items
+    .filter((i) => `${i.name} ${i.search ?? ""}`.toLowerCase().includes(filter.toLowerCase()))
+    .filter((i) => showAll || filter !== "" || !i.secondary);
 }
 
 export interface PickerHandlers {
@@ -131,7 +140,7 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · h handoff · x stop · d remove · q/esc quit";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · h handoff · x stop · d remove · a all · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -218,8 +227,8 @@ export async function pick(
 
   const out = (s: string) => process.stdout.write(s);
 
-  const filtered = () =>
-    items.filter((i) => `${i.name} ${i.search ?? ""}`.toLowerCase().includes(filter.toLowerCase()));
+  let showAll = false;
+  const filtered = () => visibleItems(items, filter, showAll);
 
   const render = () => {
     const cols = process.stdout.columns ?? 80;
@@ -260,7 +269,14 @@ export async function pick(
             ? { text: `filter: ${filter}▌` }
             : filter
               ? { text: `filter: ${filter} · ⌫ clears` }
-              : { text: `agents (${matches.length}) · f filters`, style: DIM };
+              : {
+                  text: (() => {
+                    const exited = items.filter((i) => i.secondary).length;
+                    const hint = showAll ? " · all" : exited > 0 ? ` · ${exited} exited (a shows)` : "";
+                    return `agents (${matches.length})${hint} · f filters`;
+                  })(),
+                  style: DIM,
+                };
 
     // The meta block is sized to the largest meta across ALL items, not the
     // selected one — otherwise the list capacity (and every row below the
@@ -516,6 +532,9 @@ export async function pick(
         feedback = null;
       } else if ((key === "\x18" || key === "x") && handlers.stop) {
         runAction(handlers.stop);
+      } else if (key === "a") {
+        showAll = !showAll;
+        feedback = null;
       } else if (key === "m" && handlers.move) {
         runDeferred("moving", handlers.move);
       } else if (key === "h" && handlers.handoff) {

@@ -99,3 +99,16 @@ describe("wrapText", () => {
     expect(capped[2]).toBe("…");
   });
 });
+
+describe("visibleItems", () => {
+  test("secondary items hide by default, show with a-toggle or an active filter", async () => {
+    const { visibleItems } = await import("../src/picker");
+    const items = [
+      { name: "alive", label: "" },
+      { name: "gone", label: "", secondary: true },
+    ];
+    expect(visibleItems(items, "", false).map((i) => i.name)).toEqual(["alive"]);
+    expect(visibleItems(items, "", true).map((i) => i.name)).toEqual(["alive", "gone"]);
+    expect(visibleItems(items, "gon", false).map((i) => i.name)).toEqual(["gone"]);
+  });
+});

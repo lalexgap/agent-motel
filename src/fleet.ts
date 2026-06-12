@@ -159,6 +159,7 @@ export function fleetPickerItems(): PickerItem[] {
     return {
       name: fleetKey(r),
       section: r.host ?? "local",
+      secondary: r.status === "exited",
       label: `${STATUS_ICONS[r.status]} ${r.name}`,
       right: [hostBadge, r.provider === "codex" ? "codex" : "", r.status, r.queued > 0 ? `· ${r.queued} queued` : ""]
         .filter(Boolean)
