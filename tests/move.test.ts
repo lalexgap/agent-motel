@@ -154,3 +154,17 @@ describe("premoveNotice", () => {
     expect(notice).toContain("Do not start new work");
   });
 });
+
+describe("sectionFor", () => {
+  test("host mode groups by machine, dir mode by repo (worktrees collapse)", async () => {
+    const { sectionFor } = await import("../src/fleet");
+    const row = (over: object) => ({
+      name: "x", status: "idle", provider: "claude", queued: 0,
+      updatedAt: "", dir: "/home/u/code/app", ...over,
+    });
+    expect(sectionFor(row({}) as never, "host")).toBe("local");
+    expect(sectionFor(row({ host: "home.alexgap.ca" }) as never, "host")).toBe("home.alexgap.ca");
+    const wt = row({ dir: "/home/u/.agent-manager/worktrees/app/x", repoRoot: "/home/u/code/app" });
+    expect(sectionFor(wt as never, "dir")).toBe(sectionFor(row({}) as never, "dir"));
+  });
+});

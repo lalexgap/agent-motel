@@ -16,7 +16,7 @@ import { clickCommand } from "./commands/click";
 import { exportCommand, importCommand, moveCommand } from "./commands/move";
 import { cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
-import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost } from "./fleet";
+import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
 import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
@@ -220,6 +220,7 @@ async function pickerFlow(): Promise<void> {
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
+    regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),

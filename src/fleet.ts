@@ -150,15 +150,35 @@ async function refreshPreview(key: string, host: string, agentName: string): Pro
   }
 }
 
+// Sidebar grouping: by host (local first, then each remote) or by project
+// (repoRoot when the agent lives in a worktree — grouping by the literal
+// worktree dir would put every agent alone — else its dir). Toggled with
+// `g`; session-local.
+export type GroupMode = "host" | "dir";
+let groupMode: GroupMode = "host";
+
+export function toggleGroupMode(): GroupMode {
+  groupMode = groupMode === "host" ? "dir" : "host";
+  return groupMode;
+}
+
+export function sectionFor(row: FleetRow, mode: GroupMode): string {
+  if (mode === "dir") return shortenHome(row.repoRoot ?? row.dir);
+  return row.host ?? "local";
+}
+
 // Shared list builder for the classic picker and the hub sidebar: one item
 // per agent across the whole fleet, keyed host:name for remote rows.
 export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
-  const items = rows.map((r) => {
+  // Groups must be contiguous for the picker's section headers; host mode is
+  // naturally ordered (local rows come first), dir mode needs the sort.
+  const sorted = groupMode === "dir" ? [...rows].sort((a, b) => sectionFor(a, "dir").localeCompare(sectionFor(b, "dir"))) : rows;
+  const items = sorted.map((r) => {
     const hostBadge = r.host ? `@${shortHost(r.host)}` : "";
     return {
       name: fleetKey(r),
-      section: r.host ?? "local",
+      section: sectionFor(r, groupMode),
       secondary: r.status === "exited",
       label: `${STATUS_ICONS[r.status]} ${r.name}`,
       right: [hostBadge, r.provider === "codex" ? "codex" : "", r.status, r.queued > 0 ? `· ${r.queued} queued` : ""]

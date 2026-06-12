@@ -48,6 +48,8 @@ export interface PickerHandlers {
   move?: (name: string) => string | Promise<string>;
   handoff?: (name: string) => string | Promise<string>;
   clone?: (name: string) => string | Promise<string>;
+  // Toggle the list grouping (host ↔ directory); returns footer feedback.
+  regroup?: () => string;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -150,7 +152,7 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · q/esc quit";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -557,6 +559,9 @@ export async function pick(
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;
+      } else if (key === "g" && handlers.regroup) {
+        feedback = handlers.regroup();
+        items = load();
       } else if (key === "m" && handlers.move) {
         runDeferred("moving", handlers.move);
       } else if (key === "h" && handlers.handoff) {

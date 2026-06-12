@@ -109,6 +109,7 @@ export interface AgentRow {
   createdAt?: string;
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
+  repoRoot?: string;
 }
 
 export function agentRows(): AgentRow[] {
