@@ -106,15 +106,39 @@ you*.
 | Option | Pros | Cons | Verdict |
 |---|---|---|---|
 | **Native SwiftUI** | Real push (APNs/critical alerts), backgrounding, Shortcuts/widgets/Live Activities, keychain, best SSH/terminal libs | Swift codebase to maintain; Apple Developer Program ($99/yr); TestFlight/App Store dance | **Best for the real product** |
-| **PWA (installable web app)** | One codebase, instant deploy, no App Store, trivial to host behind tailscale/Caddy | **Web Push on iOS is weak**: only when installed to Home Screen, no critical alerts, unreliable background wake — fatal for a notify-first tool. No native SSH. | **Great for a v0 prototype, not the notify story** |
+| **PWA (installable web app)** | One codebase, instant deploy, **no Apple account, no App Store, no re-signing**, trivial to host behind tailscale/Caddy; can do the full interactive fleet API (it's just HTTP) | Web Push on iOS is weak — **but irrelevant here, because push is offloaded to ntfy, not the PWA.** No native SSH (deferred anyway). | **The $0 path — recommended for personal use (pair with ntfy for push)** |
 | **Wrap an existing tool** | The Claude app already *is* a high-quality wrapper for the per-agent case | Covers one agent at a time, Claude-only, no fleet/Codex/am-lifecycle | **Use it, don't rebuild it — deep-link to it** |
-| **ntfy.sh (off-the-shelf push)** | `notifyCommand` already supports it (`curl ntfy.sh/<topic>`); the ntfy iOS app gives lock-screen push **today, zero code** | Generic notification list, no fleet view, no reply-with-context | **Ship this first as the notification MVP while a real app is built** |
+| **ntfy.sh (off-the-shelf push)** | `notifyCommand` already supports it (`curl ntfy.sh/<topic>`); the ntfy iOS app gives lock-screen push **today, zero code**; supports **action buttons that fire HTTP requests** (tap-to-queue-reply from the lock screen) | Generic notification list, no fleet view | **The push half of the $0 stack — ship first** |
 
-**Recommendation:** native SwiftUI for the product; **ntfy as a zero-build
-interim** for notifications (it already works via `notifyCommand`); optionally a
-PWA prototype of the fleet view to validate the API before writing Swift.
+**Recommendation (personal use, paying optional):** the **$0 stack is
+PWA + ntfy** — a PWA serves the fleet UI/reply (no Apple account, no App Store,
+no weekly re-signing), and ntfy carries push. Earlier I called PWA push "weak";
+that no longer bites because the PWA never does push — **ntfy does**. Go native
+SwiftUI *only* when you want the polish (integrated push + notification
+quick-reply, embedded SSH attach, no rebuild treadmill), at which point the
+$99/yr is worth it.
 
-### 3b. App Store constraints for a personal tool
+### 3b. Cost decision (personal use) — you don't need to pay
+
+Decided: **prefer not to pay; pay only if it clearly helps.** Given that, the
+$99/yr Apple Developer Program is **not required for the MVP**, because:
+
+- The only free-tier blocker that matters for a notify-first tool is **push from
+  your own app** (APNs needs the paid program). But **push is offloaded to
+  ntfy** — a separate App Store app with its own push pipeline — so your app
+  never needs the entitlement.
+- That leaves two free paths:
+  - **PWA + ntfy (recommended):** $0, no Apple account, no App Store, **no
+    7-day re-signing**. The PWA does the fleet UI + reply; ntfy does push
+    (with action buttons for lock-screen quick-reply). Covers the entire MVP.
+  - **Free native build (personal team):** Xcode sideloads a native app with
+    just a free Apple ID — but builds **expire after 7 days** (replug into
+    Xcode and rebuild weekly). Annoying for something you rely on for alerts.
+- **Pay the $99/yr only when** you want: a polished native app (integrated push
+  + notification quick-reply, no rebuild treadmill), embedded SSH terminal
+  attach with good UX, or TestFlight's 90-day OTA builds. None are MVP.
+
+### 3c. App Store / distribution constraints (if you do go native later)
 
 - This is a **single-user personal tool**, so it does **not need to ship on the
   public App Store.** That sidesteps most review friction (no "minimum
@@ -136,7 +160,7 @@ PWA prototype of the fleet view to validate the API before writing Swift.
   silent/Focus) need a special Apple entitlement that's hard to get; regular
   push or ntfy's high-priority is the realistic ceiling.
 
-### 3c. TestFlight summary
+### 3d. TestFlight summary (native path only)
 Paid account → archive in Xcode → upload → add yourself as an internal tester →
 install via TestFlight app. 90-day build expiry, OTA updates, no review. This is
 the recommended distribution for the foreseeable life of this tool.
@@ -248,27 +272,34 @@ Deliberately skips interactive attach and most lifecycle write ops.
 - Bearer-token auth on every route. Document the tailscale-serve setup.
 - This is genuinely small because the read side already exists.
 
-### Phase 2 — native iOS app (TestFlight, internal)
+### Phase 2 — the fleet UI as a **PWA** ($0, no Apple account)
+Build the fleet UI as an installable web app served behind Tailscale (e.g. via
+`tailscale serve`, or Caddy bound to the tailnet). It's pure HTTP to the Phase 1
+layer, so no Apple account, no App Store, no weekly re-signing.
 - **Fleet list** mirroring the hub sidebar: status icon, name, host badge,
   provider, queue depth, "Ns ago". Pull-to-refresh + light polling (SSE later).
 - **Agent detail**: task, dir, worktree, provider, timestamps, queued messages,
   a read-only **pane snapshot** image/text.
 - **Reply**: queue / now / interrupt from the detail view.
-- **Push**: APNs for needs-attention + idle, reusing `shouldNotifyIdle`
-  filtering; **notification action → reply** (queue a message without opening
-  the app). This is the single highest-value interaction — prioritize it.
 - **Spawn**: `am new` with name + optional task + dir/host picker.
+- **Push stays on ntfy** (Phase 0) — the PWA doesn't try to do iOS web push.
+  Use ntfy **action buttons** (HTTP-request buttons) so a lock-screen
+  notification can queue a canned reply or deep-link into the PWA at that agent.
 
-### Phase 3 — lifecycle + jump-in (post-MVP)
+### Phase 3 — go native *only if the PWA earns it* (optional, $99/yr)
+If the PWA proves the phone is where you actually triage and you want the
+polish, port to native SwiftUI on TestFlight internal testing:
+- **APNs push** with **notification action → reply** integrated into the app
+  (no second app), reusing `shouldNotifyIdle` filtering — the main upgrade over
+  ntfy.
 - stop / resume / rm / move / handoff as detail-view actions.
 - "Open in Claude app" deep link for Claude agents (full interactive drive).
-- Optional embedded SSH attach for Codex / power use — only if Phase 2 proves
-  the phone is where you actually want to work, not just triage.
+- Optional embedded SSH attach for Codex / power use.
 
 ### What the MVP deliberately omits
 - Interactive terminal attach (peek + reply covers the phone use case).
 - Public/internet exposure (tailnet only).
-- Multi-user / accounts / the App Store (single-user, TestFlight internal).
+- A native app / paid Apple account (PWA + ntfy is the $0 MVP; native is Phase 3).
 - Re-creating the Claude app's per-agent chat.
 
 ---
@@ -288,8 +319,8 @@ Deliberately skips interactive attach and most lifecycle write ops.
 - **Auth hardening:** if you ever bind beyond the tailnet, the bearer token
   alone is insufficient — add TLS (tailscale serve gives it) and consider
   per-device tokens / revocation.
-- **Apple account:** confirm the $99/yr Developer Program is acceptable; without
-  it, ntfy (Phase 0) is the ceiling for push.
+- **Apple account:** decided not needed for the MVP — the PWA + ntfy stack is
+  $0. The $99/yr Developer Program is a Phase 3 (native) decision only.
 
 ---
 
@@ -302,7 +333,8 @@ awareness across machines and providers**: which of my many agents — local,
 remote, Claude *and* Codex — needs me right now, and let me reply in one tap.
 Build that as a small token-authenticated HTTP layer on the existing daemon
 (the read side already exists via `agentRows()`/`fleetRows()`), reach it only
-over Tailscale, and put a native SwiftUI app on it distributed through
-TestFlight internal testing. MVP = fleet list + agent detail + push + reply.
-Everything else (attach, move, handoff) is a fast-follow once the phone proves
-it's where you triage.
+over Tailscale, and put a **PWA** on it (fleet list + agent detail + reply) with
+**ntfy** for push — a $0 stack with no Apple account. MVP = fleet list + agent
+detail + ntfy push + reply. Go native (TestFlight, $99/yr) only as a Phase 3
+polish step if the PWA proves the phone is where you triage; attach/move/handoff
+are fast-follows either way.

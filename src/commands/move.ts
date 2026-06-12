@@ -50,14 +50,6 @@ export function parseMoveSpec(first: string, second: string | undefined): MoveSp
   return { direction: "push", host: second, name: first };
 }
 
-export function dirtyGitFiles(dir: string): string[] {
-  const isRepo = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--git-dir"]).exitCode === 0;
-  if (!isRepo) return [];
-  const status = Bun.spawnSync(["git", "-C", dir, "status", "--porcelain"]);
-  if (status.exitCode !== 0) return [];
-  return status.stdout.toString().split("\n").filter((l) => l.trim() !== "");
-}
-
 // Where the conversation file must land on the target, given the TARGET dir
 // (claude keys transcripts by a slug of the working directory).
 export function targetTranscriptPath(
@@ -100,7 +92,6 @@ export function importPayload(raw: string): string {
 export interface MoveOptions {
   dir?: string;
   copy: boolean;
-  force: boolean;
   start: boolean;
   // Clone: the source keeps running and nothing is removed — the
   // conversation forks into two independent agents.
@@ -123,6 +114,7 @@ export function migrationBrief(opts: {
       : `[am] You were just MOVED to a different machine: this conversation previously ran on ${opts.from} in ${opts.oldDir}; you are now on ${opts.to} in ${opts.newDir}.`,
     `Your history is intact but the environment is not the one you remember:`,
     `- absolute paths from earlier (under ${opts.oldDir}) likely don't exist here — your working directory is now ${opts.newDir}`,
+    `- the working tree here may differ from the source machine's (uncommitted changes never travel)`,
     `- processes, dev servers, and shell state from before are gone`,
     `- OS, installed tools, and credentials may differ`,
     `Briefly re-verify the repo/file state before continuing your work.`,
@@ -142,15 +134,6 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   const agent = resolveAgent(name);
   if (agent.worktreePath && !opts.dir) {
     throw new Error("worktree agents can't be auto-mapped — pass --dir <plain checkout on the target>");
-  }
-
-  const dirty = dirtyGitFiles(agent.dir);
-  if (dirty.length > 0 && !opts.force) {
-    throw new Error(
-      `uncommitted changes in ${agent.dir} won't travel:\n  ${dirty.slice(0, 8).join("\n  ")}` +
-        (dirty.length > 8 ? `\n  …and ${dirty.length - 8} more` : "") +
-        `\npush/pull them yourself, or re-run with --force`,
-    );
   }
 
   const targetHomeDir = remoteHome(host);

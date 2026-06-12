@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultMoveTarget,
-  dirtyGitFiles,
   importPayload,
   mapHomeDir,
   parseMoveSpec,
@@ -128,20 +127,6 @@ describe("importPayload", () => {
   });
 });
 
-describe("dirtyGitFiles", () => {
-  test("non-repo is clean; dirty repo lists files", () => {
-    const dir = mkdtempSync(join(tmpdir(), "am-git-"));
-    try {
-      expect(dirtyGitFiles(dir)).toEqual([]);
-      Bun.spawnSync(["git", "-C", dir, "init", "-q"]);
-      expect(dirtyGitFiles(dir)).toEqual([]);
-      writeFileSync(join(dir, "f.txt"), "x");
-      expect(dirtyGitFiles(dir).length).toBe(1);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
 
 describe("migrationBrief", () => {
   test("move wording names both machines and dirs", async () => {

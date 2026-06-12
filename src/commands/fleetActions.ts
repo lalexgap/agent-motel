@@ -11,7 +11,7 @@ import { handoffAgent } from "./handoff";
 export function moveHandler(key: string): string | Promise<string> {
   const target = defaultMoveTarget(key, loadConfig().remotes ?? []);
   if ("error" in target) return target.error;
-  return moveAgent(target.first, target.second, { copy: false, force: false, start: true });
+  return moveAgent(target.first, target.second, { copy: false, start: true });
 }
 
 export function handoffHandler(key: string): string | Promise<string> {
