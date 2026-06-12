@@ -32,7 +32,7 @@ export function isGitRepo(dir: string): boolean {
   return git(dir, "rev-parse", "--git-dir").exitCode === 0;
 }
 
-function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
+export function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
   // --git-common-dir resolves through nested worktrees to the main repo, so
   // spawning "from" another agent's worktree still files the new one under
   // the real repo's name.
@@ -95,6 +95,12 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
   const provider = opts.provider ?? "claude";
+  // Fail loudly now rather than spawning a tmux session that dies instantly
+  // ("command not found" with no surviving error) — bit handoffs on machines
+  // without the other provider installed.
+  if (!Bun.which(provider)) {
+    throw new Error(`${provider} is not installed on this machine — install it or pick the other provider (--to)`);
+  }
 
   ensureDirs();
   if (!(await ensureDaemon())) {

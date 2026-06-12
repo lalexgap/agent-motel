@@ -4,6 +4,7 @@ import { deliverNext, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
+import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
@@ -101,8 +102,9 @@ export async function hookCommand(event: string): Promise<void> {
   writeAgent(agent);
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
+  let pane: string[] | null = null;
   if (event === "stop" || event === "session-end") {
-    const pane = capturePane(agent.tmuxSession, { colors: true });
+    pane = capturePane(agent.tmuxSession, { colors: true });
     if (pane && pane.length > 0) writeSnapshot(name, pane);
   }
 
@@ -136,6 +138,10 @@ export async function hookCommand(event: string): Promise<void> {
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
     } else if (
       event === "stop" &&
+      // A waiting agent (scheduled wake-up, background task) hasn't really
+      // finished — don't ping the human about it. Best-effort: the indicator
+      // may not have rendered yet at hook time.
+      !(pane && paneWaitingInfo(pane).waiting) &&
       shouldNotifyIdle({
         config: loadConfig(),
         workedSeconds,

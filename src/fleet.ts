@@ -1,4 +1,5 @@
-import { agentRows, relativeTime, shortenHome, STATUS_ICONS, type AgentRow } from "./commands/ls";
+import { basename } from "node:path";
+import { agentRows, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { loadConfig } from "./config";
 import { sshAm, sshAmAsync, sshRun } from "./remote";
 import type { PickerItem } from "./picker";
@@ -150,23 +151,52 @@ async function refreshPreview(key: string, host: string, agentName: string): Pro
   }
 }
 
+// Sidebar grouping: by host (local first, then each remote) or by project
+// (repoRoot when the agent lives in a worktree — grouping by the literal
+// worktree dir would put every agent alone — else its dir). Toggled with
+// `g`; session-local.
+export type GroupMode = "host" | "dir";
+let groupMode: GroupMode = "host";
+
+export function toggleGroupMode(): GroupMode {
+  groupMode = groupMode === "host" ? "dir" : "host";
+  return groupMode;
+}
+
+export function sectionFor(row: FleetRow, mode: GroupMode): string {
+  // Project = basename, not path: the same repo legitimately lives at
+  // different paths per machine (~ vs /home/u vs a /mnt symlink target), and
+  // any path-string normalization would still split those into separate
+  // sections.
+  if (mode === "dir") return basename(row.repoRoot ?? row.dir);
+  return row.host ?? "local";
+}
+
 // Shared list builder for the classic picker and the hub sidebar: one item
 // per agent across the whole fleet, keyed host:name for remote rows.
 export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
-  const items = rows.map((r) => {
+  // Groups must be contiguous for the picker's section headers; host mode is
+  // naturally ordered (local rows come first), dir mode needs the sort.
+  const sorted = groupMode === "dir" ? [...rows].sort((a, b) => sectionFor(a, "dir").localeCompare(sectionFor(b, "dir"))) : rows;
+  const items = sorted.map((r) => {
     const hostBadge = r.host ? `@${shortHost(r.host)}` : "";
+    // The colored glyph carries the status, so the badge drops the redundant
+    // status word and keeps only host/provider/queue. Queue stands out: a
+    // compact ▸N, yellow when backed up.
+    const queueBadge = r.queued > 0 ? `▸${r.queued}` : "";
     return {
       name: fleetKey(r),
-      section: r.host ?? "local",
+      section: sectionFor(r, groupMode),
       secondary: r.status === "exited",
-      label: `${STATUS_ICONS[r.status]} ${r.name}`,
-      right: [hostBadge, r.provider === "codex" ? "codex" : "", r.status, r.queued > 0 ? `· ${r.queued} queued` : ""]
-        .filter(Boolean)
-        .join(" "),
+      icon: STATUS_ICONS[r.status],
+      iconStyle: STATUS_COLORS[r.status],
+      label: r.name,
+      right: [hostBadge, r.provider === "codex" ? "codex" : "", queueBadge].filter(Boolean).join(" "),
+      rightStyle: r.queued > 0 ? "\x1b[33m" : "\x1b[2m", // yellow when queued, else dim
       search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.host ?? "local"}`,
       meta: [
-        `status   ${r.status}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
+        `status   ${r.status}${r.statusDetail ? ` — ${r.statusDetail}` : ""}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
         `host     ${r.host ?? "local"}`,
         `provider ${r.provider}`,
         `dir      ${shortenHome(r.dir)}`,
@@ -183,8 +213,11 @@ export function fleetPickerItems(): PickerItem[] {
       name: `${host}:`,
       section: host,
       secondary: false,
-      label: `✕ (${shortHost(host)} unreachable)`,
+      icon: "✕",
+      iconStyle: "\x1b[31;2m", // dim red
+      label: `(${shortHost(host)} unreachable)`,
       right: "",
+      rightStyle: "\x1b[2m",
       search: host,
       meta: [`host     ${host}`, `status   unreachable`],
     });

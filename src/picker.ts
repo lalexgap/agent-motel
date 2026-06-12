@@ -1,8 +1,15 @@
 export interface PickerItem {
   name: string;
   label: string;
-  // Right-aligned text at the row's end (status, queue depth).
+  // Leading status glyph, colored (iconStyle) independently of the label so
+  // state reads at a glance. On the highlighted row the inverse bar owns the
+  // colors, so the glyph there renders plain.
+  icon?: string;
+  iconStyle?: string;
+  // Right-aligned text at the row's end (host, provider, queue depth), with an
+  // optional color applied on non-highlighted rows.
   right?: string;
+  rightStyle?: string;
   // Extra text the filter matches against (task, dir) besides the name.
   search?: string;
   // Already-formatted detail lines shown in the sidebar under the list for
@@ -22,10 +29,25 @@ export function visibleItems(items: PickerItem[], filter: string, showAll: boole
     .filter((i) => showAll || filter !== "" || !i.secondary);
 }
 
+// Action results render as a colored banner under the header. A bare string
+// is treated as a success; tag a severity to render it red (error), yellow
+// (warn/confirm), or dim (info/in-progress) instead.
+export type FeedbackLevel = "info" | "ok" | "warn" | "error";
+export interface FeedbackResult {
+  text: string;
+  level: FeedbackLevel;
+}
+export type Feedback = string | FeedbackResult;
+
+export function asFeedback(f: Feedback | null | undefined): FeedbackResult | null {
+  if (f == null) return null;
+  return typeof f === "string" ? { text: f, level: "ok" } : f;
+}
+
 export interface PickerHandlers {
-  // Each returns a feedback message shown in the picker footer.
-  stop?: (name: string) => string;
-  remove?: (name: string) => string;
+  // Each returns a feedback message shown as a banner under the header.
+  stop?: (name: string) => Feedback;
+  remove?: (name: string) => Feedback;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
   // Create a new agent; resolves to its name, which the picker then jumps to
@@ -36,18 +58,23 @@ export interface PickerHandlers {
   defaultDir?: (highlighted: string | null) => string;
   // Persistent mode (am ui sidebar): enter calls select instead of resolving
   // the picker, esc calls quit, and the picker keeps running. Returns
-  // optional footer feedback.
-  select?: (name: string) => string | null;
+  // optional banner feedback.
+  select?: (name: string) => Feedback | null;
   quit?: () => void;
   // Fires when the cursor lands on a different item (persistent mode uses
   // this to make the agent pane follow the scroll). Debouncing is the
   // handler's job.
   highlight?: (name: string) => void;
-  // Slow actions (ssh moves, provider handoffs): the resolved string lands
-  // in the footer when done; rejections surface their message there too.
-  move?: (name: string) => string | Promise<string>;
-  handoff?: (name: string) => string | Promise<string>;
-  clone?: (name: string) => string | Promise<string>;
+  // Slow actions (ssh moves, provider handoffs): the resolved message lands
+  // in the banner when done; rejections surface (as errors) there too.
+  move?: (name: string) => Feedback | Promise<Feedback>;
+  handoff?: (name: string) => Feedback | Promise<Feedback>;
+  clone?: (name: string) => Feedback | Promise<Feedback>;
+  // Toggle the list grouping (host ↔ directory); returns banner feedback.
+  regroup?: () => Feedback;
+  // Relocate an agent to a new directory (r key opens a prefilled prompt).
+  cd?: (name: string, dir: string) => Feedback | Promise<Feedback>;
+  cdPrefill?: (name: string) => string;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -149,8 +176,16 @@ const WRAP_ON = "\x1b[?7h";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
+const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
+const RED = "\x1b[31m";
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · q/esc quit";
+const FB_GLYPH: Record<FeedbackLevel, string> = { info: "", ok: "✓", warn: "⚠", error: "✕" };
+const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YELLOW, error: RED };
+// Errors carry detail (ssh stderr) worth more room than a routine toast.
+const ERROR_FEEDBACK_LINES = 10;
+
+const HELP = "↑/↓/j/k · enter jumps (ctrl-q returns) · f filter · g group · a all · n new · e edit… · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -209,7 +244,36 @@ interface Cell {
   style?: string;
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir";
+// The colored banner shown under the header for an action's result. Control
+// bytes from ssh stderr are stripped, the severity glyph leads the first line,
+// continuations are indented to align under the text. Errors get more lines.
+export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
+  const glyph = FB_GLYPH[fb.level] ? `${FB_GLYPH[fb.level]} ` : "";
+  const clean = fb.text.replace(/\t/g, " ").replace(/[\x00-\x08\x0b-\x1f]/g, "");
+  const maxLines = fb.level === "error" ? ERROR_FEEDBACK_LINES : MAX_FEEDBACK_LINES;
+  const wrapped = wrapText(clean, Math.max(1, width - glyph.length), maxLines);
+  const indent = " ".repeat(glyph.length);
+  return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
+}
+
+type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "cd-dir" | "edit";
+
+export function hasEditActions(handlers: PickerHandlers): boolean {
+  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
+}
+
+// The edit menu's footer line, built from whichever actions are wired.
+export function editMenuHelp(handlers: PickerHandlers): string {
+  const keys = [
+    handlers.move && "m move",
+    handlers.clone && "c clone",
+    handlers.handoff && "h handoff",
+    handlers.cd && "r cd",
+    handlers.stop && "x stop",
+    handlers.remove && "d remove",
+  ].filter(Boolean);
+  return [...keys, "esc back"].join(" · ");
+}
 
 export async function pick(
   load: () => PickerItem[],
@@ -226,12 +290,14 @@ export async function pick(
   // follows a NAME, not an index — otherwise a reload silently moves the
   // cursor (and in persistent mode, the agent pane) to a different agent.
   let cursorName: string | null = items[cursor]?.name ?? null;
-  let feedback: string | null = null;
+  let feedback: FeedbackResult | null = null;
   let confirmRemove: string | null = null;
   let mode: Mode = "list";
   let newName = "";
   let newTask = "";
   let newDir = "";
+  let cdDir = "";
+  let cdTarget: string | null = null;
   let creating = false;
   let lastHighlighted: string | null = null;
 
@@ -247,14 +313,20 @@ export async function pick(
     const sidebarWidth = sidebarWidthFor(cols, showPreview);
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
 
-    const footerLines = creating
-      ? wrapText(`creating "${newName}"…`, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[33m${l}\x1b[0m`)
+    // The active message renders as a colored banner under the header (near
+    // the cursor), not buried in the footer. The footer always shows help.
+    const active: FeedbackResult | null = creating
+      ? { text: `creating "${newName}"…`, level: "info" }
       : confirmRemove
-        ? wrapText(`remove "${confirmRemove}"? d again to confirm`, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[31m${l}\x1b[0m`)
-        : feedback
-          ? wrapText(feedback, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[33m${l}\x1b[0m`)
-          : wrapTokens(handlers.help ?? HELP, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
+        ? { text: `remove "${confirmRemove}"? d again to confirm`, level: "warn" }
+        : feedback;
+    const footerHelp =
+      mode === "edit"
+        ? `edit ${visibleItems(items, filter, showAll)[cursor]?.name ?? ""}: ${editMenuHelp(handlers)}`
+        : (handlers.help ?? HELP);
+    const footerLines = wrapTokens(footerHelp, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
     const bodyRows = Math.max(1, rows - footerLines.length);
+    const bannerBlock: Cell[] = active ? feedbackBanner(active, sidebarWidth) : [];
 
     const matches = filtered();
     const tracked = cursorName ? matches.findIndex((i) => i.name === cursorName) : -1;
@@ -275,6 +347,8 @@ export async function pick(
           ? { text: `task (optional): ${newTask}▌` }
           : mode === "new-dir"
             ? { text: `dir: ${newDir}▌` }
+            : mode === "cd-dir"
+              ? { text: `cd to: ${cdDir}▌` }
             : mode === "filter"
             ? { text: `filter: ${filter}▌` }
             : filter
@@ -311,13 +385,14 @@ export async function pick(
     const headerRows = showSections ? sections.length : 0;
 
     // Window the list around the cursor so long agent lists stay navigable.
-    const listCapacity = Math.max(1, bodyRows - 1 - metaBlock.length - headerRows);
+    // The banner and meta block consume rows just like the header does.
+    const listCapacity = Math.max(1, bodyRows - 1 - bannerBlock.length - metaBlock.length - headerRows);
     let start = 0;
     if (matches.length > listCapacity) {
       start = Math.min(Math.max(0, cursor - Math.floor(listCapacity / 2)), matches.length - listCapacity);
     }
 
-    const side: Cell[] = [header];
+    const side: Cell[] = [header, ...bannerBlock];
     let lastSection: string | null = null;
     matches.slice(start, start + listCapacity).forEach((item, i) => {
       const idx = start + i;
@@ -329,9 +404,20 @@ export async function pick(
       }
       const prefix = idx === cursor ? "❯ " : "  ";
       const right = item.right ?? "";
-      const labelWidth = Math.max(1, sidebarWidth - prefix.length - (right ? right.length + 1 : 0));
-      const text = prefix + clipLine(item.label, labelWidth).padEnd(labelWidth) + (right ? " " + right : "");
-      side.push(idx === cursor ? { text, style: INVERSE } : { text });
+      const icon = item.icon ?? "";
+      const iconWidth = icon ? visibleWidth(icon) + 1 : 0; // glyph + space
+      const labelWidth = Math.max(1, sidebarWidth - prefix.length - iconWidth - (right ? right.length + 1 : 0));
+      const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
+      if (idx === cursor) {
+        // The inverse bar highlights the whole row; keep it free of inner
+        // color/RESETs (a RESET would cut the inverse off mid-line).
+        const text = prefix + (icon ? icon + " " : "") + label + (right ? " " + right : "");
+        side.push({ text, style: INVERSE });
+      } else {
+        const iconSeg = icon ? (item.iconStyle ?? "") + icon + RESET + " " : "";
+        const rightSeg = right ? " " + (item.rightStyle ?? "") + right + RESET : "";
+        side.push({ text: prefix + iconSeg + label + rightSeg });
+      }
     });
     if (matches.length === 0) {
       side.push({
@@ -347,7 +433,10 @@ export async function pick(
     const lines: string[] = [];
     for (let r = 0; r < bodyRows; r++) {
       const cell = side[r] ?? { text: "" };
-      const padded = clipLine(cell.text, sidebarWidth).padEnd(sidebarWidth);
+      // Cells may carry embedded SGR (colored status glyph): clip and pad by
+      // VISIBLE width so escape codes don't throw off the column math.
+      const clipped = visibleWidth(cell.text) > sidebarWidth ? clipAnsi(cell.text, sidebarWidth) : cell.text;
+      const padded = clipped + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(clipped)));
       let line = cell.style ? cell.style + padded + RESET : padded;
       if (showPreview) {
         // Preview lines keep their own colors; RESET stops any unclosed
@@ -403,7 +492,7 @@ export async function pick(
           newName = "";
           newTask = "";
           newDir = "";
-          feedback = handlers.select(created);
+          feedback = asFeedback(handlers.select(created));
           items = load();
           render();
         },
@@ -411,37 +500,37 @@ export async function pick(
           // Back to the name prompt with the input intact so it can be fixed.
           creating = false;
           mode = "new-name";
-          feedback = error.message;
+          feedback = { text: error.message, level: "error" };
           items = load();
           render();
         },
       );
     };
 
-    const runAction = (handler: (name: string) => string) => {
+    const runAction = (handler: (name: string) => Feedback) => {
       const target = filtered()[cursor];
       if (!target) return;
-      feedback = handler(target.name);
+      feedback = asFeedback(handler(target.name));
       items = load();
       if (items.length === 0 && !handlers.create) return finish(null);
     };
 
     // Slow actions (ssh move, handoff): show progress in the footer, resolve
     // into it when done — the picker stays interactive throughout.
-    const runDeferred = (working: string, handler: (name: string) => string | Promise<string>) => {
+    const runDeferred = (working: string, handler: (name: string) => Feedback | Promise<Feedback>) => {
       const target = filtered()[cursor];
       if (!target) return;
-      feedback = `${working} ${target.name}…`;
+      feedback = { text: `${working} ${target.name}…`, level: "info" };
       Promise.resolve()
         .then(() => handler(target.name))
         .then(
           (message) => {
-            feedback = message;
+            feedback = asFeedback(message);
             items = load();
             if (!finished) render();
           },
           (error: Error) => {
-            feedback = error.message;
+            feedback = { text: error.message, level: "error" };
             if (!finished) render();
           },
         );
@@ -455,7 +544,7 @@ export async function pick(
         try {
           handleKey(key);
         } catch (error) {
-          feedback = (error as Error).message;
+          feedback = { text: (error as Error).message, level: "error" };
           render();
         }
       }
@@ -494,6 +583,40 @@ export async function pick(
         return render();
       }
 
+      if (mode === "edit") {
+        const target = filtered()[cursor];
+        const pending = confirmRemove;
+        confirmRemove = null;
+        if (key === "\x1b" || key === "q" || !target) {
+          mode = "list";
+        } else if (key === "m" && handlers.move) {
+          mode = "list";
+          runDeferred("moving", handlers.move);
+        } else if (key === "c" && handlers.clone) {
+          mode = "list";
+          runDeferred("cloning", handlers.clone);
+        } else if (key === "h" && handlers.handoff) {
+          mode = "list";
+          runDeferred("handing off", handlers.handoff);
+        } else if (key === "r" && handlers.cd) {
+          mode = "cd-dir";
+          cdTarget = target.name;
+          cdDir = handlers.cdPrefill?.(target.name) ?? "";
+        } else if (key === "x" && handlers.stop) {
+          mode = "list";
+          runAction(handlers.stop);
+        } else if (key === "d" && handlers.remove) {
+          // twice on the same item to confirm
+          if (pending === target.name) {
+            mode = "list";
+            runAction(handlers.remove);
+          } else {
+            confirmRemove = target.name;
+          }
+        }
+        return render();
+      }
+
       if (mode !== "list") {
         if (creating) return;
         if (key === "\x1b") {
@@ -501,11 +624,13 @@ export async function pick(
           newName = "";
           newTask = "";
           newDir = "";
+          cdDir = "";
+          cdTarget = null;
           feedback = null;
         } else if (key === "\r" || key === "\n") {
           if (mode === "new-name") {
             if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
-              feedback = "name must be alphanumeric with dashes/underscores";
+              feedback = { text: "name must be alphanumeric with dashes/underscores", level: "error" };
             } else {
               feedback = null;
               mode = "new-task";
@@ -513,16 +638,40 @@ export async function pick(
           } else if (mode === "new-task") {
             mode = "new-dir";
             newDir = handlers.defaultDir?.(cursorName) ?? "";
+          } else if (mode === "cd-dir") {
+            const target = cdTarget;
+            const dir = cdDir.trim();
+            mode = "list";
+            cdDir = "";
+            cdTarget = null;
+            if (target && handlers.cd) {
+              feedback = { text: `moving ${target} to ${dir}…`, level: "info" };
+              Promise.resolve()
+                .then(() => handlers.cd!(target, dir))
+                .then(
+                  (message) => {
+                    feedback = asFeedback(message);
+                    items = load();
+                    if (!finished) render();
+                  },
+                  (error: Error) => {
+                    feedback = { text: error.message, level: "error" };
+                    if (!finished) render();
+                  },
+                );
+            }
           } else {
             return submitCreate(); // renders itself
           }
         } else if (key === "\x7f" || key === "\b") {
           if (mode === "new-name") newName = newName.slice(0, -1);
           else if (mode === "new-task") newTask = newTask.slice(0, -1);
+          else if (mode === "cd-dir") cdDir = cdDir.slice(0, -1);
           else newDir = newDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (mode === "new-name") newName += key;
           else if (mode === "new-task") newTask += key;
+          else if (mode === "cd-dir") cdDir += key;
           else newDir += key;
         }
         return render();
@@ -541,7 +690,7 @@ export async function pick(
         const match = filtered()[cursor];
         if (match) {
           if (!handlers.select) return finish(match.name);
-          feedback = handlers.select(match.name);
+          feedback = asFeedback(handlers.select(match.name));
           items = load();
         }
       } else if (key === "f" || key === "/") {
@@ -552,22 +701,19 @@ export async function pick(
         newName = "";
         newTask = "";
         feedback = null;
-      } else if ((key === "\x18" || key === "x") && handlers.stop) {
-        runAction(handlers.stop);
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;
-      } else if (key === "m" && handlers.move) {
-        runDeferred("moving", handlers.move);
-      } else if (key === "h" && handlers.handoff) {
-        runDeferred("handing off", handlers.handoff);
-      } else if (key === "c" && handlers.clone) {
-        runDeferred("cloning", handlers.clone);
-      } else if ((key === "\x04" || key === "d") && handlers.remove) {
-        // twice on the same item to confirm
-        const target = filtered()[cursor];
-        if (target && pendingConfirm === target.name) runAction(handlers.remove);
-        else if (target) confirmRemove = target.name;
+      } else if (key === "g" && handlers.regroup) {
+        feedback = asFeedback(handlers.regroup());
+        items = load();
+      } else if (key === "e" && hasEditActions(handlers)) {
+        // Agent-mutating actions live one level down: e opens the edit menu
+        // for the highlighted agent, keeping the top level to view keys.
+        if (filtered()[cursor]) {
+          mode = "edit";
+          feedback = null;
+        }
       } else if (key === "\x1b[A" || key === "k") moveCursor(-1);
       else if (key === "\x1b[B" || key === "j") moveCursor(1);
       else if (key === "\x7f" || key === "\b") filter = "";

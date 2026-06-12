@@ -1,6 +1,6 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, renameSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   agentProvider,
   agentSessionId,
@@ -17,7 +17,10 @@ import { sendText } from "../tmux";
 import { enterDelayMs } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
-import { worktreesDir } from "../paths";
+import { expandHome, worktreesDir } from "../paths";
+import { hasSession } from "../tmux";
+import { loadConfig } from "../config";
+import { createWorktree, isGitRepo } from "./new";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -484,4 +487,84 @@ export function exportCommand(name: string): void {
 export async function importCommand(): Promise<void> {
   const name = importPayload(await Bun.stdin.text());
   console.log(`imported "${name}"`);
+}
+
+// `am cd <name> <dir>`: same-machine directory change — a degenerate move.
+// Claude sessions are bound to their project dir (transcripts are slugged by
+// it), so this stops the session, re-files the conversation under the new
+// dir's slug, and resumes there.
+export function dirChangeBrief(oldDir: string, newDir: string): string {
+  return [
+    `[am] Your working directory just CHANGED: this conversation previously ran in ${oldDir}; you are now in ${newDir} (same machine).`,
+    `- paths under ${oldDir} from earlier in the conversation are NOT your working directory anymore`,
+    `- re-orient: check where you are and what's here before continuing`,
+  ].join("\n");
+}
+
+export async function cdAgent(
+  prefix: string,
+  dirArg: string,
+  opts: { inPlace: boolean; start: boolean },
+): Promise<string> {
+  const agent = resolveAgent(prefix);
+  const target = resolve(expandHome(dirArg));
+  if (!existsSync(target)) throw new Error(`directory does not exist: ${target}`);
+  const canonicalTarget = realpathSync(target);
+  if (canonicalTarget === agent.dir) throw new Error(`"${agent.name}" is already in ${canonicalTarget}`);
+
+  // Same default as spawning: a git repo target gets a fresh worktree —
+  // agents are guests, not owners.
+  let dir = canonicalTarget;
+  let worktree: { path: string; branch: string; repoRoot: string } | undefined;
+  if (!opts.inPlace && loadConfig().worktreeByDefault && isGitRepo(canonicalTarget)) {
+    const branch = agent.worktreeBranch ?? `am/${agent.name}`;
+    const wt = createWorktree(agent.name, branch, canonicalTarget);
+    dir = realpathSync(wt.path);
+    worktree = { path: dir, branch, repoRoot: wt.repoRoot };
+  }
+
+  const wasLive = hasSession(agent.tmuxSession);
+  if (wasLive) {
+    await settleBeforeMove(agent.name, dir); // heads-up + capped wrap-up window
+    stopAgent(agent);
+  }
+
+  // Re-file the claude conversation under the new dir's slug (codex rollouts
+  // aren't dir-keyed — nothing to move).
+  const sessionId = agentSessionId(agent);
+  const transcript = sourceTranscript(agent);
+  if (agentProvider(agent) === "claude" && transcript && sessionId) {
+    const dest = targetTranscriptPath("claude", homedir(), dir, sessionId, null);
+    Bun.spawnSync(["mkdir", "-p", dirname(dest)]);
+    renameSync(transcript.path, dest);
+  }
+
+  const oldDir = agent.dir;
+  const oldWorktree = agent.worktreePath;
+  agent.dir = dir;
+  agent.worktreePath = worktree?.path;
+  agent.worktreeBranch = worktree?.branch;
+  agent.repoRoot = worktree?.repoRoot;
+  agent.status = "exited";
+  agent.workingSince = undefined;
+  writeAgent(agent);
+  queueAppend(agent.name, dirChangeBrief(oldDir, dir));
+
+  let message = `moved "${agent.name}" to ${dir}`;
+  if (oldWorktree) message += ` (old worktree left at ${oldWorktree})`;
+
+  if (opts.start) {
+    const { reviveAgent } = await import("./resume");
+    await reviveAgent(readAgent(agent.name)!);
+    message += " — running";
+  }
+  return message;
+}
+
+export async function cdCommand(
+  prefix: string,
+  dirArg: string,
+  opts: { inPlace: boolean; start: boolean },
+): Promise<void> {
+  console.log(await cdAgent(prefix, dirArg, opts));
 }

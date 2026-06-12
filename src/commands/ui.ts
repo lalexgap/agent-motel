@@ -2,10 +2,10 @@ import { agentProvider, listAgents, readAgent, recordAttached } from "../state";
 import { attachOrSwitch, hasSession, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
-import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey } from "../fleet";
+import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
-import { cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
-import { pick, type PickerHandlers } from "../picker";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
+import { pick, type Feedback, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
 import { newCommand } from "./new";
@@ -20,7 +20,7 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · m move · c clone · h handoff · x stop · d remove · a all · q/esc detach · ctrl-c quit";
+const HUB_HELP = "↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · f filter · g group · a all · n new · e edit… · q/esc detach · ctrl-c quit";
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -108,10 +108,10 @@ export async function sidebarCommand(): Promise<void> {
   // Point the right pane at an agent (key = name, or host:name for remote).
   // With focus=false (scroll preview) the sidebar keeps focus; enter/→ pass
   // focus=true to move into the session.
-  const showAgent = (key: string, focus: boolean): string | null => {
+  const showAgent = (key: string, focus: boolean): Feedback | null => {
     const { host, name } = splitFleetKey(key);
     const pane = ensureRightPane();
-    if (!pane) return "could not create the agent pane";
+    if (!pane) return { text: "could not create the agent pane", level: "error" };
 
     if (host) {
       if (!name) {
@@ -134,14 +134,14 @@ export async function sidebarCommand(): Promise<void> {
         if (revived.exitCode !== 0) {
           tmux("respawn-pane", "-k", "-t", pane,
             messageCommand(`remote revive failed: ${revived.stderr.trim()}`));
-          return `remote revive failed`;
+          return { text: `remote revive failed: ${revived.stderr.trim()}`, level: "error" };
         }
       }
       if (shown !== key) {
         sshRun(host, `tmux set-option -t '=agentmgr-${name}:' status off`, { timeoutMs: 4000 });
         const attach = `env -u TMUX ssh -t ${shQuote(host)} -- ${shQuote(`tmux attach-session -t '=agentmgr-${name}'`)}`;
         const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
-        if (respawned.exitCode !== 0) return `remote attach failed: ${respawned.stderr.trim()}`;
+        if (respawned.exitCode !== 0) return { text: `remote attach failed: ${respawned.stderr.trim()}`, level: "error" };
         shown = key;
       }
       if (focus) tmux("select-pane", "-t", pane);
@@ -149,7 +149,7 @@ export async function sidebarCommand(): Promise<void> {
     }
 
     const agent = readAgent(name);
-    if (!agent) return focus ? `unknown agent "${name}"` : null;
+    if (!agent) return focus ? { text: `unknown agent "${name}"`, level: "error" } : null;
 
     if (!hasSession(agent.tmuxSession)) {
       shown = null;
@@ -170,7 +170,7 @@ export async function sidebarCommand(): Promise<void> {
           }
         },
       );
-      return `reviving ${name}…`;
+      return { text: `reviving ${name}…`, level: "info" };
     }
 
     if (shown !== key) {
@@ -179,7 +179,7 @@ export async function sidebarCommand(): Promise<void> {
       tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
       const attach = `env -u TMUX tmux attach-session -t ${shQuote(`=${agent.tmuxSession}`)}`;
       const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
-      if (respawned.exitCode !== 0) return `attach failed: ${respawned.stderr.trim()}`;
+      if (respawned.exitCode !== 0) return { text: `attach failed: ${respawned.stderr.trim()}`, level: "error" };
       shown = key;
     }
     if (focus) {
@@ -204,7 +204,8 @@ export async function sidebarCommand(): Promise<void> {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["stop", name]);
-        return result.exitCode === 0 ? `stopped ${name} on ${host}` : `stop failed: ${result.stderr.trim()}`;
+        if (result.exitCode !== 0) return { text: `stop failed: ${result.stderr.trim()}`, level: "error" };
+        return `stopped ${name} on ${host}`;
       }
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
@@ -214,7 +215,8 @@ export async function sidebarCommand(): Promise<void> {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["rm", name]);
-        return result.exitCode === 0 ? `removed ${name} on ${host}` : `rm failed: ${result.stderr.trim()}`;
+        if (result.exitCode !== 0) return { text: `rm failed: ${result.stderr.trim()}`, level: "error" };
+        return `removed ${name} on ${host}`;
       }
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
@@ -234,6 +236,14 @@ export async function sidebarCommand(): Promise<void> {
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
+    regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    cd: cdHandler,
+    cdPrefill: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
+      return readAgent(name)?.dir ?? "";
+    },
+
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },
