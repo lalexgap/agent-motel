@@ -86,8 +86,8 @@ function renderGate() {
     <div class="gate">
       <h2>Connect to am</h2>
       <p>Paste the token from <code>am token</code> on the server.</p>
-      <input class="field" id="tok" type="password" inputmode="text" autocomplete="off"
-        autocapitalize="off" placeholder="bearer token" />
+      <input class="field" id="tok" type="text" inputmode="text" autocomplete="off"
+        autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="paste bearer token" />
       <button class="primary" id="go" style="width:100%">Connect</button>
     </div>`);
   view.appendChild(box);
@@ -298,6 +298,15 @@ document.getElementById("refresh").onclick = () => (route.name === "detail" ? re
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+// URL bootstrap: visiting /?token=… stores the token and strips it from the
+// visible URL — lets you skip the paste field entirely on iOS.
+const urlToken = new URLSearchParams(location.search).get("token");
+if (urlToken) {
+  token = urlToken.trim();
+  localStorage.setItem(TOKEN_KEY, token);
+  history.replaceState({}, "", location.pathname);
 }
 
 go({ name: "list" }); // renders the token gate first when no token is stored
