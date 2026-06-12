@@ -238,9 +238,9 @@ export async function pick(
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
 
     const footerLines = creating
-      ? [`\x1b[33mcreating "${newName}"…\x1b[0m`]
+      ? wrapText(`creating "${newName}"…`, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[33m${l}\x1b[0m`)
       : confirmRemove
-        ? [`\x1b[31mremove "${confirmRemove}"? d again to confirm\x1b[0m`]
+        ? wrapText(`remove "${confirmRemove}"? d again to confirm`, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[31m${l}\x1b[0m`)
         : feedback
           ? wrapText(feedback, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[33m${l}\x1b[0m`)
           : wrapTokens(handlers.help ?? HELP, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
