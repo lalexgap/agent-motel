@@ -243,6 +243,27 @@ outbox`, and are surfaced back to the sender's agent the next time it sends.
 outbox, the laptop's daemon to collect. The two halves are each tested/smoked
 here; the ssh hop between them reuses the same transport as `am move`.
 
+### Known limitation: at-least-once, with a crash window
+
+`am __outbox-take` is *take-then-inject*: the collector atomically removes
+entries from the remote, then injects them locally. If the collector dies in
+that window — after the take returns but before `queueAppend`/`deliverNext` —
+those messages are gone (removed remotely, never delivered locally). The window
+is tiny (a few in-process statements, no awaits between take and queue), so in
+practice this is rare, but it is a real **at-least-once gap, not exactly-once**.
+
+A bounded loss elsewhere too: the daemon doesn't persist a "collected but not
+yet delivered" journal, so a crash also loses anything taken in the same sweep.
+
+**Not built (needs Alex's sign-off).** The fix is an *ack handshake*: have
+`__outbox-take` only *mark* entries in-flight (move to a `taking/` holding area
+with a token) rather than delete them, and have the collector send back
+`__outbox-ack <token…>` once each is safely queued locally; unacked entries
+return to the outbox after a timeout for the next sweep. That makes delivery
+idempotent/at-least-once-with-recovery. It is deliberately **not implemented** —
+it adds a second round-trip and stateful protocol for a crash window measured in
+milliseconds. Revisit only if the loss is observed in practice or Alex asks.
+
 ## Files touched (summary)
 
 | File | Change |
