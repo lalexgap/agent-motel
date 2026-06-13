@@ -247,6 +247,16 @@ export async function sidebarCommand(): Promise<void> {
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },
+    // Focus indicator: is the sidebar pane the active one, or has the user
+    // locked into the agent pane? Read this pane's own pane_active flag.
+    activity: () => {
+      const pane = process.env.TMUX_PANE;
+      if (!pane) return null;
+      const result = tmux("display-message", "-p", "-t", pane, "#{pane_active}");
+      if (result.exitCode !== 0) return null;
+      const active = result.stdout.trim() === "1";
+      return { active, text: active ? "keys → sidebar" : "keys → session · ctrl-q ↩" };
+    },
     help: HUB_HELP,
   };
 

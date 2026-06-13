@@ -75,6 +75,10 @@ export interface PickerHandlers {
   // Relocate an agent to a new directory (r key opens a prefilled prompt).
   cd?: (name: string, dir: string) => Feedback | Promise<Feedback>;
   cdPrefill?: (name: string) => string;
+  // Split-view hub: report whether the sidebar pane currently has input focus,
+  // with a short label for the indicator the picker draws at the top. Polled on
+  // the refresh tick and after a lock-in. null = not a split view (no indicator).
+  activity?: () => { active: boolean; text: string } | null;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -300,6 +304,12 @@ export async function pick(
   let cdTarget: string | null = null;
   let creating = false;
   let lastHighlighted: string | null = null;
+  // Hub focus indicator: which pane is driving the keyboard. Refreshed on the
+  // load tick and right after a lock-in (cheap tmux poll); null off the hub.
+  let activity = handlers.activity?.() ?? null;
+  const refreshActivity = () => {
+    activity = handlers.activity?.() ?? null;
+  };
 
   const out = (s: string) => process.stdout.write(s);
 
@@ -384,15 +394,26 @@ export async function pick(
     const showSections = sections.length > 1;
     const headerRows = showSections ? sections.length : 0;
 
+    // Hub focus indicator (a top row): a calm dim line when the sidebar drives
+    // the keyboard, a loud bar when input is going to the locked-in session.
+    const indicator: Cell | null = activity
+      ? activity.active
+        ? { text: `● ${activity.text}`, style: DIM }
+        : { text: `▶ ${activity.text}`, style: "\x1b[30;43m" } // black on yellow
+      : null;
+
     // Window the list around the cursor so long agent lists stay navigable.
-    // The banner and meta block consume rows just like the header does.
-    const listCapacity = Math.max(1, bodyRows - 1 - bannerBlock.length - metaBlock.length - headerRows);
+    // The indicator, banner and meta block consume rows just like the header.
+    const listCapacity = Math.max(
+      1,
+      bodyRows - 1 - (indicator ? 1 : 0) - bannerBlock.length - metaBlock.length - headerRows,
+    );
     let start = 0;
     if (matches.length > listCapacity) {
       start = Math.min(Math.max(0, cursor - Math.floor(listCapacity / 2)), matches.length - listCapacity);
     }
 
-    const side: Cell[] = [header, ...bannerBlock];
+    const side: Cell[] = indicator ? [indicator, header, ...bannerBlock] : [header, ...bannerBlock];
     let lastSection: string | null = null;
     matches.slice(start, start + listCapacity).forEach((item, i) => {
       const idx = start + i;
@@ -462,6 +483,7 @@ export async function pick(
   // Keep statuses, queue depths, and the preview live while the picker is open.
   const refresh = setInterval(() => {
     items = load();
+    refreshActivity();
     render();
   }, REFRESH_MS);
   const onResize = () => render();
@@ -692,6 +714,8 @@ export async function pick(
           if (!handlers.select) return finish(match.name);
           feedback = asFeedback(handlers.select(match.name));
           items = load();
+          // Focus just moved to the agent pane — reflect it without waiting a tick.
+          refreshActivity();
         }
       } else if (key === "f" || key === "/") {
         mode = "filter";
