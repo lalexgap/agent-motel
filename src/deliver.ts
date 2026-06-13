@@ -13,20 +13,30 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
 }
 
 // Claude/codex render the input box between the last two horizontal
-// separators. If the head of our message is still sitting there after the
+// separators. Fresh sessions show a dim `Try "..."` placeholder, which is
+// not human text.
+const PLACEHOLDER_RE = /^Try "/;
+
+export function inputBoxText(pane: string[]): string {
+  const plain = pane.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  const seps: number[] = [];
+  for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
+  if (seps.length < 2) return "";
+  const text = plain
+    .slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!)
+    .join(" ")
+    .replace(/❯/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return PLACEHOLDER_RE.test(text) ? "" : text;
+}
+
+// If the head of our message is still sitting in the input box after the
 // Enter, the submit got eaten.
 export function looksUnsubmitted(pane: string[], message: string): boolean {
   const head = message.split("\n")[0]!.replace(/\s+/g, " ").trim().slice(0, 24);
   if (head.length < 4) return false;
-  const plain = pane.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
-  const seps: number[] = [];
-  for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
-  if (seps.length < 2) return false;
-  const box = plain
-    .slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!)
-    .join(" ")
-    .replace(/\s+/g, " ");
-  return box.includes(head);
+  return inputBoxText(pane).includes(head);
 }
 
 const SUBMIT_RETRIES = 2;
@@ -42,6 +52,13 @@ export async function deliverNext(name: string): Promise<boolean> {
   if (!agent || !hasSession(agent.tmuxSession)) return false;
   const message = queuePeek(name);
   if (message === null) return false;
+
+  // Someone (usually the human) is mid-composition in the input box: typing
+  // our message now would splice into theirs. Leave it queued — the daemon's
+  // reconcile loop and the next Stop drain retry until the box clears.
+  const before = capturePane(agent.tmuxSession);
+  if (before && inputBoxText(before)) return false;
+
   sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent, message) });
   queuePop(name);
 

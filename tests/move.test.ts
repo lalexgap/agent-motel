@@ -191,3 +191,14 @@ describe("swallowed-Enter detection", () => {
     expect(looksUnsubmitted(submitted, msg)).toBe(false);
   });
 });
+
+describe("inputBoxText (composing guard)", () => {
+  const SEP = "─".repeat(40);
+
+  test("empty box and placeholder read as empty; human text doesn't", async () => {
+    const { inputBoxText } = await import("../src/deliver");
+    expect(inputBoxText([SEP, "❯ ", SEP, " status"])).toBe("");
+    expect(inputBoxText([SEP, '❯ Try "fix lint errors"', SEP, " status"])).toBe("");
+    expect(inputBoxText([SEP, "❯ are we sure", SEP, " status"])).toBe("are we sure");
+  });
+});
