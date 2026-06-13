@@ -1,14 +1,66 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { daemonPidFile, daemonSocket, ensureDirs } from "./paths";
-import { listAgents, setStatus } from "./state";
-import { queueDepth } from "./queue";
+import { listAgents, readAgent, setStatus } from "./state";
+import { queueAppend, queueDepth } from "./queue";
 import { hasSession } from "./tmux";
 import { deliverNext } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
+import { loadConfig } from "./config";
+import { sshAmAsync } from "./remote";
+import { attribute } from "./comms";
+import { collectedSender, type OutboxEntry } from "./outbox";
 
 export const DELIVERY_DELAY_MS = 500;
 const RECONCILE_INTERVAL_MS = 15_000;
+
+// Inject one collected outbox entry into its local target. Attribution +
+// rate limiting happen here (point 3): a cross-machine flood trips the same
+// per-pair guard as a local send. The sender is qualified by host so the
+// recipient sees "[am · from <name>@<host>] …" and can tell it came from afar.
+async function injectCollected(entry: OutboxEntry, host: string): Promise<void> {
+  const target = readAgent(entry.to);
+  if (!target) return; // the name stopped being local since we advertised it
+  const sender = collectedSender(entry.from, entry.fromHost, host);
+  const att = attribute(sender, entry.to, entry.body, "send");
+  if (!att.allowed) return; // cross-machine loop guard tripped
+  queueAppend(entry.to, att.body);
+  if (target.status === "idle" || target.status === "starting") {
+    try {
+      await deliverNext(entry.to);
+    } catch (error) {
+      console.error(`outbox delivery to ${entry.to} failed:`, error);
+    }
+  }
+}
+
+// Sweep each configured remote's outbox for messages addressed to our local
+// agents — the collector half of store-and-forward. `am outbox --take`
+// atomically returns-and-removes them; we inject locally. Never blocks the
+// reconcile loop (ssh is async, errors are swallowed per host).
+let collecting = false;
+async function collectFromRemotes(): Promise<void> {
+  if (collecting) return; // a prior sweep is still running — don't overlap
+  const remotes = loadConfig().remotes ?? [];
+  const localNames = listAgents().map((a) => a.name);
+  if (remotes.length === 0 || localNames.length === 0) return;
+  collecting = true;
+  try {
+    for (const host of remotes) {
+      const res = await sshAmAsync(host, ["outbox", "--take", ...localNames], { timeoutMs: 8000 });
+      if (res.exitCode !== 0) continue; // unreachable, or remote am predates outbox
+      let entries: OutboxEntry[];
+      try {
+        entries = JSON.parse(res.stdout) as OutboxEntry[];
+      } catch {
+        continue; // not JSON — old am, ignore
+      }
+      for (const entry of entries) await injectCollected(entry, host);
+    }
+  } finally {
+    collecting = false;
+  }
+}
 
 export interface DaemonHandle {
   stop(): void;
@@ -69,6 +121,9 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         }
       }
     }
+    // Pull any store-and-forward messages waiting on the remotes for our
+    // local agents. Fire-and-forget — must not stall the reconcile tick.
+    void collectFromRemotes().catch((error) => console.error("outbox collect failed:", error));
   }, RECONCILE_INTERVAL_MS);
 
   return {

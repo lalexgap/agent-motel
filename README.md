@@ -119,10 +119,26 @@ the structure that makes a conversation work:
   Remote handoffs scp the bytes over and forward only the note, reusing the same
   transport as `am move`.
 
+- **Reaching a roaming agent (store-and-forward).** Cross-machine sends work
+  laptop→server directly (the laptop can ssh in). The reverse — server→laptop,
+  when the laptop roams and runs no sshd — has no live transport, so a send to an
+  unreachable target lands in an **outbox** instead of erroring:
+
+  ```sh
+  am send laptop-agent "the nightly finished"   # → queued in outbox for pickup
+  am outbox                                      # inspect what's waiting
+  ```
+
+  The laptop's daemon sweeps each configured remote's outbox every ~15s, pulls
+  anything addressed to its local agents, and delivers it attributed by origin
+  (`[am · from web@server] …`). Entries expire after ~48h (`outboxTtlHours`) and
+  a bounce is surfaced back to the sender — never a silent drop. (Both machines
+  need this version of `am` for the round trip.)
+
 - **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
   `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A
-  chatter with a warning. `am comms <name>` shows the recent traffic the limiter
-  sees.
+  chatter with a warning — at injection time, so a cross-machine loop trips the
+  same guard. `am comms <name>` shows the recent traffic the limiter sees.
 
 ### Phone access (PWA)
 

@@ -1,9 +1,11 @@
-import { resolveAgent } from "../state";
+import { hostname } from "node:os";
+import { listAgents, readAgent, resolveAgent } from "../state";
 import { queueAppend, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
 import { deliverNext, enterDelayMs } from "../deliver";
 import { attribute, resolveSender } from "../comms";
 import { loadConfig } from "../config";
+import { outboxAppend, takeBouncesFrom } from "../outbox";
 
 function requireLiveSession(prefix: string) {
   const agent = resolveAgent(prefix);
@@ -11,6 +13,33 @@ function requireLiveSession(prefix: string) {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
   }
   return agent;
+}
+
+// Like resolveAgent, but a no-match returns null (the caller stores it in the
+// outbox) while an ambiguous prefix still errors.
+function localMatch(prefix: string): string | null {
+  const names = listAgents().map((a) => a.name);
+  if (names.includes(prefix)) return prefix;
+  const matches = names.filter((n) => n.startsWith(prefix));
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) throw new Error(`"${prefix}" is ambiguous: ${matches.join(", ")}`);
+  return null;
+}
+
+// No local agent and (the fleet forward already declined) no reachable remote:
+// queue for store-and-forward instead of erroring. A collector that owns this
+// name sweeps it out. Surfaces any of this sender's messages that expired
+// undelivered, so a bounce is never silent.
+function outboxFallback(prefix: string, message: string, opts: { from?: string }): void {
+  const from = resolveSender(opts.from);
+  const to = prefix.includes(":") ? prefix.slice(prefix.indexOf(":") + 1) : prefix;
+  outboxAppend({ to, from, fromHost: hostname(), body: message });
+  console.log(`queued in outbox for "${to}" — delivered when a collector picks it up`);
+  for (const b of from ? takeBouncesFrom(from) : []) {
+    console.error(
+      `note: your earlier message to "${b.to}" expired undelivered (queued ${b.queuedAt}, never collected)`,
+    );
+  }
 }
 
 // Drop notice when a send trips the per-pair rate limiter — surfaced so a
@@ -28,7 +57,12 @@ export async function sendCommand(
   message: string,
   opts: { now: boolean; from?: string },
 ): Promise<void> {
-  const agent = requireLiveSession(prefix);
+  const match = localMatch(prefix);
+  if (!match) return outboxFallback(prefix, message, opts);
+  const agent = readAgent(match)!;
+  if (!hasSession(agent.tmuxSession)) {
+    throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
+  }
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, opts.now ? "now" : "send");
   if (!att.allowed) return rateLimited(from!, agent.name);

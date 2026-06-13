@@ -44,6 +44,9 @@ export interface Config {
   // so the recipient can address a reply back. Unset → bare name + global
   // fleet resolution (fine as long as agent names are unique across the fleet).
   hostAlias?: string;
+  // How long an outbox message (a send to an unreachable target, queued for a
+  // collector to pick up) stays valid before it expires undelivered.
+  outboxTtlHours: number;
 }
 
 const DEFAULTS: Config = {
@@ -55,6 +58,7 @@ const DEFAULTS: Config = {
   worktreeByDefault: true,
   commsMaxPerWindow: 5,
   commsWindowSeconds: 60,
+  outboxTtlHours: 48,
 };
 
 export function loadConfig(): Config {

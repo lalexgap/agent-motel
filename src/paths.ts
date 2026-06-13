@@ -53,6 +53,23 @@ export function inboxDir(name: string): string {
   return join(baseDir(), "inbox", name);
 }
 
+// Store-and-forward for sends whose target can't be reached from here (the
+// reverse direction: a roaming laptop unreachable from the server). One JSONL
+// per target name; a collector with that name local sweeps and removes them.
+export function outboxDir(): string {
+  return join(baseDir(), "outbox");
+}
+
+export function outboxFile(to: string): string {
+  return join(outboxDir(), `${to.replace(/[^a-zA-Z0-9_-]/g, "_")}.jsonl`);
+}
+
+// Expired outbox entries land here instead of vanishing, so expiry stays
+// observable (am outbox) and can be surfaced back to the sender.
+export function outboxBouncesFile(): string {
+  return join(baseDir(), "outbox-bounces.jsonl");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }

@@ -8,6 +8,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { commsCommand } from "./commands/comms";
+import { outboxCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
@@ -67,6 +68,8 @@ usage:
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
+  am outbox                   messages queued here for an unreachable target
+                              (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
   am transcript <name> [--full] [--out file]
                               render the agent's conversation as markdown
@@ -379,6 +382,9 @@ async function main(): Promise<void> {
       break;
     case "comms":
       commsCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "outbox":
+      outboxCommand(args.positional, { take: !!args.flags.take });
       break;
     case "queue":
     case "q":

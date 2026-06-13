@@ -208,6 +208,37 @@ shippable.
 - Config knobs surfaced in docs/README.
 - Any cross-host nuances that fall out of review.
 
+## Remote → local store-and-forward (the outbox relay)
+
+Cross-fleet sends only work in one direction out of the box: a laptop with the
+server in `config.remotes` can ssh in and deliver, but the reverse — server →
+laptop — has no transport (the laptop roams, sleeps, runs no sshd). Rather than
+reverse-ssh or a tunnel, the relay is **store-and-forward**, pulled by the side
+that *can* reach the other.
+
+**Sender side (e.g. the server).** When a send's target resolves to no local
+agent and no reachable configured remote, `am send` doesn't error — it appends
+to an **outbox** (`~/.agent-manager/outbox/<to>.jsonl`) with `{to, from, fromHost,
+body, queuedAt, ttlMs}` (TTL ~48h, `config.outboxTtlHours`) and prints "queued in
+outbox for pickup". `am outbox` inspects it. The body is stored **raw** —
+attribution is applied later, by the collector.
+
+**Collector side (the laptop, which has remotes configured).** The daemon's
+15-second reconcile loop sweeps each remote with `am outbox --take <local
+names…>` over ssh (`sshAmAsync`, non-blocking) — an atomic return-and-remove of
+entries addressed to names this machine owns. Each is injected through the
+normal `attribute()` path, the sender **qualified by host** so the recipient
+sees `[am · from <name>@<host>] …`, then delivered on idle (`deliverNext`).
+
+**Safety.** Attribution and the per-pair rate limiter run at **injection** time,
+so a cross-machine report loop trips the same guard as a local one. TTL is never
+a silent drop: expired entries move to a bounces log, stay visible in `am
+outbox`, and are surfaced back to the sender's agent the next time it sends.
+
+**Both machines need the code** for an end-to-end run: the server to write the
+outbox, the laptop's daemon to collect. The two halves are each tested/smoked
+here; the ssh hop between them reuses the same transport as `am move`.
+
 ## Files touched (summary)
 
 | File | Change |
@@ -216,6 +247,10 @@ shippable.
 | `src/commands/send.ts` | attribution + rate limit |
 | `src/commands/report.ts` *(new)* | `am report` |
 | `src/commands/comms.ts` *(new)* | `am comms` audit view |
+| `src/outbox.ts` *(new)* | store-and-forward ledger (append/take/expiry/bounces) |
+| `src/commands/outbox.ts` *(new)* | `am outbox` (inspect + `--take` pickup) |
+| `src/commands/send.ts` | outbox fallback for unreachable targets |
+| `src/daemon.ts` | reconcile-loop collector that sweeps remotes |
 | `src/commands/new.ts` | `spawnedBy`, `--report-to`/`--report`, brief line |
 | `src/commands/hook.ts` | Stop-hook backstop report |
 | `src/state.ts` | `reportTo`, `spawnedBy` |
