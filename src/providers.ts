@@ -13,7 +13,7 @@ export function agentSystemPrompt(name: string, opts: { reportTo?: string } = {}
 
 When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI via Bash — not your built-in Task/subagent tool. Reach for the Task tool only for a quick scoped lookup whose result needn't outlive this turn; whenever you'd delegate real work, spawn a real am agent so it's visible, attachable, and steerable:
 - am new <name> [-m "task"] [--dir <path> | --worktree <branch>] [--codex]   spawn-and-leave-running: fire-and-forget, you'll check on or message it later (names are global, pick a unique one)
-- am run <name> -m "task" [--dir <path> | --worktree <branch>] [--codex] [--rm]   spawn-wait-collect: spawns a real agent, BLOCKS until it finishes its turn, then prints its final message to stdout. This is the am-visible replacement for the Task tool when you need a result back — for fan-out, run one "am run" per item (background several with & then wait, or run them in sequence). The agent stays in am ls unless you pass --rm. Exits non-zero if it blocks on input or times out (--timeout <secs>, default 600).
+- am run <name> -m "task" [--dir <path> | --worktree <branch>] [--codex] [--rm]   spawn-wait-collect: spawns a real agent, BLOCKS until it finishes its turn, then prints its final message to stdout. This is the am-visible replacement for the Task tool when you need a result back — for fan-out, run one "am run" per item (background several with & then wait, or run them in sequence). The agent stays in am ls unless you pass --rm. Exits non-zero if it blocks on input or times out (--timeout <secs>, default 600). NOTE: the built-in Workflow tool is disabled for you on purpose — its fan-out spawns subagents am can't see; to parallelize, run several "am run" agents instead.
 - am send <name> "msg"          queue a message, delivered when that agent goes idle
   (for a message with backticks/quotes/newlines, pipe it instead to avoid shell
    mangling: printf '%s' "\$msg" | am send <name> -)
@@ -121,7 +121,15 @@ export interface LaunchPlan {
 function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): LaunchPlan {
   const remoteArgs = remoteControlArgs(opts.remote);
   const command = [
+    // Disable the multi-agent Workflow tool: its fan-out spawns in-process
+    // subagents that are invisible to am (no own session, no state file),
+    // producing a confusing mix of am agents and headless "claude agents".
+    // Managed agents fan out with `am run` instead, so every agent is a
+    // first-class, visible am citizen. Kept BEFORE the next flag so the
+    // variadic <tools...> can't swallow a trailing positional (the prompt).
+    // The Task/Agent tool stays available for quick in-turn lookups.
     "claude",
+    "--disallowedTools", "Workflow",
     "--settings", writeHookSettings(),
     "--append-system-prompt", agentSystemPrompt(name, { reportTo: opts.reportTo }),
     ...conversation,

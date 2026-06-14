@@ -52,6 +52,22 @@ describe("buildLaunchCommand", () => {
     expect(plan.deferredMessage).toBeUndefined();
   });
 
+  test("claude disables the Workflow tool without swallowing the prompt", () => {
+    const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: false });
+    const idx = plan.command.indexOf("--disallowedTools");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(plan.command[idx + 1]).toBe("Workflow");
+    // The variadic <tools...> must be followed by a flag, never the message
+    // positional — otherwise the prompt becomes a second "tool" and is lost.
+    expect(plan.command[idx + 2]!.startsWith("--")).toBe(true);
+    expect(plan.command.at(-1)).toBe("do the thing");
+  });
+
+  test("codex gets no --disallowedTools (it has no Workflow tool)", () => {
+    const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", remote: false });
+    expect(plan.command).not.toContain("--disallowedTools");
+  });
+
   test("claude with remote control defers the message and puts the flag last", () => {
     const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: true });
     // --remote-control swallows a trailing positional, so the message must
