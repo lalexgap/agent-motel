@@ -3,6 +3,7 @@ import { agentProvider, listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
 import { pick, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
+import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
@@ -55,6 +56,11 @@ usage:
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens the provider's session picker)
+  am run <name> -m msg [--dir path] [--worktree b] [--codex]
+                       [--timeout secs] [--rm] [--json]
+                              spawn a real agent, wait for its turn, print its
+                              final message (for fan-out: the agent stays in
+                              am ls unless --rm; exit 1 if blocked/timed out)
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
@@ -111,7 +117,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -350,6 +356,21 @@ async function main(): Promise<void> {
         report: !!args.flags.report,
       });
       break;
+    case "run": {
+      const runName = requirePositional(args, 0, "agent name");
+      const runMessage = (args.flags.m ?? args.flags.message) as string | undefined;
+      if (!runMessage) throw new Error("am run requires a task: -m \"<task>\"");
+      await runCommand(runName, {
+        message: runMessage,
+        dir: args.flags.dir as string | undefined,
+        worktree: args.flags.worktree as string | undefined,
+        provider: args.flags.codex ? "codex" : undefined,
+        timeoutSec: args.flags.timeout ? Number(args.flags.timeout) : undefined,
+        rm: !!args.flags.rm,
+        json: !!args.flags.json,
+      });
+      break;
+    }
     case "resume":
       await resumeCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
