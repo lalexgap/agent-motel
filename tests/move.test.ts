@@ -144,6 +144,24 @@ describe("migrationBrief", () => {
     expect(brief).toContain("CLONE");
     expect(brief).toContain("original keeps running");
   });
+
+  test("re-anchors on the stored task when present", async () => {
+    const { migrationBrief } = await import("../src/commands/move");
+    const brief = migrationBrief({
+      from: "laptop", to: "gapserver", oldDir: "/a", newDir: "/b", clone: false,
+      task: "harden the am move feature",
+    });
+    expect(brief).toContain("assignment is unchanged");
+    expect(brief).toContain("harden the am move feature");
+  });
+
+  test("omits the task line when no task is stored", async () => {
+    const { migrationBrief } = await import("../src/commands/move");
+    const brief = migrationBrief({ from: "laptop", to: "gapserver", oldDir: "/a", newDir: "/b", clone: false });
+    expect(brief).not.toContain("assignment is unchanged");
+    const blank = migrationBrief({ from: "laptop", to: "gapserver", oldDir: "/a", newDir: "/b", clone: false, task: "   " });
+    expect(blank).not.toContain("assignment is unchanged");
+  });
 });
 
 describe("premoveNotice", () => {

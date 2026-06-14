@@ -114,11 +114,22 @@ export function migrationBrief(opts: {
   newDir: string;
   clone: boolean;
   branchNote?: string;
+  task?: string;
 }): string {
   return [
     opts.clone
       ? `[am] You are a CLONE of an agent on ${opts.from} — the original keeps running there in ${opts.oldDir}; you are an independent copy on ${opts.to} in ${opts.newDir}. Work here may diverge from the original's.`
       : `[am] You were just MOVED to a different machine: this conversation previously ran on ${opts.from} in ${opts.oldDir}; you are now on ${opts.to} in ${opts.newDir}.`,
+    // Re-anchor on the durable task. A long conversation's in-context window
+    // can truncate away the founding instruction while keeping recent
+    // move-handshake turns — leaving the agent unsure why it exists even
+    // though the full transcript is still on disk. This restates the task
+    // from am's own metadata, which never truncates.
+    ...(opts.task?.trim()
+      ? [
+          `Your assignment is unchanged by the move — if your in-context memory of it has gone thin, re-anchor on this (the full transcript is on disk if you need more): ${opts.task.trim()}`,
+        ]
+      : []),
     `Your history is intact but the environment is not the one you remember:`,
     `- absolute paths from earlier (under ${opts.oldDir}) likely don't exist here — your working directory is now ${opts.newDir}`,
     `- the working tree here may differ from the source machine's (uncommitted changes never travel)`,
@@ -283,6 +294,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         newDir: canonicalDir,
         clone: !!opts.clone,
         branchNote,
+        task: agent.task,
       }),
       ...queueList(agent.name).map((m) => m.message),
     ],
@@ -412,6 +424,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
           newDir: canonicalDir,
           clone: !!opts.clone,
           branchNote,
+          task: remote.state.task,
         }),
         ...remote.queue,
       ],
