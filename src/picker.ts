@@ -740,6 +740,12 @@ export async function pick(
         }
       } else if (key === "\x1b[A" || key === "k") moveCursor(-1);
       else if (key === "\x1b[B" || key === "j") moveCursor(1);
+      // PageUp/PageDown: over the hub the sidebar doesn't run mouse mode, so
+      // the outer tmux forwards each wheel notch into this pane as a bare
+      // PageUp/Down. Move one row per notch — same as the SGR-mouse path
+      // above — so wheel-scrolling the sidebar tracks like a list scroll.
+      else if (key === "\x1b[5~") moveCursor(-1);
+      else if (key === "\x1b[6~") moveCursor(1);
       else if (key === "\x7f" || key === "\b") filter = "";
       render();
     };

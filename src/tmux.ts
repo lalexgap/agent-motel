@@ -45,6 +45,43 @@ export function killSession(session: string): void {
   tmux("kill-session", "-t", `=${session}`);
 }
 
+// The agentmgr scroll bindings, as tmux command argv (sans the leading
+// "tmux"). Exported so the local setup (configureAgentSession) and the hub's
+// remote ssh assertion (showAgent) stay in lockstep — they drifted once and
+// the remote silently kept the wrong behavior.
+//
+// Why this shape: agent panes are fullscreen TUIs (claude/codex) in the
+// ALTERNATE screen with NO tmux scrollback (history_size=0) and their own
+// mouse mode, so tmux copy-mode has nothing to show. Route the scroll to the
+// APP, per the tmux maintainer's tiered idiom:
+//   • mouse_any_flag — the app wants mouse (every claude/codex TUI; also the
+//     local nested attach): forward the wheel verbatim with `send -M`.
+//   • alternate_on (no mouse) — a fullscreen app reached over ssh, where the
+//     wheel can't be re-encoded: send it PageUp/Down, which claude honors.
+//   • else — a plain shell pane (normal buffer, real scrollback): copy-mode
+//     (-e exits at the bottom, back to live).
+// PPage/NPage are bound too: the hub forwards each wheel notch into a remote
+// pane as a bare PageUp/Down (mouse mode is lost over the ssh relay), so those
+// keys must reach the same logic.
+export const SCROLL_BINDINGS: string[][] = [
+  ["bind-key", "-T", "agentmgr", "WheelUpPane",
+    "if-shell", "-F", "-t=", "#{mouse_any_flag}",
+    "send-keys -M -t=",
+    "if-shell -F -t= '#{alternate_on}' 'send-keys -t= PPage' 'copy-mode -e'"],
+  ["bind-key", "-T", "agentmgr", "WheelDownPane",
+    "if-shell", "-F", "-t=", "#{mouse_any_flag}",
+    "send-keys -M -t=",
+    "if-shell -F -t= '#{alternate_on}' 'send-keys -t= NPage' 'send-keys -X page-down'"],
+  ["bind-key", "-T", "agentmgr", "PPage",
+    "if-shell", "-F", "-t=", "#{alternate_on}",
+    "send-keys -t= PPage",
+    "copy-mode -eu"],
+  ["bind-key", "-T", "agentmgr", "NPage",
+    "if-shell", "-F", "-t=", "#{alternate_on}",
+    "send-keys -t= NPage",
+    "send-keys -X page-down"],
+];
+
 // Per-session setup for agent sessions: ctrl-q detaches (the binding lives in
 // a custom key table so other tmux sessions keep their root bindings), and
 // the terminal tab/window title shows the agent's name while attached.
@@ -56,14 +93,12 @@ export function configureAgentSession(session: string): void {
   tmux("set-option", "-t", `=${session}:`, "set-titles", "on");
   tmux("set-option", "-t", `=${session}:`, "set-titles-string", session.slice(SESSION_PREFIX.length));
 
-  // Wheel-up scrolls back through the session's scrollback; wheeling back to
-  // the bottom returns to live (-e). Mouse mode is needed for tmux to see
-  // wheel events at all, but ONLY the wheel is bound — no drag/click
-  // interception, no auto-copy. Copying is terminal-native: Shift-drag
-  // (Option in iTerm2/Terminal.app), then ⌘C.
+  // Mouse mode lets tmux see wheel events at all; only the wheel/page keys are
+  // bound (see SCROLL_BINDINGS) — no drag/click interception, no auto-copy.
+  // Copying is terminal-native: Shift-drag (Option in iTerm2/Terminal.app),
+  // then ⌘C.
   tmux("set-option", "-t", `=${session}:`, "mouse", "on");
-  tmux("bind-key", "-T", "agentmgr", "WheelUpPane", "copy-mode", "-e");
-  tmux("bind-key", "-T", "agentmgr", "PPage", "copy-mode", "-eu");
+  for (const binding of SCROLL_BINDINGS) tmux(...binding);
 
   // Plain click on a URL opens it; any other click is forwarded to the app
   // untouched. Only the pane id and click coordinates cross the shell

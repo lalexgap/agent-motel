@@ -1,5 +1,5 @@
 import { agentProvider, listAgents, readAgent, recordAttached } from "../state";
-import { attachOrSwitch, hasSession, shQuote, tmux } from "../tmux";
+import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
@@ -183,13 +183,16 @@ export async function sidebarCommand(): Promise<void> {
       if (shown !== key) {
         tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name}@${shortHost(host)}`);
         // Prep the remote session for the nested attach. Besides hiding its
-        // status bar, assert the scrollback bindings ON THE REMOTE: the hub
-        // forwards the wheel as a bare PageUp (a remote pane's mouse mode
-        // doesn't survive the ssh relay, so `send -M` is a no-op), and that
-        // PageUp only scrolls if the remote tmux intercepts it into copy-mode.
-        // A session created by an older `am`, or one moved here without a
-        // re-configure, may lack that binding — so we set it from this side
-        // rather than trust the remote's build. Mirrors configureAgentSession.
+        // status bar, assert the scroll bindings ON THE REMOTE: the hub
+        // forwards each wheel notch as a bare PageUp/Down (a remote pane's
+        // mouse mode doesn't survive the ssh relay, so `send -M` is a no-op),
+        // and the remote agent is a fullscreen TUI with no tmux scrollback —
+        // so those keys have to be forwarded to the APP, not eaten by an empty
+        // copy-mode. A session created by an older `am`, or one moved here
+        // without a re-configure, may have the wrong binding — so we set it
+        // from this side rather than trust the remote's build. Uses the same
+        // SCROLL_BINDINGS as configureAgentSession (shQuoted so the remote
+        // shell hands tmux back the exact argv).
         const remoteTarget = `'=agentmgr-${name}:'`;
         sshRun(
           host,
@@ -197,8 +200,7 @@ export async function sidebarCommand(): Promise<void> {
             `tmux set-option -t ${remoteTarget} status off`,
             `tmux set-option -t ${remoteTarget} key-table agentmgr`,
             `tmux set-option -t ${remoteTarget} mouse on`,
-            `tmux bind-key -T agentmgr WheelUpPane copy-mode -e`,
-            `tmux bind-key -T agentmgr PPage copy-mode -eu`,
+            ...SCROLL_BINDINGS.map((binding) => ["tmux", ...binding].map(shQuote).join(" ")),
           ].join("; "),
           { timeoutMs: 4000 },
         );
