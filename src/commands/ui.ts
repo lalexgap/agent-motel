@@ -302,6 +302,10 @@ export async function sidebarCommand(): Promise<void> {
       const active = result.stdout.trim() === "1";
       return { active, text: active ? "keys → sidebar" : "keys → session · ctrl-q ↩" };
     },
+    // Re-assert the hub's key-table on every refresh tick so a long-lived,
+    // continuously-attached sidebar picks up binding changes (e.g. the remote
+    // wheel→PageUp scroll fix) without needing a fresh `am ui` attach.
+    onTick: applyHubBindings,
     help: HUB_HELP,
   };
 

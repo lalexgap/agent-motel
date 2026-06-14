@@ -79,6 +79,11 @@ export interface PickerHandlers {
   // with a short label for the indicator the picker draws at the top. Polled on
   // the refresh tick and after a lock-in. null = not a split view (no indicator).
   activity?: () => { active: boolean; text: string } | null;
+  // Fires on every refresh tick (persistent mode). The hub uses it to
+  // re-assert its server-global key-table bindings so a long-lived,
+  // continuously-attached sidebar self-heals after an `am` update — without
+  // it, binding changes only land on a fresh `am ui` attach.
+  onTick?: () => void;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -484,6 +489,7 @@ export async function pick(
   const refresh = setInterval(() => {
     items = load();
     refreshActivity();
+    handlers.onTick?.();
     render();
   }, REFRESH_MS);
   const onResize = () => render();
