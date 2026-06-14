@@ -1,10 +1,33 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   claudeProjectSlug,
+  claudeProjectSlugResolved,
   parseClaudeTranscript,
   parseCodexTranscript,
   renderTranscript,
 } from "../src/transcript";
+
+describe("claudeProjectSlugResolved", () => {
+  test("resolves a symlinked dir to its real target's slug (matches what claude wrote)", () => {
+    const root = mkdtempSync(join(tmpdir(), "am-slug-"));
+    const real = join(root, "real-checkout");
+    mkdirSync(real);
+    const link = join(root, "link-checkout");
+    symlinkSync(real, link);
+    // A logical (symlink) dir and its real target must produce the SAME slug,
+    // since claude keys the transcript by the resolved path.
+    expect(claudeProjectSlugResolved(link)).toBe(claudeProjectSlug(real));
+    expect(claudeProjectSlugResolved(link)).not.toBe(claudeProjectSlug(link));
+  });
+
+  test("falls back to the logical path when the dir is absent on this machine", () => {
+    const missing = "/mnt/nonexistent-on-this-host/code/x";
+    expect(claudeProjectSlugResolved(missing)).toBe(claudeProjectSlug(missing));
+  });
+});
 
 // Shapes mirror real session files (see ~/.claude/projects/*/<id>.jsonl and
 // ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl).

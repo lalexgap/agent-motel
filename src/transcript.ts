@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
@@ -198,9 +198,27 @@ export function locateTranscript(agent: AgentState): string {
     if (file) return file;
     throw new Error(`no codex rollout found for session ${sessionId} under ${codexHome()}/sessions`);
   }
-  const file = join(homedir(), ".claude", "projects", claudeProjectSlug(agent.dir), `${sessionId}.jsonl`);
+  // Claude keys its transcript by the realpath of the cwd (symlinks resolved),
+  // while am stores the LOGICAL dir so it stays portable across machines.
+  // Resolve here so the slug matches what claude actually wrote; fall back to
+  // the stored path if the dir isn't present on this machine.
+  const file = join(homedir(), ".claude", "projects", claudeProjectSlugResolved(agent.dir), `${sessionId}.jsonl`);
   if (existsSync(file)) return file;
   throw new Error(`no claude session file at ${file}`);
+}
+
+// Slug for claude's transcript directory. Claude keys the project by the
+// realpath of the cwd (symlinks resolved), while am stores the LOGICAL dir so
+// the record stays portable across machines — so resolve here. Falls back to
+// the stored path when the dir isn't present on this machine.
+export function claudeProjectSlugResolved(dir: string): string {
+  let resolved = dir;
+  try {
+    resolved = realpathSync(dir);
+  } catch {
+    // dir absent on this machine — best-effort with the logical path
+  }
+  return claudeProjectSlug(resolved);
 }
 
 // Rollouts live at sessions/YYYY/MM/DD/rollout-<ts>-<session-id>.jsonl.

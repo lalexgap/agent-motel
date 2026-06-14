@@ -197,7 +197,11 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   const agent = resolveAgent(name);
 
   const targetHomeDir = await remoteHome(host);
-  let canonicalDir: string;
+  // storedDir is the LOGICAL dir saved in state (portable across machines);
+  // transcriptDir is its symlink-resolved form, used only to place the claude
+  // transcript where claude (which realpaths the cwd) will look for it.
+  let storedDir: string;
+  let transcriptDir: string;
   let branchNote: string | undefined;
   let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
 
@@ -236,9 +240,11 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     if (added.exitCode !== 0) {
       throw new Error(`could not create worktree on ${host}: ${added.stderr.trim()}`);
     }
-    canonicalDir =
+    // Worktrees live under ~/.agent-manager (never symlinked), so logical and
+    // resolved coincide.
+    storedDir = transcriptDir =
       (await sshRunAsync(host, `realpath ${shq(wtPath)}`, { timeoutMs: 8000 })).stdout.trim() || wtPath;
-    targetWorktree = { path: canonicalDir, branch, repoRoot: canonicalRepo };
+    targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
   } else {
     const targetDir = opts.dir ?? mapHomeDir(agent.dir, homedir(), targetHomeDir);
     if (!targetDir) {
@@ -247,10 +253,12 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     if ((await sshRunAsync(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 })).exitCode !== 0) {
       throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
     }
-    // Canonicalize on the TARGET: claude resolves symlinks when keying
-    // transcripts by project dir (~/code/x → /mnt/.../x), so the slug and the
-    // stored dir must use the real path or resume finds no conversation.
-    canonicalDir =
+    // Store the LOGICAL dir so the record stays portable; claude keys
+    // transcripts by the realpath (~/code/x → /mnt/.../x), so resolve only for
+    // the transcript path below. Baking the resolved path into state.dir made
+    // a machine-specific /mnt/... path that couldn't be remapped on pull-home.
+    storedDir = targetDir;
+    transcriptDir =
       (await sshRunAsync(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
   }
 
@@ -265,7 +273,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   let remoteTranscriptPath: string | undefined;
   if (transcript && sessionId) {
     const target = targetTranscriptPath(
-      agentProvider(agent), targetHomeDir, canonicalDir, sessionId, transcript.codexRelative,
+      agentProvider(agent), targetHomeDir, transcriptDir, sessionId, transcript.codexRelative,
     );
     if ((await sshRunAsync(host, `mkdir -p ${shq(dirname(target))}`, { timeoutMs: 8000 })).exitCode !== 0) {
       throw new Error(`could not create transcript dir on ${host}`);
@@ -278,7 +286,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   const payload: MovePayload = {
     state: {
       ...agent,
-      dir: canonicalDir,
+      dir: storedDir,
       status: "exited",
       workingSince: undefined,
       transcriptPath: remoteTranscriptPath,
@@ -291,7 +299,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         from: hostname(),
         to: host,
         oldDir: agent.dir,
-        newDir: canonicalDir,
+        newDir: storedDir,
         clone: !!opts.clone,
         branchNote,
         task: agent.task,
@@ -306,8 +314,8 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
 
   if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
   let message = opts.clone
-    ? `cloned "${agent.name}" → ${host}:${canonicalDir} (original still here)`
-    : `moved "${agent.name}" → ${host}:${canonicalDir}${opts.copy ? " (local copy kept)" : ""}`;
+    ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
+    : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
 
   if (opts.start) {
     const resumed = await sshAmAsync(host, ["resume", agent.name], { timeoutMs: 30000 });
@@ -333,7 +341,8 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     transcript: { path: string; codexRelative: string | null } | null;
   };
 
-  let canonicalDir: string;
+  let storedDir: string;
+  let transcriptDir: string;
   let branchNote: string | undefined;
   let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
 
@@ -373,8 +382,8 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
         : ["worktree", "add", "-b", branch, wtPath];
     const added = await runAsync(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
     if (added.exitCode !== 0) throw new Error(`could not create local worktree: ${added.stderr.trim()}`);
-    canonicalDir = realpathSync(wtPath);
-    targetWorktree = { path: canonicalDir, branch, repoRoot: canonicalRepo };
+    storedDir = transcriptDir = realpathSync(wtPath);
+    targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
   } else {
     const targetDir = opts.dir ?? mapHomeDir(remote.state.dir, remote.home, homedir());
     if (!targetDir) {
@@ -383,9 +392,10 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     if (!existsSync(targetDir)) {
       throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
     }
-    // Same symlink hazard as push, local side: claude keys transcripts by the
-    // resolved path.
-    canonicalDir = realpathSync(targetDir);
+    // Store the LOGICAL dir (portable); resolve only for the transcript path,
+    // since claude keys transcripts by the realpath of the cwd.
+    storedDir = targetDir;
+    transcriptDir = realpathSync(targetDir);
   }
 
   // Stop it remotely before copying the conversation so the file is final
@@ -399,7 +409,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   let localTranscriptPath: string | undefined;
   if (remote.transcript && sessionId) {
     const provider = agentProvider(remote.state);
-    const target = targetTranscriptPath(provider, homedir(), canonicalDir, sessionId, remote.transcript.codexRelative);
+    const target = targetTranscriptPath(provider, homedir(), transcriptDir, sessionId, remote.transcript.codexRelative);
     Bun.spawnSync(["mkdir", "-p", dirname(target)]);
     const scp = await runAsync(["scp", "-q", `${host}:${remote.transcript.path}`, target], { timeoutMs: 120000 });
     if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
@@ -410,7 +420,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     JSON.stringify({
       state: {
         ...remote.state,
-        dir: canonicalDir,
+        dir: storedDir,
         transcriptPath: localTranscriptPath,
         worktreePath: targetWorktree?.path,
         worktreeBranch: targetWorktree?.branch,
@@ -421,7 +431,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
           from: host,
           to: hostname(),
           oldDir: remote.state.dir,
-          newDir: canonicalDir,
+          newDir: storedDir,
           clone: !!opts.clone,
           branchNote,
           task: remote.state.task,
@@ -434,7 +444,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
   let message = opts.clone
     ? `cloned "${name}" ← ${host} (original still on ${host})`
-    : `moved "${name}" ← ${host} (now in ${canonicalDir})${opts.copy ? " (remote copy kept)" : ""}`;
+    : `moved "${name}" ← ${host} (now in ${storedDir})${opts.copy ? " (remote copy kept)" : ""}`;
 
   if (opts.start) {
     const { reviveAgent } = await import("./resume");
