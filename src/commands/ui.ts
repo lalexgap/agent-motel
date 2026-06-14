@@ -112,6 +112,15 @@ function applyHubBindings(): void {
     clickHandler,
     "send-keys -M -t=",
   );
+  // Forward wheel events straight into whichever pane is under the cursor.
+  // Both panes are full-screen nested apps (the picker, and a local-tmux or
+  // ssh→tmux attach) that scroll themselves. tmux's default only forwards
+  // when the pane advertises mouse mode (mouse_any_flag=1); a remote agent
+  // attached over ssh reports mouse_any_flag=0 because its mouse DECSET
+  // doesn't survive the ssh relay, so the outer tmux would otherwise hijack
+  // the wheel for its own copy-mode and the remote pane never scrolls.
+  tmux("bind-key", "-T", "am-hub", "WheelUpPane", "send-keys", "-M");
+  tmux("bind-key", "-T", "am-hub", "WheelDownPane", "send-keys", "-M");
 }
 
 export function uiCommand(): void {
