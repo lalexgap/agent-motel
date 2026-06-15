@@ -68,6 +68,18 @@ describe("buildLaunchCommand", () => {
     expect(plan.command).not.toContain("--disallowedTools");
   });
 
+  test("claude launches permissionless by default", () => {
+    const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: false });
+    expect(plan.command).toContain("--dangerously-skip-permissions");
+  });
+
+  test("codex launches permissionless by default (its bypass flag, before the -c overrides)", () => {
+    const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", remote: false });
+    expect(plan.command).toContain("--dangerously-bypass-approvals-and-sandbox");
+    // claude's flag must not leak onto codex.
+    expect(plan.command).not.toContain("--dangerously-skip-permissions");
+  });
+
   test("claude with remote control defers the message and puts the flag last", () => {
     const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: true });
     // --remote-control swallows a trailing positional, so the message must
@@ -111,7 +123,7 @@ function agent(overrides: Partial<AgentState>): AgentState {
 describe("buildResumeCommand", () => {
   test("codex resumes by session id, falling back to --last", () => {
     expect(buildResumeCommand("codex", agent({ sessionId: "id-1" }), {}).command).toEqual([
-      "codex", "-c", "check_for_update_on_startup=false", "resume", "id-1",
+      "codex", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false", "resume", "id-1",
     ]);
     expect(buildResumeCommand("codex", agent({}), {}).command).toContain("--last");
   });

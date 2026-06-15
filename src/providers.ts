@@ -102,6 +102,18 @@ export function remoteControlArgs(override: boolean | undefined): string[] {
   return (override ?? loadConfig().remoteControl) ? ["--remote-control"] : [];
 }
 
+// Managed agents run unattended, so they launch permissionless by default — a
+// per-command approval prompt would hang an agent nobody is watching. claude
+// bypasses its permission checks; codex bypasses approvals + sandbox (its
+// closest equivalent — these agents run on the user's own trusted machines).
+// Config escape hatch: skipPermissions=false restores prompts.
+export function permissionArgs(provider: Provider): string[] {
+  if (!loadConfig().skipPermissions) return [];
+  return provider === "codex"
+    ? ["--dangerously-bypass-approvals-and-sandbox"]
+    : ["--dangerously-skip-permissions"];
+}
+
 export interface LaunchOpts extends ConversationOpts {
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
@@ -129,6 +141,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
     // variadic <tools...> can't swallow a trailing positional (the prompt).
     // The Task/Agent tool stays available for quick in-turn lookups.
     "claude",
+    ...permissionArgs("claude"),
     "--disallowedTools", "Workflow",
     "--settings", writeHookSettings(),
     "--append-system-prompt", agentSystemPrompt(name, { reportTo: opts.reportTo }),
@@ -144,7 +157,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
   if (provider === "codex") {
-    const command = ["codex", ...CODEX_LAUNCH_OVERRIDES, ...codexConversationArgs(opts)];
+    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES, ...codexConversationArgs(opts)];
     if (opts.message) command.push(`${agentSystemPrompt(name, { reportTo: opts.reportTo })}\n\n# Your task\n\n${opts.message}`);
     return { command };
   }
@@ -160,7 +173,7 @@ export function buildResumeCommand(
   if (provider === "codex") {
     // Old state files may predate session-id capture; --last picks up the
     // most recent conversation instead.
-    const command = ["codex", ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
     if (opts.message) command.push(opts.message);
     return { command };
   }

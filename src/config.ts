@@ -28,6 +28,11 @@ export interface Config {
   // target dir is a repo, instead of assuming ownership of the checkout.
   // Per-agent opt-out: am new --in-place.
   worktreeByDefault: boolean;
+  // Launch agents permissionless — no per-command approval prompts. Managed
+  // agents run unattended, and a prompt would hang an agent nobody is
+  // watching. claude gets --dangerously-skip-permissions; codex gets
+  // --dangerously-bypass-approvals-and-sandbox. Set false to restore prompts.
+  skipPermissions: boolean;
   // `am serve` (the HTTP API + PWA for phones) listens here. Bind defaults to
   // loopback — point it at a tailnet IP, or keep loopback and front it with
   // Caddy/tailscale serve. NEVER 0.0.0.0 without a network gate: the API can
@@ -66,6 +71,7 @@ const DEFAULTS: Config = {
   apiPort: 8787,
   apiBind: "127.0.0.1",
   worktreeByDefault: true,
+  skipPermissions: true,
   commsMaxPerWindow: 5,
   commsWindowSeconds: 60,
   outboxTtlHours: 48,
