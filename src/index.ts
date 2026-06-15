@@ -13,6 +13,7 @@ import { commsCommand } from "./commands/comms";
 import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
+import { restoreCommand } from "./commands/restore";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
@@ -91,6 +92,10 @@ usage:
                               --in-place uses the dir as-is)
   am stop <name>              kill the session but keep state (resumable)
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
+                              (the state is snapshotted to trash first)
+  am restore [<name>]         bring back a removed agent (resumes its
+                              conversation); no name lists what's recoverable
+                              (--no-resume just re-registers it)
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
@@ -485,6 +490,9 @@ async function main(): Promise<void> {
     }
     case "rm":
       rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean });
+      break;
+    case "restore":
+      await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });
       break;
     case "hook":
       await hookCommand(requirePositional(args, 0, "hook event"));

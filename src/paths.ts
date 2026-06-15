@@ -25,6 +25,12 @@ export function worktreesDir(): string {
   return join(baseDir(), "worktrees");
 }
 
+// Removed agents' state files are snapshotted here so an accidental `am rm`
+// is undoable with `am restore`.
+export function trashDir(): string {
+  return join(baseDir(), "trash");
+}
+
 export function lastAttachedFile(): string {
   return join(baseDir(), "last-attached.json");
 }

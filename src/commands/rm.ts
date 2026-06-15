@@ -1,6 +1,7 @@
 import { removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear } from "../queue";
 import { removeSnapshot } from "../snapshots";
+import { trashState } from "../trash";
 import { hasSession, killSession } from "../tmux";
 
 // Stop = kill the tmux session but keep state, so `am resume` still works.
@@ -24,6 +25,13 @@ export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void 
       console.log(`removed worktree ${agent.worktreePath}`);
     }
   }
+
+  // Snapshot the state before deleting it so an accidental rm is recoverable
+  // with `am restore`. The conversation (and, without --clean, the worktree)
+  // survive rm untouched, so the snapshot is all that's needed to bring it
+  // back; restore checks the dir at recovery time and recreates the worktree
+  // from its branch if --clean had removed it.
+  trashState(agent);
 
   queueClear(agent.name);
   removeSnapshot(agent.name);
