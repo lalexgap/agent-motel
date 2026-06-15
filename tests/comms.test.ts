@@ -10,6 +10,7 @@ import {
   hasMessagedSince,
   isSelfSend,
   resolveSender,
+  seenRecently,
   shouldReport,
   splitAddr,
 } from "../src/comms";
@@ -87,6 +88,16 @@ describe("attribute", () => {
     // The dropped message is not recorded, and an unrelated pair is unaffected.
     expect(commsFor("docs")).toHaveLength(3);
     expect(attribute("lead", "docs", "still ok", "send").allowed).toBe(true);
+  });
+});
+
+describe("seenRecently (dedup index)", () => {
+  test("true once a message with that id has been attributed", () => {
+    expect(seenRecently("mid-1")).toBe(false);
+    attribute("api", "docs", "hello", "send", "mid-1");
+    expect(seenRecently("mid-1")).toBe(true);
+    expect(seenRecently("other")).toBe(false);
+    expect(seenRecently("")).toBe(false);
   });
 });
 

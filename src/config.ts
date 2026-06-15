@@ -47,10 +47,12 @@ export interface Config {
   // How long an outbox message (a send to an unreachable target, queued for a
   // collector to pick up) stays valid before it expires undelivered.
   outboxTtlHours: number;
-  // How often the daemon sweeps each remote's outbox for messages addressed to
-  // local agents. Lower = snappier cross-machine delivery, but one ssh per
-  // remote per tick — tune for your fleet size / battery. 0 disables collection.
+  // Outbox poll cadence is adaptive: outboxPollSeconds is the HOT floor (used
+  // right after mail arrives), backing off ×1.5 up to outboxPollMaxSeconds when
+  // idle, snapping back to hot on the next message. Lower floor = snappier
+  // delivery; higher cap = cheaper idle. 0 disables collection entirely.
   outboxPollSeconds: number;
+  outboxPollMaxSeconds: number;
 }
 
 const DEFAULTS: Config = {
@@ -63,7 +65,8 @@ const DEFAULTS: Config = {
   commsMaxPerWindow: 5,
   commsWindowSeconds: 60,
   outboxTtlHours: 48,
-  outboxPollSeconds: 5,
+  outboxPollSeconds: 2,
+  outboxPollMaxSeconds: 30,
 };
 
 export function loadConfig(): Config {

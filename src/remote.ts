@@ -1,8 +1,39 @@
+import { homedir } from "node:os";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { shQuote } from "./tmux";
 
 // `am -H server <cmd>` / `AM_HOST=server am <cmd>`: run the command on a
 // remote am over plain SSH. am stays transport-ignorant — ssh does auth,
 // encryption, and the terminal; this just forwards argv.
+
+// Connection multiplexing: the daemon polls remotes on a tight cadence, and
+// each plain ssh pays a full TCP+KEX+auth+login-shell handshake (~hundreds of ms
+// + radio/battery on a laptop). ControlMaster reuses one persistent connection
+// for every subsequent ssh to that host — polls drop to ~channel-open latency,
+// shared automatically across the daemon and the TUI. Purely ssh-side, so am
+// stays transport-ignorant; a stale master (laptop slept) is re-dialed
+// transparently on the next call. Opt out with AM_SSH_NO_MUX=1.
+let muxDirReady = false;
+function muxOpts(): string[] {
+  if (process.env.AM_SSH_NO_MUX) return [];
+  const dir = join(homedir(), ".cache", "am", "ssh");
+  if (!muxDirReady) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      muxDirReady = true;
+    } catch {
+      return []; // can't make the socket dir — fall back to plain ssh
+    }
+  }
+  return [
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${join(dir, "%C")}`,
+    "-o", "ControlPersist=120",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+  ];
+}
 
 export function stripHostArgs(argv: string[]): string[] {
   const filtered: string[] = [];
@@ -36,7 +67,7 @@ export interface SshResult {
 // (`source`) that dash chokes on. argv is re-quoted to survive both ssh's
 // argument join and the remote shell.
 function sshArgv(host: string, remoteCommand: string, tty: boolean): string[] {
-  return ["ssh", ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remoteCommand)}`];
+  return ["ssh", ...muxOpts(), ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remoteCommand)}`];
 }
 
 export function amCommandString(args: string[]): string {
@@ -105,7 +136,7 @@ export async function sshRunAsync(
   command: string,
   opts: { timeoutMs?: number } = {},
 ): Promise<SshResult> {
-  return runAsync(["ssh", host, "--", command], opts);
+  return runAsync(["ssh", ...muxOpts(), host, "--", command], opts);
 }
 
 // Run `am <args>` remotely with the terminal attached (interactive jump from
@@ -126,7 +157,7 @@ export function sshRun(
   command: string,
   opts: { timeoutMs?: number } = {},
 ): SshResult {
-  const result = Bun.spawnSync(["ssh", host, "--", command], {
+  const result = Bun.spawnSync(["ssh", ...muxOpts(), host, "--", command], {
     stdin: "ignore",
     timeout: opts.timeoutMs,
   });

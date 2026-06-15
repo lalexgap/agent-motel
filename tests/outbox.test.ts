@@ -2,17 +2,26 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readdirSync } from "node:fs";
 import {
   collectedSender,
   isExpired,
+  outboxAck,
   outboxAppend,
+  outboxClaim,
   outboxList,
+  outboxReclaim,
   outboxTake,
   readBounces,
   takeBouncesFrom,
   type OutboxEntry,
 } from "../src/outbox";
+import { outboxDir } from "../src/paths";
 import { formatEnvelope, splitAddr } from "../src/comms";
+
+function claimedFiles(): string[] {
+  return readdirSync(outboxDir()).filter((f) => f.endsWith(".claimed.jsonl"));
+}
 
 let home: string;
 
@@ -52,7 +61,7 @@ describe("outbox append + take round-trip", () => {
 
 describe("expiry", () => {
   test("isExpired honors the per-entry ttl", () => {
-    const entry: OutboxEntry = { to: "x", fromHost: "h", body: "b", queuedAt: new Date(Date.now() - 2 * HOUR).toISOString(), ttlMs: HOUR };
+    const entry: OutboxEntry = { msgId: "m1", to: "x", fromHost: "h", body: "b", queuedAt: new Date(Date.now() - 2 * HOUR).toISOString(), ttlMs: HOUR };
     expect(isExpired(entry)).toBe(true);
     expect(isExpired({ ...entry, ttlMs: 3 * HOUR })).toBe(false);
   });
@@ -75,6 +84,38 @@ describe("expiry", () => {
     expect(view.bounced.map((b) => b.body)).toEqual(["stale"]);
     // The live entry survives a second look; the expired one is already gone.
     expect(outboxList().live.map((e) => e.body)).toEqual(["live"]);
+  });
+});
+
+describe("claim / ack / reclaim", () => {
+  test("claim returns entries WITHOUT deleting; ack deletes; sorted by msgId", () => {
+    outboxAppend({ to: "web", from: "api", fromHost: "server", body: "a", msgId: "m1" });
+    outboxAppend({ to: "web", from: "api", fromHost: "server", body: "b", msgId: "m2" });
+
+    const got = outboxClaim("c1", ["web"]);
+    expect(got.map((e) => e.body)).toEqual(["a", "b"]); // m1 < m2
+    expect(claimedFiles().length).toBe(1); // held, not deleted
+
+    // a fresh claim finds nothing — entries are claimed, not yet reclaimed
+    expect(outboxClaim("c2", ["web"])).toEqual([]);
+
+    outboxAck("c1");
+    expect(claimedFiles().length).toBe(0);
+  });
+
+  test("reclaim returns an unacked claim to pending for redelivery", () => {
+    outboxAppend({ to: "web", from: "api", fromHost: "server", body: "x", msgId: "m1" });
+    expect(outboxClaim("c1", ["web"]).map((e) => e.body)).toEqual(["x"]);
+    outboxReclaim(0); // treat any claim as stale → back to pending
+    expect(claimedFiles().length).toBe(0);
+    expect(outboxClaim("c2", ["web"]).map((e) => e.body)).toEqual(["x"]); // claimable again
+  });
+
+  test("claim drops expired entries to bounces, never returns them", () => {
+    outboxAppend({ to: "web", from: "api", fromHost: "server", body: "old", msgId: "m1", ttlMs: HOUR, queuedAt: new Date(Date.now() - 2 * HOUR).toISOString() });
+    outboxAppend({ to: "web", from: "api", fromHost: "server", body: "fresh", msgId: "m2" });
+    expect(outboxClaim("c1", ["web"]).map((e) => e.body)).toEqual(["fresh"]);
+    expect(readBounces().map((b) => b.body)).toEqual(["old"]);
   });
 });
 

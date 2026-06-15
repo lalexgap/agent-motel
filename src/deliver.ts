@@ -1,7 +1,45 @@
+import { closeSync, openSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { agentProvider, readAgent, type AgentState } from "./state";
 import { queuePeek, queuePop } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText } from "./tmux";
 import { cliEntrypoint } from "./settings";
+import { queueDir } from "./paths";
+
+// Per-agent delivery lock. deliverNext can be invoked concurrently from three
+// places — the Stop hook's detached process, the daemon's /event handler, and
+// the reconcile loop — so an in-process flag isn't enough; without this two
+// callers can peek the same queue head and type it into the pane twice. An
+// O_EXCL lockfile serializes across processes; a stale lock (holder crashed)
+// is reclaimed after a timeout.
+const LOCK_STALE_MS = 30_000;
+
+function lockPath(name: string): string {
+  return join(queueDir(), `${name}.deliver.lock`);
+}
+
+function acquireDeliverLock(name: string): boolean {
+  const path = lockPath(name);
+  try {
+    closeSync(openSync(path, "wx")); // O_EXCL — fails if it already exists
+    return true;
+  } catch {
+    try {
+      if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
+        rmSync(path, { force: true });
+        closeSync(openSync(path, "wx"));
+        return true;
+      }
+    } catch {
+      // lost the reclaim race — someone else holds it
+    }
+    return false;
+  }
+}
+
+function releaseDeliverLock(name: string): void {
+  rmSync(lockPath(name), { force: true });
+}
 
 export function enterDelayMs(agent: AgentState, message?: string): number | undefined {
   // Codex always drops an Enter that lands in the same key batch as the
@@ -50,25 +88,32 @@ const SUBMIT_CHECK_MS = 600;
 export async function deliverNext(name: string): Promise<boolean> {
   const agent = readAgent(name);
   if (!agent || !hasSession(agent.tmuxSession)) return false;
-  const message = queuePeek(name);
-  if (message === null) return false;
+  // Serialize delivery for this agent across processes — held through the verify
+  // loop so a concurrent caller can't grab the same (or the next) queue head.
+  if (!acquireDeliverLock(name)) return false;
+  try {
+    const message = queuePeek(name);
+    if (message === null) return false;
 
-  // Someone (usually the human) is mid-composition in the input box: typing
-  // our message now would splice into theirs. Leave it queued — the daemon's
-  // reconcile loop and the next Stop drain retry until the box clears.
-  const before = capturePane(agent.tmuxSession);
-  if (before && inputBoxText(before)) return false;
+    // Someone (usually the human) is mid-composition in the input box: typing
+    // our message now would splice into theirs. Leave it queued — the daemon's
+    // reconcile loop and the next Stop drain retry until the box clears.
+    const before = capturePane(agent.tmuxSession);
+    if (before && inputBoxText(before)) return false;
 
-  sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent, message) });
-  queuePop(name);
+    sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent, message) });
+    queuePop(name);
 
-  for (let attempt = 0; attempt < SUBMIT_RETRIES; attempt++) {
-    await Bun.sleep(SUBMIT_CHECK_MS);
-    const pane = capturePane(agent.tmuxSession);
-    if (!pane || !looksUnsubmitted(pane, message)) break;
-    sendEnter(agent.tmuxSession);
+    for (let attempt = 0; attempt < SUBMIT_RETRIES; attempt++) {
+      await Bun.sleep(SUBMIT_CHECK_MS);
+      const pane = capturePane(agent.tmuxSession);
+      if (!pane || !looksUnsubmitted(pane, message)) break;
+      sendEnter(agent.tmuxSession);
+    }
+    return true;
+  } finally {
+    releaseDeliverLock(name);
   }
-  return true;
 }
 
 // Fire-and-forget delivery from inside a hook. The hook must exit promptly

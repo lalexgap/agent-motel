@@ -15,6 +15,7 @@ export interface CommsEntry {
   to: string; // local target name
   kind: CommsKind;
   body: string;
+  msgId?: string; // stable id, when the message carried one (dedup index)
 }
 
 // The sender of a message originating inside a managed session: any `am`
@@ -118,6 +119,14 @@ export function hasMessagedSince(from: string, to: string, since: string): boole
   );
 }
 
+// Was a message with this id already delivered? Powers receiver-side dedup so a
+// redelivered claim (at-least-once) doesn't double-inject. The ledger is the
+// dedup index — every attributed delivery records its msgId.
+export function seenRecently(msgId: string): boolean {
+  if (!msgId) return false;
+  return readLog().some((e) => e.msgId === msgId);
+}
+
 export interface Attribution {
   // The body to actually deliver — wrapped in the envelope, or unchanged for a
   // self/anonymous send.
@@ -136,6 +145,7 @@ export function attribute(
   target: string,
   body: string,
   kind: CommsKind,
+  msgId?: string,
 ): Attribution {
   if (!from || isSelfSend(from, target)) {
     return { body, allowed: true, attributed: false };
@@ -145,7 +155,7 @@ export function attribute(
   if (sendsInWindow(from, target, windowMs) >= cfg.commsMaxPerWindow) {
     return { body, allowed: false, attributed: true };
   }
-  recordComms({ at: new Date().toISOString(), from, to: target, kind, body });
+  recordComms({ at: new Date().toISOString(), from, to: target, kind, body, msgId });
   return { body: formatEnvelope(from, body), allowed: true, attributed: true };
 }
 

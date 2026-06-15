@@ -8,21 +8,31 @@ import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
 import { sshAmAsync } from "./remote";
-import { attribute } from "./comms";
+import { attribute, seenRecently } from "./comms";
 import { collectedSender, type OutboxEntry } from "./outbox";
+import { newMsgId } from "./msgid";
 
 export const DELIVERY_DELAY_MS = 500;
 const RECONCILE_INTERVAL_MS = 15_000;
 
+// Adaptive poll backoff: snap to the hot floor when mail just arrived, else
+// grow ×1.5 toward the idle cap. Pure for testing.
+export function nextPollMs(current: number, hotMs: number, maxMs: number, collected: number): number {
+  if (collected > 0) return hotMs;
+  return Math.min(Math.floor(current * 1.5), maxMs);
+}
+
 // Inject one collected outbox entry into its local target. Attribution +
 // rate limiting happen here (point 3): a cross-machine flood trips the same
 // per-pair guard as a local send. The sender is qualified by host so the
-// recipient sees "[am · from <name>@<host>] …" and can tell it came from afar.
+// recipient sees "[am · from <host>:<name>] …" and can reply across machines.
+// Dedup by msgId makes redelivery (the price of at-least-once) invisible.
 async function injectCollected(entry: OutboxEntry, host: string): Promise<void> {
   const target = readAgent(entry.to);
   if (!target) return; // the name stopped being local since we advertised it
+  if (entry.msgId && seenRecently(entry.msgId)) return; // already delivered — dedup
   const sender = collectedSender(entry.from, entry.fromHost, host);
-  const att = attribute(sender, entry.to, entry.body, "send");
+  const att = attribute(sender, entry.to, entry.body, "send", entry.msgId);
   if (!att.allowed) {
     // cross-machine loop guard tripped — don't drop silently
     console.error(`outbox: rate-limited collected message from ${sender} to ${entry.to} (dropped)`);
@@ -38,32 +48,62 @@ async function injectCollected(entry: OutboxEntry, host: string): Promise<void> 
   }
 }
 
+// Sweep one remote: claim its mail for our names, inject locally, then ack so
+// it's deleted only after durable local delivery. Falls back to the legacy
+// destructive `__outbox-take` when the remote predates claim/ack. Returns the
+// number of messages collected (drives adaptive cadence).
+async function collectFromHost(host: string, localNames: string[]): Promise<number> {
+  const cid = newMsgId();
+  const claim = await sshAmAsync(host, ["__outbox-claim", cid, ...localNames], { timeoutMs: 8000 });
+  if (claim.exitCode === 0) {
+    let entries: OutboxEntry[];
+    try {
+      entries = JSON.parse(claim.stdout) as OutboxEntry[];
+    } catch {
+      return 0; // not JSON — ignore this host this sweep
+    }
+    for (const entry of entries) await injectCollected(entry, host);
+    // Ack only after every entry is durably queued locally; if this never lands
+    // (we crash here), the remote reclaims and redelivers → dedup absorbs it.
+    if (entries.length > 0) await sshAmAsync(host, ["__outbox-ack", cid], { timeoutMs: 8000 });
+    return entries.length;
+  }
+  // Old remote without claim/ack → legacy take (lossy, as before).
+  const take = await sshAmAsync(host, ["__outbox-take", ...localNames], { timeoutMs: 8000 });
+  if (take.exitCode !== 0) return 0; // unreachable, or remote am predates outbox
+  let entries: OutboxEntry[];
+  try {
+    entries = JSON.parse(take.stdout) as OutboxEntry[];
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) await injectCollected(entry, host);
+  return entries.length;
+}
+
 // Sweep each configured remote's outbox for messages addressed to our local
-// agents — the collector half of store-and-forward. `am outbox --take`
-// atomically returns-and-removes them; we inject locally. Never blocks the
-// reconcile loop (ssh is async, errors are swallowed per host).
+// agents — the collector half of store-and-forward. Never blocks the poll loop
+// (ssh is async, errors swallowed per host). Returns total messages collected.
 let collecting = false;
-async function collectFromRemotes(): Promise<void> {
-  if (collecting) return; // a prior sweep is still running — don't overlap
+async function collectFromRemotes(): Promise<number> {
+  if (collecting) return 0; // a prior sweep is still running — don't overlap
   const remotes = loadConfig().remotes ?? [];
   const localNames = listAgents().map((a) => a.name);
-  if (remotes.length === 0 || localNames.length === 0) return;
+  if (remotes.length === 0 || localNames.length === 0) return 0;
   collecting = true;
+  let total = 0;
   try {
     for (const host of remotes) {
-      const res = await sshAmAsync(host, ["__outbox-take", ...localNames], { timeoutMs: 8000 });
-      if (res.exitCode !== 0) continue; // unreachable, or remote am predates outbox
-      let entries: OutboxEntry[];
       try {
-        entries = JSON.parse(res.stdout) as OutboxEntry[];
-      } catch {
-        continue; // not JSON — old am, ignore
+        total += await collectFromHost(host, localNames);
+      } catch (error) {
+        console.error(`outbox collect from ${host} failed:`, error);
       }
-      for (const entry of entries) await injectCollected(entry, host);
     }
   } finally {
     collecting = false;
   }
+  return total;
 }
 
 export interface DaemonHandle {
@@ -127,21 +167,39 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     }
   }, RECONCILE_INTERVAL_MS);
 
-  // Pull store-and-forward messages from the remotes on a separate, faster
-  // cadence than the local self-heal — outbox latency is user-facing, so it
-  // gets its own (configurable) interval instead of riding the 15s reconcile.
-  // The `collecting` guard keeps a slow sweep from piling up.
-  const pollMs = Math.max(1, loadConfig().outboxPollSeconds) * 1000;
-  const collector = loadConfig().outboxPollSeconds > 0
-    ? setInterval(() => {
-        void collectFromRemotes().catch((error) => console.error("outbox collect failed:", error));
-      }, pollMs)
-    : null;
+  // Pull store-and-forward messages from the remotes on its own ADAPTIVE
+  // cadence (separate from the 15s local self-heal): poll the hot floor right
+  // after mail arrives, back off ×1.5 to the cap when idle, snap back to hot on
+  // the next message. A self-rescheduling timeout (not setInterval) so the
+  // interval can change each tick; the `collecting` guard prevents pile-up.
+  const cfg = loadConfig();
+  const hotMs = Math.max(1, cfg.outboxPollSeconds) * 1000;
+  const maxMs = Math.max(cfg.outboxPollSeconds, cfg.outboxPollMaxSeconds) * 1000;
+  let pollMs = hotMs;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+
+  function scheduleCollect(): void {
+    const jitter = 0.9 + Math.random() * 0.2; // ±10% so multiple daemons don't thunder
+    pollTimer = setTimeout(async () => {
+      if (stopped) return;
+      let collected = 0;
+      try {
+        collected = await collectFromRemotes();
+      } catch (error) {
+        console.error("outbox collect failed:", error);
+      }
+      pollMs = nextPollMs(pollMs, hotMs, maxMs, collected);
+      if (!stopped) scheduleCollect();
+    }, Math.floor(pollMs * jitter));
+  }
+  if (cfg.outboxPollSeconds > 0) scheduleCollect();
 
   return {
     stop() {
+      stopped = true;
       clearInterval(reconciler);
-      if (collector) clearInterval(collector);
+      if (pollTimer) clearTimeout(pollTimer);
       server.stop(true);
       rmSync(socketPath, { force: true });
     },

@@ -129,13 +129,16 @@ the structure that makes a conversation work:
   am outbox                                      # inspect what's waiting
   ```
 
-  The laptop's daemon sweeps each configured remote's outbox every
-  `outboxPollSeconds` (default 5s; set `0` to disable), pulls anything addressed
+  The laptop's daemon sweeps each configured remote's outbox on an adaptive
+  cadence (hot `outboxPollSeconds`≈2s after mail, backing off to
+  `outboxPollMaxSeconds`≈30s when idle; `0` disables), pulls anything addressed
   to its local agents, and delivers it attributed by origin (`[am · from
-  server:web] …`, the same `host:name` you reply with). Entries expire after
-  ~48h (`outboxTtlHours`) and a bounce is
-  surfaced back to the sender — never a silent drop. (Both machines need this
-  version of `am` for the round trip.)
+  server:web] …`, the same `host:name` you reply with). Pickup is
+  **at-least-once with dedup** (claim/ack/reclaim + message IDs) so a collector
+  crash never loses mail; ssh connection multiplexing keeps the frequent polls
+  cheap. Entries expire after ~48h (`outboxTtlHours`) with a bounce surfaced to
+  the sender — never a silent drop. (Both machines need this version of `am` for
+  the round trip.)
 
 - **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
   `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A

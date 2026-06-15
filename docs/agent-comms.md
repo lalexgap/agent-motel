@@ -224,13 +224,16 @@ outbox for pickup". `am outbox` inspects it. The body is stored **raw** —
 attribution is applied later, by the collector.
 
 **Collector side (the laptop, which has remotes configured).** A daemon poll
-(every `outboxPollSeconds`, default 5s — its own interval, separate from the 15s
-local self-heal reconcile) sweeps each remote with `am __outbox-take <local
-names…>` over ssh (`sshAmAsync`, non-blocking) — an atomic return-and-remove of
-entries addressed to names this machine owns. (`__`-prefixed so it's internal
-and never fleet-forwarded; `am outbox [--clear]` is the human-facing view.)
-Lower the interval for snappier delivery at the cost of one ssh per remote per
-tick; `0` disables collection. Each is injected through the
+(adaptive: hot floor `outboxPollSeconds`=2s, backing off ×1.5 to
+`outboxPollMaxSeconds`=30s when idle, snapping back on new mail) sweeps each
+remote with `am __outbox-claim <cid> <local names…>` over ssh — a *redrive-safe*
+return-without-delete; the collector injects locally, then `am __outbox-ack
+<cid>` so entries are removed only after durable delivery (an unacked claim is
+reclaimed and redelivered, with msgId dedup absorbing the duplicate). Falls back
+to the legacy `__outbox-take` for collectors/remotes that predate claim/ack.
+(`__`-prefixed so internal and never fleet-forwarded; `am outbox [--clear]` is
+the human view.) ssh ControlMaster multiplexing keeps frequent polls cheap;
+`outboxPollSeconds: 0` disables collection. Each is injected through the
 normal `attribute()` path, the sender **qualified by host** so the recipient
 sees `[am · from <host>:<name>] …` (the canonical, reply-able form), then
 delivered on idle (`deliverNext`).
@@ -244,26 +247,18 @@ outbox`, and are surfaced back to the sender's agent the next time it sends.
 outbox, the laptop's daemon to collect. The two halves are each tested/smoked
 here; the ssh hop between them reuses the same transport as `am move`.
 
-### Known limitation: at-least-once, with a crash window
+### Delivery guarantee: at-least-once with dedup
 
-`am __outbox-take` is *take-then-inject*: the collector atomically removes
-entries from the remote, then injects them locally. If the collector dies in
-that window — after the take returns but before `queueAppend`/`deliverNext` —
-those messages are gone (removed remotely, never delivered locally). The window
-is tiny (a few in-process statements, no awaits between take and queue), so in
-practice this is rare, but it is a real **at-least-once gap, not exactly-once**.
+The outbox is **at-least-once with msgId dedup** (claim/ack/reclaim, above): a
+collector crash mid-sweep no longer loses mail — an unacked claim is reclaimed
+and redelivered, and dedup drops the duplicate. The earlier take-then-inject
+silent-loss window is closed.
 
-A bounded loss elsewhere too: the daemon doesn't persist a "collected but not
-yet delivered" journal, so a crash also loses anything taken in the same sweep.
-
-**Not built (needs Alex's sign-off).** The fix is an *ack handshake*: have
-`__outbox-take` only *mark* entries in-flight (move to a `taking/` holding area
-with a token) rather than delete them, and have the collector send back
-`__outbox-ack <token…>` once each is safely queued locally; unacked entries
-return to the outbox after a timeout for the next sweep. That makes delivery
-idempotent/at-least-once-with-recovery. It is deliberately **not implemented** —
-it adds a second round-trip and stateful protocol for a crash window measured in
-milliseconds. Revisit only if the loss is observed in practice or Alex asks.
+Residual minor items (deferred, see `docs/messaging-redesign.md`): the *local*
+queue's tmux delivery is pop-after-send (not pop-after-verify) so a daemon crash
+during the submit-retry could re-type a message — harmless given the per-agent
+delivery lock and rare, but it lacks local-queue dedup; and msgIds aren't yet
+carried through `am move`. Neither is a silent-loss path.
 
 ## Files touched (summary)
 

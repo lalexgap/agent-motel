@@ -10,7 +10,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { commsCommand } from "./commands/comms";
-import { outboxCommand, outboxTakeCommand } from "./commands/outbox";
+import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
@@ -425,6 +425,12 @@ async function main(): Promise<void> {
       break;
     case "__outbox-take":
       outboxTakeCommand(args.positional);
+      break;
+    case "__outbox-claim":
+      outboxClaimCommand(requirePositional(args, 0, "claim id"), args.positional.slice(1));
+      break;
+    case "__outbox-ack":
+      outboxAckCommand(requirePositional(args, 0, "claim id"));
       break;
     case "queue":
     case "q":

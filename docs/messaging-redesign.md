@@ -88,9 +88,16 @@ move into the reliability PR.)
 3. **Robust readers** (R6): wrap per-line `JSON.parse` with skip-on-error; write the
    bounce log via tmp+rename; cap/rotate the comms ledger.
 
-### Phase 1 — Reliability: at-least-once + dedup
+### Phase 1 — Reliability: at-least-once + dedup ✅ SHIPPED (this PR)
 
 Convert "at-most-once with a silent hole" → "at-least-once with dedup."
+Implemented: ULID msgIds (`src/msgid.ts`) on outbox + comms entries;
+`__outbox-claim`/`__outbox-ack`/reclaim replacing the destructive take (the
+collector acks only after durable local delivery; an unacked claim is reclaimed);
+receiver dedup by msgId (`seenRecently`); per-agent cross-process delivery lock
+(O_EXCL) fixing the double-send race; per-sweep FIFO by msgId. Deferred: threading
+msgId through the local queue + `am move` payload, and pop-after-verify (its
+duplicate needs local-queue dedup first) — noted below.
 
 1. **Message IDs** (R2): new `src/msgid.ts` minting a ULID (CSPRNG + monotonic guard for
    coarse `Date.now()`); thread `msgId` through `queueAppend`, `OutboxEntry`, `CommsEntry`,
@@ -104,7 +111,13 @@ Convert "at-most-once with a silent hole" → "at-least-once with dedup."
 4. **Pop-after-verify** in `deliverNext` (R5) and a per-agent delivery lock (R3).
 5. **Per-sender FIFO**: sort each injected batch by `msgId` before append.
 
-### Phase 2 — Performance: cheap + low-latency
+### Phase 2 — Performance: cheap + low-latency ✅ PARTLY SHIPPED (this PR)
+
+Implemented: ssh **ControlMaster** multiplexing in `sshArgv` + raw ssh helpers
+(opt-out `AM_SSH_NO_MUX=1`); **adaptive poll** (hot floor `outboxPollSeconds`=2s,
+×1.5 backoff to `outboxPollMaxSeconds`=30s, snap-to-hot on received mail, ±10%
+jitter, self-rescheduling). Deferred: daemon-owned combined sync (TUI reads the
+socket instead of its own ssh) and the "any mail?" peek — below.
 
 1. **ssh `ControlMaster` multiplexing** in `sshArgv` (P1) — biggest win, smallest change;
    purely ssh-side, shared automatically across daemon + TUI. ~200ms → ~10ms per poll.

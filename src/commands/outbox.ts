@@ -1,4 +1,4 @@
-import { outboxClear, outboxList, outboxTake } from "../outbox";
+import { outboxAck, outboxClaim, outboxClear, outboxList, outboxTake } from "../outbox";
 import { relativeTime } from "./ls";
 
 function clip(body: string, max = 50): string {
@@ -8,9 +8,22 @@ function clip(body: string, max = 50): string {
 
 // `am __outbox-take <names...>`: atomically return-and-remove live entries for
 // those names as JSON. Internal (the collector's ssh pickup) — `__`-prefixed so
-// it's hidden and never fleet-forwarded.
+// it's hidden and never fleet-forwarded. Kept for collectors that predate the
+// claim/ack protocol below.
 export function outboxTakeCommand(names: string[]): void {
   console.log(JSON.stringify(outboxTake(names)));
+}
+
+// `am __outbox-claim <cid> <names...>`: return live entries as JSON WITHOUT
+// deleting them (renamed to a `.claimed` file). The collector must `__outbox-ack
+// <cid>` once they're durably delivered, else they're reclaimed and redelivered.
+export function outboxClaimCommand(cid: string, names: string[]): void {
+  console.log(JSON.stringify(outboxClaim(cid, names)));
+}
+
+// `am __outbox-ack <cid>`: confirm a claim is delivered — delete its files.
+export function outboxAckCommand(cid: string): void {
+  outboxAck(cid);
 }
 
 // `am outbox [--clear]`: human inspection of what's queued here for pickup, plus
