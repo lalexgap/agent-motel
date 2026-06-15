@@ -92,3 +92,10 @@ am send <laptop-agent> "hi"   # forwards live over the tunnel
   back to the outbox and the laptop collects it on reconnect — no message lost.
 - The tunnel is plain ssh; `am` stays transport-ignorant. `am tunnel` only
   supervises the connection.
+- **`am` and `tmux` must be reachable over ssh.** The fleet runs remote commands
+  via `bash -lc`, so they need to be on the *bash login* PATH — a gotcha on
+  zsh-primary macOS, where `~/.bun/bin` / Homebrew are often only on the zsh PATH
+  (the host then shows as "unreachable"). `am` prepends `~/.bun/bin`,
+  `/opt/homebrew/bin`, and `/usr/local/bin` automatically, so the standard
+  install just works; if your `am`/`tmux` live elsewhere, add that dir to
+  `~/.bash_profile`.

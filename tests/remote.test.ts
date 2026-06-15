@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isForwardable, stripHostArgs } from "../src/remote";
+import { isForwardable, sshArgv, stripHostArgs } from "../src/remote";
 import { chooseOpener } from "../src/commands/click";
 import { buildNotifyCommand } from "../src/notify";
 import type { Config } from "../src/config";
@@ -10,6 +10,25 @@ describe("stripHostArgs", () => {
     expect(stripHostArgs(["new", "x", "--host", "box", "-m", "hi"])).toEqual(["new", "x", "-m", "hi"]);
     expect(stripHostArgs(["-L", "ls"])).toEqual(["ls"]);
     expect(stripHostArgs(["ls"])).toEqual(["ls"]);
+  });
+});
+
+describe("sshArgv", () => {
+  test("runs the command under a bash login shell with am/tmux dirs on PATH", () => {
+    const argv = sshArgv("box", "am ls --json", false);
+    expect(argv[0]).toBe("ssh");
+    expect(argv).toContain("box");
+    const cmd = argv.at(-1)!;
+    expect(cmd.startsWith("bash -lc ")).toBe(true);
+    // PATH is augmented so a zsh-only host still exposes am + tmux to bash
+    expect(cmd).toContain("$HOME/.bun/bin");
+    expect(cmd).toContain("/opt/homebrew/bin");
+    expect(cmd).toContain("am ls --json");
+  });
+
+  test("adds -t for an interactive (tty) session", () => {
+    expect(sshArgv("box", "am j x", true)).toContain("-t");
+    expect(sshArgv("box", "am j x", false)).not.toContain("-t");
   });
 });
 

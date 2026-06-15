@@ -62,12 +62,19 @@ export interface SshResult {
   stderr: string;
 }
 
-// Login shell (bash -lc) so ~/.bun/bin lands on PATH for non-interactive
-// ssh; bash rather than sh because profiles routinely use bashisms
-// (`source`) that dash chokes on. argv is re-quoted to survive both ssh's
-// argument join and the remote shell.
-function sshArgv(host: string, remoteCommand: string, tty: boolean): string[] {
-  return ["ssh", ...muxOpts(), ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remoteCommand)}`];
+// Login shell (bash -lc) so profile PATH applies for non-interactive ssh; bash
+// rather than sh because profiles routinely use bashisms (`source`) that dash
+// chokes on. We also PREPEND the usual install dirs to PATH: a remote host whose
+// `am`/`tmux` live only on its *zsh* PATH (common on macOS) wouldn't expose them
+// to a bash login shell, so the fleet would see it as unreachable. Prepending is
+// additive — the host's own profile PATH still applies and wins for anything not
+// in these dirs. Non-existent dirs (e.g. Homebrew on Linux) are harmless.
+const REMOTE_PATH_PREFIX =
+  'export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+
+export function sshArgv(host: string, remoteCommand: string, tty: boolean): string[] {
+  const wrapped = `bash -lc ${shQuote(REMOTE_PATH_PREFIX + remoteCommand)}`;
+  return ["ssh", ...muxOpts(), ...(tty ? ["-t"] : []), host, "--", wrapped];
 }
 
 export function amCommandString(args: string[]): string {
