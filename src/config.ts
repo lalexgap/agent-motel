@@ -53,6 +53,10 @@ export interface Config {
   // delivery; higher cap = cheaper idle. 0 disables collection entirely.
   outboxPollSeconds: number;
   outboxPollMaxSeconds: number;
+  // Server-side port that `am tunnel` opens to reach back to a roaming host's
+  // sshd (reverse SSH). The server addresses the tunneled host via an ssh Host
+  // alias pointing at localhost:<tunnelPort>.
+  tunnelPort: number;
 }
 
 const DEFAULTS: Config = {
@@ -67,6 +71,7 @@ const DEFAULTS: Config = {
   outboxTtlHours: 48,
   outboxPollSeconds: 2,
   outboxPollMaxSeconds: 30,
+  tunnelPort: 2222,
 };
 
 export function loadConfig(): Config {

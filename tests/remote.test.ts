@@ -35,7 +35,7 @@ describe("chooseOpener", () => {
 });
 
 describe("buildNotifyCommand", () => {
-  const base: Config = { notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30 };
+  const base: Config = { notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222 };
 
   test("notifyCommand wins on any platform", () => {
     const config = { ...base, notifyCommand: "curl -d \"$AM_MESSAGE\" ntfy.sh/x" };

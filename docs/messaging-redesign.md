@@ -136,6 +136,10 @@ socket instead of its own ssh) and the "any mail?" peek — below.
 
 ### Phase 3 — Deeper / optional (on demand or Alex's call)
 
+- **Reverse SSH tunnel** ✅ SHIPPED (`am tunnel`, `docs/reverse-ssh.md`): the roaming
+  host opens a reverse tunnel so the server can reach back to its sshd while online;
+  once added to the server's remotes the fleet works both ways (shared agent list, live
+  sends), falling back to the outbox when offline.
 - **Long-poll push** (`am __mail-stream`, IMAP-IDLE-over-ssh) gated to attached/foreground
   sessions, with the adaptive poll as the offline/reconnect fallback → sub-100ms while online.
 - **App-level ingest-ack** (`am __ingest-ack <msgId>`) — the only thing proving the *agent*

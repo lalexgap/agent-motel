@@ -34,6 +34,7 @@ import { sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
+import { runTunnel } from "./tunnel";
 
 const HELP = `am — manage and jump between coding agents (Claude Code & Codex)
 
@@ -111,6 +112,11 @@ remote (agents running on a server, am on your laptop):
                                auto-resume; uncommitted changes never travel)
   am clone <name> <host>      like move, but the source keeps running — the
                               conversation forks into two independent agents
+  am tunnel <server> [--port n] [--ssh-port p]
+                              (run on a roaming host) keep a reverse SSH tunnel
+                              open so <server> can reach back to this host's sshd
+                              — then add it to the server's config.remotes and
+                              the fleet works both ways (see docs/reverse-ssh.md)
 `;
 
 interface ParsedArgs {
@@ -118,7 +124,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -498,6 +504,12 @@ async function main(): Promise<void> {
     case "watch":
       await watchCommand();
       break;
+    case "tunnel":
+      await runTunnel(requirePositional(args, 0, "server host"), {
+        port: args.flags.port ? Number(args.flags.port) : undefined,
+        sshPort: args.flags["ssh-port"] ? Number(args.flags["ssh-port"]) : undefined,
+      });
+      return; // long-runner — supervises the reverse tunnel until killed
     case "__sidebar":
       await sidebarCommand();
       break;

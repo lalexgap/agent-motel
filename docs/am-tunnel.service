@@ -1,0 +1,26 @@
+# systemd user unit for the am reverse-ssh tunnel — run on the ROAMING host
+# (laptop) so the always-on server can reach back to it. See docs/reverse-ssh.md.
+#
+#   1. set the server alias below (replace <server>)
+#   2. mkdir -p ~/.config/systemd/user
+#      cp docs/am-tunnel.service ~/.config/systemd/user/
+#      systemctl --user daemon-reload && systemctl --user enable --now am-tunnel
+#      loginctl enable-linger $USER   # keep it up without an active login
+#
+# macOS uses launchd instead of systemd — run `am tunnel <server>` from a
+# launchd agent (KeepAlive=true) or just `am tunnel <server> &` for a session.
+#
+# sh -l so PATH picks up ~/.bun/bin from the profile.
+
+[Unit]
+Description=am reverse-ssh tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/bin/sh -lc 'am tunnel <server>'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -140,6 +140,12 @@ the structure that makes a conversation work:
   the sender — never a silent drop. (Both machines need this version of `am` for
   the round trip.)
 
+- **Live reverse reach (optional).** For real-time server→laptop while the laptop
+  is online, `am tunnel <server>` on the laptop opens a reverse SSH tunnel so the
+  server can reach back to it; add it to the server's `config.remotes` and the
+  fleet works both ways (shared agent list, live sends). Falls back to the outbox
+  when the laptop is offline. See [docs/reverse-ssh.md](docs/reverse-ssh.md).
+
 - **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
   `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A
   chatter with a warning — at injection time, so a cross-machine loop trips the
