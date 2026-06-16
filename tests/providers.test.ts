@@ -106,6 +106,52 @@ describe("buildLaunchCommand", () => {
     const plan = buildLaunchCommand("codex", "worker", {});
     expect(plan.command.at(-1)).toBe("check_for_update_on_startup=false");
   });
+
+  test("claude threads --model and --effort when set", () => {
+    const plan = buildLaunchCommand("claude", "worker", {
+      message: "do the thing",
+      remote: false,
+      model: "claude-opus-4-8",
+      effort: "high",
+    });
+    const m = plan.command.indexOf("--model");
+    expect(m).toBeGreaterThanOrEqual(0);
+    expect(plan.command[m + 1]).toBe("claude-opus-4-8");
+    const e = plan.command.indexOf("--effort");
+    expect(e).toBeGreaterThanOrEqual(0);
+    expect(plan.command[e + 1]).toBe("high");
+    // The message still lands last (the model/effort flags don't swallow it).
+    expect(plan.command.at(-1)).toBe("do the thing");
+  });
+
+  test("claude omits --model and --effort when unset", () => {
+    const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: false });
+    expect(plan.command).not.toContain("--model");
+    expect(plan.command).not.toContain("--effort");
+  });
+
+  test("codex maps effort onto -c model_reasoning_effort and never uses --effort", () => {
+    const plan = buildLaunchCommand("codex", "worker", {
+      message: "do the thing",
+      model: "gpt-5-codex",
+      effort: "low",
+    });
+    const m = plan.command.indexOf("--model");
+    expect(m).toBeGreaterThanOrEqual(0);
+    expect(plan.command[m + 1]).toBe("gpt-5-codex");
+    // Effort is a -c config override, not a --effort flag (codex has none).
+    expect(plan.command).not.toContain("--effort");
+    const c = plan.command.indexOf("model_reasoning_effort=low");
+    expect(c).toBeGreaterThanOrEqual(0);
+    expect(plan.command[c - 1]).toBe("-c");
+  });
+
+  test("codex omits model/effort overrides when unset", () => {
+    const plan = buildLaunchCommand("codex", "worker", { message: "do the thing" });
+    expect(plan.command).not.toContain("--model");
+    expect(plan.command).not.toContain("--effort");
+    expect(plan.command.some((a) => a.startsWith("model_reasoning_effort="))).toBe(false);
+  });
 });
 
 function agent(overrides: Partial<AgentState>): AgentState {

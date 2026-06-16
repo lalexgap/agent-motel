@@ -119,6 +119,11 @@ export interface LaunchOpts extends ConversationOpts {
   remote?: boolean;
   // Standing report relationship — surfaced to the agent in its primer.
   reportTo?: string;
+  // Optional model override; undefined = the provider's default model.
+  model?: string;
+  // Optional reasoning-effort override; undefined = the provider default.
+  // Wired per-provider (claude: --effort; codex: -c model_reasoning_effort=).
+  effort?: string;
 }
 
 export interface LaunchPlan {
@@ -145,6 +150,8 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
     "--disallowedTools", "Workflow",
     "--settings", writeHookSettings(),
     "--append-system-prompt", agentSystemPrompt(name, { reportTo: opts.reportTo }),
+    ...(opts.model ? ["--model", opts.model] : []),
+    ...(opts.effort ? ["--effort", opts.effort] : []),
     ...conversation,
   ];
   if (opts.message && remoteArgs.length === 0) command.push(opts.message);
@@ -157,7 +164,11 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
   if (provider === "codex") {
-    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES, ...codexConversationArgs(opts)];
+    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES];
+    if (opts.model) command.push("--model", opts.model);
+    // Codex has no --effort flag; reasoning effort is a config override.
+    if (opts.effort) command.push("-c", `model_reasoning_effort=${opts.effort}`);
+    command.push(...codexConversationArgs(opts));
     if (opts.message) command.push(`${agentSystemPrompt(name, { reportTo: opts.reportTo })}\n\n# Your task\n\n${opts.message}`);
     return { command };
   }

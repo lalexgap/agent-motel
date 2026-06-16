@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { hostname } from "node:os";
-import { agentProvider, listAgents, readAgent, resolveAgent } from "./state";
+import { agentProvider, listAgents, readAgent, resolveAgent, type Provider } from "./state";
 import { queueDepth } from "./queue";
 import { pick, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
@@ -48,9 +48,11 @@ usage:
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path] [--codex] [--remote | --no-remote]
+                [--model <m>] [--effort <level>]
                               spawn a new agent in tmux and jump into it
                               (--no-jump to stay; non-TTY callers never jump;
-                               --codex runs Codex instead of Claude Code)
+                               --codex runs Codex instead of Claude Code;
+                               --model / --effort override the provider defaults)
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
                               --worktree <branch> picks the branch
@@ -129,7 +131,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -279,8 +281,25 @@ async function pickerFlow(): Promise<void> {
       if (snapshot) return [`(last screen — ${displayStatus(agent)})`, ...snapshot];
       return [`(no live session — ${displayStatus(agent)})`];
     },
-    create: async (name: string, task: string | undefined, dir: string | undefined) => {
-      await newCommand({ name, message: task, dir: dir ? expandHome(dir) : undefined, jump: false, quiet: true });
+    create: async (
+      name: string,
+      task: string | undefined,
+      dir: string | undefined,
+      _host: string | undefined,
+      provider: string | undefined,
+      model: string | undefined,
+      effort: string | undefined,
+    ) => {
+      await newCommand({
+        name,
+        message: task,
+        dir: dir ? expandHome(dir) : undefined,
+        provider: provider as Provider | undefined,
+        model,
+        effort,
+        jump: false,
+        quiet: true,
+      });
       return name;
     },
     // Dir prompt prefill: the highlighted agent's dir (related work usually
@@ -361,6 +380,8 @@ async function main(): Promise<void> {
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
         provider: args.flags.codex ? "codex" : undefined,
+        model: args.flags.model as string | undefined,
+        effort: args.flags.effort as string | undefined,
         resume: args.flags.resume as string | boolean | undefined,
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
@@ -379,6 +400,8 @@ async function main(): Promise<void> {
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
         provider: args.flags.codex ? "codex" : undefined,
+        model: args.flags.model as string | undefined,
+        effort: args.flags.effort as string | undefined,
         timeoutSec: args.flags.timeout ? Number(args.flags.timeout) : undefined,
         rm: !!args.flags.rm,
         json: !!args.flags.json,

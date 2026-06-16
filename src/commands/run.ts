@@ -10,6 +10,8 @@ export interface RunOptions {
   dir?: string;
   worktree?: string;
   provider?: Provider;
+  model?: string;
+  effort?: string;
   // Seconds to wait for the task turn to finish before giving up. The agent
   // keeps running on timeout (it's a real agent) — only the wait gives up.
   timeoutSec?: number;
@@ -103,6 +105,8 @@ export async function runAgent(name: string, opts: RunOptions): Promise<RunResul
     dir: opts.dir,
     worktree: opts.worktree,
     provider: opts.provider,
+    model: opts.model,
+    effort: opts.effort,
     jump: false,
     quiet: true,
   });
