@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildInboxOutput, buildStopGate, formatInbox, hookEffects } from "../src/commands/hook";
+import { buildInboxOutput, buildStopGate, formatInbox, hookEffects, shortTask } from "../src/commands/hook";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
@@ -79,5 +79,16 @@ describe("stop gate (Stop hook block)", () => {
     expect(out.reason).toContain("[am · from api] ship it");
     const two = JSON.parse(buildStopGate(["a", "b"])!);
     expect(two.reason).toContain("2 messages from other agents");
+  });
+});
+
+describe("shortTask (backstop terseness)", () => {
+  test("empty for no task; first line only; capped with ellipsis", () => {
+    expect(shortTask(undefined)).toBe("");
+    expect(shortTask("short task")).toBe("short task");
+    expect(shortTask("first line\nsecond line\nthird")).toBe("first line");
+    const long = "x".repeat(200);
+    expect(shortTask(long).length).toBe(72);
+    expect(shortTask(long).endsWith("…")).toBe(true);
   });
 });

@@ -81,6 +81,14 @@ async function deliverReport(from: string, target: string, body: string): Promis
   if (t.status === "idle" || t.status === "starting") await deliverNext(target);
 }
 
+// Keep the backstop "went idle" heads-up terse: an agent's `task` can be a huge
+// -m prompt, so show only its first line, capped. Pure.
+export function shortTask(task: string | undefined, max = 72): string {
+  if (!task) return "";
+  const firstLine = task.split("\n")[0]!.trim();
+  return firstLine.length > max ? firstLine.slice(0, max - 1) + "…" : firstLine;
+}
+
 // The context block shown to the agent for its pending peer messages. Pure.
 export function formatInbox(messages: string[]): string {
   const n = messages.length;
@@ -222,7 +230,8 @@ export async function hookCommand(event: string): Promise<void> {
         alreadyReported,
       })
     ) {
-      const body = `went idle after ${formatDuration(workedSeconds)}${agent.task ? ` · task: ${agent.task}` : ""}`;
+      const t = shortTask(agent.task);
+      const body = `went idle after ${formatDuration(workedSeconds)}${t ? ` · task: ${t}` : ""}`;
       await deliverReport(name, agent.reportTo, body);
     }
   }
