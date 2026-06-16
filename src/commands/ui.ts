@@ -1,4 +1,4 @@
-import { agentProvider, listAgents, readAgent, recordAttached } from "../state";
+import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
@@ -293,18 +293,38 @@ export async function sidebarCommand(): Promise<void> {
       return `removed ${name}`;
     },
     remotes: loadConfig().remotes ?? [],
-    create: async (name: string, task: string | undefined, dir: string | undefined, host: string | undefined) => {
+    create: async (
+      name: string,
+      task: string | undefined,
+      dir: string | undefined,
+      host: string | undefined,
+      provider: string | undefined,
+      model: string | undefined,
+      effort: string | undefined,
+    ) => {
       if (host) {
         // Spawn on the remote via its own am; dir (if given) is a path on that
         // host, so it's passed through untouched (no local ~ expansion).
         const args = ["new", name, "--no-jump"];
         if (task) args.push("-m", task);
         if (dir) args.push("--dir", dir);
+        if (provider === "codex") args.push("--codex");
+        if (model) args.push("--model", model);
+        if (effort) args.push("--effort", effort);
         const res = sshAm(host, args);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${host} failed`);
         return `${host}:${name}`;
       }
-      await newCommand({ name, message: task, dir: dir ? expandHome(dir) : undefined, jump: false, quiet: true });
+      await newCommand({
+        name,
+        message: task,
+        dir: dir ? expandHome(dir) : undefined,
+        provider: provider as Provider | undefined,
+        model,
+        effort,
+        jump: false,
+        quiet: true,
+      });
       return name;
     },
     // Dir prompt prefill: the highlighted agent's dir (related work usually

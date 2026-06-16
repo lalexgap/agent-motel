@@ -57,7 +57,15 @@ export interface PickerHandlers {
   // Create a new agent; resolves to its key (name locally, host:name remote),
   // which the picker then jumps to (or selects, in persistent mode). host is
   // undefined for local, or a configured remote alias chosen in the flow.
-  create?: (name: string, task: string | undefined, dir: string | undefined, host: string | undefined) => Promise<string>;
+  create?: (
+    name: string,
+    task: string | undefined,
+    dir: string | undefined,
+    host: string | undefined,
+    provider: string | undefined,
+    model: string | undefined,
+    effort: string | undefined,
+  ) => Promise<string>;
   // Configured remote hosts. When non-empty, the create flow adds a
   // "where" step (local vs a remote) after the dir prompt.
   remotes?: string[];
@@ -294,10 +302,17 @@ export function editMenuHelp(handlers: PickerHandlers): string {
 }
 
 // The create form's fields. "where" (local vs a configured remote) only
-// appears when remotes exist, mirroring the old stepped flow.
+// appears when remotes exist, mirroring the old stepped flow. Provider/model/
+// effort are always shown — they apply equally to local and remote spawns.
 export function formFields(hasRemotes: boolean): string[] {
-  return hasRemotes ? ["name", "task", "dir", "where"] : ["name", "task", "dir"];
+  const base = ["name", "task", "dir", "provider", "model", "effort"];
+  return hasRemotes ? [...base, "where"] : base;
 }
+
+// Provider cycle (mirrors the Where field). The first entry is the default.
+export const PROVIDER_OPTIONS = ["claude", "codex"];
+// Effort cycle; "default" means omit the flag and let the provider decide.
+export const EFFORT_OPTIONS = ["default", "low", "medium", "high"];
 
 // Tab / Shift-Tab / ↑ / ↓ move the focus ring around the form, wrapping.
 export function cycleField(idx: number, count: number, delta: number): number {
@@ -385,6 +400,11 @@ export async function pick(
   // The "where" step is only shown when at least one remote is configured.
   const hostOptions = ["local", ...(handlers.remotes ?? [])];
   let newHostIdx = 0;
+  // Provider (Claude/Codex) and reasoning effort cycle like Where; model is
+  // free text (blank = the provider's default model).
+  let newProviderIdx = 0;
+  let newModel = "";
+  let newEffortIdx = 0;
   // Full-screen create form: which field has the focus ring, and the dir
   // autocomplete candidates to display (when the last Tab was ambiguous).
   const fields = formFields(hostOptions.length > 1);
@@ -424,10 +444,20 @@ export async function pick(
       name: "Name",
       task: "Task (optional)",
       dir: "Dir",
+      provider: "Provider",
+      model: "Model (optional)",
+      effort: "Effort (optional)",
       where: "Where",
     };
-    const labelW = 16;
+    const labelW = 18;
     const margin = "  ";
+
+    // The Where/Provider/Effort fields render as an arrow-cycled option strip,
+    // highlighting the selection (inverse when focused, [bracketed] otherwise).
+    const optionStrip = (options: string[], selected: number, focused: boolean): string =>
+      options
+        .map((o, oi) => (oi === selected ? (focused ? `${INVERSE} ${o} ${RESET}` : `[${o}]`) : ` ${o} `))
+        .join(" ");
 
     const fieldRow = (field: string, i: number): string => {
       const focused = i === formIdx;
@@ -437,13 +467,11 @@ export async function pick(
       if (field === "name") value = newName + (focused ? "▌" : "");
       else if (field === "task") value = newTask + (focused ? "▌" : "");
       else if (field === "dir") value = newDir + (focused ? "▌" : "");
-      else {
-        value = hostOptions
-          .map((h, hi) =>
-            hi === newHostIdx ? (focused ? `${INVERSE} ${h} ${RESET}` : `[${h}]`) : ` ${h} `,
-          )
-          .join(" ");
-      }
+      else if (field === "model")
+        value = newModel ? newModel + (focused ? "▌" : "") : (focused ? "▌" : "") + `${DIM}(default)${RESET}`;
+      else if (field === "provider") value = optionStrip(PROVIDER_OPTIONS, newProviderIdx, focused);
+      else if (field === "effort") value = optionStrip(EFFORT_OPTIONS, newEffortIdx, focused);
+      else value = optionStrip(hostOptions, newHostIdx, focused);
       return marker + label + value;
     };
 
@@ -479,7 +507,7 @@ export async function pick(
     const footer = [
       "Tab next/complete dir",
       "⇧Tab back",
-      fields.includes("where") && "←/→ where",
+      "←/→ change",
       "Enter create",
       "Esc cancel",
     ]
@@ -685,7 +713,9 @@ export async function pick(
       creating = true;
       render();
       const host = hostOptions[newHostIdx] === "local" ? undefined : hostOptions[newHostIdx];
-      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host).then(
+      const provider = PROVIDER_OPTIONS[newProviderIdx];
+      const effort = EFFORT_OPTIONS[newEffortIdx] === "default" ? undefined : EFFORT_OPTIONS[newEffortIdx];
+      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host, provider, newModel.trim() || undefined, effort).then(
         (created) => {
           if (!handlers.select) return finish(created);
           creating = false;
@@ -694,6 +724,9 @@ export async function pick(
           newTask = "";
           newDir = "";
           newHostIdx = 0;
+          newProviderIdx = 0;
+          newModel = "";
+          newEffortIdx = 0;
           formIdx = 0;
           formCandidates = [];
           setForm(false); // un-zoom the sidebar pane
@@ -840,6 +873,9 @@ export async function pick(
           newTask = "";
           newDir = "";
           newHostIdx = 0;
+          newProviderIdx = 0;
+          newModel = "";
+          newEffortIdx = 0;
           formIdx = 0;
           formCandidates = [];
           feedback = null;
@@ -873,13 +909,17 @@ export async function pick(
           moveField(1); // ↓
         } else if (key === "\x1b[A") {
           moveField(-1); // ↑
-        } else if (field === "where" && key === "\x1b[C") {
-          newHostIdx = (newHostIdx + 1) % hostOptions.length;
-        } else if (field === "where" && key === "\x1b[D") {
-          newHostIdx = (newHostIdx - 1 + hostOptions.length) % hostOptions.length;
+        } else if (key === "\x1b[C" || key === "\x1b[D") {
+          // ←/→ cycle the option-strip fields (provider, effort, where);
+          // ignored on text fields.
+          const dir = key === "\x1b[C" ? 1 : -1;
+          if (field === "provider") newProviderIdx = cycleField(newProviderIdx, PROVIDER_OPTIONS.length, dir);
+          else if (field === "effort") newEffortIdx = cycleField(newEffortIdx, EFFORT_OPTIONS.length, dir);
+          else if (field === "where") newHostIdx = cycleField(newHostIdx, hostOptions.length, dir);
         } else if (key === "\x7f" || key === "\b") {
           if (field === "name") newName = newName.slice(0, -1);
           else if (field === "task") newTask = newTask.slice(0, -1);
+          else if (field === "model") newModel = newModel.slice(0, -1);
           else if (field === "dir") {
             newDir = newDir.slice(0, -1);
             formCandidates = [];
@@ -887,11 +927,12 @@ export async function pick(
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (field === "name") newName += key;
           else if (field === "task") newTask += key;
+          else if (field === "model") newModel += key;
           else if (field === "dir") {
             newDir += key;
             formCandidates = [];
           }
-          // "where" takes no text — it's arrow-navigated.
+          // provider/effort/where take no text — they're arrow-navigated.
         }
         return render();
       }
@@ -959,6 +1000,9 @@ export async function pick(
         newTask = "";
         newDir = handlers.defaultDir?.(cursorName) ?? "";
         newHostIdx = 0;
+        newProviderIdx = 0;
+        newModel = "";
+        newEffortIdx = 0;
         formIdx = 0;
         formCandidates = [];
         feedback = null;

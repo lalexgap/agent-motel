@@ -65,6 +65,10 @@ export interface NewOptions {
   dir?: string;
   worktree?: string;
   provider?: Provider;
+  // Optional model override; undefined = the provider's default model.
+  model?: string;
+  // Optional reasoning-effort override; undefined = the provider default.
+  effort?: string;
   // Adopt an existing conversation: a session id, or `true` to open the
   // provider's interactive session picker inside the new agent.
   resume?: string | boolean;
