@@ -209,7 +209,7 @@ Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps w
   the same $HOME-relative path (repos are assumed cloned on both sides;
   uncommitted changes never travel), and the agent resumes on the target with its
   context intact.
-- **Durable agents**: agents survive as more than processes. The initial task is stored and searchable in the picker (filter matches name, task, and directory), the Stop hook keeps a last-screen snapshot so dead agents still show a preview, and conversations persist on disk — so days later you can find an agent by what it was doing and `am resume` it with its context intact, even across reboots (tmux sessions die on reboot; the agent's identity and conversation don't).
+- **Durable agents**: agents survive as more than processes. The initial task is stored and searchable in the picker (`f` filters name, task, and directory; `/` searches the full chat text), the Stop hook keeps a last-screen snapshot so dead agents still show a preview, and conversations persist on disk — so days later you can find an agent by what it said (`am search`, or `/` in the picker) and `am resume` it with its context intact, even across reboots (tmux sessions die on reboot; the agent's identity and conversation don't).
 
 All state lives in `~/.agent-manager/` as plain JSON — easy to inspect, easy to nuke.
 
