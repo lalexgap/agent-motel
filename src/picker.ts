@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { localAgentMatches, search } from "./search";
 
 export interface PickerItem {
   name: string;
@@ -282,7 +283,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "new-form" | "cd-dir" | "edit";
+type Mode = "list" | "filter" | "search" | "new-form" | "cd-dir" | "edit";
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
   return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
@@ -385,6 +386,14 @@ export async function pick(
   if (!process.stdin.isTTY) throw new Error("interactive picker needs a TTY (use `am ls` / `am j <name>`)");
 
   let filter = "";
+  // Chat search (`/`): a separate axis from the name/task substring `filter`.
+  // chatMatch is the live result of running `am search` over local agents' full
+  // conversations — name → matching snippet; null when not chat-searching.
+  // chatOrder preserves the search ranking. The list derives from CURRENT items
+  // each render (so status glyphs stay live), restricted to these names.
+  let chatQuery = "";
+  let chatMatch: Map<string, string> | null = null;
+  let chatOrder: string[] = [];
   let cursor = Math.max(0, items.findIndex((i) => i.name === initial));
   // The list reloads every second and agents come and go, so the cursor
   // follows a NAME, not an index — otherwise a reload silently moves the
@@ -434,7 +443,40 @@ export async function pick(
   };
 
   let showAll = false;
-  const filtered = () => visibleItems(items, filter, showAll);
+  const filtered = () => {
+    if (chatMatch) {
+      // Chat-search owns the list: show every agent whose conversation matched
+      // (exited included), in search-rank order, with the snippet surfaced as
+      // the first meta line for the highlighted row.
+      const byName = new Map(items.map((i) => [i.name, i]));
+      return chatOrder
+        .map((name) => byName.get(name))
+        .filter((i): i is PickerItem => !!i)
+        .map((i) => ({ ...i, meta: [`match    ${chatMatch!.get(i.name) ?? ""}`, ...(i.meta ?? [])] }));
+    }
+    return visibleItems(items, filter, showAll);
+  };
+
+  // Run `am search` over local agents' chats for the current query. Synchronous
+  // (ripgrep does the whole corpus in tens of ms) so it can run per keystroke
+  // without an async dance. Local registered agents only — they're the rows the
+  // picker can actually select; history/remote stay on the `am search` CLI.
+  const runChatSearch = () => {
+    const query = chatQuery.trim();
+    if (!query) {
+      chatMatch = null;
+      chatOrder = [];
+      return;
+    }
+    try {
+      const { order, snippets } = localAgentMatches(search(query, { limit: 100 }));
+      chatMatch = snippets;
+      chatOrder = order;
+    } catch {
+      chatMatch = null;
+      chatOrder = [];
+    }
+  };
 
   // The full-screen create form. Shows every field at once with a focus ring,
   // rendered across the whole (zoomed) pane rather than the list's narrow
@@ -564,24 +606,30 @@ export async function pick(
     const header: Cell =
       mode === "cd-dir"
         ? { text: `cd to: ${cdDir}▌` }
-        : mode === "filter"
+        : mode === "search"
+          ? { text: `search chats: ${chatQuery}▌` }
+          : mode === "filter"
             ? { text: `filter: ${filter}▌` }
-            : filter
-              ? { text: `filter: ${filter} · ⌫ clears` }
-              : {
-                  text: (() => {
-                    const exited = items.filter((i) => i.secondary).length;
-                    const hint = showAll ? " · all" : exited > 0 ? ` · ${exited} exited (a shows)` : "";
-                    return `agents (${matches.length})${hint} · f filters`;
-                  })(),
-                  style: DIM,
-                };
+            : chatMatch
+              ? { text: `search: ${chatQuery} (${matches.length}) · esc clears`, style: DIM }
+              : filter
+                ? { text: `filter: ${filter} · ⌫ clears` }
+                : {
+                    text: (() => {
+                      const exited = items.filter((i) => i.secondary).length;
+                      const hint = showAll ? " · all" : exited > 0 ? ` · ${exited} exited (a shows)` : "";
+                      return `agents (${matches.length})${hint} · f filters · / search`;
+                    })(),
+                    style: DIM,
+                  };
 
     // The meta block is sized to the largest meta across ALL items, not the
     // selected one — otherwise the list capacity (and every row below the
     // header) shifts as the cursor moves between agents with more or fewer
     // detail lines.
-    const metaHeight = Math.max(0, ...items.map((i) => i.meta?.length ?? 0));
+    // +1 while chat-searching: filtered() prepends a "match" snippet line to
+    // each row's meta, one more than any raw item carries.
+    const metaHeight = Math.max(0, ...items.map((i) => i.meta?.length ?? 0)) + (chatMatch ? 1 : 0);
     const metaBlock: Cell[] = metaHeight
       ? [
           { text: "" },
@@ -823,6 +871,27 @@ export async function pick(
         return render();
       }
 
+      if (mode === "search") {
+        // Esc clears the chat search entirely; Enter keeps the matched list up
+        // (mode → list) so you can navigate and jump/resume a result. Editing
+        // the query re-runs the search synchronously (ripgrep is fast).
+        if (key === "\x1b") {
+          chatQuery = "";
+          runChatSearch();
+          mode = "list";
+        } else if (key === "\r" || key === "\n") {
+          mode = "list";
+        } else if (key === "\x1b[A") moveCursor(-1);
+        else if (key === "\x1b[B") moveCursor(1);
+        else {
+          if (key === "\x7f" || key === "\b") chatQuery = chatQuery.slice(0, -1);
+          else if (key >= " " && !key.startsWith("\x1b")) chatQuery += key;
+          else return render();
+          runChatSearch();
+        }
+        return render();
+      }
+
       if (mode === "edit") {
         const target = filtered()[cursor];
         const pending = confirmRemove;
@@ -976,7 +1045,13 @@ export async function pick(
       const pendingConfirm = confirmRemove;
       confirmRemove = null;
 
-      if (key === "\x1b" || key === "q") {
+      if (key === "\x1b" && chatMatch) {
+        // A chat search is showing: esc clears it back to the full list rather
+        // than quitting the picker.
+        chatQuery = "";
+        runChatSearch();
+        feedback = null;
+      } else if (key === "\x1b" || key === "q") {
         // esc/q: in persistent mode hand off to quit (detach) and keep running.
         if (handlers.quit) handlers.quit();
         else return finish(null);
@@ -991,8 +1066,11 @@ export async function pick(
           // Focus just moved to the agent pane — reflect it without waiting a tick.
           refreshActivity();
         }
-      } else if (key === "f" || key === "/") {
+      } else if (key === "f") {
         mode = "filter";
+        feedback = null;
+      } else if (key === "/") {
+        mode = "search";
         feedback = null;
       } else if ((key === "\x0e" || key === "n") && handlers.create) {
         mode = "new-form";
@@ -1028,7 +1106,12 @@ export async function pick(
       // above — so wheel-scrolling the sidebar tracks like a list scroll.
       else if (key === "\x1b[5~") moveCursor(-1);
       else if (key === "\x1b[6~") moveCursor(1);
-      else if (key === "\x7f" || key === "\b") filter = "";
+      else if (key === "\x7f" || key === "\b") {
+        if (chatMatch) {
+          chatQuery = "";
+          runChatSearch();
+        } else filter = "";
+      }
       render();
     };
 

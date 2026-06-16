@@ -373,6 +373,20 @@ function searchRemotes(query: string, opts: SearchOptions): SearchResult[] {
   return out;
 }
 
+// Reduce results to the local registered agents the picker can actually select
+// (a row in its list), preserving search rank and dropping remote, history, and
+// duplicate hits. Returns the ordered names plus each agent's lead snippet.
+export function localAgentMatches(results: SearchResult[]): { order: string[]; snippets: Map<string, string> } {
+  const snippets = new Map<string, string>();
+  const order: string[] = [];
+  for (const r of results) {
+    if (!r.agentName || r.host || r.scope !== "agent" || snippets.has(r.agentName)) continue;
+    snippets.set(r.agentName, r.snippets[0]?.text ?? "");
+    order.push(r.agentName);
+  }
+  return { order, snippets };
+}
+
 export function search(query: string, opts: SearchOptions = {}): SearchResult[] {
   const local = searchLocal(query, opts);
   if (opts.localOnly || !opts.fleet) return local;

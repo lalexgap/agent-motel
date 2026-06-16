@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { search } from "../src/search";
+import { localAgentMatches, search, type SearchResult } from "../src/search";
 import { entryFragments } from "../src/transcript";
 import { writeAgent, type AgentState } from "../src/state";
 import { trashState } from "../src/trash";
@@ -144,6 +144,44 @@ describe("search (local corpus)", () => {
     const file = writeTranscript([claudeLine("user", "nothing to see here")]);
     writeAgent(agent("quiet", file));
     expect(search("zzzznope")).toHaveLength(0);
+  });
+});
+
+// localAgentMatches feeds the picker's `/` chat-search: only locally-registered
+// agents (selectable rows) survive, in rank order, each with its lead snippet.
+describe("localAgentMatches", () => {
+  function result(extra: Partial<SearchResult>): SearchResult {
+    return {
+      provider: "claude",
+      scope: "agent",
+      action: "resume",
+      command: "am resume x",
+      matchCount: 1,
+      snippets: [],
+      updatedAt: 0,
+      ...extra,
+    };
+  }
+
+  test("keeps local registered agents in order with their lead snippet", () => {
+    const { order, snippets } = localAgentMatches([
+      result({ agentName: "alpha", snippets: [{ kind: "user", text: "a-snip", matchStart: 0, matchLen: 1 }] }),
+      result({ agentName: "beta", snippets: [{ kind: "assistant", text: "b-snip", matchStart: 0, matchLen: 1 }] }),
+    ]);
+    expect(order).toEqual(["alpha", "beta"]);
+    expect(snippets.get("alpha")).toBe("a-snip");
+    expect(snippets.get("beta")).toBe("b-snip");
+  });
+
+  test("drops remote, history, and duplicate hits", () => {
+    const { order } = localAgentMatches([
+      result({ agentName: "remote", host: "server" }),
+      result({ agentName: "old", scope: "history", action: "adopt" }),
+      result({ agentName: "trashed", scope: "trash", action: "restore" }),
+      result({ agentName: "live" }),
+      result({ agentName: "live" }), // duplicate
+    ]);
+    expect(order).toEqual(["live"]);
   });
 });
 
