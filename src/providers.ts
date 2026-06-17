@@ -1,4 +1,4 @@
-import { writeHookSettings } from "./settings";
+import { writeHookSettings, writeMcpConfig } from "./settings";
 import { loadConfig } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
 
@@ -124,6 +124,8 @@ export interface LaunchOpts extends ConversationOpts {
   // Optional reasoning-effort override; undefined = the provider default.
   // Wired per-provider (claude: --effort; codex: -c model_reasoning_effort=).
   effort?: string;
+  // Per-agent MCP override; undefined = config.mcp default. `am new --no-mcp`.
+  mcp?: boolean;
 }
 
 export interface LaunchPlan {
@@ -133,6 +135,17 @@ export interface LaunchPlan {
   // prompt. With remote on, the message comes back here instead, for the
   // caller to queue; the SessionStart hook delivers it once the TUI is up.
   deferredMessage?: string;
+}
+
+// `--mcp-config` (the `am` MCP tools) for claude, plus the channels research-
+// preview flag when configured to run the server as a native inbound channel.
+// Placed among the flags (never last) so its value can't swallow the prompt.
+export function mcpArgs(opts: LaunchOpts): string[] {
+  const useMcp = opts.mcp ?? loadConfig().mcp;
+  if (!useMcp) return [];
+  const args = ["--mcp-config", writeMcpConfig()];
+  if (loadConfig().channels) args.push("--dangerously-load-development-channels", "server:am");
+  return args;
 }
 
 function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): LaunchPlan {
@@ -149,6 +162,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
     ...permissionArgs("claude"),
     "--disallowedTools", "Workflow",
     "--settings", writeHookSettings(),
+    ...mcpArgs(opts),
     "--append-system-prompt", agentSystemPrompt(name, { reportTo: opts.reportTo }),
     ...(opts.model ? ["--model", opts.model] : []),
     ...(opts.effort ? ["--effort", opts.effort] : []),

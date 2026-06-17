@@ -84,6 +84,8 @@ export interface NewOptions {
   // (no explicit target) means "the agent that spawned me".
   reportTo?: string;
   report?: boolean;
+  // Per-agent MCP override; undefined = config.mcp default (--no-mcp sets false).
+  mcp?: boolean;
   // Suppress console output (used by the picker, which owns the screen).
   quiet?: boolean;
 }

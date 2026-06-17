@@ -151,6 +151,15 @@ the structure that makes a conversation work:
   chatter with a warning — at injection time, so a cross-machine loop trips the
   same guard. `am comms <name>` shows the recent traffic the limiter sees.
 
+- **MCP tools (and channels).** Claude agents get an `am` MCP server (`config.mcp`,
+  on by default; `am new --no-mcp` to opt out) with typed tools — `send_message`,
+  `spawn_agent`, `list_agents`, … — so they act on the fleet without generating
+  shell. Opt into `config.channels` and that same server doubles as a Claude Code
+  **channel**: peer messages are pushed natively into the session (the tmux/hook
+  delivery stands down). Channels need a claude.ai login + Claude Code ≥2.1.80 and
+  are a research preview — see [docs/mcp.md](docs/mcp.md). Codex keeps the
+  tmux/hook path either way.
+
 ### Phone access (PWA)
 
 `am serve` starts a small HTTP server that exposes the fleet as a JSON API and

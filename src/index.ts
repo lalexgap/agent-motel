@@ -24,6 +24,7 @@ import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands
 import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
+import { resolveTarget } from "./route";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
 import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
@@ -36,6 +37,7 @@ import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
+import { runMcpServer } from "./mcp/server";
 
 const HELP = `am — manage and jump between coding agents (Claude Code & Codex)
 
@@ -216,29 +218,12 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
   const ref = args.positional[0];
   if (!ref) return;
 
-  const { host: explicitHost, name: explicitName } = splitFleetKey(ref);
-  if (explicitHost && explicitName) {
-    const known = loadConfig().remotes ?? [];
-    if (known.includes(explicitHost)) {
-      remoteExec(explicitHost, injectSender(command, argv.map((a) => (a === ref ? explicitName : a))));
-    }
-    return; // colon but unknown host — let local resolution complain
-  }
-
-  const localNames = listAgents().map((a) => a.name);
-  if (localNames.some((n) => n === ref || n.startsWith(ref))) return; // local wins
-
-  const remoteRows = fleetRows({ timeoutMs: 4000 }).rows.filter((r) => r.host);
-  const exact = remoteRows.filter((r) => r.name === ref);
-  const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
-  const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
-  if (match?.host) {
-    remoteExec(match.host, injectSender(command, argv.map((a) => (a === ref ? match.name : a))));
-  }
-  if (prefix.length > 1) {
-    throw new Error(
-      `"${ref}" is ambiguous across hosts: ${prefix.map((r) => `${r.host}:${r.name}`).join(", ")}`,
-    );
+  // Shared resolver (route.ts): only a "remote" target forwards over ssh;
+  // local/none fall through to local dispatch (which handles the outbox for
+  // unreachable targets).
+  const target = resolveTarget(ref);
+  if (target.kind === "remote") {
+    remoteExec(target.host, injectSender(command, argv.map((a) => (a === ref ? target.name : a))));
   }
 }
 
@@ -389,6 +374,7 @@ async function main(): Promise<void> {
         inPlace: !!args.flags["in-place"],
         reportTo: args.flags["report-to"] as string | undefined,
         report: !!args.flags.report,
+        mcp: args.flags["no-mcp"] ? false : undefined,
       });
       break;
     case "run": {
@@ -541,6 +527,9 @@ async function main(): Promise<void> {
         sshPort: args.flags["ssh-port"] ? Number(args.flags["ssh-port"]) : undefined,
       });
       return; // long-runner — supervises the reverse tunnel until killed
+    case "mcp":
+      await runMcpServer();
+      return; // long-runner — speaks MCP over stdio until the client disconnects
     case "__sidebar":
       await sidebarCommand();
       break;

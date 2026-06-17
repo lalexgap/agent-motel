@@ -39,6 +39,12 @@ export function hookSettingsFile(): string {
   return join(baseDir(), "hook-settings.json");
 }
 
+// Generated MCP server config handed to spawned agents (claude --mcp-config),
+// pointing at `am mcp` over stdio. See src/mcp/server.ts.
+export function mcpConfigFile(): string {
+  return join(baseDir(), "mcp-config.json");
+}
+
 export function configFile(): string {
   return join(baseDir(), "config.json");
 }

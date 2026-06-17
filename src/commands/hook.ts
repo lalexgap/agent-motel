@@ -8,6 +8,7 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
+import { channelActive } from "../channel";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -134,6 +135,7 @@ export function buildStopGate(messages: string[]): string | null {
 // idle-drain (deliverNext): atomic + lock-guarded means each message is consumed
 // exactly once whether it's surfaced here or typed in on idle.
 function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
+  if (channelActive(name)) return; // a channel pushes this agent's inbound instead
   if (queueDepth(name) === 0) return; // nothing pending — avoid lock churn per tool call
   if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
   try {
@@ -150,6 +152,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
 // At a Stop boundary: drain pending peer messages and return the block JSON, or
 // null if there's nothing (or another delivery is mid-flight — let it handle).
 function stopGate(name: string): string | null {
+  if (channelActive(name)) return null; // a channel pushes this agent's inbound instead
   if (!acquireDeliverLock(name)) return null;
   try {
     const pending: string[] = [];

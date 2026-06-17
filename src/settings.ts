@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureDirs, hookSettingsFile } from "./paths";
+import { ensureDirs, hookSettingsFile, mcpConfigFile } from "./paths";
 
 // Claude Code hook event -> `am hook <arg>` subcommand.
 export const HOOK_EVENTS: Record<string, string> = {
@@ -41,5 +41,28 @@ export function writeHookSettings(): string {
   ensureDirs();
   const file = hookSettingsFile();
   writeFileSync(file, JSON.stringify(buildHookSettings(), null, 2) + "\n");
+  return file;
+}
+
+// The generated `claude --mcp-config` handed to spawned agents: an `am` server
+// over stdio (`am mcp`). Absolute bun + script paths for the same PATH reason as
+// the hooks. The stdio child inherits AGENTMGR_AGENT from the tmux session, so
+// the server attributes sends as that agent with no token.
+export function buildMcpConfig(): object {
+  return {
+    mcpServers: {
+      am: {
+        type: "stdio",
+        command: process.execPath,
+        args: [cliEntrypoint(), "mcp"],
+      },
+    },
+  };
+}
+
+export function writeMcpConfig(): string {
+  ensureDirs();
+  const file = mcpConfigFile();
+  writeFileSync(file, JSON.stringify(buildMcpConfig(), null, 2) + "\n");
   return file;
 }

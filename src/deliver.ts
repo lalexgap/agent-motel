@@ -5,6 +5,7 @@ import { queuePeek, queuePop } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { queueDir } from "./paths";
+import { channelActive } from "./channel";
 
 // Per-agent delivery lock. deliverNext can be invoked concurrently from three
 // places — the Stop hook's detached process, the daemon's /event handler, and
@@ -102,6 +103,7 @@ const SUBMIT_CHECK_MS = 600;
 export async function deliverNext(name: string): Promise<boolean> {
   const agent = readAgent(name);
   if (!agent || !hasSession(agent.tmuxSession)) return false;
+  if (channelActive(name)) return false; // a channel owns this agent's inbound — don't also type
   // Serialize delivery for this agent across processes — held through the verify
   // loop so a concurrent caller can't grab the same (or the next) queue head.
   if (!acquireDeliverLock(name)) return false;

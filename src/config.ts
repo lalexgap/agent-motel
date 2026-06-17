@@ -62,6 +62,17 @@ export interface Config {
   // sshd (reverse SSH). The server addresses the tunneled host via an ssh Host
   // alias pointing at localhost:<tunnelPort>.
   tunnelPort: number;
+  // Give spawned (claude) agents the `am` MCP server — typed fleet tools
+  // (send_message, spawn_agent, …) so they act on the fleet without generating
+  // shell. Outbound only; inbound delivery is unaffected. Per-agent off via
+  // `am new --no-mcp`. (Claude only — Codex MCP config is separate.)
+  mcp: boolean;
+  // Run the `am` MCP server as a Claude Code CHANNEL: push queued peer messages
+  // straight into the agent's session (native, no tmux keystrokes). Requires a
+  // claude.ai login + Claude Code ≥2.1.80 + the channel research preview, so
+  // it's OPT-IN. When on, the channel owns inbound for that agent and the
+  // tmux/hook delivery stands down (it resumes if the channel goes away).
+  channels: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -78,6 +89,8 @@ const DEFAULTS: Config = {
   outboxPollSeconds: 2,
   outboxPollMaxSeconds: 30,
   tunnelPort: 2222,
+  mcp: true,
+  channels: false,
 };
 
 export function loadConfig(): Config {
