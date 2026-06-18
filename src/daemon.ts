@@ -159,16 +159,23 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   });
 
   // Sessions can die without a SessionEnd hook (tmux kill, reboot) — sweep
-  // them to exited so status stays honest. Also self-heal queues that got
-  // stranded while an agent was idle (e.g. a send racing a status change):
-  // an idle agent fires no Stop hook, so nothing else would drain them.
+  // them to exited so status stays honest. Also self-heal stranded queues: any
+  // live agent with pending mail is a delivery candidate, and deliverNext reads
+  // the *pane* (not the status file) to decide it's safe to type. That rescues
+  // the common stuck case — a finished agent left marked "working" by a missed
+  // Stop hook fires no Stop and was skipped by the old `status === "idle"` gate,
+  // so its mail sat unread until the human prompted. A genuinely busy agent is
+  // left alone (deliverNext bails on the "esc to interrupt" footer).
   const reconciler = setInterval(() => {
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited");
         continue;
       }
-      if (agent.status === "idle" && queueDepth(agent.name) > 0) {
+      // Skip "needs-attention": a permission dialog or prompt may be up, where
+      // typing could pick an option. Everything else live (idle / working /
+      // starting) is a candidate — deliverNext checks the pane before typing.
+      if (agent.status !== "exited" && agent.status !== "needs-attention" && queueDepth(agent.name) > 0) {
         try {
           void deliverNext(agent.name);
         } catch (error) {

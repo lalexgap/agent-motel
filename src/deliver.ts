@@ -83,6 +83,24 @@ export function inputBoxText(pane: string[]): string {
   return PLACEHOLDER_RE.test(text) ? "" : text;
 }
 
+// Is the agent actively generating a response right now? Claude Code and Codex
+// both show an "esc to interrupt" hint in the footer for the whole duration of
+// a turn (thinking, generating, and while tools run); it's absent at an idle
+// prompt. We treat it as the authoritative "do NOT type into this pane" signal
+// — more trustworthy than the status file, which can lag: a missed Stop hook
+// leaves a finished agent marked "working", which used to strand its queued
+// mail until the human prompted. Scans only the footer (last few lines) so an
+// "esc to interrupt" quoted in scrollback can't read as busy.
+const INTERRUPT_RE = /\besc to interrupt\b/i;
+
+export function paneBusy(pane: string[]): boolean {
+  const tail = pane
+    .slice(-6)
+    .map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""))
+    .join("\n");
+  return INTERRUPT_RE.test(tail);
+}
+
 // If the head of our message is still sitting in the input box after the
 // Enter, the submit got eaten.
 export function looksUnsubmitted(pane: string[], message: string): boolean {
@@ -109,11 +127,15 @@ export async function deliverNext(name: string): Promise<boolean> {
     const message = queuePeek(name);
     if (message === null) return false;
 
-    // Someone (usually the human) is mid-composition in the input box: typing
-    // our message now would splice into theirs. Leave it queued — the daemon's
-    // reconcile loop and the next Stop drain retry until the box clears.
+    // Don't type into a pane that isn't sitting idle at its prompt. Two cases:
+    //   - the agent is mid-turn (paneBusy) — typing would splice into the turn;
+    //   - someone (usually the human) is mid-composition in the input box.
+    // Either way leave it queued — the daemon's reconcile loop and the next Stop
+    // drain retry until the pane is clear. Reading the pane (not the status
+    // file) is what lets us deliver to an agent that's genuinely idle but still
+    // marked "working" by a missed Stop hook.
     const before = capturePane(agent.tmuxSession);
-    if (before && inputBoxText(before)) return false;
+    if (before && (paneBusy(before) || inputBoxText(before))) return false;
 
     sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent, message) });
     queuePop(name);

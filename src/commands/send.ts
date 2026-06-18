@@ -76,12 +76,15 @@ export async function sendCommand(
   }
 
   const depth = queueAppend(agent.name, body);
-  if (agent.status === "idle" || agent.status === "starting") {
-    // Agent isn't working, so no Stop hook is coming — deliver right away.
-    await deliverNext(agent.name);
-    console.log(`delivered to "${agent.name}" (was idle)`);
+  // Always attempt delivery: deliverNext reads the pane and only types when the
+  // agent is genuinely idle (no "esc to interrupt" footer, empty input box), so
+  // this lands immediately even when the status file still says "working" after
+  // a missed Stop hook. A truly busy agent gets it on its next Stop / the
+  // daemon's reconcile sweep.
+  if (await deliverNext(agent.name)) {
+    console.log(`delivered to "${agent.name}"`);
   } else {
-    console.log(`queued for "${agent.name}" (${depth} in queue) — delivered when it goes idle`);
+    console.log(`queued for "${agent.name}" (${depth} in queue) — delivered when it's free`);
   }
 }
 
