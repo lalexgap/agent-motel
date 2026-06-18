@@ -1,6 +1,4 @@
-import { readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { completeDir, completeDirRemote } from "./dirComplete";
 import { localAgentMatches, search } from "./search";
 
 export interface PickerItem {
@@ -321,61 +319,6 @@ export function cycleField(idx: number, count: number, delta: number): number {
   return (((idx + delta) % count) + count) % count;
 }
 
-function commonPrefix(strs: string[]): string {
-  if (strs.length === 0) return "";
-  let prefix = strs[0]!;
-  for (const s of strs) {
-    while (!s.startsWith(prefix)) prefix = prefix.slice(0, -1);
-  }
-  return prefix;
-}
-
-function expandTilde(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return homedir() + path.slice(1);
-  return path;
-}
-
-export interface DirCompletion {
-  // The input after completion. Unchanged when there's nothing to complete.
-  value: string;
-  // Candidate basenames to display when the completion is ambiguous; empty
-  // when a unique completion was applied or there was nothing to match.
-  candidates: string[];
-}
-
-// Tab-completion for the Dir field against the LOCAL filesystem (directories
-// only — remote dirs stay manual). Expands ~ for reading but preserves the
-// literal head of the input (including ~) in the returned value, since
-// completion only ever rewrites the final path segment. A unique match is
-// completed and gets a trailing "/" so the next Tab descends into it; an
-// ambiguous one is completed to the common prefix and the candidates returned
-// for display in the form's roomy full-screen space.
-export function completeDir(input: string): DirCompletion {
-  const expanded = expandTilde(input);
-  // The directory to read and the prefix to match within it. A trailing slash
-  // means "list this directory" (empty prefix); otherwise the last segment is
-  // the prefix and its parent is the directory to read.
-  const dir = expanded.endsWith("/") ? expanded || "/" : dirname(expanded) || ".";
-  const slash = input.lastIndexOf("/");
-  const prefix = slash >= 0 ? input.slice(slash + 1) : input;
-  const head = slash >= 0 ? input.slice(0, slash + 1) : "";
-
-  let entries: string[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  } catch {
-    return { value: input, candidates: [] };
-  }
-
-  const matches = entries.filter((n) => n.startsWith(prefix)).sort();
-  if (matches.length === 0) return { value: input, candidates: [] };
-  if (matches.length === 1) return { value: head + matches[0] + "/", candidates: [] };
-  return { value: head + commonPrefix(matches), candidates: matches };
-}
-
 export async function pick(
   load: () => PickerItem[],
   handlers: PickerHandlers = {},
@@ -419,6 +362,11 @@ export async function pick(
   const fields = formFields(hostOptions.length > 1);
   let formIdx = 0;
   let formCandidates: string[] = [];
+  // Remote Dir completion runs over ssh: dirQuerying drives the "(querying …)"
+  // line, and dirQueryGen is bumped on every dir edit / focus move / new query
+  // so a slow round-trip that lands after the input changed is discarded.
+  let dirQuerying = false;
+  let dirQueryGen = 0;
   let cdDir = "";
   let cdTarget: string | null = null;
   let creating = false;
@@ -544,6 +492,11 @@ export async function pick(
         lines.push(margin + shown.slice(i, i + perRow).map((c) => c.padEnd(colW)).join(""));
       }
       if (shown.length < formCandidates.length) lines.push(`${margin}${DIM}…${RESET}`);
+    }
+
+    // Remote Dir completion is mid-flight: tell the user which host we're asking.
+    if (dirQuerying) {
+      lines.push(`${margin}${DIM}querying ${hostOptions[newHostIdx]}…${RESET}`);
     }
 
     const footer = [
@@ -777,6 +730,8 @@ export async function pick(
           newEffortIdx = 0;
           formIdx = 0;
           formCandidates = [];
+          dirQuerying = false;
+          dirQueryGen++;
           setForm(false); // un-zoom the sidebar pane
           feedback = asFeedback(handlers.select(created));
           items = load();
@@ -935,6 +890,7 @@ export async function pick(
         const moveField = (delta: number) => {
           formIdx = cycleField(formIdx, fields.length, delta);
           formCandidates = [];
+          dirQueryGen++; // discard any in-flight remote completion
         };
         if (key === "\x1b") {
           mode = "list";
@@ -947,6 +903,8 @@ export async function pick(
           newEffortIdx = 0;
           formIdx = 0;
           formCandidates = [];
+          dirQuerying = false;
+          dirQueryGen++;
           feedback = null;
           setForm(false); // un-zoom the sidebar pane
         } else if (key === "\r" || key === "\n") {
@@ -958,19 +916,45 @@ export async function pick(
             return submitCreate();
           }
         } else if (key === "\t") {
-          // Tab on the Dir field completes against the local filesystem; if it
-          // makes no progress (already complete, no matches) it falls through
-          // to moving focus, so Tab-Tab still advances.
-          if (field === "dir") {
-            const { value, candidates } = completeDir(newDir);
+          // Tab on the Dir field completes; if it makes no progress (already
+          // complete, no matches) it falls through to moving focus, so Tab-Tab
+          // still advances. Local completion is synchronous; when Where points
+          // at a remote, the dir lives on that host, so completion is one ssh
+          // round-trip — fired here and applied when it resolves.
+          const completeHost = hostOptions[newHostIdx] === "local" ? undefined : hostOptions[newHostIdx];
+          const applyCompletion = (value: string, candidates: string[]) => {
             if (value !== newDir || candidates.length) {
               newDir = value;
               formCandidates = candidates;
             } else {
               moveField(1);
             }
-          } else {
+          };
+          if (field !== "dir") {
             moveField(1);
+          } else if (!completeHost) {
+            const { value, candidates } = completeDir(newDir);
+            applyCompletion(value, candidates);
+          } else if (!dirQuerying) {
+            const gen = ++dirQueryGen;
+            dirQuerying = true;
+            formCandidates = [];
+            feedback = null;
+            completeDirRemote(completeHost, newDir, { timeoutMs: 4000 }).then(
+              ({ value, candidates }) => {
+                if (finished || gen !== dirQueryGen) return;
+                dirQuerying = false;
+                // Only apply if focus is still on the (unchanged) Dir field.
+                if (mode === "new-form" && fields[formIdx] === "dir") applyCompletion(value, candidates);
+                render();
+              },
+              (error: Error) => {
+                if (finished || gen !== dirQueryGen) return;
+                dirQuerying = false;
+                feedback = { text: error.message, level: "warn" };
+                render();
+              },
+            );
           }
         } else if (key === "\x1b[Z") {
           moveField(-1); // shift-tab
@@ -992,6 +976,7 @@ export async function pick(
           else if (field === "dir") {
             newDir = newDir.slice(0, -1);
             formCandidates = [];
+            dirQueryGen++; // input changed: discard any in-flight completion
           }
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (field === "name") newName += key;
@@ -1000,6 +985,7 @@ export async function pick(
           else if (field === "dir") {
             newDir += key;
             formCandidates = [];
+            dirQueryGen++; // input changed: discard any in-flight completion
           }
           // provider/effort/where take no text — they're arrow-navigated.
         }
@@ -1083,6 +1069,8 @@ export async function pick(
         newEffortIdx = 0;
         formIdx = 0;
         formCandidates = [];
+        dirQuerying = false;
+        dirQueryGen++;
         feedback = null;
         setForm(true); // zoom the sidebar pane to full screen
       } else if (key === "a") {
