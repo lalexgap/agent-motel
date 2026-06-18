@@ -102,9 +102,9 @@ describe("feedbackBanner", () => {
 });
 
 describe("formFields", () => {
-  test("adds the where field only when remotes exist", () => {
+  test("adds the where field (before dir) only when remotes exist", () => {
     expect(formFields(false)).toEqual(["name", "task", "dir", "provider", "model", "effort"]);
-    expect(formFields(true)).toEqual(["name", "task", "dir", "provider", "model", "effort", "where"]);
+    expect(formFields(true)).toEqual(["name", "task", "where", "dir", "provider", "model", "effort"]);
   });
 });
 

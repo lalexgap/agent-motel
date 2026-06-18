@@ -304,8 +304,11 @@ export function editMenuHelp(handlers: PickerHandlers): string {
 // appears when remotes exist, mirroring the old stepped flow. Provider/model/
 // effort are always shown — they apply equally to local and remote spawns.
 export function formFields(hasRemotes: boolean): string[] {
-  const base = ["name", "task", "dir", "provider", "model", "effort"];
-  return hasRemotes ? [...base, "where"] : base;
+  // "where" (location) sits just before "dir" so you pick the host first — the
+  // dir field then completes against that host on the first Tab.
+  return hasRemotes
+    ? ["name", "task", "where", "dir", "provider", "model", "effort"]
+    : ["name", "task", "dir", "provider", "model", "effort"];
 }
 
 // Provider cycle (mirrors the Where field). The first entry is the default.
