@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { codexHome } from "./codexHooks";
 import { displayStatus, type DisplayStatus } from "./commands/ls";
 import { loadConfig } from "./config";
+import { claudeProjectsDir } from "./paths";
 import { sshAm } from "./remote";
 import { agentProvider, listAgents, type Provider } from "./state";
 import { listTrashed } from "./trash";
@@ -136,7 +136,7 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
 const CLAUDE_SESSION_ID_RE = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
 
 function* walkHistory(): Generator<{ file: string; provider: Provider; sessionId?: string }> {
-  const claudeRoot = join(homedir(), ".claude", "projects");
+  const claudeRoot = claudeProjectsDir();
   for (const file of walkJsonl(claudeRoot)) {
     const m = CLAUDE_SESSION_ID_RE.exec(basename(file));
     yield { file, provider: "claude", sessionId: m?.[1] ?? basename(file).replace(/\.jsonl$/, "") };

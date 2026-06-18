@@ -25,6 +25,14 @@ export function worktreesDir(): string {
   return join(baseDir(), "worktrees");
 }
 
+// Claude's transcript store. Reads process.env.HOME live rather than
+// os.homedir() — Bun caches homedir() at startup, so a runtime HOME override
+// (tests sandboxing the search corpus) wouldn't otherwise apply. In normal use
+// HOME is the real home, so this is unchanged behavior.
+export function claudeProjectsDir(): string {
+  return join(process.env.HOME ?? homedir(), ".claude", "projects");
+}
+
 // Removed agents' state files are snapshotted here so an accidental `am rm`
 // is undoable with `am restore`.
 export function trashDir(): string {
