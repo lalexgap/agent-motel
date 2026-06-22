@@ -353,8 +353,16 @@ fi
 # ---- 6. verify -------------------------------------------------------------
 info "verifying…"
 if [[ "$DRY_RUN" != 1 ]]; then
-  SAMPLE=$(printf '%s\n' "$INV" | head -1 | cut -f4)
-  if [[ -n "$SAMPLE" ]]; then
+  # Sample a worktree that actually EXISTS — stale agent records can point at
+  # directories that were cleaned up long ago (their .git is gone); those would
+  # fail git through no fault of the migration. Pick the first present one.
+  SAMPLE=""
+  while IFS=$'\t' read -r _n _p _s dir _t _l; do
+    [[ -n "$dir" && -e "$dir/.git" ]] && { SAMPLE="$dir"; break; }
+  done <<< "$INV"
+  if [[ -z "$SAMPLE" ]]; then
+    info "no existing worktree to sample (all records stale) — skipping git check"
+  else
     git -C "$SAMPLE" status --short >/dev/null 2>&1 && info "git OK in sample worktree: $SAMPLE" \
       || die "git check failed in $SAMPLE — investigate before resuming"
     RP=$(readlink -f "$SAMPLE")
