@@ -207,16 +207,13 @@ while IFS=$'\t' read -r name provider status dir tpath live; do
 done <<< "$INV"
 info "live worktree agents (${#LIVE_AGENTS[@]}): ${LIVE_AGENTS[*]:-<none>}"
 
-# ---- 3. copy to dest (additive; original untouched) ------------------------
+# ---- 3. pre-copy while live (additive; original untouched; no downtime) ----
+# Bulk copy with the agents still running, to minimize the later quiesced
+# window. The authoritative, consistent copy is the delta re-sync in step 4b,
+# after writers are stopped.
 if ! already_migrated; then
-  info "rsync pass 1 → $DEST"
+  info "rsync pre-copy (live) → $DEST"
   run "$SUDO rsync -aHAX --numeric-ids --delete '$SRC/' '$DEST/'"
-  info "rsync pass 2 (verify: must report no changes)"
-  if [[ "$DRY_RUN" != 1 ]]; then
-    CHANGES=$(RSYNC -aHAX --numeric-ids --delete -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
-    [[ "$CHANGES" == 0 ]] || die "rsync verify found $CHANGES differing entries — aborting before swap"
-  fi
-  info "copy verified."
 fi
 
 # ---- 4. stop live agents ---------------------------------------------------
@@ -233,6 +230,21 @@ if ! already_migrated && [[ ${#LIVE_AGENTS[@]} -gt 0 ]]; then
       done
     done
   fi
+fi
+
+# ---- 4b. delta re-sync now that writers are quiesced -----------------------
+# This is the authoritative copy: with the agents stopped, nothing is writing
+# into the worktrees, so this catches anything that changed during the live
+# pre-copy. The verify pass must then report zero differences before we swap.
+if ! already_migrated; then
+  info "rsync delta (agents stopped) → $DEST"
+  run "$SUDO rsync -aHAX --numeric-ids --delete '$SRC/' '$DEST/'"
+  info "verify: re-sync must report no remaining differences"
+  if [[ "$DRY_RUN" != 1 ]]; then
+    CHANGES=$(RSYNC -aHAX --numeric-ids --delete -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
+    [[ "$CHANGES" == 0 ]] || die "verify found $CHANGES differing entries after stop — aborting before swap (is something still writing under $SRC?)"
+  fi
+  info "copy verified — source and dest are identical."
 fi
 
 # ---- 5. swap the path ------------------------------------------------------
