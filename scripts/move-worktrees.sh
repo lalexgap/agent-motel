@@ -16,6 +16,9 @@
 #     --dest <dir>          destination root (default: /mnt/fastdata/agent-manager/worktrees)
 #     --dry-run             print what would happen; change nothing
 #     --no-resume           don't auto-resume agents that were live
+#     --kill-strays         kill leaked dev-server processes (rails/bin/dev/chrome)
+#                           still rooted under the worktrees after the stop;
+#                           without it the script refuses to swap if any remain
 #     --purge-backup        after a verified migration, delete the on-root backup
 #                           (this is the step that actually frees the ~15 G)
 #     --yes                 don't prompt for confirmation before destructive steps
@@ -35,6 +38,7 @@ DRY_RUN=0
 NO_RESUME=0
 PURGE_BACKUP=0
 ASSUME_YES=0
+KILL_STRAYS=0
 
 SRC="${HOME}/.agent-manager/worktrees"
 AGENTS_DIR="${HOME}/.agent-manager/agents"
@@ -53,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)       DRY_RUN=1; shift;;
     --no-resume)     NO_RESUME=1; shift;;
     --purge-backup)  PURGE_BACKUP=1; shift;;
+    --kill-strays)   KILL_STRAYS=1; shift;;
     --yes)           ASSUME_YES=1; shift;;
     -h|--help)       sed -n '2,40p' "$0"; exit 0;;
     *)               die "unknown arg: $1";;
@@ -229,6 +234,37 @@ if ! already_migrated && [[ ${#LIVE_AGENTS[@]} -gt 0 ]]; then
         sleep 0.5
       done
     done
+  fi
+fi
+
+# ---- 4a. no straggler processes rooted under the worktrees -----------------
+# am stop kills the agent's process group, but detached dev servers (rails,
+# bin/dev, headless chrome) reparent to init (ppid=1) and survive — holding cwd
+# or open files under the worktrees. If they outlive the swap they stay pinned
+# to the old (backup) inode and any writes land in the soon-purged backup.
+# Detect them; refuse to swap unless --kill-strays was given.
+if ! already_migrated && [[ "$DRY_RUN" != 1 ]]; then
+  mapfile -t STRAYS < <(
+    for p in /proc/[0-9]*; do
+      pid=${p#/proc/}
+      { l=$(readlink "$p/cwd" 2>/dev/null) && [[ "$l" == "$SRC"/* ]] && { echo "$pid"; continue; }; } || true
+      for fd in "$p"/fd/*; do
+        t=$(readlink "$fd" 2>/dev/null) || continue
+        [[ "$t" == "$SRC"/* ]] && { echo "$pid"; break; }
+      done
+    done | sort -un)
+  if [[ ${#STRAYS[@]} -gt 0 ]]; then
+    echo "[move-worktrees] processes still rooted under $SRC after stopping agents:" >&2
+    for pid in "${STRAYS[@]}"; do
+      echo "    pid $pid ($(ps -o comm= -p "$pid" 2>/dev/null)) cwd=$(readlink /proc/"$pid"/cwd 2>/dev/null)" >&2
+    done
+    if [[ "$KILL_STRAYS" == 1 ]]; then
+      confirm "Kill these ${#STRAYS[@]} straggler process(es)?" || die "aborted before killing strays"
+      kill "${STRAYS[@]}" 2>/dev/null || true; sleep 2; kill -9 "${STRAYS[@]}" 2>/dev/null || true
+      info "strays terminated."
+    else
+      die "refusing to swap with live processes under $SRC (likely leaked dev servers). Stop them, or rerun with --kill-strays."
+    fi
   fi
 fi
 
