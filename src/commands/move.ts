@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   agentProvider,
   agentSessionId,
+  listAgents,
   readAgent,
   resolveAgent,
   writeAgent,
@@ -70,6 +71,65 @@ export function targetTranscriptPath(
     return join(targetHome, ".codex", codexRelative);
   }
   return join(targetHome, ".claude", "projects", claudeProjectSlug(targetDir), `${sessionId}.jsonl`);
+}
+
+function gitOut(dir: string, ...args: string[]): { ok: boolean; out: string } {
+  const r = Bun.spawnSync(["git", "-C", dir, ...args]);
+  return { ok: r.exitCode === 0, out: r.stdout.toString().trim() };
+}
+
+// git resolves symlinks, so a repo kept at ~/code/x → /mnt/fastdata/x reports
+// its root as the /mnt path — which a move can't remap across machines (it's
+// not under $HOME). Recover the portable $HOME path that a sibling agent in
+// the same repo already recorded; fall back to the resolved path otherwise.
+function logicalRepoRoot(resolvedRoot: string): string {
+  const home = homedir();
+  if (mapHomeDir(resolvedRoot, home, home) !== null) return resolvedRoot; // already under $HOME
+  for (const a of listAgents()) {
+    if (!a.repoRoot || mapHomeDir(a.repoRoot, home, home) === null) continue;
+    try {
+      if (realpathSync(a.repoRoot) === resolvedRoot) return a.repoRoot;
+    } catch {}
+  }
+  return resolvedRoot;
+}
+
+// Reconstruct worktree metadata for an agent whose `dir` is a linked git
+// worktree but that never recorded worktreePath/repoRoot (older agents, or
+// ones whose metadata was lost). Returns null when `dir` isn't a *linked*
+// worktree — the main checkout has nothing to recreate. This is what lets a
+// move recreate the worktree on the target instead of failing because the
+// directory doesn't exist there.
+export function inferWorktree(
+  dir: string,
+): { worktreePath: string; worktreeBranch?: string; repoRoot: string } | null {
+  if (!existsSync(dir)) return null;
+  const gitDir = gitOut(dir, "rev-parse", "--git-dir");
+  const commonDir = gitOut(dir, "rev-parse", "--git-common-dir");
+  if (!gitDir.ok || !commonDir.ok) return null;
+  // Same git-dir and common-dir ⇒ the main checkout, not a linked worktree.
+  if (resolve(dir, gitDir.out) === resolve(dir, commonDir.out)) return null;
+  const repoRoot = logicalRepoRoot(dirname(resolve(dir, commonDir.out)));
+  const branch = gitOut(dir, "symbolic-ref", "--short", "HEAD");
+  return {
+    worktreePath: dir,
+    worktreeBranch: branch.ok && branch.out ? branch.out : undefined,
+    repoRoot,
+  };
+}
+
+// Backfill missing worktree fields so the move's worktree-recreation path can
+// run. A no-op when the agent already carries them or its dir is a plain dir.
+export function withWorktreeMeta(agent: AgentState): AgentState {
+  if (agent.worktreePath && agent.repoRoot) return agent;
+  const inferred = inferWorktree(agent.dir);
+  if (!inferred) return agent;
+  return {
+    ...agent,
+    worktreePath: inferred.worktreePath,
+    worktreeBranch: agent.worktreeBranch ?? inferred.worktreeBranch,
+    repoRoot: inferred.repoRoot,
+  };
 }
 
 // The conversation file to ship, or null for agents that never ran a turn.
@@ -194,7 +254,9 @@ export async function remoteHome(host: string): Promise<string> {
 }
 
 async function pushAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
-  const agent = resolveAgent(name);
+  // Backfill worktree metadata from git so an agent whose dir is a worktree
+  // but never recorded it still gets its worktree recreated on the target.
+  const agent = withWorktreeMeta(resolveAgent(name));
 
   const targetHomeDir = await remoteHome(host);
   // storedDir is the LOGICAL dir saved in state (portable across machines);
@@ -495,7 +557,9 @@ export function defaultMoveTarget(
 
 // `am __export <name>`: everything the other side needs, on stdout.
 export function exportCommand(name: string): void {
-  const agent = resolveAgent(name);
+  // Enrich on the source side (where the worktree is live) so a pull recreates
+  // it even when the agent never recorded its worktree metadata.
+  const agent = withWorktreeMeta(resolveAgent(name));
   console.log(
     JSON.stringify({
       state: agent,
