@@ -66,7 +66,7 @@ command -v rsync>/dev/null || die "'rsync' not installed"
 
 # Don't run from inside a worktree agent: the script stops worktree agents, so it
 # would kill itself mid-run. Run it from a plain login shell (or tmux outside am).
-if [[ -n "${AGENTMGR_AGENT:-}" ]]; then
+if [[ -n "${AGENTMGR_AGENT:-}" && "$DRY_RUN" != 1 ]]; then
   die "running inside managed agent '$AGENTMGR_AGENT' — this script stops worktree agents and would kill itself. Run from a normal shell."
 fi
 
@@ -76,6 +76,22 @@ confirm() {
 }
 
 slug() { printf '%s' "$1" | sed 's/[^a-zA-Z0-9]/-/g'; }
+
+# Worktrees can hold foreign-owned dev scratch — e.g. a dev-server container's
+# tmp/postgresql_data (uid 999, mode 0700) that only root can read. If any such
+# path exists, du/rsync must run under sudo or they silently drop files. Detect
+# once; DU/RSYNC then transparently elevate. -aHAX --numeric-ids preserves the
+# foreign ownership/ACLs/xattrs faithfully so the copy is byte-for-byte.
+NEED_SUDO_IO=0
+SUDO=""
+detect_sudo_io() {
+  if find "$SRC" -xdev \( ! -readable -o ! -executable \) -print -quit 2>/dev/null | grep -q .; then
+    NEED_SUDO_IO=1; SUDO="sudo"
+    info "foreign-owned/unreadable paths present under $SRC → using 'sudo' for du/rsync"
+  fi
+}
+DU()    { $SUDO du "$@"; }
+RSYNC() { $SUDO rsync "$@"; }
 
 # realpath of a logical worktree path AFTER migration, for symlink mode:
 # the dir's prefix SRC becomes DEST.
@@ -100,9 +116,12 @@ if [[ "$PURGE_BACKUP" == 1 ]]; then
   shopt -u nullglob
   [[ ${#backups[@]} -gt 0 ]] || die "no ${SRC}.old-* backup found — nothing to purge"
   already_migrated || die "refusing to purge: $SRC is not a $MODE yet (migration not in place)"
+  # The backup can hold foreign-owned dirs (uid 999 postgres data) that only root
+  # can stat/delete; elevate for the size readout and the rm.
+  if find "${backups[0]}" -xdev \( ! -readable -o ! -executable \) -print -quit 2>/dev/null | grep -q .; then SUDO=sudo; fi
   for b in "${backups[@]}"; do
-    info "backup found: $b  ($(du -sh "$b" 2>/dev/null | cut -f1))"
-    if confirm "DELETE this on-root backup to free space?"; then run "rm -rf '$b'"; fi
+    info "backup found: $b  ($($SUDO du -sh "$b" 2>/dev/null | cut -f1))"
+    if confirm "DELETE this on-root backup to free space?"; then run "$SUDO rm -rf '$b'"; fi
   done
   info "purge complete."
   exit 0
@@ -118,8 +137,27 @@ else
   [[ -d "$SRC" && ! -L "$SRC" ]] || die "src is not a plain dir (already a link/mount?): $SRC"
 fi
 
-# space check
-SRC_KB=$(du -sk "$SRC" | cut -f1)
+# Detect foreign-owned content so du/rsync elevate as needed.
+detect_sudo_io
+
+# Refuse if a live container mounts a path *under* the worktrees — moving a busy
+# data dir (e.g. a running postgres) would corrupt it. Best-effort: skips quietly
+# if docker isn't reachable. (A dev server bind-mounting the MAIN checkout, not a
+# worktree, is fine and won't trip this.)
+if command -v docker >/dev/null 2>&1; then
+  BUSY=$( { $SUDO docker ps -q 2>/dev/null | xargs -r $SUDO docker inspect \
+            --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' 2>/dev/null; } \
+          | grep -F "$SRC/" || true )
+  if [[ -n "$BUSY" ]]; then
+    echo "REFUSING: a live container mounts a path under $SRC (moving it would corrupt the data):" >&2
+    printf '  %s\n' $BUSY >&2
+    echo "Stop that container/dev-server first, then retry." >&2
+    exit 1
+  fi
+fi
+
+# space check (sudo-aware so foreign-owned dirs are counted, not skipped)
+SRC_KB=$(DU -sk "$SRC" 2>/dev/null | tail -1 | cut -f1)
 DEST_AVAIL_KB=$(df -Pk "$(dirname "$DEST")" | awk 'NR==2{print $4}')
 info "source size: $((SRC_KB/1024)) MB   dest avail: $((DEST_AVAIL_KB/1024)) MB"
 [[ "$DEST_AVAIL_KB" -ge "$SRC_KB" ]] || die "not enough space on dest fs"
@@ -172,10 +210,10 @@ info "live worktree agents (${#LIVE_AGENTS[@]}): ${LIVE_AGENTS[*]:-<none>}"
 # ---- 3. copy to dest (additive; original untouched) ------------------------
 if ! already_migrated; then
   info "rsync pass 1 → $DEST"
-  run "rsync -a --delete '$SRC/' '$DEST/'"
+  run "$SUDO rsync -aHAX --numeric-ids --delete '$SRC/' '$DEST/'"
   info "rsync pass 2 (verify: must report no changes)"
   if [[ "$DRY_RUN" != 1 ]]; then
-    CHANGES=$(rsync -ai --delete --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
+    CHANGES=$(RSYNC -aHAX --numeric-ids --delete -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
     [[ "$CHANGES" == 0 ]] || die "rsync verify found $CHANGES differing entries — aborting before swap"
   fi
   info "copy verified."
@@ -264,7 +302,7 @@ cat <<EOF
 
 [move-worktrees] DONE (mode=$MODE).
   Data now served from: $DEST
-  On-root backup kept:  $BACKUP   ($(du -sh "$BACKUP" 2>/dev/null | cut -f1 || echo '?'))
+  On-root backup kept:  $BACKUP   ($(DU -sh "$BACKUP" 2>/dev/null | cut -f1 || echo '?'))
 
   Root space is NOT freed yet — the backup is intentionally retained for rollback.
   After you confirm the fleet is healthy (am ls; am transcript <name>; jump in):
