@@ -88,11 +88,13 @@ export function createHub(): void {
   // key table, so the outer client intercepts ctrl-q before the nested agent
   // session (whose own ctrl-q binding means detach) ever sees it.
   tmux("set-option", "-t", hubTarget(), "status", "off");
-  // The terminal tab title follows whichever agent the right pane shows
-  // (showAgent updates the string); direct `am j` attaches get theirs from
-  // the per-agent session titles instead.
+  // The terminal tab title follows the FOCUSED pane's title live: the agent
+  // pane carries the agent's name, and the sidebar publishes the highlighted
+  // agent as its own pane title. Deriving from pane_title (rather than a
+  // string showAgent sets on each switch) means the title never goes stale
+  // when the focused agent changes by a path showAgent doesn't see.
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
-  tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", "#{pane_title}");
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
   applyHubBindings();
   tmux("set-option", "-t", hubTarget(), "key-table", "am-hub");
@@ -185,7 +187,6 @@ export async function sidebarCommand(): Promise<void> {
         }
       }
       if (shown !== key) {
-        tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name}@${shortHost(host)}`);
         // Prep the remote session for the nested attach. Besides hiding its
         // status bar, assert the scroll bindings ON THE REMOTE: the hub
         // forwards each wheel notch as a bare PageUp/Down (a remote pane's
@@ -243,7 +244,6 @@ export async function sidebarCommand(): Promise<void> {
     }
 
     if (shown !== key) {
-      tmux("set-option", "-t", hubTarget(), "set-titles-string", name);
       // The nested attach needs TMUX unset, or the inner tmux refuses to
       // start. The inner session's status bar is noise inside the pane.
       tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");

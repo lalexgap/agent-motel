@@ -557,6 +557,12 @@ export async function pick(
     if (selected && handlers.highlight && selected.name !== lastHighlighted) {
       lastHighlighted = selected.name;
       handlers.highlight(selected.name);
+      // Publish the highlighted agent as this pane's title so the hub's
+      // set-titles-string (#{pane_title}) shows it while you browse the
+      // sidebar. Keys are fleet keys (host:name); show the bare agent name to
+      // match the agent pane's own title. Skip group headers (name ends ":").
+      const bare = selected.name.split(":").pop() ?? "";
+      if (bare) out(`\x1b]0;${bare}\x07`);
     }
 
     const header: Cell =
