@@ -46,6 +46,23 @@ PROJECTS_DIR="${HOME}/.claude/projects"
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP="${SRC}.old-${TS}"
 
+# Regenerable/volatile scratch that constantly churns under a live checkout
+# (bootsnap caches, dev DB dirs, sockets, pids, test scratch). Excluded from BOTH
+# the copy and the verify: copying it is pointless (it regenerates on next dev
+# boot) and — more importantly — its churn would otherwise keep source != dest so
+# the verify gate could never pass on a system that's even slightly active. The
+# foreign-owned tmp/*_data DB dirs are stale per-worktree scratch (the live dev DB
+# lives under the main checkout), so dropping them is safe; dev re-inits on boot.
+EXCLUDES=(
+  --exclude='**/tmp/cache/'
+  --exclude='**/tmp/pids/'
+  --exclude='**/tmp/sockets/'
+  --exclude='**/tmp/storage/'
+  --exclude='**/tmp/*_data/'
+  --exclude='**/tmp/rspec_examples.txt'
+  --exclude='**/*.sock'
+)
+
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "[move-worktrees] $*"; }
 run()  { if [[ "$DRY_RUN" == 1 ]]; then echo "  DRY: $*"; else eval "$@"; fi; }
@@ -218,7 +235,11 @@ info "live worktree agents (${#LIVE_AGENTS[@]}): ${LIVE_AGENTS[*]:-<none>}"
 # after writers are stopped.
 if ! already_migrated; then
   info "rsync pre-copy (live) → $DEST"
-  run "$SUDO rsync -aHAX --numeric-ids --delete '$SRC/' '$DEST/'"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    echo "  DRY: $SUDO rsync -aHAX --numeric-ids --delete --delete-excluded ${EXCLUDES[*]} $SRC/ $DEST/"
+  else
+    $SUDO rsync -aHAX --numeric-ids --delete --delete-excluded "${EXCLUDES[@]}" "$SRC/" "$DEST/"
+  fi
 fi
 
 # ---- 4. stop live agents ---------------------------------------------------
@@ -274,13 +295,17 @@ fi
 # pre-copy. The verify pass must then report zero differences before we swap.
 if ! already_migrated; then
   info "rsync delta (agents stopped) → $DEST"
-  run "$SUDO rsync -aHAX --numeric-ids --delete '$SRC/' '$DEST/'"
-  info "verify: re-sync must report no remaining differences"
-  if [[ "$DRY_RUN" != 1 ]]; then
-    CHANGES=$(RSYNC -aHAX --numeric-ids --delete -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
-    [[ "$CHANGES" == 0 ]] || die "verify found $CHANGES differing entries after stop — aborting before swap (is something still writing under $SRC?)"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    echo "  DRY: $SUDO rsync -aHAX --numeric-ids --delete --delete-excluded ${EXCLUDES[*]} $SRC/ $DEST/"
+  else
+    $SUDO rsync -aHAX --numeric-ids --delete --delete-excluded "${EXCLUDES[@]}" "$SRC/" "$DEST/"
   fi
-  info "copy verified — source and dest are identical."
+  info "verify: re-sync must report no remaining differences (excluding volatile scratch)"
+  if [[ "$DRY_RUN" != 1 ]]; then
+    CHANGES=$(RSYNC -aHAX --numeric-ids --delete --delete-excluded "${EXCLUDES[@]}" -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
+    [[ "$CHANGES" == 0 ]] || die "verify found $CHANGES differing entries after stop — aborting before swap (is something still writing real files under $SRC? rerun to re-delta)"
+  fi
+  info "copy verified — source and dest match (volatile scratch excluded)."
 fi
 
 # ---- 5. swap the path ------------------------------------------------------
