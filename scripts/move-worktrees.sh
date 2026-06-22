@@ -302,7 +302,12 @@ if ! already_migrated; then
   fi
   info "verify: re-sync must report no remaining differences (excluding volatile scratch)"
   if [[ "$DRY_RUN" != 1 ]]; then
-    CHANGES=$(RSYNC -aHAX --numeric-ids --delete --delete-excluded "${EXCLUDES[@]}" -i --dry-run "$SRC/" "$DEST/" | grep -vE '^$' | wc -l)
+    # Capture rsync output on its own (so a real rsync error still trips set -e),
+    # then count non-blank lines. grep exits 1 when there are zero matches — the
+    # SUCCESS case — so guard with || true, else set -e/pipefail would abort the
+    # script silently right before the swap.
+    VERIFY_OUT=$(RSYNC -aHAX --numeric-ids --delete --delete-excluded "${EXCLUDES[@]}" -i --dry-run "$SRC/" "$DEST/")
+    CHANGES=$(printf '%s' "$VERIFY_OUT" | grep -c '[^[:space:]]' || true)
     [[ "$CHANGES" == 0 ]] || die "verify found $CHANGES differing entries after stop — aborting before swap (is something still writing real files under $SRC? rerun to re-delta)"
   fi
   info "copy verified — source and dest match (volatile scratch excluded)."
