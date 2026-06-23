@@ -102,10 +102,12 @@ export function createHub(): void {
 // pick up binding changes without a recreate.
 function applyHubBindings(): void {
   // ctrl-q only gets you OUT of a session: from an agent it moves to the
-  // sidebar (the left pane). On the sidebar it's a deliberate no-op (already
-  // leftmost) — ctrl-q must never detach/quit the whole hub when you aren't
-  // locked into a session.
-  tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-L");
+  // sidebar (the left pane). On the sidebar it's a deliberate no-op. A bare
+  // `select-pane -L` is NOT safe here: from the leftmost pane it WRAPS to the
+  // rightmost (the agent), locking you back in — so guard on pane_at_left and
+  // only move when there's actually a pane to the left.
+  tmux("bind-key", "-T", "am-hub", "C-q",
+    "if-shell", "-F", "#{?pane_at_left,0,1}", "select-pane -L");
   // URL clicks are handled OUTER-side: the right pane's visible text IS the
   // (possibly remote) agent screen, so the local am extracts the URL and
   // opens it on THIS machine — a remote session's am __click would run
