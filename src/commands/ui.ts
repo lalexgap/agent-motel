@@ -1,7 +1,6 @@
 import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
-import { expandHome } from "../paths";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
 import { loadConfig } from "../config";
@@ -307,7 +306,7 @@ export async function sidebarCommand(): Promise<void> {
     ) => {
       if (host) {
         // Spawn on the remote via its own am; dir (if given) is a path on that
-        // host, so it's passed through untouched (no local ~ expansion).
+        // host, so it's passed through untouched — the remote am expands ~.
         const args = ["new", name, "--no-jump"];
         if (task) args.push("-m", task);
         if (dir) args.push("--dir", dir);
@@ -321,7 +320,7 @@ export async function sidebarCommand(): Promise<void> {
       await newCommand({
         name,
         message: task,
-        dir: dir ? expandHome(dir) : undefined,
+        dir,
         provider: provider as Provider | undefined,
         model,
         effort,

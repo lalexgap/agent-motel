@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { ensureDirs, worktreesDir } from "../paths";
+import { ensureDirs, worktreesDir, expandHome } from "../paths";
 import { readAgent, recordAttached, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
@@ -114,7 +114,9 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   let hooksChanged = false;
   if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
 
-  let dir = resolve(opts.dir ?? process.cwd());
+  // Expand ~ ourselves rather than leaning on the shell: a --dir routed over
+  // ssh arrives single-quoted (shQuote), so the remote shell never expands it.
+  let dir = resolve(expandHome(opts.dir ?? process.cwd()));
   if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
   let worktreePath: string | undefined;
   let repoRoot: string | undefined;
