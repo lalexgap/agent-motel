@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { trashDir } from "./paths";
 import type { AgentState } from "./state";
@@ -27,6 +27,11 @@ export function readTrashedState(name: string): TrashedState | null {
   } catch {
     return null;
   }
+}
+
+// Drop a trash snapshot for good (`am gc` past its retention).
+export function removeTrashed(name: string): void {
+  rmSync(trashFile(name), { force: true });
 }
 
 // Removed agents available to restore, newest deletion first.

@@ -62,6 +62,11 @@ export interface Config {
   // sshd (reverse SSH). The server addresses the tunneled host via an ssh Host
   // alias pointing at localhost:<tunnelPort>.
   tunnelPort: number;
+  // `am gc` retention: agents whose session is gone and untouched for this
+  // many days are reaped (to trash); trash snapshots older than gcTrashDays
+  // are purged. Per-run override: --agent-days / --trash-days.
+  gcAgentDays: number;
+  gcTrashDays: number;
 }
 
 const DEFAULTS: Config = {
@@ -78,6 +83,8 @@ const DEFAULTS: Config = {
   outboxPollSeconds: 2,
   outboxPollMaxSeconds: 30,
   tunnelPort: 2222,
+  gcAgentDays: 7,
+  gcTrashDays: 30,
 };
 
 export function loadConfig(): Config {

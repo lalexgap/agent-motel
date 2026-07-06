@@ -76,6 +76,10 @@ am queue api             # show pending messages (--clear to drop them)
 am stop api              # kill the session but keep state (resumable)
 am resume api            # restart an exited agent, resuming its conversation
 am rm api                # kill session + state (--clean also removes the worktree)
+am gc                    # dry-run report of collectable garbage: agents dead >7d,
+                         # trash >30d, orphaned files, unreferenced clean worktrees
+am gc --apply            # actually collect it (reaped agents stay restorable;
+                         # dirty worktrees are kept and reported)
 
 am watch                 # live status table, fed by the daemon
 am daemon status         # the daemon is auto-started by `am new`

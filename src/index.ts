@@ -14,6 +14,7 @@ import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand 
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { restoreCommand } from "./commands/restore";
+import { gcCommand } from "./commands/gc";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
@@ -107,6 +108,14 @@ usage:
   am restore [<name>]         bring back a removed agent (resumes its
                               conversation); no name lists what's recoverable
                               (--no-resume just re-registers it)
+  am gc [--apply]             collect garbage: reap agents whose session is
+                              gone and untouched >7d (to trash, restorable),
+                              purge trash >30d, remove orphaned queue/inbox/
+                              snapshot files and clean unreferenced worktrees
+                              (dirty ones are kept and reported; committed
+                              work survives on its branch). Dry-run by
+                              default; --agent-days / --trash-days override
+                              the config retention
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
@@ -140,7 +149,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -549,6 +558,13 @@ async function main(): Promise<void> {
       break;
     case "restore":
       await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });
+      break;
+    case "gc":
+      gcCommand({
+        apply: !!args.flags.apply,
+        agentDays: numberFlag(args, "agent-days"),
+        trashDays: numberFlag(args, "trash-days"),
+      });
       break;
     case "hook":
       await hookCommand(requirePositional(args, 0, "hook event"));
