@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentsDir, ensureDirs, lastAttachedFile } from "./paths";
+import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 
 export type AgentStatus =
   | "starting"
@@ -57,35 +58,33 @@ function stateFile(name: string): string {
   return join(agentsDir(), `${name}.json`);
 }
 
-// Tolerant read: a torn/corrupt state file is treated as absent instead of
-// throwing — one bad byte must not brick every am command (and every hook).
+// Tolerant read: a torn/corrupt state file must not brick every am command
+// (and every hook). But silence would make the agent invisibly unmanageable
+// (unlisted, un-rm-able), so the damage is quarantined loudly: the file moves
+// aside as .corrupt, freeing the name.
 function readStateFile(file: string): AgentState | null {
-  try {
-    return JSON.parse(readFileSync(file, "utf8")) as AgentState;
-  } catch {
-    return null;
+  if (!existsSync(file)) return null;
+  const state = readJsonOrNull<AgentState>(file);
+  if (state === null) {
+    try {
+      renameSync(file, `${file}.corrupt`);
+      console.error(`am: quarantined corrupt state file ${file} → ${file}.corrupt`);
+    } catch {
+      // raced another quarantiner (or the file vanished) — already handled
+    }
   }
+  return state;
 }
 
 export function readAgent(name: string): AgentState | null {
-  const file = stateFile(name);
-  if (!existsSync(file)) return null;
-  return readStateFile(file);
-}
-
-// Unique tmp + rename: state files are written by several processes at once
-// (hooks, the CLI, the daemon) and read constantly — a reader must never see
-// a torn write, and two concurrent writers must never interleave into
-// invalid JSON. Last rename wins with a complete document either way.
-function writeJsonAtomic(file: string, value: unknown): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
-  renameSync(tmp, file);
+  return readStateFile(stateFile(name));
 }
 
 export function writeAgent(state: AgentState): void {
   ensureDirs();
   state.updatedAt = new Date().toISOString();
+  // Atomic: state files are written by several processes at once (hooks, the
+  // CLI, the daemon) and read constantly.
   writeJsonAtomic(stateFile(state.name), state);
 }
 
@@ -131,12 +130,7 @@ interface LastAttached {
 }
 
 export function readLastAttached(): LastAttached {
-  if (!existsSync(lastAttachedFile())) return {};
-  try {
-    return JSON.parse(readFileSync(lastAttachedFile(), "utf8")) as LastAttached;
-  } catch {
-    return {};
-  }
+  return readJsonOrNull<LastAttached>(lastAttachedFile()) ?? {};
 }
 
 export function recordAttached(name: string): void {

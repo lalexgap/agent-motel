@@ -38,6 +38,14 @@ function encodeRand(bytes: Uint8Array): string {
   return out.slice(0, 16);
 }
 
+// An id stamped at an explicit (usually past) time, bypassing the monotonic
+// state — for entries whose order predates "now", e.g. legacy queue migration
+// backdating messages to their original enqueue time so the migrated backlog
+// sorts ahead of anything appended mid-migration.
+export function msgIdAt(ms: number): string {
+  return encodeTime(ms) + encodeRand(new Uint8Array(randomBytes(10)));
+}
+
 // Mint a new id. Monotonic within a process even if the clock stalls or jumps
 // back (same/earlier ms → increment the random tail instead of regenerating),
 // so two messages in the same millisecond still sort in send order.

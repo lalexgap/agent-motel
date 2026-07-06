@@ -68,12 +68,16 @@ export function fleetRows(opts: { localOnly?: boolean; timeoutMs?: number } = {}
 // instantly, refreshing each host in the background at most every few
 // seconds.
 const REMOTE_REFRESH_MS = 5000;
+// A host keeps rendering its last-known rows for this long after its last
+// successful fetch, so one ssh blip doesn't blank it from the hub; past the
+// grace it reads as unreachable (rows stay cached for routing lookups).
+const REMOTE_STALE_GRACE_MS = 30_000;
 
 interface CacheEntry {
   rows: FleetRow[];
   fetchedAt: number;
   inFlight: boolean;
-  ok: boolean;
+  okAt: number; // last successful fetch (0 = never)
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -85,7 +89,7 @@ function refreshHost(host: string): void {
   cache.set(host, {
     rows: entry?.rows ?? [],
     fetchedAt: entry?.fetchedAt ?? 0,
-    ok: entry?.ok ?? false,
+    okAt: entry?.okAt ?? 0,
     inFlight: true,
   });
   sshAmAsync(host, ["ls", "--json", "--local-only"]).then(
@@ -95,15 +99,18 @@ function refreshHost(host: string): void {
       cache.set(host, {
         rows: rows ?? prev?.rows ?? [],
         fetchedAt: Date.now(),
-        ok: rows !== null,
+        okAt: rows !== null ? Date.now() : (prev?.okAt ?? 0),
         inFlight: false,
       });
     },
     () => {
-      // Keep the last-known rows on a transient failure (matches the
-      // result-path fallback) — a blip shouldn't blank a host from the hub.
       const prev = cache.get(host);
-      cache.set(host, { rows: prev?.rows ?? [], fetchedAt: Date.now(), ok: false, inFlight: false });
+      cache.set(host, {
+        rows: prev?.rows ?? [],
+        fetchedAt: Date.now(),
+        okAt: prev?.okAt ?? 0,
+        inFlight: false,
+      });
     },
   );
 }
@@ -113,8 +120,11 @@ export function cachedFleetRows(): Fleet {
   const unreachable: string[] = [];
   for (const host of loadConfig().remotes ?? []) {
     const entry = cache.get(host);
-    if (entry?.ok) rows.push(...entry.rows);
-    else if (entry && !entry.inFlight) unreachable.push(host);
+    if (entry && entry.okAt > 0 && Date.now() - entry.okAt < REMOTE_STALE_GRACE_MS) {
+      rows.push(...entry.rows);
+    } else if (entry && !entry.inFlight) {
+      unreachable.push(host);
+    }
     refreshHost(host);
   }
   return { rows, unreachable };

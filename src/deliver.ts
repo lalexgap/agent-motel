@@ -1,10 +1,11 @@
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, readAgent, type AgentState } from "./state";
-import { queuePeek, queuePop } from "./queue";
+import { queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText } from "./tmux";
 import { cliEntrypoint } from "./settings";
-import { queueDir } from "./paths";
+import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
+import { openLogFd } from "./fsutil";
 
 // Per-agent delivery lock. deliverNext can be invoked concurrently from three
 // places — the Stop hook's detached process, the daemon's /event handler, and
@@ -106,8 +107,8 @@ export async function deliverNext(name: string): Promise<boolean> {
   // loop so a concurrent caller can't grab the same (or the next) queue head.
   if (!acquireDeliverLock(name)) return false;
   try {
-    const message = queuePeek(name);
-    if (message === null) return false;
+    const head = queueHead(name);
+    if (head === null) return false;
 
     // Someone (usually the human) is mid-composition in the input box: typing
     // our message now would splice into theirs. Leave it queued — the daemon's
@@ -115,13 +116,15 @@ export async function deliverNext(name: string): Promise<boolean> {
     const before = capturePane(agent.tmuxSession);
     if (before && inputBoxText(before)) return false;
 
-    sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent, message) });
-    queuePop(name);
+    sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
+    // Remove exactly what was typed — popping "the current head" instead
+    // could delete a different message reclaimed between peek and pop.
+    queuePopId(name, head.id);
 
     for (let attempt = 0; attempt < SUBMIT_RETRIES; attempt++) {
       await Bun.sleep(SUBMIT_CHECK_MS);
       const pane = capturePane(agent.tmuxSession);
-      if (!pane || !looksUnsubmitted(pane, message)) break;
+      if (!pane || !looksUnsubmitted(pane, head.message)) break;
       sendEnter(agent.tmuxSession);
     }
     return true;
@@ -134,13 +137,26 @@ export async function deliverNext(name: string): Promise<boolean> {
 // (Claude Code blocks on it), and the TUI needs a beat to get back to its
 // prompt — so a detached process sleeps briefly, then delivers.
 export function spawnDeliver(name: string): void {
-  Bun.spawn({
-    cmd: [process.execPath, cliEntrypoint(), "__deliver", name],
-    env: { ...process.env },
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  }).unref();
+  // Output goes to the daemon's log: this fallback runs precisely when the
+  // daemon (and so its own logging) is down — a delivery failure here used to
+  // vanish into "ignore".
+  let out: number | "ignore" = "ignore";
+  try {
+    out = openLogFd(daemonLogFile(), DAEMON_LOG_MAX_BYTES);
+  } catch {
+    // no log — deliver silent rather than not at all
+  }
+  try {
+    Bun.spawn({
+      cmd: [process.execPath, cliEntrypoint(), "__deliver", name],
+      env: { ...process.env },
+      stdin: "ignore",
+      stdout: out,
+      stderr: out,
+    }).unref();
+  } finally {
+    if (typeof out === "number") closeSync(out);
+  }
 }
 
 export async function deliverCommand(name: string): Promise<void> {

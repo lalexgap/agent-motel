@@ -75,13 +75,13 @@ export async function sendCommand(
     return;
   }
 
-  const depth = queueAppend(agent.name, body);
+  queueAppend(agent.name, body);
   if (agent.status === "idle" || agent.status === "starting") {
     // Agent isn't working, so no Stop hook is coming — deliver right away.
     await deliverNext(agent.name);
     console.log(`delivered to "${agent.name}" (was idle)`);
   } else {
-    console.log(`queued for "${agent.name}" (${depth} in queue) — delivered when it goes idle`);
+    console.log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — delivered when it goes idle`);
   }
 }
 

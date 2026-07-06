@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { queueAppend, queueClear, queueDepth, queueList, queuePeek, queuePop } from "../src/queue";
+import { queueAppend, queueClear, queueDepth, queueHead, queueList, queuePeek, queuePop, queuePopId } from "../src/queue";
 
 let home: string;
 
@@ -93,5 +93,59 @@ describe("queue", () => {
     expect(queuePeek("a")).toBe("good");
     expect(queuePop("a")).toBe("good");
     expect(queuePop("a")).toBeNull();
+  });
+
+  test("a fresh .taking claim is invisible; a stale one is reclaimed", () => {
+    queueAppend("a", "msg");
+    const dir = join(home, "queue", "a");
+    const file = readdirSync(dir).find((f) => f.endsWith(".json"))!;
+
+    // Fresh claim (stamp = now): in flight, not listed, not reclaimed.
+    renameSync(join(dir, file), join(dir, `${file}.taking.${Date.now()}`));
+    expect(queueDepth("a")).toBe(0);
+
+    // Stale claim (stamp 60s old): reclaimed and delivered. Crucially the
+    // stamp lives in the NAME — rename preserves mtime, so an mtime check
+    // would have insta-reclaimed any message older than the threshold.
+    const claimed = readdirSync(dir).find((f) => f.includes(".taking."))!;
+    renameSync(join(dir, claimed), join(dir, `${file}.taking.${Date.now() - 60_000}`));
+    expect(queueDepth("a")).toBe(1);
+    expect(queuePop("a")).toBe("msg");
+  });
+
+  test("a stranded legacy-migration claim is adopted, not lost", () => {
+    const dir = join(home, "queue", "a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `legacy.migrating.${Date.now() - 60_000}`),
+      JSON.stringify({ message: "stranded", queuedAt: "2026-01-01T00:00:00Z" }) + "\n",
+    );
+    expect(queuePop("a")).toBe("stranded");
+  });
+
+  test("migrated messages keep FIFO order against a mid-migration append", () => {
+    // Legacy entries are backdated to their queuedAt, so they sort before a
+    // message appended while the migration was splitting them.
+    const dir = join(home, "queue");
+    mkdirSync(dir, { recursive: true });
+    queueAppend("a", "appended-now");
+    writeFileSync(
+      join(dir, "a.jsonl"),
+      JSON.stringify({ message: "old-backlog", queuedAt: "2026-01-01T00:00:00Z" }) + "\n",
+    );
+    expect(queuePop("a")).toBe("old-backlog");
+    expect(queuePop("a")).toBe("appended-now");
+  });
+
+  test("queueHead + queuePopId remove exactly the peeked entry", () => {
+    queueAppend("a", "first");
+    queueAppend("a", "second");
+    const head = queueHead("a")!;
+    expect(head.message).toBe("first");
+    queuePopId("a", head.id);
+    expect(queueList("a").map((m) => m.message)).toEqual(["second"]);
+    // Popping the same id again is a harmless no-op.
+    queuePopId("a", head.id);
+    expect(queueDepth("a")).toBe(1);
   });
 });

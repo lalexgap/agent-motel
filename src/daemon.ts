@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, logsDir } from "./paths";
+import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs } from "./paths";
 import { listAgents, readAgent, setStatus } from "./state";
 import { queueAppend, queueDepth } from "./queue";
-import { hasSession } from "./tmux";
+import { hasSession, sessionName } from "./tmux";
+import { openLogFd } from "./fsutil";
 import { deliverNext } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
@@ -41,7 +42,11 @@ export function nextPollMs(current: number, hotMs: number, maxMs: number, collec
 // from double-delivering the entries that did get through. [fixes review M1]
 async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
   const target = readAgent(entry.to);
-  if (!target) return true; // name no longer local — nothing we can do here; let it go
+  // No readable state for this name. If a live managed session still exists,
+  // the state is merely damaged (quarantined), not gone — defer (no ack)
+  // rather than eat mail addressed to a running agent; the remote's TTL
+  // bounces it observably if the state never comes back.
+  if (!target) return !hasSession(sessionName(entry.to));
   if (entry.msgId && seenRecently(entry.msgId)) return true; // already delivered — dedup
   const sender = collectedSender(entry.from, entry.fromHost, host);
   const att = attribute(sender, entry.to, entry.body, "send", entry.msgId);
@@ -167,6 +172,18 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // stranded while an agent was idle (e.g. a send racing a status change):
   // an idle agent fires no Stop hook, so nothing else would drain them.
   const reconciler = setInterval(() => {
+    // Bound the log during a long run — rotation at spawn can't help a daemon
+    // that stays up for weeks. Truncate in place: the inherited append fd
+    // keeps writing at the (new) end, whereas a rename would divorce the fd
+    // from the path.
+    try {
+      if (statSync(daemonLogFile()).size > DAEMON_LOG_MAX_BYTES) {
+        truncateSync(daemonLogFile(), 0);
+        log("log truncated (size cap)");
+      }
+    } catch {
+      // no log yet
+    }
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited");
@@ -263,35 +280,27 @@ export function runForegroundDaemon(): void {
   log(`am daemon listening on ${daemonSocket()} (pid ${process.pid})`);
 }
 
-const DAEMON_LOG_MAX_BYTES = 5_000_000;
-
-// Append fd for the daemon's output, rotating a grown log to .old first.
-function daemonLogFd(): number {
-  mkdirSync(logsDir(), { recursive: true });
-  const file = daemonLogFile();
-  try {
-    if (statSync(file).size > DAEMON_LOG_MAX_BYTES) renameSync(file, `${file}.old`);
-  } catch {
-    // no log yet
-  }
-  return openSync(file, "a");
-}
-
 export async function ensureDaemon(): Promise<boolean> {
   if (await daemonHealth()) return true;
   let out: number | "ignore" = "ignore";
   try {
-    out = daemonLogFd();
+    out = openLogFd(daemonLogFile(), DAEMON_LOG_MAX_BYTES);
   } catch {
     // can't open a log file — run the daemon silent rather than not at all
   }
-  Bun.spawn({
-    cmd: [process.execPath, cliEntrypoint(), "__daemon"],
-    env: { ...process.env },
-    stdin: "ignore",
-    stdout: out,
-    stderr: out,
-  }).unref();
+  try {
+    Bun.spawn({
+      cmd: [process.execPath, cliEntrypoint(), "__daemon"],
+      env: { ...process.env },
+      stdin: "ignore",
+      stdout: out,
+      stderr: out,
+    }).unref();
+  } finally {
+    // The child holds its own copy — close ours so repeated failed starts
+    // from a long-lived caller (hub, watch) don't leak an fd per attempt.
+    if (typeof out === "number") closeSync(out);
+  }
   // Give it a moment to bind the socket.
   for (let i = 0; i < 20; i++) {
     await Bun.sleep(100);

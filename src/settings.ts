@@ -1,6 +1,6 @@
-import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, hookSettingsFile } from "./paths";
+import { writeJsonAtomic } from "./fsutil";
 
 // Claude Code hook event -> `am hook <arg>` subcommand.
 export const HOOK_EVENTS: Record<string, string> = {
@@ -40,6 +40,8 @@ export function buildHookSettings(): object {
 export function writeHookSettings(): string {
   ensureDirs();
   const file = hookSettingsFile();
-  writeFileSync(file, JSON.stringify(buildHookSettings(), null, 2) + "\n");
+  // Atomic: two concurrent `am new` runs rewrite this file while Claude Code
+  // parses it at startup — a torn read would launch an agent with no hooks.
+  writeJsonAtomic(file, buildHookSettings());
   return file;
 }

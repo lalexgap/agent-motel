@@ -62,12 +62,15 @@ describe("agent state", () => {
     expect(readAgent("ghost")).toBeNull();
   });
 
-  test("a corrupt state file is skipped, not fatal", () => {
+  test("a corrupt state file is quarantined, not fatal", () => {
     writeAgent(makeAgent("alpha"));
     writeFileSync(join(home, "agents", "torn.json"), '{"name": "torn", "status"');
 
     expect(readAgent("torn")).toBeNull();
     expect(listAgents().map((a) => a.name)).toEqual(["alpha"]);
+    // Moved aside (name freed, damage visible) rather than silently shadowing.
+    const files = readdirSync(join(home, "agents")).sort();
+    expect(files).toEqual(["alpha.json", "torn.json.corrupt"]);
   });
 
   test("writes are atomic — no lingering partial .json files", () => {
