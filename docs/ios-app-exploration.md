@@ -6,6 +6,13 @@ which native/scripted clients consume. The PWA sections stay as design
 rationale; the security model (§4e–4f network gating, bearer token) still
 describes the live API.
 
+A **voice-first native app now exists under `ios/`** (see `ios/README.md`):
+sideloaded SwiftUI, on-device speech in/out, backed by
+`GET /api/agents/:name/transcript`. Mic-originated messages ask the agent for a
+`<voice>…</voice>` spoken summary so replies are terse aloud but remain full in
+the session. Still future: remote-agent transcripts over ssh fan-out and push
+integration (ntfy covers it meanwhile).
+
 **Audience:** whoever picks this up next (likely a coding agent). Verify the
 code references against the current tree; line numbers drift.
 

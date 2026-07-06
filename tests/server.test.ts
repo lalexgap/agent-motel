@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
@@ -174,6 +174,101 @@ describe("agents api", () => {
     } finally {
       daemon.stop();
     }
+  });
+});
+
+describe("transcript api", () => {
+  // locateTranscript prefers agent.transcriptPath when the file exists, so a
+  // temp JSONL stands in for a real ~/.claude/projects session file.
+  function seedWithTranscript(name: string, jsonlLines: object[]) {
+    const file = join(home, `${name}-session.jsonl`);
+    writeFileSync(file, jsonlLines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    const now = new Date().toISOString();
+    writeAgent({
+      name,
+      status: "idle",
+      dir: "/tmp",
+      tmuxSession: `agentmgr-${name}`,
+      transcriptPath: file,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  const SESSION = [
+    { type: "user", sessionId: "s-1", cwd: "/tmp", message: { role: "user", content: "fix the tests" } },
+    {
+      type: "assistant",
+      sessionId: "s-1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Looking now." },
+          { type: "tool_use", id: "t1", name: "Bash", input: { command: "bun test" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      sessionId: "s-1",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "x".repeat(2000) }] }],
+      },
+    },
+    { type: "assistant", sessionId: "s-1", message: { role: "assistant", content: [{ type: "text", text: "All green." }] } },
+  ];
+
+  test("returns status, provider, total, and parsed turns", async () => {
+    seedWithTranscript("talker", SESSION);
+    const res = await fetch(url("/api/agents/talker/transcript"), auth());
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.status).toBe("dead"); // no real tmux session in tests
+    expect(data.provider).toBe("claude");
+    expect(data.total).toBe(4); // user, assistant text, tool, assistant text
+    expect(data.turns.map((t: any) => t.kind)).toEqual(["user", "assistant", "tool", "assistant"]);
+    expect(data.turns[3].text).toBe("All green.");
+  });
+
+  test("after cursor returns only new turns; total stays absolute", async () => {
+    seedWithTranscript("cursor", SESSION);
+    const res = await fetch(url("/api/agents/cursor/transcript?after=3"), auth());
+    const data = (await res.json()) as any;
+    expect(data.total).toBe(4);
+    expect(data.turns).toHaveLength(1);
+    expect(data.turns[0].text).toBe("All green.");
+  });
+
+  test("after at or past total yields empty turns", async () => {
+    seedWithTranscript("caught-up", SESSION);
+    const res = await fetch(url("/api/agents/caught-up/transcript?after=4"), auth());
+    const data = (await res.json()) as any;
+    expect(data.turns).toEqual([]);
+    expect(data.total).toBe(4);
+  });
+
+  test("tool output is truncated to compact limits", async () => {
+    seedWithTranscript("chatty-tool", SESSION);
+    const res = await fetch(url("/api/agents/chatty-tool/transcript"), auth());
+    const data = (await res.json()) as any;
+    const tool = data.turns.find((t: any) => t.kind === "tool");
+    expect(tool.name).toBe("Bash");
+    expect(tool.output.length).toBeLessThan(600);
+    expect(tool.output).toContain("chars]"); // truncation marker
+  });
+
+  test("agent with no session yet → empty transcript, not an error", async () => {
+    seedAgent("newborn");
+    const res = await fetch(url("/api/agents/newborn/transcript"), auth());
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.total).toBe(0);
+    expect(data.turns).toEqual([]);
+  });
+
+  test("unknown agent → 404", async () => {
+    expect((await fetch(url("/api/agents/ghost/transcript"), auth())).status).toBe(404);
   });
 });
 

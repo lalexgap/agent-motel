@@ -332,6 +332,22 @@ function truncate(text: string, chars: number, lines?: number): string {
   return result;
 }
 
+// A turn sized for transport (the phone API): tool input/output cut to the
+// same compact limits the markdown renderer uses. User/assistant text is kept
+// whole — the app needs it for display and speech.
+export function compactTurn(turn: Turn): Turn {
+  if (turn.kind !== "tool") return turn;
+  const compact: Extract<Turn, { kind: "tool" }> = {
+    kind: "tool",
+    name: turn.name,
+    input: truncate(turn.input.replaceAll("\n", " "), COMPACT_INPUT_CHARS),
+  };
+  if (turn.output?.trim()) {
+    compact.output = truncate(turn.output, COMPACT_OUTPUT_CHARS, COMPACT_OUTPUT_LINES);
+  }
+  return compact;
+}
+
 export function renderTranscript(
   transcript: Transcript,
   opts: { full?: boolean; agentName?: string } = {},

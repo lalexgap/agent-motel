@@ -1,0 +1,29 @@
+# XcodeGen manifest — run `xcodegen` in this directory on a Mac to produce
+# AmVoice.xcodeproj (see README.md). The project file itself is not committed.
+name: AmVoice
+options:
+  bundleIdPrefix: dev.lagap
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  AmVoice:
+    type: application
+    platform: iOS
+    sources:
+      - AmVoice
+    info:
+      path: AmVoice/Info.plist
+      properties:
+        CFBundleDisplayName: am voice
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: Voice chat records your speech to send it to your coding agents.
+        NSSpeechRecognitionUsageDescription: Your speech is transcribed on-device into text messages for your agents.
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

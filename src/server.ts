@@ -8,6 +8,7 @@ import { displayStatus } from "./commands/ls";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand } from "./commands/send";
+import { compactTurn, locateTranscript, parseTranscript, type Turn } from "./transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
@@ -167,6 +168,30 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);
       destroyAgent(agent, { clean: false });
       return json({ ok: true });
+    }
+
+    // GET /api/agents/:name/transcript?after=<n> — structured conversation
+    // turns with an incremental cursor: `total` is the full turn count, and
+    // `turns` starts at index `after`, so a poller passes back the last
+    // `total` it saw and receives only what's new. Status rides along so one
+    // poll drives both the chat view and turn-completion detection.
+    if (parts.length === 3 && parts[2] === "transcript" && method === "GET") {
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      let turns: Turn[] = [];
+      try {
+        const file = locateTranscript(agent);
+        turns = parseTranscript(agentProvider(agent), readFileSync(file, "utf8")).turns;
+      } catch {
+        // No session yet (fresh agent) — an empty transcript, not an error.
+      }
+      const after = Math.max(0, Number(new URL(req.url).searchParams.get("after")) || 0);
+      return json({
+        status: displayStatus(agent),
+        provider: agentProvider(agent),
+        total: turns.length,
+        turns: turns.slice(after).map(compactTurn),
+      });
     }
 
     // POST /api/agents/:name/messages — {text, mode: queue|now|interrupt}
