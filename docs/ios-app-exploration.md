@@ -1,11 +1,10 @@
 # An iOS app for `am` — research & design exploration
 
-**Status:** Phases 1–2 of the MVP are **implemented** on the `ios-pwa` branch —
-`am serve` ships a token-gated HTTP API plus an installable PWA (fleet list,
-agent detail + pane snapshot, queue/now/interrupt, spawn/stop/remove). The rest
-of this doc is the design rationale that led there; remote-agent *actions* over
-the API, push integration, and the optional native app (Phase 3) are still
-future work.
+**Status (historical):** the PWA described below shipped and was later
+**removed** (PR #30) — `am serve` now exposes only the token-gated HTTP API,
+which native/scripted clients consume. The PWA sections stay as design
+rationale; the security model (§4e–4f network gating, bearer token) still
+describes the live API.
 
 **Audience:** whoever picks this up next (likely a coding agent). Verify the
 code references against the current tree; line numbers drift.

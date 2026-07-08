@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { apiTokenFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
 import { agentProvider, readAgent, resolveAgent } from "./state";
@@ -13,13 +12,13 @@ import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 
-// The HTTP layer behind the phone PWA. Unlike the daemon's unix socket this
-// listens on TCP, so it is opt-in (`am serve`) and bearer-token gated on every
-// /api route. The static PWA shell carries no secret and is served unguarded.
-// Deployment is expected to add the network gate (tailnet bind / Caddy / mTLS) —
-// see docs/ios-app-exploration.md §4e.
+// The HTTP layer for remote clients — scripts, and the in-progress native
+// phone app (lives on its own branch; nothing on main consumes these routes).
+// Unlike the daemon's unix socket this listens on TCP, so it is opt-in
+// (`am serve`) and bearer-token gated (Authorization header only) on every
+// /api route. Deployment is expected to add the network gate (tailnet bind /
+// Caddy / mTLS) — see docs/ios-app-exploration.md §4e.
 
-const WEB_DIR = join(import.meta.dir, "web");
 const PANE_LINES = 60;
 
 // --- token -----------------------------------------------------------------
@@ -63,21 +62,22 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body as object, { status });
 }
 
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".webmanifest": "application/manifest+json",
-  ".svg": "image/svg+xml",
-};
+// Self-destruct for service workers installed by the removed PWA: clear its
+// caches, unregister, and reload any open clients onto the tombstone page.
+const SW_TOMBSTONE = `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil((async () => {
+  for (const k of await caches.keys()) await caches.delete(k);
+  await self.registration.unregister();
+  for (const c of await self.clients.matchAll({ type: "window" })) c.navigate(c.url);
+})()));
+`;
 
-async function serveStatic(name: string): Promise<Response> {
-  const safe = name.replace(/^\/+/, "").replace(/\.\.+/g, "");
-  const file = Bun.file(join(WEB_DIR, safe || "index.html"));
-  if (!(await file.exists())) return new Response("not found", { status: 404 });
-  const ext = safe.slice(safe.lastIndexOf("."));
-  return new Response(file, { headers: { "content-type": CONTENT_TYPES[ext] ?? "application/octet-stream" } });
-}
+const PWA_GONE_HTML = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>am</title><body style="font-family: system-ui; margin: 2rem">
+<p>The am web app was removed — this server now exposes only the token-gated API.
+You can uninstall this icon.</p>
+<script>navigator.serviceWorker?.register("/sw.js");</script>
+`;
 
 function agentDetail(name: string) {
   const agent = readAgent(name);
@@ -211,7 +211,10 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       const path = url.pathname;
 
       if (path === "/api" || path.startsWith("/api/")) {
-        const supplied = bearer(req) ?? url.searchParams.get("token");
+        // Bearer header only. The old `?token=` query fallback existed for
+        // the PWA's URL bootstrap; with that gone it would just leak the
+        // token (an RCE credential) into proxy logs and shell history.
+        const supplied = bearer(req);
         if (!supplied || !tokensMatch(supplied, token)) {
           return json({ error: "unauthorized" }, 401);
         }
@@ -219,12 +222,20 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
         return handleApi(req, parts);
       }
 
-      // Static PWA shell — no secret, so unauthenticated. Unknown paths fall
-      // back to the app shell so client-side routing works on deep links.
-      if (req.method !== "GET") return json({ error: "not found" }, 404);
-      if (path === "/") return serveStatic("index.html");
-      const res = await serveStatic(path);
-      return res.status === 404 ? serveStatic("index.html") : res;
+      // PWA tombstones: phones that installed the old web app still hold its
+      // service worker, which would cache a raw 404 over the shell. Hand the
+      // update check a self-destructing worker (drop caches, unregister,
+      // reload) and a one-line page so the stranded icon explains itself.
+      if (path === "/sw.js") {
+        return new Response(SW_TOMBSTONE, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+      }
+      if (path === "/" || path === "/index.html") {
+        return new Response(PWA_GONE_HTML, {
+          status: 410,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      return json({ error: "not found" }, 404);
     },
   });
 

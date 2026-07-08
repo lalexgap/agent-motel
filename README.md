@@ -91,9 +91,9 @@ am gc --apply            # actually collect it (reaped agents stay restorable;
 am watch                 # live status table, fed by the daemon
 am daemon status         # the daemon is auto-started by `am new`
 
-am serve                 # HTTP API + installable PWA to watch/message the fleet
-                         # from a phone (token-gated; put it behind a tailnet)
-am token                 # print the bearer token to paste into the PWA
+am serve                 # HTTP API to watch/message the fleet from other
+                         # clients (token-gated; put it behind a tailnet)
+am token                 # print the API bearer token
 ```
 
 ### Agents talking to each other
@@ -166,23 +166,22 @@ the structure that makes a conversation work:
   chatter with a warning — at injection time, so a cross-machine loop trips the
   same guard. `am comms <name>` shows the recent traffic the limiter sees.
 
-### Phone access (PWA)
+### Remote access (HTTP API)
 
-`am serve` starts a small HTTP server that exposes the fleet as a JSON API and
-serves an installable web app (PWA) — a phone-friendly version of `am ls` plus
-the detail view: live status across every machine, the agent's last screen, and
-queue / send-now / interrupt / spawn / stop. Open the URL it prints, paste the
-token from `am token`, and "Add to Home Screen" to install it.
+`am serve` starts a small HTTP server that exposes the fleet as a JSON API for
+other clients (a phone app, scripts): live status across every machine, agent
+detail with the last screen and queue, plus message / spawn / stop / resume.
+Every `/api` route requires the bearer token from `am token`.
 
 **It is not exposed to the internet, by design.** The API can spawn agents and
 run commands, so it's a remote-code-execution surface: bind it to your
 [Tailscale](https://tailscale.com) tailnet (set `"apiBind"` to the tailnet IP in
 `~/.agent-manager/config.json`), or keep the loopback default and front it with
-Caddy/`tailscale serve` for HTTPS. Every `/api` route requires the bearer token
-as defence-in-depth — but the network gate is what keeps it safe. Run it under
-systemd with `docs/am-serve.service`. Push notifications stay on the existing
+Caddy/`tailscale serve` for HTTPS. The bearer token is defence-in-depth — the
+network gate is what keeps it safe. Run it under systemd with
+`docs/am-serve.service`. Push notifications stay on the existing
 `notifyCommand` path (point it at [ntfy](https://ntfy.sh) for the phone). The
-full design rationale — public-vs-private exposure, PWA auth, native-app
+full design rationale — public-vs-private exposure, auth, native-app
 trade-offs — is in [`docs/ios-app-exploration.md`](docs/ios-app-exploration.md).
 
 ### Scrolling and copying text

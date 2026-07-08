@@ -1,5 +1,5 @@
-# systemd user unit for `am serve` — the HTTP API + installable PWA that lets
-# you watch and message the fleet from a phone. Optional; run it on the box the
+# systemd user unit for `am serve` — the HTTP API that lets other clients
+# (a phone app, scripts) watch and message the fleet. Optional; run it on the box the
 # agents live on.
 #
 #   mkdir -p ~/.config/systemd/user
@@ -13,11 +13,11 @@
 # expose it to the public internet with only the bearer token. See
 # docs/ios-app-exploration.md §4e–4f.
 #
-# Get the token to paste into the PWA with:  am token
+# Get the API bearer token with:  am token
 # sh -l so PATH picks up ~/.bun/bin from the profile.
 
 [Unit]
-Description=amux phone API + PWA
+Description=amux fleet HTTP API
 After=network-online.target
 
 [Service]
