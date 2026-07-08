@@ -84,7 +84,7 @@ Environment — much of this Alex says is already done; verify rather than redo:
 - [ ] `claude` CLI installed and logged in (`claude login` — OAuth; Max plan
       covers multiple machines). Verify `claude -p "ok"` works. Same for
       `codex` if codex agents are wanted.
-- [ ] This repo cloned (github.com/lalexgap/agent-manager), `bun install`,
+- [ ] This repo cloned (github.com/lalexgap/amux), `bun install`,
       `bun link` so `am` is on PATH (including non-interactive shells: check
       PATH in `~/.profile`/`~/.bashrc` for ssh non-login commands).
 - [ ] tailscale up and reachable from the laptop's tailnet. SSH works

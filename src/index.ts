@@ -42,7 +42,7 @@ import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
 
-const HELP = `am — manage and jump between coding agents (Claude Code & Codex)
+const HELP = `amux (am) — a multiplexer for coding agents (Claude Code & Codex)
 
 usage:
   am                          split view: sidebar + live agent pane

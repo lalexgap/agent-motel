@@ -1,6 +1,6 @@
-# am — coding agent manager
+# amux — a multiplexer for coding agents
 
-A small CLI for running multiple [Claude Code](https://claude.com/claude-code) and [Codex](https://developers.openai.com/codex/cli) agents at once and jumping between them fast. Each agent is a real interactive `claude` or `codex` session in its own tmux session; provider hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle. An idle agent whose screen shows a scheduled wake-up or a running background task is displayed as `waiting` (◐) instead — best-effort, detected from the pane content since hooks carry no such signal.
+A small CLI (`am` at the command line) for running multiple [Claude Code](https://claude.com/claude-code) and [Codex](https://developers.openai.com/codex/cli) agents at once and jumping between them fast. Each agent is a real interactive `claude` or `codex` session in its own tmux session; provider hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle. An idle agent whose screen shows a scheduled wake-up or a running background task is displayed as `waiting` (◐) instead — best-effort, detected from the pane content since hooks carry no such signal.
 
 ```
 $ am
@@ -28,8 +28,8 @@ an optional task, then jumps into the new session).
 Requires [Bun](https://bun.sh), tmux, and Claude Code. Codex (≥0.133, for `--codex` agents) is optional.
 
 ```sh
-git clone https://github.com/lalexgap/agent-manager.git
-cd agent-manager
+git clone https://github.com/lalexgap/amux.git
+cd amux
 bun install
 bun link
 ```

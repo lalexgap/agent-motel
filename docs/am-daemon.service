@@ -9,7 +9,7 @@
 # sh -l so PATH picks up ~/.bun/bin from the profile.
 
 [Unit]
-Description=am agent-manager daemon
+Description=amux daemon
 
 [Service]
 Type=forking

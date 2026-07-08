@@ -1,7 +1,7 @@
 {
-  "name": "agent-manager",
+  "name": "amux",
   "version": "0.1.0",
-  "description": "am — a CLI for managing and jumping between Claude Code agents running in tmux",
+  "description": "amux — a multiplexer for coding agents; the `am` CLI manages and jumps between Claude Code/Codex agents running in tmux",
   "license": "MIT",
   "type": "module",
   "bin": {

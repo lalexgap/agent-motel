@@ -17,7 +17,7 @@
 # sh -l so PATH picks up ~/.bun/bin from the profile.
 
 [Unit]
-Description=am agent-manager phone API + PWA
+Description=amux phone API + PWA
 After=network-online.target
 
 [Service]
