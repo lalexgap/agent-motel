@@ -60,6 +60,12 @@ am send api --now "prefer the v2 endpoint" # typed in immediately (steers curren
 am send api --file ./patch.diff            # hand off a file (cross-machine too)
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 
+am send api "run the tests" && am wait api # wait for the turn; prints api's answer
+                                           # (--status needs-attention / --timeout n)
+am peek api                                # print api's screen without attaching
+                                           # (--lines 20; dead agents show their
+                                           #  last snapshot)
+
 am report api --to lead   # api now reports progress to lead (see below)
 am comms api              # recent messages to/from api
 

@@ -148,6 +148,12 @@ export function capturePane(session: string, opts: { colors?: boolean } = {}): s
   return lines;
 }
 
+// Strip SGR color/style sequences (capture-pane -e output). The one shared
+// owner — per-file copies of this regex kept drifting.
+export function stripSgr(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 export function insideTmux(): boolean {
   return !!process.env.TMUX;
 }

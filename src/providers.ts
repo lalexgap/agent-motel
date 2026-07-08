@@ -20,6 +20,8 @@ When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI v
 - am send <name> --now "msg"    steer its current turn immediately
 - am send <name> [msg] --file <path>   hand a file to that agent (even on another machine)
 - am interrupt <name> "msg"     abort its turn and redirect it
+- am wait <name>                block until that agent's turn ends, then print its final message — \`am send x "..." && am wait x\` is a request/response pair
+- am peek <name>                print that agent's current screen without attaching (what is it doing right now?)
 - am ls --json                  every agent's status and queue depth
 - am stop <name> · am resume <name> · am rm <name>
 

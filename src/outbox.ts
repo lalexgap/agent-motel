@@ -150,7 +150,9 @@ export function outboxReclaim(timeoutMs: number, now = Date.now()): void {
     const file = join(outboxDir(), f);
     let ageMs: number;
     try {
-      ageMs = now - statSync(file).mtimeMs;
+      // Clamp: mtime can land sub-ms ahead of Date.now(), and a negative age
+      // must not make a timeout-0 reclaim skip the file (flaky under load).
+      ageMs = Math.max(0, now - statSync(file).mtimeMs);
     } catch {
       continue;
     }

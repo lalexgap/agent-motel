@@ -1,4 +1,4 @@
-import { mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Shared file primitives for am's on-disk state. Several processes (hooks,
@@ -23,6 +23,31 @@ export function writeJsonAtomic(file: string, value: unknown, opts: { pretty?: b
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(value, null, opts.pretty === false ? undefined : 2) + "\n");
   renameSync(tmp, file);
+}
+
+// The last maxBytes of a file as text. When the read is truncated, the first
+// (possibly torn) line is dropped so line-oriented callers only ever see
+// complete lines. Null when unreadable.
+export function readFileTail(file: string, maxBytes: number): string | null {
+  try {
+    const size = statSync(file).size;
+    const length = Math.min(maxBytes, size);
+    const fd = openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(length);
+      readSync(fd, buf, 0, length, size - length);
+      let text = buf.toString("utf8");
+      if (length < size) {
+        const nl = text.indexOf("\n");
+        text = nl === -1 ? "" : text.slice(nl + 1);
+      }
+      return text;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
 }
 
 // Append fd for a detached process's output, rotating a grown log to .old

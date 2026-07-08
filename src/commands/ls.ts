@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "../state";
 import { claudeProjectSlug } from "../transcript";
 import { queueDepth } from "../queue";
-import { capturePane, hasSession } from "../tmux";
+import { capturePane, hasSession, stripSgr } from "../tmux";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -56,7 +56,7 @@ export interface WaitingInfo {
 export function paneWaitingInfo(rawLines: string[]): WaitingInfo {
   // Callers pass plain or colored captures; SGR codes would pollute the
   // extracted detail and could split a separator match.
-  const lines = rawLines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  const lines = rawLines.map(stripSgr);
   let sep = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (SEPARATOR_RE.test(lines[i]!)) {
@@ -90,8 +90,7 @@ export function sessionTasksDir(agent: AgentState): string | null {
 }
 
 export function lastNonEmptyLine(text: string): string | null {
-  const lines = text
-    .replace(/\x1b\[[0-9;]*m/g, "")
+  const lines = stripSgr(text)
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);

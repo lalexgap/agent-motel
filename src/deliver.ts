@@ -2,7 +2,7 @@ import { closeSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { agentProvider, readAgent, type AgentState } from "./state";
 import { queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendText } from "./tmux";
+import { capturePane, hasSession, sendEnter, sendText, stripSgr } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd } from "./fsutil";
@@ -71,7 +71,7 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
 const PLACEHOLDER_RE = /^Try "/;
 
 export function inputBoxText(pane: string[]): string {
-  const plain = pane.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  const plain = pane.map(stripSgr);
   const seps: number[] = [];
   for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
   if (seps.length < 2) return "";
