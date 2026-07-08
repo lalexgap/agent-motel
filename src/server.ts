@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { apiTokenFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
 import { agentProvider, readAgent, resolveAgent } from "./state";
@@ -13,13 +12,11 @@ import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 
-// The HTTP layer behind the phone PWA. Unlike the daemon's unix socket this
-// listens on TCP, so it is opt-in (`am serve`) and bearer-token gated on every
-// /api route. The static PWA shell carries no secret and is served unguarded.
-// Deployment is expected to add the network gate (tailnet bind / Caddy / mTLS) —
-// see docs/ios-app-exploration.md §4e.
+// The HTTP layer for phone/remote clients (the iOS app, scripts). Unlike the
+// daemon's unix socket this listens on TCP, so it is opt-in (`am serve`) and
+// bearer-token gated on every /api route. Deployment is expected to add the
+// network gate (tailnet bind / Caddy / mTLS) — see docs/ios-app-exploration.md §4e.
 
-const WEB_DIR = join(import.meta.dir, "web");
 const PANE_LINES = 60;
 
 // --- token -----------------------------------------------------------------
@@ -61,22 +58,6 @@ function bearer(req: Request): string | null {
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body as object, { status });
-}
-
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".webmanifest": "application/manifest+json",
-  ".svg": "image/svg+xml",
-};
-
-async function serveStatic(name: string): Promise<Response> {
-  const safe = name.replace(/^\/+/, "").replace(/\.\.+/g, "");
-  const file = Bun.file(join(WEB_DIR, safe || "index.html"));
-  if (!(await file.exists())) return new Response("not found", { status: 404 });
-  const ext = safe.slice(safe.lastIndexOf("."));
-  return new Response(file, { headers: { "content-type": CONTENT_TYPES[ext] ?? "application/octet-stream" } });
 }
 
 function agentDetail(name: string) {
@@ -219,12 +200,8 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
         return handleApi(req, parts);
       }
 
-      // Static PWA shell — no secret, so unauthenticated. Unknown paths fall
-      // back to the app shell so client-side routing works on deep links.
-      if (req.method !== "GET") return json({ error: "not found" }, 404);
-      if (path === "/") return serveStatic("index.html");
-      const res = await serveStatic(path);
-      return res.status === 404 ? serveStatic("index.html") : res;
+      // API only — the PWA shell this used to serve is gone.
+      return json({ error: "not found" }, 404);
     },
   });
 

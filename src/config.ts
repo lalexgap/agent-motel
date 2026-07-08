@@ -33,7 +33,7 @@ export interface Config {
   // watching. claude gets --dangerously-skip-permissions; codex gets
   // --dangerously-bypass-approvals-and-sandbox. Set false to restore prompts.
   skipPermissions: boolean;
-  // `am serve` (the HTTP API + PWA for phones) listens here. Bind defaults to
+  // `am serve` (the HTTP API for phone/remote clients) listens here. Bind defaults to
   // loopback — point it at a tailnet IP, or keep loopback and front it with
   // Caddy/tailscale serve. NEVER 0.0.0.0 without a network gate: the API can
   // spawn agents and run commands.

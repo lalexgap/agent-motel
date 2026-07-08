@@ -9,8 +9,8 @@ export function tokenCommand(opts: { reset?: boolean }): void {
   if (!process.env.AM_API_TOKEN) console.error(`(stored in ${apiTokenFile()})`);
 }
 
-// `am serve` — start the HTTP API + PWA for phones. Foreground; meant to run
-// under systemd/tmux on the box the fleet lives on.
+// `am serve` — start the HTTP API for phone/remote clients. Foreground; meant
+// to run under systemd/tmux on the box the fleet lives on.
 export function serveCommand(opts: { port?: number; bind?: string }): void {
   const config = loadConfig();
   const token = loadOrCreateApiToken();
@@ -22,7 +22,7 @@ export function serveCommand(opts: { port?: number; bind?: string }): void {
   });
 
   console.log(`am serve listening on ${handle.url}`);
-  console.log(`  PWA:   open ${handle.url}/ on the phone, paste the token below`);
+  console.log(`  API:   bearer-token gated under ${handle.url}/api`);
   console.log(`  token: ${token}`);
   if (handle.hostname === "127.0.0.1") {
     console.log(

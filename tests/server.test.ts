@@ -56,24 +56,11 @@ describe("api auth", () => {
   });
 });
 
-describe("static shell", () => {
-  test("serves index.html unauthenticated", async () => {
-    const res = await fetch(url("/"));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("<title>am fleet</title>");
-  });
-
-  test("serves the manifest", async () => {
-    const res = await fetch(url("/manifest.webmanifest"));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("manifest");
-  });
-
-  test("unknown non-api path falls back to the shell", async () => {
-    const res = await fetch(url("/some/deep/link"));
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("<title>am fleet</title>");
+describe("api only — no static shell", () => {
+  test("non-api paths 404 (the PWA is gone)", async () => {
+    expect((await fetch(url("/"))).status).toBe(404);
+    expect((await fetch(url("/manifest.webmanifest"))).status).toBe(404);
+    expect((await fetch(url("/some/deep/link"))).status).toBe(404);
   });
 });
 

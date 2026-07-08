@@ -132,7 +132,7 @@ usage:
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
   am serve [--port n] [--bind addr]
-                              HTTP API + installable PWA for phones (token-gated;
+                              HTTP API for phone/remote clients (token-gated;
                               put it behind a tailnet/Caddy — it can spawn agents)
   am token [--reset]          print (or regenerate) the API bearer token
 
