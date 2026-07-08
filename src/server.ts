@@ -12,10 +12,12 @@ import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 
-// The HTTP layer for phone/remote clients (the iOS app, scripts). Unlike the
-// daemon's unix socket this listens on TCP, so it is opt-in (`am serve`) and
-// bearer-token gated on every /api route. Deployment is expected to add the
-// network gate (tailnet bind / Caddy / mTLS) — see docs/ios-app-exploration.md §4e.
+// The HTTP layer for remote clients — scripts, and the in-progress native
+// phone app (lives on its own branch; nothing on main consumes these routes).
+// Unlike the daemon's unix socket this listens on TCP, so it is opt-in
+// (`am serve`) and bearer-token gated (Authorization header only) on every
+// /api route. Deployment is expected to add the network gate (tailnet bind /
+// Caddy / mTLS) — see docs/ios-app-exploration.md §4e.
 
 const PANE_LINES = 60;
 
@@ -59,6 +61,23 @@ function bearer(req: Request): string | null {
 function json(body: unknown, status = 200): Response {
   return Response.json(body as object, { status });
 }
+
+// Self-destruct for service workers installed by the removed PWA: clear its
+// caches, unregister, and reload any open clients onto the tombstone page.
+const SW_TOMBSTONE = `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil((async () => {
+  for (const k of await caches.keys()) await caches.delete(k);
+  await self.registration.unregister();
+  for (const c of await self.clients.matchAll({ type: "window" })) c.navigate(c.url);
+})()));
+`;
+
+const PWA_GONE_HTML = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>am</title><body style="font-family: system-ui; margin: 2rem">
+<p>The am web app was removed — this server now exposes only the token-gated API.
+You can uninstall this icon.</p>
+<script>navigator.serviceWorker?.register("/sw.js");</script>
+`;
 
 function agentDetail(name: string) {
   const agent = readAgent(name);
@@ -192,7 +211,10 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       const path = url.pathname;
 
       if (path === "/api" || path.startsWith("/api/")) {
-        const supplied = bearer(req) ?? url.searchParams.get("token");
+        // Bearer header only. The old `?token=` query fallback existed for
+        // the PWA's URL bootstrap; with that gone it would just leak the
+        // token (an RCE credential) into proxy logs and shell history.
+        const supplied = bearer(req);
         if (!supplied || !tokensMatch(supplied, token)) {
           return json({ error: "unauthorized" }, 401);
         }
@@ -200,7 +222,19 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
         return handleApi(req, parts);
       }
 
-      // API only — the PWA shell this used to serve is gone.
+      // PWA tombstones: phones that installed the old web app still hold its
+      // service worker, which would cache a raw 404 over the shell. Hand the
+      // update check a self-destructing worker (drop caches, unregister,
+      // reload) and a one-line page so the stranded icon explains itself.
+      if (path === "/sw.js") {
+        return new Response(SW_TOMBSTONE, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+      }
+      if (path === "/" || path === "/index.html") {
+        return new Response(PWA_GONE_HTML, {
+          status: 410,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
       return json({ error: "not found" }, 404);
     },
   });

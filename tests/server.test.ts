@@ -51,16 +51,26 @@ describe("api auth", () => {
     expect(((await res.json()) as any).ok).toBe(true);
   });
 
-  test("accepts token as query param (for EventSource)", async () => {
-    expect((await fetch(url(`/api/health?token=${TOKEN}`))).status).toBe(200);
+  test("query-param tokens are no longer accepted (they leak into logs)", async () => {
+    expect((await fetch(url(`/api/health?token=${TOKEN}`))).status).toBe(401);
   });
 });
 
 describe("api only — no static shell", () => {
   test("non-api paths 404 (the PWA is gone)", async () => {
-    expect((await fetch(url("/"))).status).toBe(404);
     expect((await fetch(url("/manifest.webmanifest"))).status).toBe(404);
     expect((await fetch(url("/some/deep/link"))).status).toBe(404);
+  });
+
+  test("tombstones tear down stranded PWA installs", async () => {
+    // The root explains itself (410 Gone) and the service-worker URL serves
+    // a self-destructing worker, so installed phones don't cache a raw 404.
+    const root = await fetch(url("/"));
+    expect(root.status).toBe(410);
+    expect(await root.text()).toContain("removed");
+    const sw = await fetch(url("/sw.js"));
+    expect(sw.status).toBe(200);
+    expect(await sw.text()).toContain("unregister");
   });
 });
 
