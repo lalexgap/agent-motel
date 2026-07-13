@@ -58,6 +58,24 @@ describe("ensureCodexHooks", () => {
     expect(content.split(">>> agent-manager hooks").length).toBe(2);
   });
 
+  test("leaves the file untouched when codex writes trust state INSIDE the block", () => {
+    // Regression: codex re-serializes config.toml and drops its [hooks.state]
+    // trust tables between our comment markers. An exact-string compare saw
+    // that as a change and rewrote the block every launch, wiping the trust and
+    // re-triggering the approval prompt forever. The commands are unchanged, so
+    // ensureCodexHooks must report no change and not rewrite.
+    ensureCodexHooks();
+    const withTrust = readFileSync(codexConfigFile(), "utf8").replace(
+      "# <<< agent-manager hooks <<<",
+      '[hooks.state."x:session_start:0:0"]\ntrusted_hash = "sha256:abc"\n\n# <<< agent-manager hooks <<<',
+    );
+    writeFileSync(codexConfigFile(), withTrust);
+
+    expect(ensureCodexHooks().changed).toBe(false);
+    // The trust record survives, byte-for-byte.
+    expect(readFileSync(codexConfigFile(), "utf8")).toBe(withTrust);
+  });
+
   test("block contains valid-looking TOML with quoted command strings", () => {
     const block = codexHooksBlock();
     expect(block).toContain('type = "command"');

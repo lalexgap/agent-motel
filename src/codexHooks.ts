@@ -62,9 +62,29 @@ export function codexHooksBlock(): string {
   return lines.join("\n");
 }
 
-// Insert or refresh the managed block in $CODEX_HOME/config.toml. Everything
-// outside the markers — including the [hooks.state] trust hashes Codex writes
-// after the user approves — is preserved untouched.
+// The `command = "..."` lines are the only content Codex trusts (and the only
+// thing whose change should invalidate that trust). Extract them, sorted, so
+// two blocks can be compared while ignoring everything else.
+function hookCommands(blockText: string): string[] {
+  return [...blockText.matchAll(/^command = (.+)$/gm)].map((m) => m[1]!).sort();
+}
+
+function sameHookCommands(a: string, b: string): boolean {
+  const ca = hookCommands(a);
+  const cb = hookCommands(b);
+  return ca.length === cb.length && ca.every((v, i) => v === cb[i]);
+}
+
+// Insert or refresh the managed block in $CODEX_HOME/config.toml.
+//
+// Codex records hook trust by appending [hooks.state] tables AFTER the user
+// approves — and re-serializing the TOML drops those tables physically INSIDE
+// our BLOCK markers. An exact-string compare therefore saw the block as
+// "changed" on every launch, rewrote it, and sliced Codex's trust hashes back
+// out — so the approval prompt returned every single time. Compare only the
+// hook commands we own: as long as those are unchanged we leave the file
+// untouched, preserving Codex's trust. A genuine command change still rewrites
+// (and Codex re-reviews once, as intended).
 export function ensureCodexHooks(): { changed: boolean; file: string } {
   const file = codexConfigFile();
   mkdirSync(codexHome(), { recursive: true });
@@ -76,7 +96,7 @@ export function ensureCodexHooks(): { changed: boolean; file: string } {
   let next: string;
   if (begin !== -1 && end !== -1 && end > begin) {
     const existing = current.slice(begin, end + BLOCK_END.length);
-    if (existing === block) return { changed: false, file };
+    if (sameHookCommands(existing, block)) return { changed: false, file };
     next = current.slice(0, begin) + block + current.slice(end + BLOCK_END.length);
   } else {
     const separator = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
