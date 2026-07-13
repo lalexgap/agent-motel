@@ -17,6 +17,9 @@ export interface PickerItem {
   labelStyle?: string;
   badge?: string;
   badgeStyle?: string;
+  // Tag color when the row is selected (the design brightens cdx to blue on
+  // the selection fill); falls back to badgeStyle.
+  badgeSelectedStyle?: string;
   queueDepth?: number;
   // Right-aligned activity text, with an optional color on unselected rows.
   right?: string;
@@ -261,23 +264,22 @@ const bg = (hex: string) => {
 };
 
 // Tokyo Night surfaces, one constant per design role: #1a1b26 main pane,
-// #16161e darkest chrome (sidebar / key bar / form card), #1f2335 raised
-// surfaces (details card, focused form row), #191b26 the form's footer strip.
+// #16161e darkest chrome (sidebar / key bar / form dialog), #1f2335 the
+// borderless details panel, #283457 selection fills, #2e2a1e the amber tint
+// under needs-attention rows. Rules and frames are all #3b4261.
 export const THEME = {
   app: bg("1a1b26") + fg("a9b1d6"),
   sidebar: bg("16161e") + fg("a9b1d6"),
   card: bg("1f2335") + fg("a9b1d6"),
   form: bg("16161e") + fg("a9b1d6"),
-  formFocus: bg("1f2335") + fg("c0caf5"),
-  footer: bg("191b26") + fg("a9b1d6"),
   selected: bg("283457") + fg("c0caf5"),
+  attention: bg("2e2a1e"),
   keycap: bg("24283b") + fg("c0caf5"),
   text: fg("a9b1d6"),
   bright: fg("c0caf5"),
   muted: fg("565f89"),
   faint: fg("414868"),
-  border: fg("2a2c3d"),
-  hairline: fg("24263a"),
+  border: fg("3b4261"),
   blue: fg("7aa2f7"),
   cyan: fg("7dcfff"),
   green: fg("9ece6a"),
@@ -435,7 +437,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
 
 function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = true): Cell[] {
   const { label, hints } = keyBarHints(mode, handlers, active);
-  const prefix = `${THEME.blue}${BOLD}${label}${NORMAL_WEIGHT}${THEME.sidebar}`;
+  const prefix = `${bg("7aa2f7")}${fg("16161e")}${BOLD} ${label} ${NORMAL_WEIGHT}${THEME.sidebar}`;
   const tokens = hints.map(({ key, label: hintLabel }) =>
     `${THEME.keycap} ${key} ${THEME.sidebar} ${THEME.muted}${hintLabel}${THEME.sidebar}`,
   );
@@ -463,7 +465,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
   const token = ({ key, label: hintLabel }: KeyHint) =>
     `#[bg=#24283b,fg=#c0caf5] ${key} #[bg=#16161e,fg=#565f89] ${hintLabel}`;
   const right = hints.length && hints[hints.length - 1]!.key === "?" ? hints.pop()! : null;
-  const left = [`#[bg=#16161e,fg=#7aa2f7,bold] ${label}#[nobold]`, ...hints.map(token)].join("  ");
+  const left = [`#[bg=#7aa2f7,fg=#16161e,bold] ${label} #[nobold]#[bg=#16161e]`, ...hints.map(token)].join("  ");
   return right ? `${left}#[align=right]${token(right)} ` : left;
 }
 
@@ -635,9 +637,10 @@ export async function pick(
     }
   };
 
-  // The zoomed create flow is a centered, framed card. Every field stays
-  // visible, the focused row gets the same blue rail/tint as the agent list,
-  // and the bottom sentence previews what Enter will do.
+  // The zoomed create flow is a centered, borderless TUI dialog: a #16161e
+  // block with full-width rules under the title and above the consequence
+  // footer. The focused row gets a full-row selection fill plus the ▌ glyph,
+  // and option chips are reverse-video cells.
   const renderForm = (cols: number, rows: number): string[] => {
     formHitRows.clear();
     const labels: Record<string, string> = {
@@ -649,40 +652,35 @@ export async function pick(
       effort: "effort",
       where: "where",
     };
-    const cardWidth = Math.max(1, Math.min(84, cols - 4));
-    const innerWidth = Math.max(1, cardWidth - 2);
-    const labelW = 12;
+    const cardWidth = Math.max(1, Math.min(76, cols - 4));
+    // Rows: 1-cell marker column, 11-cell label, value, 2-cell right pad.
+    const labelW = 11;
+    const innerWidth = Math.max(1, cardWidth - 3);
     interface FormLine { text: string; field?: number }
     const card: FormLine[] = [];
-    const border = (edge: string) => `${THEME.border}${edge}${THEME.app}`;
-    const content = (value: string, base = THEME.form): string =>
-      `${THEME.border}│${base}${padAnsi(value, innerWidth)}${THEME.border}│${THEME.app}`;
-    // Inner rules use the design's fainter hairline; only the card frame gets
-    // the full border color.
-    const rule = () =>
-      card.push({ text: `${THEME.border}│${THEME.form}${THEME.hairline}${"─".repeat(innerWidth)}${THEME.border}│${THEME.app}` });
-    const chip = (text: string, style: string, rowBase: string): string =>
-      `${style} ${text} ${rowBase}`;
+    const content = (value: string, base = THEME.form): string => `${base}${padAnsi(value, cardWidth)}`;
+    const rule = () => card.push({ text: `${THEME.form}${THEME.border}${"─".repeat(cardWidth)}` });
     const optionStrip = (options: string[], selected: number, rowBase: string, kind: string): string =>
       options
         .map((o, oi) => {
-          if (oi !== selected) return `${THEME.muted} ${o} ${rowBase}`;
-          // Provider chips keep their identity color (claude purple, codex
-          // blue); the codex chip needs the accent bg — #1f2335 would vanish
-          // against the focused row, which uses that same surface.
+          if (oi !== selected) return `${THEME.muted}${o}${rowBase}`;
+          // Reverse-video cells: the provider chip is a solid identity-color
+          // block (claude purple, codex blue); where/effort use the selection
+          // fill, flipping to the cursor blue when their own row is focused
+          // (the selection fill would vanish against the focused row's bg).
           const selectedStyle = kind === "provider"
-            ? o === "claude"
-              ? bg("2a2440") + THEME.purple
-              : bg("283457") + THEME.blue
-            : bg("283457") + THEME.bright;
-          return chip(o, selectedStyle, rowBase);
+            ? `${o === "claude" ? bg("bb9af7") : bg("7aa2f7")}${fg("16161e")}${BOLD}`
+            : rowBase === THEME.selected
+              ? bg("7aa2f7") + fg("16161e")
+              : bg("283457") + THEME.bright;
+          return `${selectedStyle} ${o} ${NORMAL_WEIGHT}${rowBase}`;
         })
-        .join(" ");
+        .join("  ");
 
     const fieldRow = (field: string, i: number): FormLine => {
       const focused = i === formIdx;
-      const rowBase = focused ? THEME.formFocus : THEME.form;
-      const marker = focused ? `${THEME.blue}▌${rowBase} ` : "  ";
+      const rowBase = focused ? THEME.selected : THEME.form;
+      const marker = focused ? `${THEME.blue}▌${rowBase}` : " ";
       const label = `${focused ? THEME.blue : THEME.muted}${labels[field]!.padEnd(labelW)}${rowBase}`;
       const cursor = focused ? `${bg("7aa2f7")}${fg("16161e")} ${rowBase}` : "";
       let value: string;
@@ -707,15 +705,16 @@ export async function pick(
         value = optionStrip(hostOptions, newHostIdx, rowBase, field);
       }
       const left = marker + label + value;
-      return { text: content(hint ? alignAnsi(left, hint, innerWidth) : left, rowBase), field: i };
+      const body = hint ? alignAnsi(left, hint + " ".repeat(2), cardWidth) : left;
+      return { text: content(body, rowBase), field: i };
     };
 
-    card.push({ text: border(`╭${"─".repeat(innerWidth)}╮`) });
+    card.push({ text: content("") });
     card.push({
       text: content(alignAnsi(
-        ` ${THEME.green}${BOLD}Create agent${NORMAL_WEIGHT}${THEME.form}`,
-        `${THEME.faint}esc cancel ${THEME.form}`,
-        innerWidth,
+        `  ${THEME.green}${BOLD}Create agent${NORMAL_WEIGHT}${THEME.form}`,
+        `${THEME.faint}esc cancel  ${THEME.form}`,
+        cardWidth,
       )),
     });
     rule();
@@ -724,11 +723,11 @@ export async function pick(
       if (field === "dir" && formCandidates.length) {
         for (const candidate of formCandidates.slice(0, 3)) {
           card.push({
-            text: content(`  ${" ".repeat(labelW)}${THEME.cyan}${candidate}${THEME.form}`),
+            text: content(` ${" ".repeat(labelW)}${THEME.cyan}${candidate}${THEME.form}`),
           });
         }
         if (formCandidates.length > 3) {
-          card.push({ text: content(`  ${" ".repeat(labelW)}${THEME.muted}… ${formCandidates.length - 3} more${THEME.form}`) });
+          card.push({ text: content(` ${" ".repeat(labelW)}${THEME.muted}… ${formCandidates.length - 3} more${THEME.form}`) });
         }
       }
     });
@@ -738,22 +737,22 @@ export async function pick(
       : feedback;
     if (active) {
       rule();
-      for (const cell of feedbackBanner(active, innerWidth - 2).slice(0, 3)) {
-        card.push({ text: content(` ${cell.style ?? ""}${cell.text}${THEME.form}`) });
+      for (const cell of feedbackBanner(active, innerWidth).slice(0, 3)) {
+        card.push({ text: content(`  ${cell.style ?? ""}${cell.text}${THEME.form}`) });
       }
     }
     if (dirQuerying) {
-      card.push({ text: content(` ${THEME.muted}querying ${hostOptions[newHostIdx]}…${THEME.form}`) });
+      card.push({ text: content(`  ${THEME.muted}querying ${hostOptions[newHostIdx]}…${THEME.form}`) });
     }
     rule();
     const provider = PROVIDER_OPTIONS[newProviderIdx]!;
     const providerColor = provider === "claude" ? THEME.purple : THEME.blue;
     const where = hostOptions[newHostIdx] === "local" ? "locally" : `on ${hostOptions[newHostIdx]}`;
     const worktree = handlers.worktreeByDefault ? " in a worktree of" : " in";
-    const summary = `${THEME.muted} will run ${providerColor}${provider}${THEME.muted} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.footer}`;
-    const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.footer}`;
-    card.push({ text: content(alignAnsi(summary, create, innerWidth), THEME.footer) });
-    card.push({ text: border(`╰${"─".repeat(innerWidth)}╯`) });
+    const summary = `${THEME.muted}  will run ${providerColor}${provider}${THEME.muted} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.form}`;
+    const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.form}`;
+    card.push({ text: content(alignAnsi(summary, create, cardWidth)) });
+    card.push({ text: content("") });
 
     const footer = handlers.setKeyBar ? [] : keyBar("new-form", handlers, cols, true);
     pushKeyBar("new-form", true);
@@ -764,7 +763,7 @@ export async function pick(
     for (const line of card) {
       const screenRow = screen.length + 1;
       if (line.field !== undefined) formHitRows.set(screenRow, line.field);
-      screen.push(THEME.app + " ".repeat(left) + line.text + " ".repeat(Math.max(0, cols - left - cardWidth)) + RESET);
+      screen.push(THEME.app + " ".repeat(left) + line.text + THEME.app + " ".repeat(Math.max(0, cols - left - cardWidth)) + RESET);
     }
     while (screen.length < available) screen.push(THEME.app + " ".repeat(cols) + RESET);
     screen.push(...footer.map((cell) => `${cell.style ?? THEME.sidebar}${padAnsi(cell.text, cols)}${RESET}`));
@@ -816,17 +815,17 @@ export async function pick(
     const needs = current.filter((item) => item.status === "needs-attention").length;
     const idle = current.filter((item) => item.status === "idle").length;
     const exited = items.filter((item) => item.secondary).length;
-    const titleLeft = `${THEME.bright}${BOLD}agent motel${NORMAL_WEIGHT}${THEME.sidebar}  ${THEME.muted}${current.length} agents${THEME.sidebar}`;
-    const titleRight = `${THEME.green}● ${running}${THEME.sidebar} ${THEME.yellow}✱ ${needs}${THEME.sidebar} ${THEME.muted}○ ${idle}${THEME.sidebar}`;
+    const titleLeft = `${THEME.bright}${BOLD}agent motel${NORMAL_WEIGHT}${THEME.sidebar}`;
+    const titleRight = `${THEME.green}●${running}${THEME.sidebar} ${THEME.yellow}✱${needs}${THEME.sidebar} ${THEME.muted}◌${idle}${THEME.sidebar}`;
     const headerBlock: Cell[] = [
       { text: alignAnsi(titleLeft, titleRight, sidebarWidth), style: THEME.sidebar },
       {
         text: exited > 0
-          ? `${THEME.faint}${exited} exited · ${THEME.muted}a${THEME.faint} ${showAll ? "hide" : "show all"} · ${THEME.muted}f${THEME.faint} filter${THEME.sidebar}`
+          ? `${THEME.faint}${exited} exited · ${THEME.muted}a${THEME.faint} ${showAll ? "hide" : "all"} · ${THEME.muted}f${THEME.faint} filter${THEME.sidebar}`
           : `${THEME.faint}${current.length === 0 ? "no active agents" : "f filter · / search chats"}${THEME.sidebar}`,
         style: THEME.sidebar,
       },
-      { text: `${THEME.hairline}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
+      { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
     ];
     const prompt: Cell | null =
       mode === "cd-dir"
@@ -846,14 +845,14 @@ export async function pick(
                     : null;
     if (prompt) headerBlock.push(prompt);
 
-    // Keep the details card a stable height while moving the cursor. Its
-    // framed treatment mirrors the handoff and visually separates metadata
-    // from the navigable rows above it.
+    // Keep the details panel a stable height while moving the cursor. Per the
+    // TUI design it's a borderless lighter-bg block with a one-cell margin —
+    // no box-drawing frame.
     const metaHeight = Math.max(0, ...items.map((i) => i.meta?.length ?? 0)) + (chatMatch ? 1 : 0);
     const detailWidth = Math.max(8, sidebarWidth - 2);
     const detailInner = Math.max(1, detailWidth - 2);
     const detailRow = (value: string): Cell => ({
-      text: ` ${THEME.border}│${THEME.card}${padAnsi(value, detailInner)}${THEME.border}│${THEME.sidebar}`,
+      text: ` ${THEME.card} ${padAnsi(value, detailInner)} ${THEME.sidebar}`,
       style: THEME.sidebar,
     });
     const metaBlock: Cell[] = metaHeight && selected
@@ -871,13 +870,7 @@ export async function pick(
             const label = `${THEME.muted}${match[1]!.padEnd(9)}${THEME.card}`;
             return detailRow(label + match[3]);
           });
-          return [
-            { text: "", style: THEME.sidebar },
-            { text: ` ${THEME.border}╭${"─".repeat(detailInner)}╮${THEME.sidebar}`, style: THEME.sidebar },
-            detailRow(title),
-            ...rows,
-            { text: ` ${THEME.border}╰${"─".repeat(detailInner)}╯${THEME.sidebar}`, style: THEME.sidebar },
-          ];
+          return [{ text: "", style: THEME.sidebar }, detailRow(title), ...rows];
         })()
       : [];
     const visibleMetaBlock = mode === "help" ? [] : metaBlock;
@@ -931,42 +924,44 @@ export async function pick(
         if (showSections && (item.section ?? "") !== lastSection) {
           lastSection = item.section ?? "";
           const count = matches.filter((candidate) => (candidate.section ?? "") === lastSection).length;
-          const title = ` ${(lastSection || "local").toUpperCase()} `;
-          const countText = String(count);
-          const dashes = "─".repeat(Math.max(1, sidebarWidth - title.length - countText.length));
+          const title = ` ${lastSection || "local"} `;
+          const countText = ` ${count} `;
+          const dashes = "─".repeat(Math.max(1, sidebarWidth - 2 - title.length - countText.length));
           side.push({
-            text: `${THEME.muted}${title}${THEME.hairline}${dashes}${THEME.muted}${countText}${THEME.sidebar}`,
+            text: `${THEME.muted}──${title}${dashes}${countText}${THEME.sidebar}`,
             style: THEME.sidebar,
           });
         }
         listHitRows.set(side.length + 1, idx);
         const selectedRow = idx === cursor;
-        const rowBase = selectedRow ? THEME.selected : THEME.sidebar;
-        const prefix = selectedRow ? `${THEME.blue}${bg("283457")}▌${rowBase} ` : "  ";
+        const isAttention = item.status === "needs-attention";
+        // Selection and attention read as full-row background fills, per the
+        // TUI design — no borders. `restore` returns each colored segment to
+        // the row's own bg+fg.
+        const rowStyle = selectedRow ? THEME.selected : isAttention ? THEME.text + THEME.attention : THEME.sidebar;
+        const restore = rowStyle;
+        const prefix = selectedRow ? `${THEME.blue}▌${restore} ` : "  ";
         const icon = item.icon ?? "";
         const iconWidth = icon ? visibleWidth(icon) + 1 : 0;
         const right = item.right ?? "";
         const queue = (item.queueDepth ?? 0) > 0 ? `▸${item.queueDepth}` : "";
         const badge = item.badge ?? "";
-        // Chip layout mirrors the design row: gap, then the " cdx " chip with
-        // its own bg, then a one-cell inset so it doesn't touch the pane edge.
+        // Provider tag is plain colored text with a one-cell right inset.
         const suffixWidth =
           (right ? visibleWidth(right) + 1 : 0) +
           (queue ? visibleWidth(queue) + 1 : 0) +
-          (badge ? visibleWidth(badge) + 4 : 0);
+          (badge ? visibleWidth(badge) + 2 : 0);
         const labelWidth = Math.max(1, sidebarWidth - 2 - iconWidth - suffixWidth);
         const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
-        const badgeSeg = badge ? ` ${item.badgeStyle ?? THEME.muted} ${badge} ${rowBase} ` : "";
-        if (selectedRow) {
-          const suffix = `${right ? ` ${right}` : ""}${queue ? ` ${queue}` : ""}${badgeSeg}`;
-          side.push({ text: prefix + (icon ? icon + " " : "") + label + suffix, style: THEME.selected });
-        } else {
-          const iconSeg = icon ? `${item.iconStyle ?? THEME.muted}${icon}${THEME.sidebar} ` : "";
-          const labelSeg = `${item.labelStyle ?? THEME.text}${label}${THEME.sidebar}`;
-          const rightSeg = right ? ` ${item.rightStyle ?? THEME.muted}${right}${THEME.sidebar}` : "";
-          const queueSeg = queue ? ` ${THEME.yellow}${queue}${THEME.sidebar}` : "";
-          side.push({ text: prefix + iconSeg + labelSeg + rightSeg + queueSeg + badgeSeg, style: THEME.sidebar });
-        }
+        const iconSeg = icon ? `${item.iconStyle ?? THEME.muted}${icon}${restore} ` : "";
+        const labelSeg = selectedRow
+          ? `${THEME.bright}${BOLD}${label}${NORMAL_WEIGHT}${restore}`
+          : `${item.labelStyle ?? THEME.text}${label}${restore}`;
+        const rightSeg = right ? ` ${selectedRow ? THEME.muted : (item.rightStyle ?? THEME.muted)}${right}${restore}` : "";
+        const queueSeg = queue ? ` ${THEME.yellow}${queue}${restore}` : "";
+        const badgeStyle = (selectedRow ? item.badgeSelectedStyle : undefined) ?? item.badgeStyle ?? THEME.muted;
+        const badgeSeg = badge ? ` ${badgeStyle}${badge}${restore} ` : "";
+        side.push({ text: prefix + iconSeg + labelSeg + rightSeg + queueSeg + badgeSeg, style: rowStyle });
       });
       const end = Math.min(matches.length, start + listCapacity);
       if (end < matches.length) {

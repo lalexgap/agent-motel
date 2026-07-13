@@ -219,8 +219,10 @@ const GREEN = "\x1b[38;2;158;206;106m";
 const RED = "\x1b[38;2;247;118;142m";
 const AMBER = "\x1b[38;2;224;175;104m";
 const MUTED = "\x1b[38;2;86;95;137m";
-const CLAUDE = "\x1b[38;2;187;154;247m\x1b[48;2;42;36;64m";
-const CODEX = "\x1b[38;2;122;162;247m\x1b[48;2;31;35;53m";
+// Provider tags are plain colored text per the TUI design: claude keeps its
+// purple, codex is muted and brightens to blue on the selection fill.
+const BLUE = "\x1b[38;2;122;162;247m";
+const PURPLE = "\x1b[38;2;187;154;247m";
 
 function compactAge(iso: string): string {
   return relativeTime(iso).replace(/ ago$/, "");
@@ -228,8 +230,8 @@ function compactAge(iso: string): string {
 
 function activityFor(row: FleetRow): string {
   if (row.status === "needs-attention") return "needs you";
-  const age = compactAge(row.updatedAt);
-  return row.status === "idle" ? `idle ${age}` : age;
+  // The dimmed row already says "idle"; the age alone keeps columns tight.
+  return compactAge(row.updatedAt);
 }
 
 function detailStatus(status: AgentRow["status"]): string {
@@ -245,7 +247,7 @@ function diffDetail(row: FleetRow): string {
   if (!row.diff) return !row.host && row.status !== "exited" ? `${MUTED}checking…${FG}` : "—";
   if (!row.diff.dirty) return `${GREEN}clean${FG}`;
   const files = `${row.diff.files} ${row.diff.files === 1 ? "file" : "files"}`;
-  return `${GREEN}+${row.diff.added}${FG} ${RED}−${row.diff.removed}${FG} · ${files} · uncommitted`;
+  return `${GREEN}+${row.diff.added}${FG} ${RED}−${row.diff.removed}${FG} · ${files}`;
 }
 
 // Shared list builder for the classic picker and the hub sidebar: one item
@@ -276,7 +278,8 @@ export function fleetPickerItems(): PickerItem[] {
       right: activityFor(r),
       rightStyle: r.status === "needs-attention" ? AMBER : MUTED,
       badge: r.provider === "codex" ? "cdx" : "cld",
-      badgeStyle: r.provider === "codex" ? CODEX : CLAUDE,
+      badgeStyle: r.provider === "codex" ? MUTED : PURPLE,
+      badgeSelectedStyle: r.provider === "codex" ? BLUE : PURPLE,
       queueDepth: r.queued,
       search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.host ?? "local"}`,
       meta: [
@@ -284,7 +287,7 @@ export function fleetPickerItems(): PickerItem[] {
         `provider ${r.provider}`,
         r.worktreeBranch ? `branch   ${r.worktreeBranch}` : `dir      ${shortenHome(r.dir)}`,
         `diff     ${diffDetail(r)}`,
-        `updated  ${relativeTime(r.updatedAt)}${r.createdAt ? ` · created ${relativeTime(r.createdAt)}` : ""}`,
+        `updated  ${relativeTime(r.updatedAt)}${r.diff?.dirty ? ` ${MUTED}· uncommitted${FG}` : ""}`,
       ],
     };
   });

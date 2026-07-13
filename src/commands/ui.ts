@@ -18,7 +18,7 @@ import { readLastAttached } from "../state";
 // `tmux attach`. Nesting keeps the agent fully interactive — real keyboard,
 // colors, mouse — without am re-implementing a terminal.
 const HUB_SESSION = "am-hub";
-const SIDEBAR_WIDTH = 44;
+const SIDEBAR_WIDTH = 42;
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -105,8 +105,8 @@ export function createHub(): void {
 // changes without a recreate.
 function applyHubStyle(): void {
   tmux("set-option", "-w", "-t", hubTarget(), "window-style", "bg=#1a1b26,fg=#a9b1d6");
-  tmux("set-option", "-w", "-t", hubTarget(), "pane-border-style", "fg=#2a2c3d,bg=#1a1b26");
-  tmux("set-option", "-w", "-t", hubTarget(), "pane-active-border-style", "fg=#2a2c3d,bg=#1a1b26");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-border-style", "fg=#3b4261,bg=#1a1b26");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-active-border-style", "fg=#3b4261,bg=#1a1b26");
   // The status line doubles as the key bar; older hubs have status off from a
   // previous am, so assert it on every attach.
   tmux("set-option", "-t", hubTarget(), "status", "on");
