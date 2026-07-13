@@ -152,11 +152,19 @@ describe("clipAnsi", () => {
   test("clips by visible width, keeping escapes intact", () => {
     const clipped = clipAnsi(`${RED}definitely too long${RESET}`, 10);
     expect(visibleWidth(clipped)).toBe(10);
-    expect(clipped).toBe(`${RED}definitel…`);
+    expect(clipped).toBe(`${RED}definitel…${RESET}`);
   });
 
   test("never splits an escape sequence at the boundary", () => {
     const clipped = clipAnsi(`abc${BG}def`, 4);
-    expect(clipped).toBe(`abc${BG}…`);
+    expect(clipped).toBe(`abc…${BG}`);
+  });
+
+  test("preserves styles past the clip point so padding keeps the row's colors", () => {
+    // Emulates a form row: typed value, cursor-block bg, row-base restore.
+    // Dropping the trailing restore leaked the cursor bg into the padding.
+    const clipped = clipAnsi(`${BG}typed value that overflows${RESET}tail`, 10);
+    expect(visibleWidth(clipped)).toBe(10);
+    expect(clipped.endsWith(RESET)).toBe(true);
   });
 });

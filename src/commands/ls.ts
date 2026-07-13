@@ -209,7 +209,8 @@ export interface AgentRow {
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
   repoRoot?: string;
-  diff?: DiffSummary;
+  // null = checked, dir is not a git checkout; undefined = not checked yet.
+  diff?: DiffSummary | null;
 }
 
 export interface DiffSummary {
@@ -269,8 +270,10 @@ async function gitText(dir: string, args: string[]): Promise<{ text: string; ok:
 
 // The fleet can contain hundreds of historical agents. First paint must never
 // wait for their repositories, so the UI uses this stale-while-revalidate path
-// and picks up results on its next one-second refresh.
-export function cachedGitDiffSummary(dir: string): DiffSummary | undefined {
+// and picks up results on its next one-second refresh. Returns undefined
+// while the first check is still in flight, null for a dir that turned out
+// not to be a git checkout.
+export function cachedGitDiffSummary(dir: string): DiffSummary | null | undefined {
   const cached = diffCache.get(dir);
   if ((!cached || Date.now() - cached.at >= DIFF_CACHE_MS) && !diffInFlight.has(dir)) {
     diffInFlight.add(dir);
@@ -284,7 +287,7 @@ export function cachedGitDiffSummary(dir: string): DiffSummary | undefined {
       });
     }).finally(() => diffInFlight.delete(dir));
   }
-  return cached?.value ?? undefined;
+  return cached ? cached.value : undefined;
 }
 
 export function agentRows(): AgentRow[] {
@@ -328,6 +331,16 @@ export function lsCommand(opts: { json: boolean; localOnly?: boolean }): void {
   const { fleetRows } = require("../fleet") as typeof import("../fleet");
   const fleet = fleetRows({ localOnly: opts.localOnly });
   if (opts.json) {
+    // Diff stats ride along in the JSON: the hub polls remote fleets through
+    // `am ls --json --local-only` over ssh, and only this process can see this
+    // machine's worktrees. Active agents only — exited ones can number in the
+    // hundreds and nobody attaches to them.
+    for (const row of fleet.rows) {
+      const local = !("host" in row && row.host);
+      if (local && row.status !== "exited" && row.diff === undefined) {
+        row.diff = gitDiffSummary(row.dir);
+      }
+    }
     console.log(JSON.stringify(fleet.rows, null, 2));
     return;
   }

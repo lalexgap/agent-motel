@@ -80,21 +80,39 @@ export function createHub(): void {
   if (result.exitCode !== 0) throw new Error(`tmux new-session failed: ${result.stderr.trim()}`);
   ensureRightPane();
 
-  // Hub chrome: no status bar, and ctrl-q returns focus to the sidebar (gets
-  // you out of being locked into an agent). The binding lives in a hub-only
-  // key table, so the outer client intercepts ctrl-q before the nested agent
-  // session (whose own ctrl-q binding means detach) ever sees it.
-  tmux("set-option", "-t", hubTarget(), "status", "off");
+  // Hub chrome: the status line is the full-width contextual key bar (the
+  // sidebar pushes its content via status-format), and ctrl-q returns focus
+  // to the sidebar (gets you out of being locked into an agent). The binding
+  // lives in a hub-only key table, so the outer client intercepts ctrl-q
+  // before the nested agent session (whose own ctrl-q binding means detach)
+  // ever sees it.
+  tmux("set-option", "-t", hubTarget(), "status-format[0]", "");
   // The terminal tab title follows whichever agent the right pane shows
   // (showAgent updates the string); direct `am j` attaches get theirs from
   // the per-agent session titles instead.
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
   tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
-  tmux("set-option", "-w", "-t", hubTarget(), "pane-border-style", "fg=#2a2c3d");
-  tmux("set-option", "-w", "-t", hubTarget(), "pane-active-border-style", "fg=#2a2c3d");
+  applyHubStyle();
   applyHubBindings();
   tmux("set-option", "-t", hubTarget(), "key-table", "am-hub");
+}
+
+// Cells no pane paints (the agent terminal's default background, the
+// placeholder pane) fall back to the terminal's own black without this —
+// reading far darker than the design's #1a1b26 main-pane surface. Re-applied
+// on every attach, like the bindings, so a lingering hub picks up palette
+// changes without a recreate.
+function applyHubStyle(): void {
+  tmux("set-option", "-w", "-t", hubTarget(), "window-style", "bg=#1a1b26,fg=#a9b1d6");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-border-style", "fg=#2a2c3d,bg=#1a1b26");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-active-border-style", "fg=#2a2c3d,bg=#1a1b26");
+  // The status line doubles as the key bar; older hubs have status off from a
+  // previous am, so assert it on every attach.
+  tmux("set-option", "-t", hubTarget(), "status", "on");
+  tmux("set-option", "-t", hubTarget(), "status-position", "bottom");
+  tmux("set-option", "-t", hubTarget(), "status-style", "bg=#16161e,fg=#565f89");
+  tmux("set-option", "-t", hubTarget(), "status-interval", "0");
 }
 
 // Key tables are server-global; re-applied on every attach so lingering hubs
@@ -142,6 +160,7 @@ export function uiCommand(): void {
     createHub();
   } else {
     refreshSidebar();
+    applyHubStyle();
     applyHubBindings();
   }
   attachOrSwitch(HUB_SESSION);
@@ -373,6 +392,11 @@ export async function sidebarCommand(): Promise<void> {
       if (result.exitCode !== 0) return null;
       const active = result.stdout.trim() === "1";
       return { active, text: active ? "keys → sidebar" : "keys → session · ctrl-q ↩" };
+    },
+    // The contextual key bar lives on the hub's status line so it spans the
+    // full window (sidebar + agent pane), like the design.
+    setKeyBar: (format: string) => {
+      tmux("set-option", "-t", hubTarget(), "status-format[0]", format);
     },
   };
 
