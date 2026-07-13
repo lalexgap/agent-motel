@@ -1060,6 +1060,10 @@ export async function pick(
           dirQuerying = false;
           dirQueryGen++;
           setForm(false); // un-zoom the sidebar pane
+          // Follow the newly created agent before reloading. The cursor is
+          // name-tracked, so leaving the previous name here would make render
+          // snap back to the old row even though select() opened the new one.
+          cursorName = created;
           feedback = asFeedback(handlers.select(created));
           items = load();
           render();
