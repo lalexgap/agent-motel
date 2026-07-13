@@ -115,6 +115,10 @@ export interface PickerHandlers {
   // close (create success, cancel/esc, ctrl-c). `am pick` is already
   // fullscreen, so it leaves this unset (no-op).
   onForm?: (active: boolean) => void;
+  // Split-view hub: receive the contextual key bar as a tmux status-format
+  // string. When set, the picker stops painting its in-pane footer and the
+  // hub shows the bar on its status line, spanning the full window width.
+  setKeyBar?: (format: string) => void;
 }
 
 export function clipLine(line: string, width: number): string {
@@ -197,20 +201,28 @@ export function parseMouseEvent(key: string): MouseEvent | null {
 export function clipAnsi(line: string, width: number): string {
   if (visibleWidth(line) <= width) return line;
   let out = "";
+  let tail = "";
   let visible = 0;
   for (let i = 0; i < line.length; ) {
     const match = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
     if (match) {
-      out += match[0];
+      // Styles past the clip point still apply to whatever renders after the
+      // clipped text — dropping them leaks an open color (e.g. the form's
+      // cursor block background) into the padding of the rest of the row.
+      if (visible >= Math.max(0, width - 1)) tail += match[0];
+      else out += match[0];
       i += match[0].length;
       continue;
     }
-    if (visible >= Math.max(0, width - 1)) break;
+    if (visible >= Math.max(0, width - 1)) {
+      i++;
+      continue;
+    }
     out += line[i];
     visible++;
     i++;
   }
-  return out + "…";
+  return out + "…" + tail;
 }
 
 // Sidebar width: enough for name + status, capped so the preview keeps room.
@@ -248,10 +260,16 @@ const bg = (hex: string) => {
   return `\x1b[48;2;${r};${g};${b}m`;
 };
 
+// Tokyo Night surfaces, one constant per design role: #1a1b26 main pane,
+// #16161e darkest chrome (sidebar / key bar / form card), #1f2335 raised
+// surfaces (details card, focused form row), #191b26 the form's footer strip.
 export const THEME = {
   app: bg("1a1b26") + fg("a9b1d6"),
   sidebar: bg("16161e") + fg("a9b1d6"),
   card: bg("1f2335") + fg("a9b1d6"),
+  form: bg("16161e") + fg("a9b1d6"),
+  formFocus: bg("1f2335") + fg("c0caf5"),
+  footer: bg("191b26") + fg("a9b1d6"),
   selected: bg("283457") + fg("c0caf5"),
   keycap: bg("24283b") + fg("c0caf5"),
   text: fg("a9b1d6"),
@@ -259,6 +277,7 @@ export const THEME = {
   muted: fg("565f89"),
   faint: fg("414868"),
   border: fg("2a2c3d"),
+  hairline: fg("24263a"),
   blue: fg("7aa2f7"),
   cyan: fg("7dcfff"),
   green: fg("9ece6a"),
@@ -367,7 +386,7 @@ interface KeyHint {
   label: string;
 }
 
-function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = true): Cell[] {
+function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { label: string; hints: KeyHint[] } {
   let label = mode === "new-form" ? "CREATE" : mode.toUpperCase().replace("-DIR", "");
   let hints: KeyHint[];
   if (!active) {
@@ -411,7 +430,11 @@ function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = tr
     ];
     label = "SIDEBAR";
   }
+  return { label, hints };
+}
 
+function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = true): Cell[] {
+  const { label, hints } = keyBarHints(mode, handlers, active);
   const prefix = `${THEME.blue}${BOLD}${label}${NORMAL_WEIGHT}${THEME.sidebar}`;
   const tokens = hints.map(({ key, label: hintLabel }) =>
     `${THEME.keycap} ${key} ${THEME.sidebar}${THEME.muted}${hintLabel}${THEME.sidebar}`,
@@ -429,6 +452,19 @@ function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = tr
   }
   if (line) lines.push(line);
   return lines.map((text) => ({ text, style: THEME.sidebar }));
+}
+
+// The key bar as a tmux status-format string, for the hub: painting it on the
+// hub's status line makes it span the full window (sidebar + agent pane) like
+// the design, instead of stopping at the sidebar's right edge. The trailing
+// "?" hint right-aligns, matching the mockup.
+export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true): string {
+  const { label, hints } = keyBarHints(mode, handlers, active);
+  const token = ({ key, label: hintLabel }: KeyHint) =>
+    `#[bg=#24283b,fg=#c0caf5] ${key} #[bg=#16161e,fg=#565f89] ${hintLabel}`;
+  const right = hints.length && hints[hints.length - 1]!.key === "?" ? hints.pop()! : null;
+  const left = [`#[bg=#16161e,fg=#7aa2f7,bold] ${label} #[nobold]`, ...hints.map(token)].join(" ");
+  return right ? `${left}#[align=right]${token(right)} ` : left;
 }
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
@@ -536,6 +572,21 @@ export async function pick(
     activity = handlers.activity?.() ?? null;
   };
 
+  // Hub key bar on the tmux status line: pushed from render so it always
+  // matches the visible mode, deduped because render runs every second.
+  let lastKeyBar = "";
+  const pushKeyBar = (barMode: Mode, active: boolean) => {
+    if (!handlers.setKeyBar) return;
+    const format = tmuxKeyBar(barMode, handlers, active);
+    if (format === lastKeyBar) return;
+    lastKeyBar = format;
+    try {
+      handlers.setKeyBar(format);
+    } catch {
+      /* a broken status line must not take the picker down */
+    }
+  };
+
   const out = (s: string) => process.stdout.write(s);
 
   // Zoom/un-zoom the sidebar pane around the full-screen form. Guarded: a
@@ -604,19 +655,25 @@ export async function pick(
     interface FormLine { text: string; field?: number }
     const card: FormLine[] = [];
     const border = (edge: string) => `${THEME.border}${edge}${THEME.app}`;
-    const content = (value: string, base = THEME.card): string =>
+    const content = (value: string, base = THEME.form): string =>
       `${THEME.border}│${base}${padAnsi(value, innerWidth)}${THEME.border}│${THEME.app}`;
-    const rule = () => card.push({ text: border(`├${"─".repeat(innerWidth)}┤`) });
+    // Inner rules use the design's fainter hairline; only the card frame gets
+    // the full border color.
+    const rule = () =>
+      card.push({ text: `${THEME.border}│${THEME.form}${THEME.hairline}${"─".repeat(innerWidth)}${THEME.border}│${THEME.app}` });
     const chip = (text: string, style: string, rowBase: string): string =>
       `${style} ${text} ${rowBase}`;
     const optionStrip = (options: string[], selected: number, rowBase: string, kind: string): string =>
       options
         .map((o, oi) => {
           if (oi !== selected) return `${THEME.muted} ${o} ${rowBase}`;
+          // Provider chips keep their identity color (claude purple, codex
+          // blue); the codex chip needs the accent bg — #1f2335 would vanish
+          // against the focused row, which uses that same surface.
           const selectedStyle = kind === "provider"
             ? o === "claude"
               ? bg("2a2440") + THEME.purple
-              : bg("1f2335") + THEME.blue
+              : bg("283457") + THEME.blue
             : bg("283457") + THEME.bright;
           return chip(o, selectedStyle, rowBase);
         })
@@ -624,7 +681,7 @@ export async function pick(
 
     const fieldRow = (field: string, i: number): FormLine => {
       const focused = i === formIdx;
-      const rowBase = focused ? THEME.selected : THEME.card;
+      const rowBase = focused ? THEME.formFocus : THEME.form;
       const marker = focused ? `${THEME.blue}▌${rowBase} ` : "  ";
       const label = `${focused ? THEME.blue : THEME.muted}${labels[field]!.padEnd(labelW)}${rowBase}`;
       const cursor = focused ? `${bg("7aa2f7")}${fg("16161e")} ${rowBase}` : "";
@@ -656,8 +713,8 @@ export async function pick(
     card.push({ text: border(`╭${"─".repeat(innerWidth)}╮`) });
     card.push({
       text: content(alignAnsi(
-        ` ${THEME.green}${BOLD}Create agent${NORMAL_WEIGHT}${THEME.card}`,
-        `${THEME.faint}esc cancel ${THEME.card}`,
+        ` ${THEME.green}${BOLD}Create agent${NORMAL_WEIGHT}${THEME.form}`,
+        `${THEME.faint}esc cancel ${THEME.form}`,
         innerWidth,
       )),
     });
@@ -667,11 +724,11 @@ export async function pick(
       if (field === "dir" && formCandidates.length) {
         for (const candidate of formCandidates.slice(0, 3)) {
           card.push({
-            text: content(`  ${" ".repeat(labelW)}${THEME.cyan}${candidate}${THEME.card}`),
+            text: content(`  ${" ".repeat(labelW)}${THEME.cyan}${candidate}${THEME.form}`),
           });
         }
         if (formCandidates.length > 3) {
-          card.push({ text: content(`  ${" ".repeat(labelW)}${THEME.muted}… ${formCandidates.length - 3} more${THEME.card}`) });
+          card.push({ text: content(`  ${" ".repeat(labelW)}${THEME.muted}… ${formCandidates.length - 3} more${THEME.form}`) });
         }
       }
     });
@@ -682,23 +739,24 @@ export async function pick(
     if (active) {
       rule();
       for (const cell of feedbackBanner(active, innerWidth - 2).slice(0, 3)) {
-        card.push({ text: content(` ${cell.style ?? ""}${cell.text}${THEME.card}`) });
+        card.push({ text: content(` ${cell.style ?? ""}${cell.text}${THEME.form}`) });
       }
     }
     if (dirQuerying) {
-      card.push({ text: content(` ${THEME.muted}querying ${hostOptions[newHostIdx]}…${THEME.card}`) });
+      card.push({ text: content(` ${THEME.muted}querying ${hostOptions[newHostIdx]}…${THEME.form}`) });
     }
     rule();
     const provider = PROVIDER_OPTIONS[newProviderIdx]!;
     const providerColor = provider === "claude" ? THEME.purple : THEME.blue;
     const where = hostOptions[newHostIdx] === "local" ? "locally" : `on ${hostOptions[newHostIdx]}`;
     const worktree = handlers.worktreeByDefault ? " in a worktree of" : " in";
-    const summary = `${THEME.muted} will run ${providerColor}${provider}${THEME.muted} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.card}`;
-    const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.card}`;
-    card.push({ text: content(alignAnsi(summary, create, innerWidth)) });
+    const summary = `${THEME.muted} will run ${providerColor}${provider}${THEME.muted} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.footer}`;
+    const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.footer}`;
+    card.push({ text: content(alignAnsi(summary, create, innerWidth), THEME.footer) });
     card.push({ text: border(`╰${"─".repeat(innerWidth)}╯`) });
 
-    const footer = keyBar("new-form", handlers, cols, true);
+    const footer = handlers.setKeyBar ? [] : keyBar("new-form", handlers, cols, true);
+    pushKeyBar("new-form", true);
     const available = Math.max(0, rows - footer.length);
     const top = Math.max(0, Math.floor((available - card.length) / 2));
     const screen: string[] = Array.from({ length: top }, () => THEME.app + " ".repeat(cols) + RESET);
@@ -736,7 +794,8 @@ export async function pick(
       : confirmRemove
         ? { text: `remove "${confirmRemove}"? d again to confirm`, level: "warn" }
         : feedback;
-    const footerCells = keyBar(mode, handlers, sidebarWidth, activity?.active ?? true);
+    const footerCells = handlers.setKeyBar ? [] : keyBar(mode, handlers, sidebarWidth, activity?.active ?? true);
+    pushKeyBar(mode, activity?.active ?? true);
     const bodyRows = Math.max(1, rows - footerCells.length);
     const bannerBlock: Cell[] = active ? feedbackBanner(active, sidebarWidth) : [];
 
@@ -767,7 +826,7 @@ export async function pick(
           : `${THEME.faint}${current.length === 0 ? "no active agents" : "f filter · / search chats"}${THEME.sidebar}`,
         style: THEME.sidebar,
       },
-      { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
+      { text: `${THEME.hairline}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
     ];
     const prompt: Cell | null =
       mode === "cd-dir"
@@ -876,7 +935,7 @@ export async function pick(
           const countText = String(count);
           const dashes = "─".repeat(Math.max(1, sidebarWidth - title.length - countText.length));
           side.push({
-            text: `${THEME.muted}${title}${THEME.border}${dashes}${THEME.muted}${countText}${THEME.sidebar}`,
+            text: `${THEME.muted}${title}${THEME.hairline}${dashes}${THEME.muted}${countText}${THEME.sidebar}`,
             style: THEME.sidebar,
           });
         }

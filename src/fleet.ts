@@ -239,7 +239,10 @@ function detailStatus(status: AgentRow["status"]): string {
 }
 
 function diffDetail(row: FleetRow): string {
-  if (!row.diff) return !row.host && (row.repoRoot || row.worktreeBranch) ? `${MUTED}checking…${FG}` : "—";
+  // null = the dir isn't a git checkout; undefined on a remote row = the
+  // remote am predates diff-in-ls and will never fill it in.
+  if (row.diff === null) return "—";
+  if (!row.diff) return !row.host && row.status !== "exited" ? `${MUTED}checking…${FG}` : "—";
   if (!row.diff.dirty) return `${GREEN}clean${FG}`;
   const files = `${row.diff.files} ${row.diff.files === 1 ? "file" : "files"}`;
   return `${GREEN}+${row.diff.added}${FG} ${RED}−${row.diff.removed}${FG} · ${files} · uncommitted`;
@@ -249,10 +252,12 @@ function diffDetail(row: FleetRow): string {
 // per agent across the whole fleet, keyed host:name for remote rows.
 export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
-  // Diff collection belongs to the interactive fleet UI, not `am ls`: start
-  // it only for visible local sessions and consume the non-blocking cache.
+  // Local active agents get live diffs from the non-blocking cache — any dir
+  // is worth probing (in-place repo agents count, not just worktrees; a
+  // non-repo dir caches null and is never probed again). Remote rows carry
+  // whatever diff their host's `am ls --json` computed.
   const withDiff = rows.map((row) =>
-    !row.host && row.status !== "exited" && (row.repoRoot || row.worktreeBranch)
+    !row.host && row.status !== "exited" && row.diff === undefined
       ? { ...row, diff: cachedGitDiffSummary(row.dir) }
       : row,
   );
