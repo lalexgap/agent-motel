@@ -437,7 +437,7 @@ function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = tr
   const { label, hints } = keyBarHints(mode, handlers, active);
   const prefix = `${THEME.blue}${BOLD}${label}${NORMAL_WEIGHT}${THEME.sidebar}`;
   const tokens = hints.map(({ key, label: hintLabel }) =>
-    `${THEME.keycap} ${key} ${THEME.sidebar}${THEME.muted}${hintLabel}${THEME.sidebar}`,
+    `${THEME.keycap} ${key} ${THEME.sidebar} ${THEME.muted}${hintLabel}${THEME.sidebar}`,
   );
   const lines: string[] = [];
   let line = prefix;
@@ -463,7 +463,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
   const token = ({ key, label: hintLabel }: KeyHint) =>
     `#[bg=#24283b,fg=#c0caf5] ${key} #[bg=#16161e,fg=#565f89] ${hintLabel}`;
   const right = hints.length && hints[hints.length - 1]!.key === "?" ? hints.pop()! : null;
-  const left = [`#[bg=#16161e,fg=#7aa2f7,bold] ${label} #[nobold]`, ...hints.map(token)].join(" ");
+  const left = [`#[bg=#16161e,fg=#7aa2f7,bold] ${label}#[nobold]`, ...hints.map(token)].join("  ");
   return right ? `${left}#[align=right]${token(right)} ` : left;
 }
 
@@ -948,21 +948,23 @@ export async function pick(
         const right = item.right ?? "";
         const queue = (item.queueDepth ?? 0) > 0 ? `▸${item.queueDepth}` : "";
         const badge = item.badge ?? "";
+        // Chip layout mirrors the design row: gap, then the " cdx " chip with
+        // its own bg, then a one-cell inset so it doesn't touch the pane edge.
         const suffixWidth =
           (right ? visibleWidth(right) + 1 : 0) +
           (queue ? visibleWidth(queue) + 1 : 0) +
-          (badge ? visibleWidth(badge) + 3 : 0);
+          (badge ? visibleWidth(badge) + 4 : 0);
         const labelWidth = Math.max(1, sidebarWidth - 2 - iconWidth - suffixWidth);
         const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
+        const badgeSeg = badge ? ` ${item.badgeStyle ?? THEME.muted} ${badge} ${rowBase} ` : "";
         if (selectedRow) {
-          const suffix = `${right ? ` ${right}` : ""}${queue ? ` ${queue}` : ""}${badge ? `  ${badge} ` : ""}`;
+          const suffix = `${right ? ` ${right}` : ""}${queue ? ` ${queue}` : ""}${badgeSeg}`;
           side.push({ text: prefix + (icon ? icon + " " : "") + label + suffix, style: THEME.selected });
         } else {
           const iconSeg = icon ? `${item.iconStyle ?? THEME.muted}${icon}${THEME.sidebar} ` : "";
           const labelSeg = `${item.labelStyle ?? THEME.text}${label}${THEME.sidebar}`;
           const rightSeg = right ? ` ${item.rightStyle ?? THEME.muted}${right}${THEME.sidebar}` : "";
           const queueSeg = queue ? ` ${THEME.yellow}${queue}${THEME.sidebar}` : "";
-          const badgeSeg = badge ? ` ${item.badgeStyle ?? THEME.muted} ${badge} ${THEME.sidebar}` : "";
           side.push({ text: prefix + iconSeg + labelSeg + rightSeg + queueSeg + badgeSeg, style: THEME.sidebar });
         }
       });
