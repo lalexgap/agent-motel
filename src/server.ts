@@ -11,6 +11,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
+import { daemonRequest } from "./daemon";
 
 // The HTTP layer for remote clients — scripts, and the in-progress native
 // phone app (lives on its own branch; nothing on main consumes these routes).
@@ -112,6 +113,20 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   if (parts.length === 1 && parts[0] === "agents" && method === "GET") {
     const fleet = cachedFleetRows();
     return json({ rows: fleet.rows, unreachable: fleet.unreachable });
+  }
+
+  // GET /api/events — authenticated proxy of the daemon's fleet event stream.
+  // Remote clients can update immediately without exposing the unix socket.
+  if (parts.length === 1 && parts[0] === "events" && method === "GET") {
+    const upstream = await daemonRequest("/events", { timeoutMs: 0, signal: req.signal });
+    if (!upstream?.ok || !upstream.body) return json({ error: "daemon unavailable" }, 503);
+    return new Response(upstream.body, {
+      headers: {
+        "cache-control": "no-cache",
+        "content-type": "text/event-stream; charset=utf-8",
+        connection: "keep-alive",
+      },
+    });
   }
 
   // POST /api/agents — spawn a new (local) agent

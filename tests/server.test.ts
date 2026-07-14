@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
 import { writeAgent } from "../src/state";
 import { queueAppend } from "../src/queue";
+import { daemonRequest, startDaemonServer } from "../src/daemon";
 
 let home: string;
 let server: ApiServerHandle;
@@ -142,6 +143,25 @@ describe("agents api", () => {
 
   test("unknown api route → 404", async () => {
     expect((await fetch(url("/api/nonsense"), auth())).status).toBe(404);
+  });
+
+  test("GET /api/events proxies authenticated daemon events", async () => {
+    const daemon = startDaemonServer();
+    try {
+      const response = await fetch(url("/api/events"), auth());
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      expect(decoder.decode((await reader.read()).value)).toContain("event: ready");
+      await daemonRequest("/event", {
+        method: "POST",
+        body: JSON.stringify({ agent: "api-agent", event: "idle" }),
+      });
+      expect(decoder.decode((await reader.read()).value)).toContain('"agent":"api-agent"');
+      await reader.cancel();
+    } finally {
+      daemon.stop();
+    }
   });
 });
 

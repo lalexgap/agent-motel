@@ -122,6 +122,10 @@ export interface PickerHandlers {
   // string. When set, the picker stops painting its in-pane footer and the
   // hub shows the bar on its status line, spanning the full window width.
   setKeyBar?: (format: string) => void;
+  // Push-driven reloads (the hub subscribes to daemon fleet events). Returns
+  // an unsubscribe function. A periodic reload remains as a consistency
+  // fallback for missed events and remote hosts.
+  subscribe?: (onUpdate: () => void) => () => void;
 }
 
 export function clipLine(line: string, width: number): string {
@@ -234,7 +238,8 @@ export function sidebarWidthFor(cols: number, withPreview: boolean): number {
   return Math.max(28, Math.min(48, Math.floor(cols * 0.38)));
 }
 
-const REFRESH_MS = 1000;
+const RENDER_REFRESH_MS = 1000;
+const EVENT_FALLBACK_REFRESH_MS = 5000;
 const MIN_PREVIEW_WIDTH = 24;
 
 const HIDE_CURSOR = "\x1b[?25l";
@@ -381,7 +386,43 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "search" | "new-form" | "cd-dir" | "edit" | "help";
+type Mode = "list" | "filter" | "search" | "palette" | "new-form" | "cd-dir" | "edit" | "help";
+
+export interface PaletteCommand {
+  id: string;
+  label: string;
+  keywords?: string;
+  shortcut?: string;
+}
+
+export function filterPaletteCommands(commands: PaletteCommand[], query: string): PaletteCommand[] {
+  const normalized = query.toLowerCase().trim();
+  const terms = normalized.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return commands;
+  return commands
+    .map((command, index) => {
+      const label = command.label.toLowerCase();
+      const shortcut = command.shortcut?.toLowerCase() ?? "";
+      const haystack = `${label} ${command.keywords ?? ""} ${shortcut}`.toLowerCase();
+      const tokens = haystack.split(/\s+/);
+      if (!terms.every((term) => term.length === 1 ? tokens.includes(term) : haystack.includes(term))) return null;
+      const score = label === normalized
+        ? 0
+        : label.startsWith(normalized)
+          ? 1
+          : label.split(/\s+/).some((word) => word.startsWith(normalized))
+            ? 2
+            : label.includes(normalized) || shortcut === normalized
+              ? 3
+              : terms.every((term) => label.includes(term))
+                ? 4
+                : 5;
+      return { command, index, score };
+    })
+    .filter((match): match is { command: PaletteCommand; index: number; score: number } => match !== null)
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((match) => match.command);
+}
 
 interface KeyHint {
   key: string;
@@ -412,6 +453,12 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
       { key: "esc", label: "back" },
     ];
+  } else if (mode === "palette") {
+    hints = [
+      { key: "↑↓", label: "choose" },
+      { key: "⏎", label: "run" },
+      { key: "esc", label: "close" },
+    ];
   } else if (mode === "filter" || mode === "search" || mode === "cd-dir") {
     hints = [
       { key: "⏎", label: mode === "cd-dir" ? "move" : "apply" },
@@ -428,6 +475,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       { key: "f", label: "filter" },
       ...(handlers.regroup ? [{ key: "g", label: "group" }] : []),
       ...(hasEditActions(handlers) ? [{ key: "e", label: "edit" }] : []),
+      { key: "ctrl-p", label: "commands" },
       { key: "?", label: "keys" },
     ];
     label = "SIDEBAR";
@@ -534,6 +582,9 @@ export async function pick(
   let feedback: FeedbackResult | null = null;
   let confirmRemove: string | null = null;
   let mode: Mode = "list";
+  let paletteQuery = "";
+  let paletteCursor = 0;
+  let paletteReturnMode: Mode = "list";
   let newName = "";
   let newTask = "";
   let newDir = "";
@@ -568,6 +619,7 @@ export async function pick(
   // Rebuilt on every paint. Values are indexes into the current filtered
   // result set, so section headers and variable-height banners remain safe.
   const listHitRows = new Map<number, number>();
+  const paletteHitRows = new Map<number, number>();
   const formHitRows = new Map<number, number>();
   let renderedSidebarWidth = 0;
   const refreshActivity = () => {
@@ -615,6 +667,45 @@ export async function pick(
     }
     return visibleItems(items, filter, showAll);
   };
+
+  const paletteCommands = (): PaletteCommand[] => {
+    const target = filtered()[cursor];
+    const name = target?.label ?? target?.name;
+    const commands: (PaletteCommand | undefined)[] = [
+      target && {
+        id: "open",
+        label: `${handlers.select ? "Lock into" : "Open"} ${name}`,
+        keywords: "select jump attach session",
+        shortcut: "enter",
+      },
+      handlers.create && { id: "create", label: "Create agent", keywords: "new spawn", shortcut: "n" },
+      { id: "filter", label: "Filter agents", keywords: "find name task", shortcut: "f" },
+      { id: "search", label: "Search conversations", keywords: "chat transcript history", shortcut: "/" },
+      {
+        id: "toggle-all",
+        label: showAll ? "Hide exited agents" : "Show exited agents",
+        keywords: "all dead stopped",
+        shortcut: "a",
+      },
+      handlers.regroup && { id: "regroup", label: "Toggle host/project grouping", keywords: "group directory", shortcut: "g" },
+      target && handlers.move && { id: "move", label: `Move ${name}`, keywords: "remote host relocate", shortcut: "e m" },
+      target && handlers.clone && { id: "clone", label: `Clone ${name}`, keywords: "copy fork remote", shortcut: "e c" },
+      target && handlers.handoff && { id: "handoff", label: `Handoff ${name}`, keywords: "provider transcript", shortcut: "e h" },
+      target && handlers.cd && { id: "cd", label: `Change directory for ${name}`, keywords: "relocate path", shortcut: "e r" },
+      target && handlers.stop && { id: "stop", label: `Stop ${name}`, keywords: "exit kill", shortcut: "e x" },
+      target && handlers.remove && { id: "remove", label: `Remove ${name}…`, keywords: "delete destroy", shortcut: "e d" },
+      { id: "help", label: "Show keyboard shortcuts", keywords: "help keys", shortcut: "?" },
+      {
+        id: "quit",
+        label: handlers.quit ? "Detach from Agent Motel" : "Quit picker",
+        keywords: "exit close",
+        shortcut: "q",
+      },
+    ];
+    return commands.filter((command): command is PaletteCommand => command !== undefined);
+  };
+
+  const paletteMatches = () => filterPaletteCommands(paletteCommands(), paletteQuery);
 
   // Run `am search` over local agents' chats for the current query. Synchronous
   // (ripgrep does the whole corpus in tens of ms) so it can run per keystroke
@@ -774,6 +865,7 @@ export async function pick(
     const cols = process.stdout.columns ?? 80;
     const rows = process.stdout.rows ?? 24;
     listHitRows.clear();
+    paletteHitRows.clear();
     renderedSidebarWidth = cols;
 
     if (mode === "new-form") {
@@ -828,7 +920,9 @@ export async function pick(
       { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
     ];
     const prompt: Cell | null =
-      mode === "cd-dir"
+      mode === "palette"
+        ? { text: `${THEME.blue}command${THEME.sidebar}  ${paletteQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+        : mode === "cd-dir"
         ? { text: `${THEME.blue}cd to${THEME.sidebar}  ${cdDir}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
         : mode === "search"
           ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
@@ -873,14 +967,14 @@ export async function pick(
           return [{ text: "", style: THEME.sidebar }, detailRow(title), ...rows];
         })()
       : [];
-    const visibleMetaBlock = mode === "help" ? [] : metaBlock;
+    const visibleMetaBlock = mode === "help" || mode === "palette" ? [] : metaBlock;
 
     // Section headers are rendered only when the matches span more than one
     // section (a lone "local" header is noise); they consume list rows, so
     // capacity shrinks by the section count.
     const sections = [...new Set(matches.map((i) => i.section ?? ""))];
     const showSections = sections.length > 1;
-    const headerRows = showSections ? sections.length : 0;
+    const headerRows = mode === "palette" ? 0 : showSections ? sections.length : 0;
 
     // Window the list around the cursor so long agent lists stay navigable.
     // Reserve rows for overflow hints when the fleet is taller than its pane.
@@ -908,12 +1002,33 @@ export async function pick(
         ...(handlers.create ? [`${key("n")} create agent`] : []),
         `${key("f")} filter names/tasks`,
         `${key("/")} search conversations`,
+        `${key("ctrl-p")} command palette`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
         `${key("a")} show exited agents`,
         ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
         `${key("q / esc")} ${handlers.quit ? "detach" : "quit"}`,
       ];
       side.push(...helpRows.map((text) => ({ text, style: THEME.sidebar })));
+    } else if (mode === "palette") {
+      const commands = paletteMatches();
+      paletteCursor = Math.min(paletteCursor, Math.max(0, commands.length - 1));
+      const capacity = Math.max(1, bodyRows - side.length);
+      const start = commands.length > capacity
+        ? Math.min(Math.max(0, paletteCursor - Math.floor(capacity / 2)), commands.length - capacity)
+        : 0;
+      commands.slice(start, start + capacity).forEach((command, i) => {
+        const idx = start + i;
+        paletteHitRows.set(side.length + 1, idx);
+        const selectedRow = idx === paletteCursor;
+        const rowStyle = selectedRow ? THEME.selected : THEME.sidebar;
+        const prefix = selectedRow ? `${THEME.blue}▌${rowStyle} ` : "  ";
+        const shortcut = command.shortcut ? `${THEME.muted}${command.shortcut}${rowStyle}` : "";
+        const label = selectedRow
+          ? `${THEME.bright}${BOLD}${command.label}${NORMAL_WEIGHT}${rowStyle}`
+          : `${THEME.text}${command.label}${rowStyle}`;
+        side.push({ text: prefix + alignAnsi(label, shortcut, sidebarWidth - 2), style: rowStyle });
+      });
+      if (commands.length === 0) side.push({ text: "  no matching commands", style: THEME.muted });
     } else {
       if (start > 0) {
         side.push({ text: `${THEME.muted}↑ ${start} more${THEME.sidebar}`, style: THEME.sidebar });
@@ -1013,12 +1128,27 @@ export async function pick(
   out(ALT_SCREEN_ON + HIDE_CURSOR + WRAP_OFF + MOUSE_ON);
   render();
 
-  // Keep statuses, queue depths, and the preview live while the picker is open.
-  const refresh = setInterval(() => {
+  let pickerActive = true;
+  const reload = () => {
+    if (!pickerActive) return;
     items = load();
     refreshActivity();
     render();
-  }, REFRESH_MS);
+  };
+  let unsubscribe = () => {};
+  try {
+    unsubscribe = handlers.subscribe?.(reload) ?? unsubscribe;
+  } catch {
+    // The periodic reload below is the fallback when subscription setup fails.
+  }
+  // Preview/activity still repaint once a second. Fleet data reloads at the
+  // old cadence without events, or every five seconds as a consistency check
+  // when the daemon stream is active.
+  const renderRefresh = setInterval(() => {
+    refreshActivity();
+    render();
+  }, RENDER_REFRESH_MS);
+  const loadRefresh = setInterval(reload, handlers.subscribe ? EVENT_FALLBACK_REFRESH_MS : RENDER_REFRESH_MS);
   const onResize = () => render();
   process.stdout.on("resize", onResize);
 
@@ -1026,14 +1156,35 @@ export async function pick(
     let finished = false;
     const finish = (value: string | null) => {
       finished = true;
+      pickerActive = false;
       if (mode === "new-form") setForm(false); // un-zoom if we exit mid-form
-      clearInterval(refresh);
+      unsubscribe();
+      clearInterval(renderRefresh);
+      clearInterval(loadRefresh);
       process.stdout.off("resize", onResize);
       process.stdin.off("data", onData);
       process.stdin.setRawMode(false);
       process.stdin.pause();
       out(MOUSE_OFF + WRAP_ON + ALT_SCREEN_OFF + SHOW_CURSOR);
       resolve(value);
+    };
+
+    const beginCreate = () => {
+      if (!handlers.create) return;
+      mode = "new-form";
+      newName = "";
+      newTask = "";
+      newDir = handlers.defaultDir?.(cursorName) ?? "";
+      newHostIdx = 0;
+      newProviderIdx = defaultProviderIdx;
+      newModel = "";
+      newEffortIdx = 0;
+      formIdx = 0;
+      formCandidates = [];
+      dirQuerying = false;
+      dirQueryGen++;
+      feedback = null;
+      setForm(true); // zoom the sidebar pane to full screen
     };
 
     const submitCreate = () => {
@@ -1140,8 +1291,94 @@ export async function pick(
       refreshActivity();
     };
 
+    const executePaletteCommand = () => {
+      const command = paletteMatches()[paletteCursor];
+      if (!command) return;
+      const target = filtered()[cursor];
+      paletteQuery = "";
+      paletteCursor = 0;
+      feedback = null;
+
+      switch (command.id) {
+        case "open":
+          mode = "list";
+          activateSelection();
+          break;
+        case "create":
+          beginCreate();
+          break;
+        case "filter":
+          mode = "filter";
+          break;
+        case "search":
+          mode = "search";
+          break;
+        case "toggle-all":
+          mode = "list";
+          showAll = !showAll;
+          break;
+        case "regroup":
+          mode = "list";
+          if (handlers.regroup) feedback = asFeedback(handlers.regroup());
+          items = load();
+          break;
+        case "move":
+          mode = "list";
+          if (handlers.move) runDeferred("moving", handlers.move);
+          break;
+        case "clone":
+          mode = "list";
+          if (handlers.clone) runDeferred("cloning", handlers.clone);
+          break;
+        case "handoff":
+          mode = "list";
+          if (handlers.handoff) runDeferred("handing off", handlers.handoff);
+          break;
+        case "cd":
+          if (target && handlers.cd) {
+            mode = "cd-dir";
+            cdTarget = target.name;
+            cdDir = handlers.cdPrefill?.(target.name) ?? "";
+          }
+          break;
+        case "stop":
+          mode = "list";
+          if (handlers.stop) runAction(handlers.stop);
+          break;
+        case "remove":
+          if (target && handlers.remove) {
+            mode = "edit";
+            confirmRemove = target.name;
+          }
+          break;
+        case "help":
+          mode = "help";
+          break;
+        case "quit":
+          if (handlers.quit) handlers.quit();
+          else return finish(null);
+          mode = "list";
+          break;
+      }
+    };
+
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
+
+      if (key === "\x10" && mode !== "new-form") { // ctrl-p
+        if (mode === "palette") {
+          mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
+          paletteQuery = "";
+          paletteCursor = 0;
+        } else {
+          paletteReturnMode = mode;
+          mode = "palette";
+          paletteQuery = "";
+          paletteCursor = 0;
+          feedback = null;
+        }
+        return render();
+      }
 
       // Mouse wheel follows the list. A left click activates an agent row or,
       // in the create form, moves the focus ring to the clicked field.
@@ -1149,7 +1386,15 @@ export async function pick(
       const mouse = parseMouseEvent(key);
       if (mouse) {
         if (mouse.pressed && (mouse.button === 64 || mouse.button === 65)) {
-          moveCursor(mouse.button === 64 ? -1 : 1);
+          if (mode === "palette") {
+            const commands = paletteMatches();
+            paletteCursor = Math.min(
+              Math.max(0, paletteCursor + (mouse.button === 64 ? -1 : 1)),
+              Math.max(0, commands.length - 1),
+            );
+          } else {
+            moveCursor(mouse.button === 64 ? -1 : 1);
+          }
           render();
         } else if (mouse.pressed && mouse.button === 0) {
           if (mode === "new-form") {
@@ -1159,6 +1404,13 @@ export async function pick(
               formCandidates = [];
               dirQueryGen++;
               render();
+            }
+          } else if (mode === "palette" && mouse.x <= renderedSidebarWidth) {
+            const clickedIndex = paletteHitRows.get(mouse.y);
+            if (clickedIndex !== undefined) {
+              paletteCursor = clickedIndex;
+              executePaletteCommand();
+              if (!finished) render();
             }
           } else if ((mode === "list" || mode === "filter" || mode === "search") && mouse.x <= renderedSidebarWidth) {
             const clickedIndex = listHitRows.get(mouse.y);
@@ -1182,6 +1434,28 @@ export async function pick(
         else if (key === "\x1b[B") moveCursor(1);
         else if (key === "\x7f" || key === "\b") filter = filter.slice(0, -1);
         else if (key >= " " && !key.startsWith("\x1b")) filter += key;
+        return render();
+      }
+
+      if (mode === "palette") {
+        const commands = paletteMatches();
+        if (key === "\x1b") {
+          mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
+          paletteQuery = "";
+          paletteCursor = 0;
+        } else if (key === "\r" || key === "\n") {
+          executePaletteCommand();
+        } else if (key === "\x1b[A") {
+          paletteCursor = Math.max(0, paletteCursor - 1);
+        } else if (key === "\x1b[B") {
+          paletteCursor = Math.min(Math.max(0, commands.length - 1), paletteCursor + 1);
+        } else if (key === "\x7f" || key === "\b") {
+          paletteQuery = paletteQuery.slice(0, -1);
+          paletteCursor = 0;
+        } else if (key >= " " && !key.startsWith("\x1b")) {
+          paletteQuery += key;
+          paletteCursor = 0;
+        }
         return render();
       }
 
@@ -1426,20 +1700,7 @@ export async function pick(
         mode = "search";
         feedback = null;
       } else if ((key === "\x0e" || key === "n") && handlers.create) {
-        mode = "new-form";
-        newName = "";
-        newTask = "";
-        newDir = handlers.defaultDir?.(cursorName) ?? "";
-        newHostIdx = 0;
-        newProviderIdx = defaultProviderIdx;
-        newModel = "";
-        newEffortIdx = 0;
-        formIdx = 0;
-        formCandidates = [];
-        dirQuerying = false;
-        dirQueryGen++;
-        feedback = null;
-        setForm(true); // zoom the sidebar pane to full screen
+        beginCreate();
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;

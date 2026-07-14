@@ -612,7 +612,7 @@ async function main(): Promise<void> {
       await daemonCommand(args.positional[0]);
       break;
     case "serve":
-      serveCommand({
+      await serveCommand({
         port: numberFlag(args, "port"),
         bind: args.flags.bind as string | undefined,
       });

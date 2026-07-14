@@ -23,7 +23,8 @@ refreshed every second — peek at what each agent is doing without attaching.
 Click an agent (or press Enter) to attach, use the mouse wheel to move through
 the list, and click a field in the create form to focus it.
 `ctrl-n` spawns a new agent right from the picker (it prompts for a name and
-an optional task, then jumps into the new session).
+an optional task, then jumps into the new session). `ctrl-p` opens a searchable
+command palette for fleet and selected-agent actions.
 
 ## Install
 
@@ -172,7 +173,8 @@ the structure that makes a conversation work:
 
 `am serve` starts a small HTTP server that exposes the fleet as a JSON API for
 other clients (a phone app, scripts): live status across every machine, agent
-detail with the last screen and queue, plus message / spawn / stop / resume.
+detail with the last screen and queue, message / spawn / stop / resume, and an
+SSE fleet-update stream at `/api/events`.
 Every `/api` route requires the bearer token from `am token`.
 
 **It is not exposed to the internet, by design.** The API can spawn agents and
@@ -201,7 +203,7 @@ Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps w
 - **Codex agents**: `am new --codex` runs Codex, whose hook system mirrors Claude Code's. Codex has no per-launch settings flag and its hook trust is keyed to the config file a hook lives in, so `am` installs its hook block persistently into `~/.codex/config.toml` (guarded by `AGENTMGR_AGENT`, inert in your own codex sessions). The first managed launch shows Codex's hooks review — choose **Trust all and continue** (one-time; the trust hash survives until am's paths change). Codex fires SessionStart at the first turn rather than TUI launch, so a fresh codex agent reads `starting` until its first prompt; approvals surface via the dedicated PermissionRequest event.
 - **Handoff**: `am handoff <name>` renders the agent's native session file (Claude: `~/.claude/projects/...`, Codex: `~/.codex/sessions/...` — captured from hook payloads) into markdown under `~/.agent-manager/handoffs/`, then spawns a fresh agent on the other provider briefed with it. Neither CLI can adopt the other's session natively, so the handoff is a context briefing: the new agent is told to re-verify repo state rather than trust stale tool output. The source agent keeps running until you stop it.
 - **Queue**: `am send` appends to `~/.agent-manager/queue/<name>.jsonl`. When the agent finishes a turn, its Stop hook pops the next message and types it into the session via `tmux send-keys`.
-- **Daemon**: a small background process (auto-started by `am new`) serving HTTP over a unix socket at `~/.agent-manager/daemon.sock`. It schedules queue delivery, sweeps dead sessions, and feeds `am watch`. It's an accelerator, not a requirement — if it's down, hooks fall back to handling delivery themselves, so nothing breaks.
+- **Daemon**: a small background process (auto-started by `am new`) serving HTTP over a unix socket at `~/.agent-manager/daemon.sock`. It schedules queue delivery, sweeps dead sessions, and publishes state/queue changes to the sidebar and remote API; the sidebar keeps a periodic reload as a fallback. It's an accelerator, not a requirement — if it's down, hooks fall back to handling delivery themselves, so nothing breaks.
 - **Notifications**: macOS notifications fire when an agent needs your attention (permission prompts), and when one goes idle after real background work — filtered so you're not pinged for agents you're currently watching, quick replies (default threshold 30s of work, tune `idleNotifyMinSeconds` in `~/.agent-manager/config.json`), or agents about to receive a queued message. Notifications come from the hooks, so they work even with no `am` process or daemon running.
 - **Remote control**: agents launch with [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control) enabled by default, so every agent appears in claude.ai/code and the Claude mobile app's session list and can be driven from there — the session keeps running locally with all its tools. Disable globally with `"remoteControl": false` in `~/.agent-manager/config.json`, or per agent with `--no-remote` (`--remote` forces it on). Note: with remote control on, the initial `-m` message is delivered via the queue at session start, since the flag would otherwise swallow it as the remote session's name.
 - **Worktrees by default**: spawning an agent into a git repo gives it a

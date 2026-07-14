@@ -12,6 +12,7 @@ import { newCommand } from "./new";
 import { destroyAgent, stopAgent } from "./rm";
 import { reviveAgent } from "./resume";
 import { readLastAttached } from "../state";
+import { ensureDaemon, watchDaemonEvents } from "../daemon";
 
 // Persistent split view: a hub tmux session whose left pane runs the sidebar
 // (`am __sidebar`) and whose right pane shows the selected agent via a nested
@@ -172,6 +173,7 @@ export function uiCommand(): void {
 export async function sidebarCommand(): Promise<void> {
   let shown: string | null = null;
   let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  await ensureDaemon();
 
   // Point the right pane at an agent (key = name, or host:name for remote).
   // With focus=false (scroll preview) the sidebar keeps focus; enter/→ pass
@@ -398,6 +400,7 @@ export async function sidebarCommand(): Promise<void> {
     setKeyBar: (format: string) => {
       tmux("set-option", "-t", hubTarget(), "status-format[0]", format);
     },
+    subscribe: (onUpdate) => watchDaemonEvents(() => onUpdate()),
   };
 
   await pick(load, handlers, readLastAttached().current ?? undefined);

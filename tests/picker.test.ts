@@ -4,6 +4,7 @@ import {
   clipAnsi,
   cycleField,
   feedbackBanner,
+  filterPaletteCommands,
   formFields,
   parseMouseEvent,
   splitKeys,
@@ -139,6 +140,23 @@ describe("cycleField", () => {
   });
   test("is safe with no fields", () => {
     expect(cycleField(0, 0, 1)).toBe(0);
+  });
+});
+
+describe("filterPaletteCommands", () => {
+  const commands = [
+    { id: "create", label: "Create agent", keywords: "new spawn", shortcut: "n" },
+    { id: "search", label: "Search conversations", keywords: "chat transcript", shortcut: "/" },
+    { id: "all", label: "Show exited agents", keywords: "all dead stopped", shortcut: "a" },
+    { id: "stop", label: "Stop api", keywords: "exit kill", shortcut: "e x" },
+  ];
+
+  test("matches labels, keywords, shortcuts, and multiple terms", () => {
+    expect(filterPaletteCommands(commands, "").map((c) => c.id)).toEqual(["create", "search", "all", "stop"]);
+    expect(filterPaletteCommands(commands, "spawn").map((c) => c.id)).toEqual(["create"]);
+    expect(filterPaletteCommands(commands, "search chat").map((c) => c.id)).toEqual(["search"]);
+    expect(filterPaletteCommands(commands, "e x").map((c) => c.id)).toEqual(["stop"]);
+    expect(filterPaletteCommands(commands, "stop").map((c) => c.id)).toEqual(["stop", "all"]);
   });
 });
 

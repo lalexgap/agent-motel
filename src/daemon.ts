@@ -1,5 +1,5 @@
-import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
-import { DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs } from "./paths";
+import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
+import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
 import { listAgents, readAgent, setStatus } from "./state";
 import { queueAppend, queueDepth } from "./queue";
 import { hasSession, sessionName } from "./tmux";
@@ -132,6 +132,14 @@ export interface DaemonHandle {
   stop(): void;
 }
 
+export interface FleetEvent {
+  id: number;
+  type: "fleet";
+  event: string;
+  agent?: string;
+  at: string;
+}
+
 // The daemon layers on the file-based core: state files stay the source of
 // truth; the daemon adds a place to connect to (live status) and takes over
 // delivery scheduling from detached one-shot processes.
@@ -139,6 +147,42 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   ensureDirs();
   rmSync(socketPath, { force: true }); // clear stale socket from a crashed daemon
   const startedAt = new Date().toISOString();
+  const encoder = new TextEncoder();
+  const subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  let nextEventId = 1;
+
+  const publish = (event: string, agent?: string) => {
+    const message: FleetEvent = {
+      id: nextEventId++,
+      type: "fleet",
+      event,
+      ...(agent ? { agent } : {}),
+      at: new Date().toISOString(),
+    };
+    const chunk = encoder.encode(`id: ${message.id}\nevent: fleet\ndata: ${JSON.stringify(message)}\n\n`);
+    for (const subscriber of subscribers) {
+      try {
+        subscriber.enqueue(chunk);
+      } catch {
+        subscribers.delete(subscriber);
+      }
+    }
+  };
+
+  let fileEventTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleFileEvent = () => {
+    if (fileEventTimer) return;
+    fileEventTimer = setTimeout(() => {
+      fileEventTimer = null;
+      publish("changed");
+    }, 20);
+  };
+  // State is file-backed and may be changed by any short-lived `am` process,
+  // not just hooks. Watching both trees makes the daemon a complete event hub
+  // for creates/removes/status changes and queue-depth changes.
+  const fileWatchers = [agentsDir(), queueDir()].map((dir) =>
+    watch(dir, { recursive: true }, scheduleFileEvent),
+  );
 
   const server = Bun.serve({
     unix: socketPath,
@@ -151,9 +195,30 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       if (req.method === "GET" && path === "/agents") {
         return Response.json(agentRows());
       }
+      if (req.method === "GET" && path === "/events") {
+        let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controllerRef = controller;
+            subscribers.add(controller);
+            controller.enqueue(encoder.encode(`event: ready\ndata: ${JSON.stringify({ type: "ready", startedAt })}\n\n`));
+          },
+          cancel() {
+            if (controllerRef) subscribers.delete(controllerRef);
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "cache-control": "no-cache",
+            "content-type": "text/event-stream; charset=utf-8",
+            connection: "keep-alive",
+          },
+        });
+      }
       if (req.method === "POST" && path === "/event") {
         const { agent, event } = (await req.json()) as { agent?: string; event?: string };
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
+        publish(event, agent);
         if (event === "stop" && queueDepth(agent) > 0) {
           setTimeout(() => {
             // .catch, not try/catch: deliverNext is async, so a try around a
@@ -195,6 +260,17 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     }
   }, RECONCILE_INTERVAL_MS);
 
+  const keepalive = setInterval(() => {
+    const chunk = encoder.encode(": keepalive\n\n");
+    for (const subscriber of subscribers) {
+      try {
+        subscriber.enqueue(chunk);
+      } catch {
+        subscribers.delete(subscriber);
+      }
+    }
+  }, 15_000);
+
   // Pull store-and-forward messages from the remotes on its own ADAPTIVE
   // cadence (separate from the 15s local self-heal): poll the hot floor right
   // after mail arrives, back off ×1.5 to the cap when idle, snap back to hot on
@@ -227,6 +303,17 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     stop() {
       stopped = true;
       clearInterval(reconciler);
+      clearInterval(keepalive);
+      if (fileEventTimer) clearTimeout(fileEventTimer);
+      for (const watcher of fileWatchers) watcher.close();
+      for (const subscriber of subscribers) {
+        try {
+          subscriber.close();
+        } catch {
+          // already disconnected
+        }
+      }
+      subscribers.clear();
       if (pollTimer) clearTimeout(pollTimer);
       server.stop(true);
       rmSync(socketPath, { force: true });
@@ -240,14 +327,68 @@ export async function daemonRequest(
 ): Promise<Response | null> {
   if (!existsSync(daemonSocket())) return null;
   try {
+    const { timeoutMs, ...requestInit } = init ?? {};
     return await fetch(`http://am${path}`, {
-      ...init,
+      ...requestInit,
       unix: daemonSocket(),
-      signal: AbortSignal.timeout(init?.timeoutMs ?? 1000),
+      signal: requestInit.signal ?? (timeoutMs === 0 ? undefined : AbortSignal.timeout(timeoutMs ?? 1000)),
     });
   } catch {
     return null;
   }
+}
+
+// Maintain a streaming subscription to the daemon. Disconnects are expected
+// during upgrades/restarts, so reconnect in the background; the picker keeps
+// a periodic reload as a final consistency fallback.
+export function watchDaemonEvents(onEvent: (event: FleetEvent) => void): () => void {
+  let stopped = false;
+  let current: AbortController | null = null;
+
+  void (async () => {
+    while (!stopped) {
+      current = new AbortController();
+      try {
+        const response = await daemonRequest("/events", { timeoutMs: 0, signal: current.signal });
+        if (!response?.ok || !response.body) throw new Error("daemon event stream unavailable");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!stopped) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          for (;;) {
+            const boundary = buffer.indexOf("\n\n");
+            if (boundary < 0) break;
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const data = block
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trimStart())
+              .join("\n");
+            if (!data) continue;
+            try {
+              const event = JSON.parse(data) as FleetEvent | { type: string };
+              if (event.type === "fleet") onEvent(event as FleetEvent);
+            } catch {
+              // Ignore malformed events and keep the subscription alive.
+            }
+          }
+        }
+      } catch {
+        // Reconnect below unless the caller stopped the subscription.
+      }
+      current = null;
+      if (!stopped) await Bun.sleep(1000);
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    current?.abort();
+  };
 }
 
 export async function daemonHealth(): Promise<{ pid: number; startedAt: string } | null> {
