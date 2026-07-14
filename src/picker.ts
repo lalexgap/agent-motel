@@ -455,7 +455,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
     ];
   } else if (mode === "palette") {
     hints = [
-      { key: "↑↓", label: "choose" },
+      { key: "↑↓", label: "select" },
       { key: "⏎", label: "run" },
       { key: "esc", label: "close" },
     ];
@@ -707,6 +707,21 @@ export async function pick(
 
   const paletteMatches = () => filterPaletteCommands(paletteCommands(), paletteQuery);
 
+  // The palette's second group: every visible agent, fuzzily matched on name
+  // plus the same haystack the sidebar filter uses (task, dir, provider, host).
+  // Ignores any active sidebar filter — the palette searches the whole fleet.
+  const paletteAgentMatches = (): PickerItem[] => {
+    const terms = paletteQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const rows = visibleItems(items, "", showAll);
+    if (!terms.length) return rows;
+    return rows.filter((row) => {
+      const haystack = `${row.label} ${row.search ?? ""}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+  };
+
+  const paletteTotal = () => paletteMatches().length + paletteAgentMatches().length;
+
   // Run `am search` over local agents' chats for the current query. Synchronous
   // (ripgrep does the whole corpus in tens of ms) so it can run per keystroke
   // without an async dance. Local registered agents only — they're the rows the
@@ -861,6 +876,117 @@ export async function pick(
     return screen.slice(0, rows);
   };
 
+  // The command palette (ctrl+k): a centered overlay panel near the top of
+  // the screen, same borderless #16161e vocabulary as the create dialog. One
+  // fuzzy query across two groups — commands, then agents — with matched
+  // characters highlighted and direct shortcuts shown as keycap cells.
+  const PALETTE_TOP = 4;
+  const renderPalette = (cols: number, rows: number): string[] => {
+    const panelWidth = Math.max(20, Math.min(72, cols - 4));
+    const commands = paletteMatches();
+    const agents = paletteAgentMatches();
+    const total = commands.length + agents.length;
+    paletteCursor = Math.min(paletteCursor, Math.max(0, total - 1));
+
+    const content = (value: string, base = THEME.form): string => `${base}${padAnsi(value, panelWidth)}`;
+    const ruleText = `${THEME.form}${THEME.border}${"─".repeat(panelWidth)}`;
+
+    // Color the query's matched characters in place (first occurrence of each
+    // term), restoring the row's own style afterwards.
+    const terms = paletteQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const highlightTerms = (text: string, base: string): string => {
+      if (!terms.length) return base + text;
+      const lower = text.toLowerCase();
+      const marked = new Array<boolean>(text.length).fill(false);
+      for (const term of terms) {
+        const at = lower.indexOf(term);
+        for (let i = at; at >= 0 && i < at + term.length; i++) marked[i] = true;
+      }
+      let out = base;
+      let inMatch = false;
+      for (let i = 0; i < text.length; i++) {
+        if (marked[i] && !inMatch) {
+          out += THEME.cyan;
+          inMatch = true;
+        } else if (!marked[i] && inMatch) {
+          out += base;
+          inMatch = false;
+        }
+        out += text[i];
+      }
+      return inMatch ? out + base : out;
+    };
+
+    interface PaletteRow { text: string; entry?: number }
+    const body: PaletteRow[] = [];
+    commands.forEach((command, i) => {
+      if (i === 0) body.push({ text: content(` ${THEME.muted}commands${THEME.form}`) });
+      const selectedRow = i === paletteCursor;
+      const rowBase = selectedRow ? THEME.selected : THEME.form;
+      const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
+      const shortcut = command.shortcut ? `${THEME.keycap} ${command.shortcut} ${rowBase} ` : " ";
+      body.push({
+        text: content(alignAnsi(marker + highlightTerms(command.label, rowBase), shortcut, panelWidth), rowBase),
+        entry: i,
+      });
+    });
+    agents.forEach((item, i) => {
+      if (i === 0) body.push({ text: content(` ${THEME.muted}agents${THEME.form}`) });
+      const entry = commands.length + i;
+      const selectedRow = entry === paletteCursor;
+      const rowBase = selectedRow ? THEME.selected : THEME.form;
+      const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
+      const icon = `${item.iconStyle ?? THEME.muted}${item.icon ?? "●"}${rowBase}`;
+      const action = `${THEME.muted} — ${handlers.select ? "lock in" : "attach"}${rowBase}`;
+      const tag = item.badge ? `${item.badgeStyle ?? THEME.muted}${item.badge}${rowBase} ` : " ";
+      body.push({
+        text: content(alignAnsi(marker + icon + " " + highlightTerms(item.label, rowBase) + action, tag, panelWidth), rowBase),
+        entry,
+      });
+    });
+    if (total === 0) body.push({ text: content(` ${THEME.muted}no matches${THEME.form}`) });
+
+    const footerCells = handlers.setKeyBar ? [] : keyBar("palette", handlers, cols, true);
+    pushKeyBar("palette", true);
+    const available = Math.max(0, rows - footerCells.length);
+    // Fixed chrome: pad, query, rule above — rule, footer, pad below.
+    const capacity = Math.max(1, available - PALETTE_TOP - 6);
+    let start = 0;
+    if (body.length > capacity) {
+      const cursorRow = Math.max(0, body.findIndex((row) => row.entry === paletteCursor));
+      start = Math.min(Math.max(0, cursorRow - Math.floor(capacity / 2)), body.length - capacity);
+    }
+
+    const panel: PaletteRow[] = [];
+    panel.push({ text: content("") });
+    panel.push({
+      text: content(alignAnsi(
+        ` ${THEME.blue}› ${THEME.bright}${paletteQuery}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`,
+        `${THEME.faint}esc close ${THEME.form}`,
+        panelWidth,
+      )),
+    });
+    panel.push({ text: ruleText });
+    panel.push(...body.slice(start, start + capacity));
+    panel.push({ text: ruleText });
+    const keys = ` ${THEME.keycap} ↑↓ ${THEME.form} ${THEME.muted}select${THEME.form}  ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}run${THEME.form}`;
+    const count = `${THEME.faint}${total} ${total === 1 ? "match" : "matches"} ${THEME.form}`;
+    panel.push({ text: content(alignAnsi(keys, count, panelWidth)) });
+    panel.push({ text: content("") });
+
+    const top = Math.min(PALETTE_TOP, Math.max(0, available - panel.length));
+    const left = Math.max(0, Math.floor((cols - panelWidth) / 2));
+    const screen: string[] = Array.from({ length: top }, () => THEME.app + " ".repeat(cols) + RESET);
+    for (const row of panel) {
+      const screenRow = screen.length + 1;
+      if (row.entry !== undefined) paletteHitRows.set(screenRow, row.entry);
+      screen.push(THEME.app + " ".repeat(left) + row.text + THEME.app + " ".repeat(Math.max(0, cols - left - panelWidth)) + RESET);
+    }
+    while (screen.length < available) screen.push(THEME.app + " ".repeat(cols) + RESET);
+    screen.push(...footerCells.map((cell) => `${cell.style ?? THEME.sidebar}${padAnsi(cell.text, cols)}${RESET}`));
+    return screen.slice(0, rows);
+  };
+
   const render = () => {
     const cols = process.stdout.columns ?? 80;
     const rows = process.stdout.rows ?? 24;
@@ -870,6 +996,11 @@ export async function pick(
 
     if (mode === "new-form") {
       out("\x1b[H" + renderForm(cols, rows).map((l) => CLEAR_LINE + l).join("\r\n"));
+      return;
+    }
+
+    if (mode === "palette") {
+      out("\x1b[H" + renderPalette(cols, rows).map((l) => CLEAR_LINE + l).join("\r\n"));
       return;
     }
 
@@ -920,9 +1051,7 @@ export async function pick(
       { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
     ];
     const prompt: Cell | null =
-      mode === "palette"
-        ? { text: `${THEME.blue}command${THEME.sidebar}  ${paletteQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
-        : mode === "cd-dir"
+      mode === "cd-dir"
         ? { text: `${THEME.blue}cd to${THEME.sidebar}  ${cdDir}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
         : mode === "search"
           ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
@@ -967,14 +1096,14 @@ export async function pick(
           return [{ text: "", style: THEME.sidebar }, detailRow(title), ...rows];
         })()
       : [];
-    const visibleMetaBlock = mode === "help" || mode === "palette" ? [] : metaBlock;
+    const visibleMetaBlock = mode === "help" ? [] : metaBlock;
 
     // Section headers are rendered only when the matches span more than one
     // section (a lone "local" header is noise); they consume list rows, so
     // capacity shrinks by the section count.
     const sections = [...new Set(matches.map((i) => i.section ?? ""))];
     const showSections = sections.length > 1;
-    const headerRows = mode === "palette" ? 0 : showSections ? sections.length : 0;
+    const headerRows = showSections ? sections.length : 0;
 
     // Window the list around the cursor so long agent lists stay navigable.
     // Reserve rows for overflow hints when the fleet is taller than its pane.
@@ -1002,33 +1131,13 @@ export async function pick(
         ...(handlers.create ? [`${key("n")} create agent`] : []),
         `${key("f")} filter names/tasks`,
         `${key("/")} search conversations`,
-        `${key("ctrl-p")} command palette`,
+        `${key("ctrl-k")} command palette`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
         `${key("a")} show exited agents`,
         ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
         `${key("q / esc")} ${handlers.quit ? "detach" : "quit"}`,
       ];
       side.push(...helpRows.map((text) => ({ text, style: THEME.sidebar })));
-    } else if (mode === "palette") {
-      const commands = paletteMatches();
-      paletteCursor = Math.min(paletteCursor, Math.max(0, commands.length - 1));
-      const capacity = Math.max(1, bodyRows - side.length);
-      const start = commands.length > capacity
-        ? Math.min(Math.max(0, paletteCursor - Math.floor(capacity / 2)), commands.length - capacity)
-        : 0;
-      commands.slice(start, start + capacity).forEach((command, i) => {
-        const idx = start + i;
-        paletteHitRows.set(side.length + 1, idx);
-        const selectedRow = idx === paletteCursor;
-        const rowStyle = selectedRow ? THEME.selected : THEME.sidebar;
-        const prefix = selectedRow ? `${THEME.blue}▌${rowStyle} ` : "  ";
-        const shortcut = command.shortcut ? `${THEME.muted}${command.shortcut}${rowStyle}` : "";
-        const label = selectedRow
-          ? `${THEME.bright}${BOLD}${command.label}${NORMAL_WEIGHT}${rowStyle}`
-          : `${THEME.text}${command.label}${rowStyle}`;
-        side.push({ text: prefix + alignAnsi(label, shortcut, sidebarWidth - 2), style: rowStyle });
-      });
-      if (commands.length === 0) side.push({ text: "  no matching commands", style: THEME.muted });
     } else {
       if (start > 0) {
         side.push({ text: `${THEME.muted}↑ ${start} more${THEME.sidebar}`, style: THEME.sidebar });
@@ -1157,7 +1266,7 @@ export async function pick(
     const finish = (value: string | null) => {
       finished = true;
       pickerActive = false;
-      if (mode === "new-form") setForm(false); // un-zoom if we exit mid-form
+      if (mode === "new-form" || mode === "palette") setForm(false); // un-zoom if we exit mid-overlay
       unsubscribe();
       clearInterval(renderRefresh);
       clearInterval(loadRefresh);
@@ -1292,12 +1401,33 @@ export async function pick(
     };
 
     const executePaletteCommand = () => {
-      const command = paletteMatches()[paletteCursor];
+      const commands = paletteMatches();
+      // Entries past the command group are agents: jump straight to them.
+      if (paletteCursor >= commands.length) {
+        const agent = paletteAgentMatches()[paletteCursor - commands.length];
+        if (!agent) return;
+        paletteQuery = "";
+        paletteCursor = 0;
+        feedback = null;
+        setForm(false);
+        mode = "list";
+        filter = "";
+        cursorName = agent.name;
+        const idx = filtered().findIndex((i) => i.name === agent.name);
+        if (idx >= 0) cursor = idx;
+        activateSelection();
+        return;
+      }
+      const command = commands[paletteCursor];
       if (!command) return;
       const target = filtered()[cursor];
       paletteQuery = "";
       paletteCursor = 0;
       feedback = null;
+      // Un-zoom the palette overlay — except into the create form, which is
+      // itself zoomed (beginCreate re-asserts it; skipping the toggle avoids
+      // a flicker through the split view).
+      if (command.id !== "create") setForm(false);
 
       switch (command.id) {
         case "open":
@@ -1365,17 +1495,19 @@ export async function pick(
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
 
-      if (key === "\x10" && mode !== "new-form") { // ctrl-p
+      if ((key === "\x0b" || key === "\x10") && mode !== "new-form") { // ctrl-k (and legacy ctrl-p)
         if (mode === "palette") {
           mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
           paletteQuery = "";
           paletteCursor = 0;
+          setForm(false);
         } else {
           paletteReturnMode = mode;
           mode = "palette";
           paletteQuery = "";
           paletteCursor = 0;
           feedback = null;
+          setForm(true); // the overlay is full-screen, like the create form
         }
         return render();
       }
@@ -1387,10 +1519,9 @@ export async function pick(
       if (mouse) {
         if (mouse.pressed && (mouse.button === 64 || mouse.button === 65)) {
           if (mode === "palette") {
-            const commands = paletteMatches();
             paletteCursor = Math.min(
               Math.max(0, paletteCursor + (mouse.button === 64 ? -1 : 1)),
-              Math.max(0, commands.length - 1),
+              Math.max(0, paletteTotal() - 1),
             );
           } else {
             moveCursor(mouse.button === 64 ? -1 : 1);
@@ -1438,17 +1569,17 @@ export async function pick(
       }
 
       if (mode === "palette") {
-        const commands = paletteMatches();
         if (key === "\x1b") {
           mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
           paletteQuery = "";
           paletteCursor = 0;
+          setForm(false);
         } else if (key === "\r" || key === "\n") {
           executePaletteCommand();
         } else if (key === "\x1b[A") {
           paletteCursor = Math.max(0, paletteCursor - 1);
         } else if (key === "\x1b[B") {
-          paletteCursor = Math.min(Math.max(0, commands.length - 1), paletteCursor + 1);
+          paletteCursor = Math.min(Math.max(0, paletteTotal() - 1), paletteCursor + 1);
         } else if (key === "\x7f" || key === "\b") {
           paletteQuery = paletteQuery.slice(0, -1);
           paletteCursor = 0;
