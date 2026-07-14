@@ -2,7 +2,7 @@
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, type Provider } from "./state";
 import { queueDepth } from "./queue";
-import { pick, type PickerHandlers } from "./picker";
+import { palettePopupUi, pick, type PaletteSpec, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
 import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
@@ -36,7 +36,7 @@ import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
 import { daemonCommand } from "./commands/daemon";
 import { serveCommand, tokenCommand } from "./commands/serve";
-import { sidebarCommand, uiCommand } from "./commands/ui";
+import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
@@ -380,6 +380,9 @@ async function pickerFlow(): Promise<void> {
     },
     defaultProvider: config.defaultProvider,
     worktreeByDefault: config.worktreeByDefault,
+    // Inside tmux the palette floats over the picker; elsewhere the picker
+    // falls back to its own full-screen overlay.
+    palettePopup: insideTmux() ? showPalettePopup : undefined,
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),
@@ -638,6 +641,14 @@ async function main(): Promise<void> {
     case "__click":
       clickCommand(args.positional[0] ?? "", Number(args.positional[1] ?? -1), Number(args.positional[2] ?? -1));
       break;
+    case "__palette": {
+      // The UI inside a `tmux display-popup`: render the palette from the
+      // spec file and write the picked action back for the caller.
+      const spec = JSON.parse(await Bun.file(requirePositional(args, 0, "spec path")).text()) as PaletteSpec;
+      const result = await palettePopupUi(spec);
+      if (result) await Bun.write(requirePositional(args, 1, "result path"), JSON.stringify(result));
+      break;
+    }
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));
       break;

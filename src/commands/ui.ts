@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
@@ -5,7 +8,7 @@ import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGrou
 import { sshAm, sshRun } from "../remote";
 import { loadConfig } from "../config";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
-import { pick, type Feedback, type PickerHandlers } from "../picker";
+import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
 import { newCommand } from "./new";
@@ -114,6 +117,44 @@ function applyHubStyle(): void {
   tmux("set-option", "-t", hubTarget(), "status-position", "bottom");
   tmux("set-option", "-t", hubTarget(), "status-style", "bg=#16161e,fg=#565f89");
   tmux("set-option", "-t", hubTarget(), "status-interval", "0");
+}
+
+// Host the command palette in a `tmux display-popup` floating over the
+// window, so the sidebar and agent pane stay visible underneath — the
+// design's overlay, minus the alpha dim tmux can't do. The popup process
+// (`am __palette`) is purely presentational: it reads the spec file, renders,
+// and writes the picked action back for the calling picker to execute.
+export async function showPalettePopup(spec: PaletteSpec): Promise<PaletteResult | null> {
+  const dir = mkdtempSync(join(tmpdir(), "am-palette-"));
+  const specPath = join(dir, "spec.json");
+  const resultPath = join(dir, "result.json");
+  try {
+    writeFileSync(specPath, JSON.stringify(spec));
+    const clientRows = Number(tmux("display-message", "-p", "#{client_height}").stdout.trim()) || 40;
+    // Entries + up to two group headers + six rows of chrome, plus the popup
+    // border; capped so a large fleet scrolls inside the panel.
+    const inner = Math.min(spec.commands.length + spec.agents.length + 8, clientRows - 8, 26);
+    const proc = Bun.spawn(
+      [
+        "tmux", "display-popup", "-E",
+        "-b", "single",
+        "-S", "fg=#3b4261,bg=#16161e",
+        "-s", "bg=#16161e,fg=#a9b1d6",
+        "-w", "76", "-h", String(Math.max(10, inner) + 2),
+        "-x", "C", "-y", "4",
+        `${process.execPath} ${cliEntrypoint()} __palette ${shQuote(specPath)} ${shQuote(resultPath)}`,
+      ],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+    );
+    await proc.exited;
+    try {
+      return JSON.parse(readFileSync(resultPath, "utf8")) as PaletteResult;
+    } catch {
+      return null; // dismissed — the popup wrote nothing
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // Key tables are server-global; re-applied on every attach so lingering hubs
@@ -400,6 +441,7 @@ export async function sidebarCommand(): Promise<void> {
     setKeyBar: (format: string) => {
       tmux("set-option", "-t", hubTarget(), "status-format[0]", format);
     },
+    palettePopup: showPalettePopup,
     subscribe: (onUpdate) => watchDaemonEvents(() => onUpdate()),
   };
 

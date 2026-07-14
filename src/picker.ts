@@ -126,6 +126,10 @@ export interface PickerHandlers {
   // an unsubscribe function. A periodic reload remains as a consistency
   // fallback for missed events and remote hosts.
   subscribe?: (onUpdate: () => void) => () => void;
+  // Host the command palette as a floating overlay (tmux display-popup) so
+  // what's underneath stays visible. Resolves with the picked action (null =
+  // dismissed); the picker executes it. Unset = the in-picker fallback.
+  palettePopup?: (spec: PaletteSpec) => Promise<PaletteResult | null>;
 }
 
 export function clipLine(line: string, width: number): string {
@@ -424,6 +428,212 @@ export function filterPaletteCommands(commands: PaletteCommand[], query: string)
     .map((match) => match.command);
 }
 
+// The palette's agent group: the minimal row shape shared by the in-picker
+// fallback (PickerItem satisfies it) and the popup process, which receives it
+// as JSON.
+export interface PaletteAgentEntry {
+  name: string;
+  label: string;
+  search?: string;
+  icon?: string;
+  iconStyle?: string;
+  badge?: string;
+  badgeStyle?: string;
+}
+
+export interface PaletteSpec {
+  commands: PaletteCommand[];
+  agents: PaletteAgentEntry[];
+  // "lock in" on the hub (the right pane follows), "attach" elsewhere.
+  attachLabel: string;
+}
+
+export type PaletteResult = { type: "command"; id: string } | { type: "agent"; name: string };
+
+export function filterPaletteAgents<T extends { label: string; search?: string }>(agents: T[], query: string): T[] {
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return agents;
+  return agents.filter((agent) => {
+    const haystack = `${agent.label} ${agent.search ?? ""}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+export interface PaletteRowOut {
+  text: string;
+  entry?: number;
+}
+
+// Build the palette panel — query row, rules, grouped results windowed around
+// the cursor, footer — as styled lines of `width` cells. Shared by the popup
+// (which IS the panel) and the in-picker fallback (which centers it on the
+// app background). Returns the clamped cursor so callers stay in bounds.
+export function paletteScreenRows(opts: {
+  commands: PaletteCommand[];
+  agents: PaletteAgentEntry[];
+  attachLabel: string;
+  query: string;
+  cursor: number;
+  width: number;
+  capacity: number;
+}): { rows: PaletteRowOut[]; total: number; cursor: number } {
+  const { commands, agents, attachLabel, query, width } = opts;
+  const total = commands.length + agents.length;
+  const cursor = Math.min(opts.cursor, Math.max(0, total - 1));
+
+  const content = (value: string, base = THEME.form): string => `${base}${padAnsi(value, width)}`;
+  const ruleText = `${THEME.form}${THEME.border}${"─".repeat(width)}`;
+
+  // Color the query's matched characters in place (first occurrence of each
+  // term), restoring the row's own style afterwards.
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const highlightTerms = (text: string, base: string): string => {
+    if (!terms.length) return base + text;
+    const lower = text.toLowerCase();
+    const marked = new Array<boolean>(text.length).fill(false);
+    for (const term of terms) {
+      const at = lower.indexOf(term);
+      for (let i = at; at >= 0 && i < at + term.length; i++) marked[i] = true;
+    }
+    let out = base;
+    let inMatch = false;
+    for (let i = 0; i < text.length; i++) {
+      if (marked[i] && !inMatch) {
+        out += THEME.cyan;
+        inMatch = true;
+      } else if (!marked[i] && inMatch) {
+        out += base;
+        inMatch = false;
+      }
+      out += text[i];
+    }
+    return inMatch ? out + base : out;
+  };
+
+  const body: PaletteRowOut[] = [];
+  commands.forEach((command, i) => {
+    if (i === 0) body.push({ text: content(` ${THEME.muted}commands${THEME.form}`) });
+    const selectedRow = i === cursor;
+    const rowBase = selectedRow ? THEME.selected : THEME.form;
+    const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
+    const shortcut = command.shortcut ? `${THEME.keycap} ${command.shortcut} ${rowBase} ` : " ";
+    body.push({
+      text: content(alignAnsi(marker + highlightTerms(command.label, rowBase), shortcut, width), rowBase),
+      entry: i,
+    });
+  });
+  agents.forEach((item, i) => {
+    if (i === 0) body.push({ text: content(` ${THEME.muted}agents${THEME.form}`) });
+    const entry = commands.length + i;
+    const selectedRow = entry === cursor;
+    const rowBase = selectedRow ? THEME.selected : THEME.form;
+    const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
+    const icon = `${item.iconStyle ?? THEME.muted}${item.icon ?? "●"}${rowBase}`;
+    const action = `${THEME.muted} — ${attachLabel}${rowBase}`;
+    const tag = item.badge ? `${item.badgeStyle ?? THEME.muted}${item.badge}${rowBase} ` : " ";
+    body.push({
+      text: content(alignAnsi(marker + icon + " " + highlightTerms(item.label, rowBase) + action, tag, width), rowBase),
+      entry,
+    });
+  });
+  if (total === 0) body.push({ text: content(` ${THEME.muted}no matches${THEME.form}`) });
+
+  let start = 0;
+  if (body.length > opts.capacity) {
+    const cursorRow = Math.max(0, body.findIndex((row) => row.entry === cursor));
+    start = Math.min(Math.max(0, cursorRow - Math.floor(opts.capacity / 2)), body.length - opts.capacity);
+  }
+
+  const rows: PaletteRowOut[] = [];
+  rows.push({ text: content("") });
+  rows.push({
+    text: content(alignAnsi(
+      ` ${THEME.blue}› ${THEME.bright}${query}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`,
+      `${THEME.faint}esc close ${THEME.form}`,
+      width,
+    )),
+  });
+  rows.push({ text: ruleText });
+  rows.push(...body.slice(start, start + opts.capacity));
+  rows.push({ text: ruleText });
+  const keys = ` ${THEME.keycap} ↑↓ ${THEME.form} ${THEME.muted}select${THEME.form}  ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}run${THEME.form}`;
+  const count = `${THEME.faint}${total} ${total === 1 ? "match" : "matches"} ${THEME.form}`;
+  rows.push({ text: content(alignAnsi(keys, count, width)) });
+  rows.push({ text: content("") });
+  return { rows, total, cursor };
+}
+
+// The interactive UI inside a `tmux display-popup` (`am __palette`): the
+// popup window is exactly the panel, floating over the hub, so what's
+// underneath stays visible. Purely presentational — it resolves with the
+// picked action and the caller (the picker that spawned it) executes it.
+export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult | null> {
+  let query = "";
+  let cursor = 0;
+  const out = (s: string) => process.stdout.write(s);
+  const render = () => {
+    const width = process.stdout.columns ?? 74;
+    const rows = process.stdout.rows ?? 20;
+    const panel = paletteScreenRows({
+      commands: filterPaletteCommands(spec.commands, query),
+      agents: filterPaletteAgents(spec.agents, query),
+      attachLabel: spec.attachLabel,
+      query,
+      cursor,
+      width,
+      capacity: Math.max(1, rows - 6),
+    });
+    cursor = panel.cursor;
+    const lines = panel.rows.map((row) => row.text + RESET);
+    while (lines.length < rows) lines.push(THEME.form + " ".repeat(width) + RESET);
+    out("\x1b[H" + lines.slice(0, rows).map((l) => CLEAR_LINE + l).join("\r\n"));
+  };
+
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  out(HIDE_CURSOR + WRAP_OFF);
+  render();
+
+  return await new Promise<PaletteResult | null>((resolve) => {
+    const finishPopup = (value: PaletteResult | null) => {
+      process.stdin.off("data", onData);
+      process.stdout.off("resize", render);
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      out(WRAP_ON + SHOW_CURSOR);
+      resolve(value);
+    };
+    const onData = (data: Buffer) => {
+      for (const key of splitKeys(data.toString("utf8"))) {
+        const commands = filterPaletteCommands(spec.commands, query);
+        const agents = filterPaletteAgents(spec.agents, query);
+        const total = commands.length + agents.length;
+        if (key === "\x03" || key === "\x1b" || key === "\x0b" || key === "\x10") return finishPopup(null);
+        if (key === "\r" || key === "\n") {
+          if (cursor < commands.length) {
+            const command = commands[cursor];
+            return finishPopup(command ? { type: "command", id: command.id } : null);
+          }
+          const agent = agents[cursor - commands.length];
+          return finishPopup(agent ? { type: "agent", name: agent.name } : null);
+        }
+        if (key === "\x1b[A") cursor = Math.max(0, cursor - 1);
+        else if (key === "\x1b[B") cursor = Math.min(Math.max(0, total - 1), cursor + 1);
+        else if (key === "\x7f" || key === "\b") {
+          query = query.slice(0, -1);
+          cursor = 0;
+        } else if (key >= " " && !key.startsWith("\x1b")) {
+          query += key;
+          cursor = 0;
+        }
+      }
+      render();
+    };
+    process.stdin.on("data", onData);
+    process.stdout.on("resize", render);
+  });
+}
+
 interface KeyHint {
   key: string;
   label: string;
@@ -710,15 +920,8 @@ export async function pick(
   // The palette's second group: every visible agent, fuzzily matched on name
   // plus the same haystack the sidebar filter uses (task, dir, provider, host).
   // Ignores any active sidebar filter — the palette searches the whole fleet.
-  const paletteAgentMatches = (): PickerItem[] => {
-    const terms = paletteQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const rows = visibleItems(items, "", showAll);
-    if (!terms.length) return rows;
-    return rows.filter((row) => {
-      const haystack = `${row.label} ${row.search ?? ""}`.toLowerCase();
-      return terms.every((term) => haystack.includes(term));
-    });
-  };
+  const paletteAgentMatches = (): PickerItem[] =>
+    filterPaletteAgents(visibleItems(items, "", showAll), paletteQuery);
 
   const paletteTotal = () => paletteMatches().length + paletteAgentMatches().length;
 
@@ -876,108 +1079,31 @@ export async function pick(
     return screen.slice(0, rows);
   };
 
-  // The command palette (ctrl+k): a centered overlay panel near the top of
-  // the screen, same borderless #16161e vocabulary as the create dialog. One
-  // fuzzy query across two groups — commands, then agents — with matched
-  // characters highlighted and direct shortcuts shown as keycap cells.
+  // Fallback palette when no popup host is wired (outside tmux): a centered
+  // overlay panel near the top of the screen, same borderless #16161e
+  // vocabulary as the create dialog, rendered over the app background.
   const PALETTE_TOP = 4;
   const renderPalette = (cols: number, rows: number): string[] => {
     const panelWidth = Math.max(20, Math.min(72, cols - 4));
-    const commands = paletteMatches();
-    const agents = paletteAgentMatches();
-    const total = commands.length + agents.length;
-    paletteCursor = Math.min(paletteCursor, Math.max(0, total - 1));
-
-    const content = (value: string, base = THEME.form): string => `${base}${padAnsi(value, panelWidth)}`;
-    const ruleText = `${THEME.form}${THEME.border}${"─".repeat(panelWidth)}`;
-
-    // Color the query's matched characters in place (first occurrence of each
-    // term), restoring the row's own style afterwards.
-    const terms = paletteQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const highlightTerms = (text: string, base: string): string => {
-      if (!terms.length) return base + text;
-      const lower = text.toLowerCase();
-      const marked = new Array<boolean>(text.length).fill(false);
-      for (const term of terms) {
-        const at = lower.indexOf(term);
-        for (let i = at; at >= 0 && i < at + term.length; i++) marked[i] = true;
-      }
-      let out = base;
-      let inMatch = false;
-      for (let i = 0; i < text.length; i++) {
-        if (marked[i] && !inMatch) {
-          out += THEME.cyan;
-          inMatch = true;
-        } else if (!marked[i] && inMatch) {
-          out += base;
-          inMatch = false;
-        }
-        out += text[i];
-      }
-      return inMatch ? out + base : out;
-    };
-
-    interface PaletteRow { text: string; entry?: number }
-    const body: PaletteRow[] = [];
-    commands.forEach((command, i) => {
-      if (i === 0) body.push({ text: content(` ${THEME.muted}commands${THEME.form}`) });
-      const selectedRow = i === paletteCursor;
-      const rowBase = selectedRow ? THEME.selected : THEME.form;
-      const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
-      const shortcut = command.shortcut ? `${THEME.keycap} ${command.shortcut} ${rowBase} ` : " ";
-      body.push({
-        text: content(alignAnsi(marker + highlightTerms(command.label, rowBase), shortcut, panelWidth), rowBase),
-        entry: i,
-      });
-    });
-    agents.forEach((item, i) => {
-      if (i === 0) body.push({ text: content(` ${THEME.muted}agents${THEME.form}`) });
-      const entry = commands.length + i;
-      const selectedRow = entry === paletteCursor;
-      const rowBase = selectedRow ? THEME.selected : THEME.form;
-      const marker = selectedRow ? `${THEME.blue}▌${rowBase} ` : "  ";
-      const icon = `${item.iconStyle ?? THEME.muted}${item.icon ?? "●"}${rowBase}`;
-      const action = `${THEME.muted} — ${handlers.select ? "lock in" : "attach"}${rowBase}`;
-      const tag = item.badge ? `${item.badgeStyle ?? THEME.muted}${item.badge}${rowBase} ` : " ";
-      body.push({
-        text: content(alignAnsi(marker + icon + " " + highlightTerms(item.label, rowBase) + action, tag, panelWidth), rowBase),
-        entry,
-      });
-    });
-    if (total === 0) body.push({ text: content(` ${THEME.muted}no matches${THEME.form}`) });
-
     const footerCells = handlers.setKeyBar ? [] : keyBar("palette", handlers, cols, true);
     pushKeyBar("palette", true);
     const available = Math.max(0, rows - footerCells.length);
-    // Fixed chrome: pad, query, rule above — rule, footer, pad below.
-    const capacity = Math.max(1, available - PALETTE_TOP - 6);
-    let start = 0;
-    if (body.length > capacity) {
-      const cursorRow = Math.max(0, body.findIndex((row) => row.entry === paletteCursor));
-      start = Math.min(Math.max(0, cursorRow - Math.floor(capacity / 2)), body.length - capacity);
-    }
-
-    const panel: PaletteRow[] = [];
-    panel.push({ text: content("") });
-    panel.push({
-      text: content(alignAnsi(
-        ` ${THEME.blue}› ${THEME.bright}${paletteQuery}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`,
-        `${THEME.faint}esc close ${THEME.form}`,
-        panelWidth,
-      )),
+    const panel = paletteScreenRows({
+      commands: paletteMatches(),
+      agents: paletteAgentMatches(),
+      attachLabel: handlers.select ? "lock in" : "attach",
+      query: paletteQuery,
+      cursor: paletteCursor,
+      width: panelWidth,
+      // Fixed chrome: pad, query, rule above — rule, footer, pad below.
+      capacity: Math.max(1, available - PALETTE_TOP - 6),
     });
-    panel.push({ text: ruleText });
-    panel.push(...body.slice(start, start + capacity));
-    panel.push({ text: ruleText });
-    const keys = ` ${THEME.keycap} ↑↓ ${THEME.form} ${THEME.muted}select${THEME.form}  ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}run${THEME.form}`;
-    const count = `${THEME.faint}${total} ${total === 1 ? "match" : "matches"} ${THEME.form}`;
-    panel.push({ text: content(alignAnsi(keys, count, panelWidth)) });
-    panel.push({ text: content("") });
+    paletteCursor = panel.cursor;
 
-    const top = Math.min(PALETTE_TOP, Math.max(0, available - panel.length));
+    const top = Math.min(PALETTE_TOP, Math.max(0, available - panel.rows.length));
     const left = Math.max(0, Math.floor((cols - panelWidth) / 2));
     const screen: string[] = Array.from({ length: top }, () => THEME.app + " ".repeat(cols) + RESET);
-    for (const row of panel) {
+    for (const row of panel.rows) {
       const screenRow = screen.length + 1;
       if (row.entry !== undefined) paletteHitRows.set(screenRow, row.entry);
       screen.push(THEME.app + " ".repeat(left) + row.text + THEME.app + " ".repeat(Math.max(0, cols - left - panelWidth)) + RESET);
@@ -1263,6 +1389,8 @@ export async function pick(
 
   const result = await new Promise<string | null>((resolve) => {
     let finished = false;
+    // True while the palette popup is up; guards against double-spawning.
+    let paletteOpen = false;
     const finish = (value: string | null) => {
       finished = true;
       pickerActive = false;
@@ -1400,36 +1528,21 @@ export async function pick(
       refreshActivity();
     };
 
-    const executePaletteCommand = () => {
-      const commands = paletteMatches();
-      // Entries past the command group are agents: jump straight to them.
-      if (paletteCursor >= commands.length) {
-        const agent = paletteAgentMatches()[paletteCursor - commands.length];
-        if (!agent) return;
-        paletteQuery = "";
-        paletteCursor = 0;
-        feedback = null;
-        setForm(false);
-        mode = "list";
-        filter = "";
-        cursorName = agent.name;
-        const idx = filtered().findIndex((i) => i.name === agent.name);
-        if (idx >= 0) cursor = idx;
-        activateSelection();
-        return;
-      }
-      const command = commands[paletteCursor];
-      if (!command) return;
-      const target = filtered()[cursor];
-      paletteQuery = "";
-      paletteCursor = 0;
-      feedback = null;
-      // Un-zoom the palette overlay — except into the create form, which is
-      // itself zoomed (beginCreate re-asserts it; skipping the toggle avoids
-      // a flicker through the split view).
-      if (command.id !== "create") setForm(false);
+    // Jump to a palette-picked agent, bypassing any active sidebar filter.
+    const jumpToPaletteAgent = (name: string) => {
+      mode = "list";
+      filter = "";
+      cursorName = name;
+      const idx = filtered().findIndex((i) => i.name === name);
+      if (idx >= 0) cursor = idx;
+      activateSelection();
+    };
 
-      switch (command.id) {
+    // Execute a palette command by id — shared by the popup overlay (result
+    // arrives from the `am __palette` process) and the in-picker fallback.
+    const runPaletteCommand = (id: string) => {
+      const target = filtered()[cursor];
+      switch (id) {
         case "open":
           mode = "list";
           activateSelection();
@@ -1492,10 +1605,72 @@ export async function pick(
       }
     };
 
+    // Enter in the fallback (in-picker) palette: entries past the command
+    // group are agents.
+    const executePaletteCommand = () => {
+      const commands = paletteMatches();
+      const agent = paletteCursor >= commands.length
+        ? paletteAgentMatches()[paletteCursor - commands.length]
+        : undefined;
+      const command = paletteCursor < commands.length ? commands[paletteCursor] : undefined;
+      if (!command && !agent) return;
+      paletteQuery = "";
+      paletteCursor = 0;
+      feedback = null;
+      // Un-zoom the palette overlay — except into the create form, which is
+      // itself zoomed (beginCreate re-asserts it; skipping the toggle avoids
+      // a flicker through the split view).
+      if (command?.id !== "create") setForm(false);
+      if (agent) jumpToPaletteAgent(agent.name);
+      else runPaletteCommand(command!.id);
+    };
+
+    // Popup palette: hand the current commands + fleet to the overlay host
+    // and execute whatever it resolves with. The picker keeps refreshing
+    // underneath — the popup floats above it.
+    const openPalettePopup = () => {
+      if (paletteOpen || !handlers.palettePopup) return;
+      paletteOpen = true;
+      pushKeyBar("palette", true);
+      const spec: PaletteSpec = {
+        commands: paletteCommands(),
+        agents: visibleItems(items, "", showAll).map((i) => ({
+          name: i.name,
+          label: i.label,
+          search: i.search,
+          icon: i.icon,
+          iconStyle: i.iconStyle,
+          badge: i.badge,
+          badgeStyle: i.badgeStyle,
+        })),
+        attachLabel: handlers.select ? "lock in" : "attach",
+      };
+      handlers.palettePopup(spec).then(
+        (result) => {
+          paletteOpen = false;
+          if (finished) return;
+          if (result) {
+            feedback = null;
+            if (result.type === "agent") jumpToPaletteAgent(result.name);
+            else runPaletteCommand(result.id);
+          }
+          if (!finished) render();
+        },
+        () => {
+          paletteOpen = false;
+          if (!finished) render();
+        },
+      );
+    };
+
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
 
       if ((key === "\x0b" || key === "\x10") && mode !== "new-form") { // ctrl-k (and legacy ctrl-p)
+        if (handlers.palettePopup) {
+          openPalettePopup();
+          return;
+        }
         if (mode === "palette") {
           mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
           paletteQuery = "";
