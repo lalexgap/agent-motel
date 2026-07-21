@@ -3,10 +3,12 @@ import {
   asFeedback,
   clipAnsi,
   cycleField,
+  editMenuHelp,
   feedbackBanner,
   filterPaletteCommands,
   formFields,
   parseMouseEvent,
+  renamedPickerKey,
   splitKeys,
   visibleWidth,
   wrapTokens,
@@ -128,6 +130,19 @@ describe("formFields", () => {
   test("adds the where field (before dir) only when remotes exist", () => {
     expect(formFields(false)).toEqual(["name", "task", "dir", "provider", "model", "effort"]);
     expect(formFields(true)).toEqual(["name", "task", "where", "dir", "provider", "model", "effort"]);
+  });
+});
+
+describe("renamedPickerKey", () => {
+  test("keeps the remote host qualifier", () => {
+    expect(renamedPickerKey("alpha", "omega")).toBe("omega");
+    expect(renamedPickerKey("server:alpha", "omega")).toBe("server:omega");
+  });
+});
+
+describe("editMenuHelp", () => {
+  test("surfaces rename in the selected-agent actions", () => {
+    expect(editMenuHelp({ rename: () => "ok" })).toContain("n rename");
   });
 });
 

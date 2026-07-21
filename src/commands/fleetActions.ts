@@ -2,8 +2,10 @@ import { loadConfig } from "../config";
 import { splitFleetKey } from "../fleet";
 import { sshAm, sshAmAsync } from "../remote";
 import type { Feedback } from "../picker";
+import { renameCachedRemoteAgent } from "../fleet";
 import { cdAgent, defaultMoveTarget, moveAgent } from "./move";
 import { handoffAgent } from "./handoff";
+import { renameAgent } from "./rename";
 
 // The sidebar/picker `m` and `h` actions, shared by both UIs. These can take
 // seconds (ssh, scp, spawning agents); the picker paints "moving …" first
@@ -49,5 +51,24 @@ export function handoffHandler(key: string): Feedback | Promise<Feedback> {
   }
   return handoffAgent(name, { jump: false, quiet: true }).then(
     (r) => `handed off → ${r.name} (${r.target})`,
+  );
+}
+
+export function renameHandler(key: string, newName: string): Feedback | Promise<Feedback> {
+  const { host, name } = splitFleetKey(key);
+  if (host) {
+    if (!name) return { text: "host unreachable", level: "error" };
+    return sshAmAsync(host, ["rename", name, newName], { timeoutMs: 120000 }).then(
+      (result): Feedback => {
+        if (result.exitCode !== 0) {
+          return { text: `rename failed: ${(result.stderr || result.stdout).trim()}`, level: "error" };
+        }
+        renameCachedRemoteAgent(host, name, newName);
+        return { text: `renamed ${name} → ${newName} on ${host}`, level: "ok" };
+      },
+    );
+  }
+  return renameAgent(name, newName).then(
+    (result) => `renamed ${result.oldName} → ${result.newName}${result.live ? " without interrupting it" : ""}`,
   );
 }

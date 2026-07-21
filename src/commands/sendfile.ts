@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { expandHome, inboxDir } from "../paths";
-import { listAgents, resolveAgent } from "../state";
+import { matchAgent, resolveAgent } from "../state";
 import { loadConfig } from "../config";
 import { fleetRows, splitFleetKey } from "../fleet";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
@@ -42,17 +42,15 @@ export function resolveFileTarget(ref: string): FileTarget {
     if (!known.includes(host)) throw new Error(`unknown host "${host}" — not in config.remotes`);
     return { host, name };
   }
-  const localNames = listAgents().map((a) => a.name);
-  if (localNames.includes(ref)) return { name: ref };
-  const localPrefix = localNames.filter((n) => n.startsWith(ref));
-  if (localPrefix.length === 1) return { name: localPrefix[0]! };
-  if (localPrefix.length > 1) {
-    throw new Error(`"${ref}" is ambiguous locally: ${localPrefix.join(", ")}`);
-  }
+  const local = matchAgent(ref);
+  if (local) return { name: local.name };
 
   const remoteRows = fleetRows({ timeoutMs: 4000 }).rows.filter((r) => r.host);
-  const exact = remoteRows.filter((r) => r.name === ref);
+  const exact = remoteRows.filter((r) => r.name === ref || r.aliases?.includes(ref));
   const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
+  if (exact.length > 1) {
+    throw new Error(`"${ref}" is ambiguous across hosts: ${exact.map((r) => `${r.host}:${r.name}`).join(", ")}`);
+  }
   const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
   if (match?.host) return { host: match.host, name: match.name };
   if (prefix.length > 1) {

@@ -135,6 +135,28 @@ export function cachedFleetRows(): Fleet {
 const PREVIEW_REFRESH_MS = 2000;
 const previewCache = new Map<string, { lines: string[] | null; fetchedAt: number; inFlight: boolean }>();
 
+// Apply a successful remote rename immediately instead of leaving the picker
+// on the stale old row until its next SSH refresh.
+export function renameCachedRemoteAgent(host: string, oldName: string, newName: string): void {
+  const entry = cache.get(host);
+  if (entry) {
+    entry.rows = entry.rows.map((row) => row.name === oldName
+      ? {
+          ...row,
+          name: newName,
+          aliases: [...new Set([...(row.aliases ?? []).filter((alias) => alias !== newName), oldName])],
+        }
+      : row);
+    entry.fetchedAt = 0;
+  }
+  const oldKey = `${host}:${oldName}`;
+  const preview = previewCache.get(oldKey);
+  if (preview) {
+    previewCache.set(`${host}:${newName}`, preview);
+    previewCache.delete(oldKey);
+  }
+}
+
 export function cachedRemotePreview(host: string, agentName: string): string[] | null {
   const key = `${host}:${agentName}`;
   const entry = previewCache.get(key);

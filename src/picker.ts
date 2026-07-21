@@ -96,6 +96,9 @@ export interface PickerHandlers {
   move?: (name: string) => Feedback | Promise<Feedback>;
   handoff?: (name: string) => Feedback | Promise<Feedback>;
   clone?: (name: string) => Feedback | Promise<Feedback>;
+  // Previous names remain exact routing aliases; live sessions are renamed
+  // in place, so the handler may complete while the provider is still busy.
+  rename?: (name: string, newName: string) => Feedback | Promise<Feedback>;
   // Toggle the list grouping (host ↔ directory); returns banner feedback.
   regroup?: () => Feedback;
   // Relocate an agent to a new directory (r key opens a prefilled prompt).
@@ -390,7 +393,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "search" | "palette" | "new-form" | "cd-dir" | "edit" | "help";
+type Mode = "list" | "filter" | "search" | "palette" | "new-form" | "cd-dir" | "rename-name" | "edit" | "help";
 
 export interface PaletteCommand {
   id: string;
@@ -640,7 +643,7 @@ interface KeyHint {
 }
 
 function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { label: string; hints: KeyHint[] } {
-  let label = mode === "new-form" ? "CREATE" : mode.toUpperCase().replace("-DIR", "");
+  let label = mode === "new-form" ? "CREATE" : mode === "rename-name" ? "RENAME" : mode.toUpperCase().replace("-DIR", "");
   let hints: KeyHint[];
   if (!active) {
     label = "AGENT";
@@ -658,6 +661,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.move ? [{ key: "m", label: "move" }] : []),
       ...(handlers.clone ? [{ key: "c", label: "clone" }] : []),
       ...(handlers.handoff ? [{ key: "h", label: "handoff" }] : []),
+      ...(handlers.rename ? [{ key: "n", label: "rename" }] : []),
       ...(handlers.cd ? [{ key: "r", label: "cd" }] : []),
       ...(handlers.stop ? [{ key: "x", label: "stop" }] : []),
       ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
@@ -669,10 +673,10 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       { key: "⏎", label: "run" },
       { key: "esc", label: "close" },
     ];
-  } else if (mode === "filter" || mode === "search" || mode === "cd-dir") {
+  } else if (mode === "filter" || mode === "search" || mode === "cd-dir" || mode === "rename-name") {
     hints = [
-      { key: "⏎", label: mode === "cd-dir" ? "move" : "apply" },
-      ...(mode === "cd-dir" ? [] : [{ key: "↑↓", label: "preview" }]),
+      { key: "⏎", label: mode === "cd-dir" ? "move" : mode === "rename-name" ? "rename" : "apply" },
+      ...(mode === "cd-dir" || mode === "rename-name" ? [] : [{ key: "↑↓", label: "preview" }]),
       { key: "esc", label: "cancel" },
     ];
   } else if (mode === "help") {
@@ -728,7 +732,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
 }
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
-  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
+  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.remove);
 }
 
 // The edit menu's footer line, built from whichever actions are wired.
@@ -737,11 +741,17 @@ export function editMenuHelp(handlers: PickerHandlers): string {
     handlers.move && "m move",
     handlers.clone && "c clone",
     handlers.handoff && "h handoff",
+    handlers.rename && "n rename",
     handlers.cd && "r cd",
     handlers.stop && "x stop",
     handlers.remove && "d remove",
   ].filter(Boolean);
   return [...keys, "esc back"].join(" · ");
+}
+
+export function renamedPickerKey(key: string, newName: string): string {
+  const colon = key.indexOf(":");
+  return colon >= 0 ? `${key.slice(0, colon + 1)}${newName}` : newName;
 }
 
 // The create form's fields. "where" (local vs a configured remote) only
@@ -821,6 +831,8 @@ export async function pick(
   let dirQueryGen = 0;
   let cdDir = "";
   let cdTarget: string | null = null;
+  let renameName = "";
+  let renameTarget: string | null = null;
   let creating = false;
   let lastHighlighted: string | null = null;
   // Hub focus indicator: which pane is driving the keyboard. Refreshed on the
@@ -901,6 +913,7 @@ export async function pick(
       target && handlers.move && { id: "move", label: `Move ${name}`, keywords: "remote host relocate", shortcut: "e m" },
       target && handlers.clone && { id: "clone", label: `Clone ${name}`, keywords: "copy fork remote", shortcut: "e c" },
       target && handlers.handoff && { id: "handoff", label: `Handoff ${name}`, keywords: "provider transcript", shortcut: "e h" },
+      target && handlers.rename && { id: "rename", label: `Rename ${name}`, keywords: "name identity alias", shortcut: "e n" },
       target && handlers.cd && { id: "cd", label: `Change directory for ${name}`, keywords: "relocate path", shortcut: "e r" },
       target && handlers.stop && { id: "stop", label: `Stop ${name}`, keywords: "exit kill", shortcut: "e x" },
       target && handlers.remove && { id: "remove", label: `Remove ${name}…`, keywords: "delete destroy", shortcut: "e d" },
@@ -1179,19 +1192,21 @@ export async function pick(
     const prompt: Cell | null =
       mode === "cd-dir"
         ? { text: `${THEME.blue}cd to${THEME.sidebar}  ${cdDir}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
-        : mode === "search"
-          ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
-          : mode === "filter"
-            ? { text: `${THEME.blue}filter${THEME.sidebar}  ${filter}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
-            : chatMatch
-              ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches · esc clears${THEME.sidebar}`, style: THEME.sidebar }
-              : filter
-                ? { text: `${THEME.muted}filter: ${filter} · ⌫ clears${THEME.sidebar}`, style: THEME.sidebar }
-                : mode === "edit"
-                  ? { text: `${THEME.orange}edit${THEME.sidebar}  ${selected?.label ?? ""}`, style: THEME.sidebar }
-                  : mode === "help"
-                    ? { text: `${THEME.blue}${BOLD}keyboard shortcuts${NORMAL_WEIGHT}${THEME.sidebar}`, style: THEME.sidebar }
-                    : null;
+        : mode === "rename-name"
+          ? { text: `${THEME.blue}rename to${THEME.sidebar}  ${renameName}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+          : mode === "search"
+            ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+            : mode === "filter"
+              ? { text: `${THEME.blue}filter${THEME.sidebar}  ${filter}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+              : chatMatch
+                ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches · esc clears${THEME.sidebar}`, style: THEME.sidebar }
+                : filter
+                  ? { text: `${THEME.muted}filter: ${filter} · ⌫ clears${THEME.sidebar}`, style: THEME.sidebar }
+                  : mode === "edit"
+                    ? { text: `${THEME.orange}edit${THEME.sidebar}  ${selected?.label ?? ""}`, style: THEME.sidebar }
+                    : mode === "help"
+                      ? { text: `${THEME.blue}${BOLD}keyboard shortcuts${NORMAL_WEIGHT}${THEME.sidebar}`, style: THEME.sidebar }
+                      : null;
     if (prompt) headerBlock.push(prompt);
 
     // Keep the details panel a stable height while moving the cursor. Per the
@@ -1577,6 +1592,13 @@ export async function pick(
           mode = "list";
           if (handlers.handoff) runDeferred("handing off", handlers.handoff);
           break;
+        case "rename":
+          if (target && handlers.rename) {
+            mode = "rename-name";
+            renameTarget = target.name;
+            renameName = "";
+          }
+          break;
         case "cd":
           if (target && handlers.cd) {
             mode = "cd-dir";
@@ -1806,6 +1828,10 @@ export async function pick(
         } else if (key === "h" && handlers.handoff) {
           mode = "list";
           runDeferred("handing off", handlers.handoff);
+        } else if (key === "n" && handlers.rename) {
+          mode = "rename-name";
+          renameTarget = target.name;
+          renameName = "";
         } else if (key === "r" && handlers.cd) {
           mode = "cd-dir";
           cdTarget = target.name;
@@ -1978,6 +2004,53 @@ export async function pick(
           cdDir = cdDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
           cdDir += key;
+        }
+        return render();
+      }
+
+      if (mode === "rename-name") {
+        if (key === "\x1b") {
+          mode = "list";
+          renameName = "";
+          renameTarget = null;
+          feedback = null;
+        } else if (key === "\r" || key === "\n") {
+          const target = renameTarget;
+          const next = renameName.trim();
+          if (!next) {
+            feedback = { text: "new agent name is required", level: "warn" };
+            return render();
+          }
+          mode = "list";
+          renameName = "";
+          renameTarget = null;
+          if (target && handlers.rename) {
+            feedback = { text: `renaming ${target} to ${next}…`, level: "info" };
+            Promise.resolve()
+              .then(() => handlers.rename!(target, next))
+              .then(
+                (message) => {
+                  const result = asFeedback(message);
+                  feedback = result;
+                  if (result?.level !== "error") cursorName = renamedPickerKey(target, next);
+                  items = load();
+                  if (!finished) render();
+                },
+                (error: Error) => {
+                  feedback = { text: error.message, level: "error" };
+                  if (!finished) render();
+                },
+              );
+          }
+        } else if (key === "\x7f" || key === "\b") {
+          renameName = renameName.slice(0, -1);
+        } else if (key >= " " && !key.startsWith("\x1b")) {
+          if (/^[a-zA-Z0-9_-]$/.test(key)) {
+            renameName += key;
+            feedback = null;
+          } else {
+            feedback = { text: "use letters, numbers, dashes, or underscores", level: "warn" };
+          }
         }
         return render();
       }

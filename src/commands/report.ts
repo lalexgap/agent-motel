@@ -1,4 +1,4 @@
-import { resolveAgent, writeAgent } from "../state";
+import { agentNameOwner, resolveAgent, writeAgent } from "../state";
 import { queueAppend } from "../queue";
 import { deliverNext } from "../deliver";
 import { hasSession } from "../tmux";
@@ -32,8 +32,9 @@ export function reportCommand(prefix: string, opts: { to?: string; clear?: boole
 
   if (opts.to) {
     // "spawner" resolves to whoever ran `am new` for this agent.
-    const target = opts.to === "spawner" ? agent.spawnedBy : opts.to;
-    if (!target) throw new Error(`"${agent.name}" has no spawning agent on record — name a target`);
+    const targetRef = opts.to === "spawner" ? agent.spawnedBy : opts.to;
+    if (!targetRef) throw new Error(`"${agent.name}" has no spawning agent on record — name a target`);
+    const target = agentNameOwner(targetRef)?.name ?? targetRef;
     if (target === agent.name) throw new Error("an agent can't report to itself");
     agent.reportTo = target;
     writeAgent(agent);

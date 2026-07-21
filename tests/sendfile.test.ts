@@ -18,9 +18,10 @@ afterEach(() => {
   delete process.env.AGENTMGR_HOME;
 });
 
-function agent(name: string): void {
+function agent(name: string, aliases?: string[]): void {
   const s: AgentState = {
     name,
+    aliases,
     status: "idle",
     dir: "/tmp",
     tmuxSession: `agentmgr-${name}`,
@@ -44,6 +45,11 @@ describe("resolveFileTarget", () => {
     agent("worker");
     expect(resolveFileTarget("web")).toEqual({ name: "web" });
     expect(resolveFileTarget("wor")).toEqual({ name: "worker" }); // unique prefix
+  });
+
+  test("resolves a local agent's previous name to its current inbox", () => {
+    agent("web", ["frontend"]);
+    expect(resolveFileTarget("frontend")).toEqual({ name: "web" });
   });
 
   test("an ambiguous local prefix throws", () => {

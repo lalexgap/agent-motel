@@ -11,6 +11,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
+import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
 
 // The HTTP layer for remote clients — scripts, and the in-progress native
@@ -178,6 +179,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         if (mode === "interrupt") await interruptCommand(name, text);
         else await sendCommand(name, text, { now: mode === "now" });
         return json({ ok: true, mode });
+      } catch (error) {
+        return json({ error: (error as Error).message }, 409);
+      }
+    }
+
+    // POST /api/agents/:name/rename — {name}
+    if (parts.length === 3 && parts[2] === "rename" && method === "POST") {
+      const body = (await req.json().catch(() => null)) as { name?: string } | null;
+      if (!body?.name) return json({ error: "name required" }, 400);
+      try {
+        const result = await renameAgent(name, body.name);
+        return json({ ok: true, oldName: result.oldName, name: result.newName, live: result.live });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
       }

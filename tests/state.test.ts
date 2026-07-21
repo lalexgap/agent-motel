@@ -9,6 +9,7 @@ import {
   recordAttached,
   removeAgent,
   resolveAgentName,
+  resolveAgent,
   setStatus,
   writeAgent,
   type AgentState,
@@ -98,6 +99,18 @@ describe("resolveAgentName", () => {
 
   test("no match throws", () => {
     expect(() => resolveAgentName("zzz", names)).toThrow(/no agent matches/);
+  });
+});
+
+describe("agent aliases", () => {
+  test("resolveAgent accepts exact aliases but not alias prefixes", () => {
+    writeAgent(makeAgent("current"));
+    const renamed = readAgent("current")!;
+    renamed.aliases = ["former-name"];
+    writeAgent(renamed);
+
+    expect(resolveAgent("former-name").name).toBe("current");
+    expect(() => resolveAgent("former")).toThrow(/no agent matches/);
   });
 });
 

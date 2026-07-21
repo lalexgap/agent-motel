@@ -13,14 +13,16 @@ function truncate(s: string, max = 64): string {
 // limiter, so it shows exactly what loop protection sees.
 export function commsCommand(prefix: string, opts: { limit?: number } = {}): void {
   const agent = resolveAgent(prefix);
-  const entries = commsFor(agent.name, opts.limit ?? 20);
+  const identities = [agent.name, ...(agent.aliases ?? [])];
+  const identitySet = new Set(identities);
+  const entries = commsFor(identities, opts.limit ?? 20);
   if (entries.length === 0) {
     console.log(`no recorded messages for "${agent.name}"`);
     return;
   }
   for (const e of entries) {
     const fromBase = e.from.includes(":") ? e.from.slice(e.from.indexOf(":") + 1) : e.from;
-    const outgoing = fromBase === agent.name;
+    const outgoing = identitySet.has(fromBase);
     const arrow = outgoing ? "→" : "←";
     const peer = outgoing ? e.to : e.from;
     const time = e.at.slice(11, 19);

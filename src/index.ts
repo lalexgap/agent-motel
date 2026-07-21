@@ -10,6 +10,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { commsCommand } from "./commands/comms";
+import { renameCommand } from "./commands/rename";
 import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
@@ -25,7 +26,7 @@ import { searchCommand } from "./commands/search";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
-import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
 import { resolveTask } from "./task";
@@ -115,6 +116,9 @@ usage:
   am cd <name> <dir>          change the agent's directory: conversation moves
                               with it (git targets get a fresh worktree;
                               --in-place uses the dir as-is)
+  am rename <name> <new-name> rename an agent without interrupting a running
+                              session; preserves its conversation, queue, inbox,
+                              and previous-name alias
   am stop <name>              kill the session but keep state (resumable)
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
                               (the state is snapshotted to trash first)
@@ -232,7 +236,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
-  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd",
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd", "rename",
   "report", "comms", "wait", "peek",
 ]);
 
@@ -283,12 +287,17 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
     return; // colon but unknown host — let local resolution complain
   }
 
-  const localNames = listAgents().map((a) => a.name);
-  if (localNames.some((n) => n === ref || n.startsWith(ref))) return; // local wins
+  const localAgents = listAgents();
+  if (localAgents.some((agent) => agent.name === ref || agent.name.startsWith(ref) || agent.aliases?.includes(ref))) return; // local wins
 
   const remoteRows = fleetRows({ timeoutMs: 4000 }).rows.filter((r) => r.host);
-  const exact = remoteRows.filter((r) => r.name === ref);
+  const exact = remoteRows.filter((r) => r.name === ref || r.aliases?.includes(ref));
   const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
+  if (exact.length > 1) {
+    throw new Error(
+      `"${ref}" is ambiguous across hosts: ${exact.map((r) => `${r.host}:${r.name}`).join(", ")}`,
+    );
+  }
   const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
   if (match?.host) {
     remoteExec(match.host, injectSender(command, remapRef(argv, ref, match.name)));
@@ -371,6 +380,7 @@ async function pickerFlow(): Promise<void> {
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
+    rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
     cd: cdHandler,
     cdPrefill: (key: string) => {
@@ -573,6 +583,12 @@ async function main(): Promise<void> {
         inPlace: !!args.flags["in-place"],
         start: !args.flags["no-start"],
       });
+      break;
+    case "rename":
+      await renameCommand(
+        requirePositional(args, 0, "agent name"),
+        requirePositional(args, 1, "new agent name"),
+      );
       break;
     case "move":
     case "clone":

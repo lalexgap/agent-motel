@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
-import { writeAgent } from "../src/state";
+import { readAgent, writeAgent } from "../src/state";
 import { queueAppend } from "../src/queue";
 import { daemonRequest, startDaemonServer } from "../src/daemon";
 
@@ -128,6 +128,18 @@ describe("agents api", () => {
   test("POST spawn without name → 400", async () => {
     const res = await fetch(url("/api/agents"), auth({ method: "POST", body: JSON.stringify({}) }));
     expect(res.status).toBe(400);
+  });
+
+  test("POST rename migrates an agent identity", async () => {
+    seedAgent("before", "exited");
+    const res = await fetch(
+      url("/api/agents/before/rename"),
+      auth({ method: "POST", body: JSON.stringify({ name: "after" }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, oldName: "before", name: "after", live: false });
+    expect(readAgent("before")).toBeNull();
+    expect(readAgent("after")?.aliases).toContain("before");
   });
 
   test("DELETE unknown agent → 404", async () => {

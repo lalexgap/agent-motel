@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { commsLogFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
+import { matchAgent } from "./state";
 
 // Inter-agent communication: attribution, the envelope recipients see, and a
 // file-backed ledger that powers loop protection + the `am comms` audit view.
@@ -24,7 +25,11 @@ export interface CommsEntry {
 // survive those hops).
 export function resolveSender(explicit?: string): string | undefined {
   const from = explicit ?? process.env.AGENTMGR_AGENT;
-  return from && from.trim() ? from.trim() : undefined;
+  if (!from?.trim()) return undefined;
+  const trimmed = from.trim();
+  // Explicit senders may be host-qualified and describe another machine.
+  // Only canonicalize our own inherited managed-session identity.
+  return explicit === undefined ? (matchAgent(trimmed)?.name ?? trimmed) : trimmed;
 }
 
 // A send is a "self send" — no attribution — only when an unqualified sender
@@ -174,8 +179,8 @@ export function shouldReport(opts: {
 }
 
 // Recent ledger entries touching `name` in either direction, newest last.
-export function commsFor(name: string, limit = 20): CommsEntry[] {
-  const base = bareName(name);
-  const entries = readLog().filter((e) => bareName(e.from) === base || bareName(e.to) === base);
+export function commsFor(name: string | string[], limit = 20): CommsEntry[] {
+  const names = new Set((Array.isArray(name) ? name : [name]).map(bareName));
+  const entries = readLog().filter((e) => names.has(bareName(e.from)) || names.has(bareName(e.to)));
   return entries.slice(-limit);
 }

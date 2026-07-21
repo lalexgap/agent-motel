@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
+import { agentNameOwner, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
@@ -93,8 +93,10 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error("agent name must be alphanumeric with dashes/underscores");
   }
-  if (readAgent(name)) {
-    throw new Error(`agent "${name}" already exists — restart it with \`am resume ${name}\``);
+  const owner = agentNameOwner(name);
+  if (owner) {
+    if (owner.name === name) throw new Error(`agent "${name}" already exists — restart it with \`am resume ${name}\``);
+    throw new Error(`agent name "${name}" is retained as an alias for "${owner.name}"`);
   }
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
@@ -135,7 +137,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Who created this agent? Any `am` call inside a managed session carries
   // AGENTMGR_AGENT — lets `--report` default to "whoever made me".
-  const spawnedBy = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const inheritedSpawner = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const spawnedBy = inheritedSpawner ? (matchAgent(inheritedSpawner)?.name ?? inheritedSpawner) : undefined;
   const reportTo = opts.reportTo ?? (opts.report ? spawnedBy : undefined);
   if (opts.report && !reportTo && !opts.quiet) {
     console.error("warning: --report but no spawning agent — set a target with --report-to <name>");

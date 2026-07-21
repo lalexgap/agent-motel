@@ -1,4 +1,4 @@
-import { readAgent, writeAgent, type AgentStatus } from "../state";
+import { matchAgent, writeAgent, type AgentStatus } from "../state";
 import { queueAppend, queueDepth, queuePop } from "../queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -69,16 +69,16 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
 // are out of scope for the hook (it must exit fast and can't block on ssh);
 // the agent's own `am send` covers those via fleet resolution.
 async function deliverReport(from: string, target: string, body: string): Promise<void> {
-  const t = readAgent(target);
+  const t = matchAgent(target);
   if (!t || !hasSession(t.tmuxSession)) return;
-  const att = attribute(from, target, body, "report");
+  const att = attribute(from, t.name, body, "report");
   if (!att.allowed) {
-    console.error(`am: report from ${from} to ${target} rate-limited (dropped)`);
+    console.error(`am: report from ${from} to ${t.name} rate-limited (dropped)`);
     return; // a loop guard tripped
   }
-  queueAppend(target, att.body);
+  queueAppend(t.name, att.body);
   // Await so the verify-and-retry in deliverNext finishes before the hook exits.
-  if (t.status === "idle" || t.status === "starting") await deliverNext(target);
+  if (t.status === "idle" || t.status === "starting") await deliverNext(t.name);
 }
 
 // Keep the backstop "went idle" heads-up terse: an agent's `task` can be a huge
@@ -168,12 +168,17 @@ function stopGate(name: string): string | null {
 }
 
 export async function hookCommand(event: string): Promise<void> {
-  const name = process.env.AGENTMGR_AGENT;
-  if (!name) return; // not a managed session
-  const agent = readAgent(name);
-  if (!agent) return;
-
+  const inheritedName = process.env.AGENTMGR_AGENT;
+  if (!inheritedName) return; // not a managed session
   const payload = await readStdinPayload();
+
+  // A live tmux session can be renamed, but its provider process retains the
+  // environment it inherited at launch. Previous names are exact aliases, so
+  // resolve only after stdin is read and immediately before touching state.
+  // That keeps the rename race window to the atomic state-write itself.
+  let agent = matchAgent(inheritedName);
+  if (!agent) return;
+  let name = agent.name;
 
   // Stop gate ("the loop"): if the agent is about to go idle with unread peer
   // messages, block the stop and feed them back so it handles them before
@@ -183,6 +188,10 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "stop") {
     const gate = stopGate(name);
     if (gate) {
+      // The queue lock was released by stopGate; a rename could have landed
+      // in between, so refresh the canonical state before writing.
+      agent = matchAgent(inheritedName) ?? agent;
+      name = agent.name;
       agent.status = "working"; // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
       writeAgent(agent);

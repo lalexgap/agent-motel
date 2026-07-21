@@ -206,6 +206,9 @@ export interface AgentRow {
   // The agent that spawned this one (AGENTMGR_AGENT at `am new`). Surfaced as
   // the "parent" line in the sidebar; absent for human-spawned agents.
   spawnedBy?: string;
+  // Previous exact names accepted for routing after a rename. Included in
+  // fleet JSON so another host can forward old peer replies correctly.
+  aliases?: string[];
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
   repoRoot?: string;

@@ -181,6 +181,22 @@ export function queueClear(name: string): void {
   rmSync(agentQueueDir(name), { recursive: true, force: true });
 }
 
+export function queueStorageExists(name: string): boolean {
+  return existsSync(agentQueueDir(name)) || existsSync(legacyQueueFile(name));
+}
+
+// Move an agent's durable mailbox while its delivery lock is held by the
+// caller. The destination must be unused so a
+// stale orphan can never be silently merged into the renamed identity.
+export function renameQueue(oldName: string, newName: string): void {
+  migrateLegacy(oldName);
+  if (queueStorageExists(newName)) {
+    throw new Error(`queue storage already exists for "${newName}" — run \`am gc\` or choose another name`);
+  }
+  const oldDir = agentQueueDir(oldName);
+  if (existsSync(oldDir)) renameSync(oldDir, agentQueueDir(newName));
+}
+
 // The agent a top-level entry in queueDir belongs to: a message dir, the
 // legacy jsonl (with any claim suffix), or a deliver lock. Layout knowledge
 // stays in this module so gc's orphan scan can't drift from it.

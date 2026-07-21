@@ -14,6 +14,10 @@ export type Provider = "claude" | "codex";
 
 export interface AgentState {
   name: string;
+  // Previous names kept as exact aliases after a rename. This preserves
+  // peer replies, queued cross-machine mail, and old shell history without
+  // making aliases participate in fuzzy prefix matching.
+  aliases?: string[];
   status: AgentStatus;
   dir: string;
   tmuxSession: string;
@@ -108,6 +112,36 @@ export function listAgents(): AgentState[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export function agentNamesAndAliases(state: AgentState): string[] {
+  return [state.name, ...(state.aliases ?? [])];
+}
+
+// Exact current names win over aliases. Aliases are deliberately exact-only:
+// `am send old-name` should survive a rename, while a short prefix should keep
+// resolving against the visible, current fleet rather than hidden history.
+export function matchAgent(prefix: string): AgentState | null {
+  const agents = listAgents();
+  const exact = agents.find((agent) => agent.name === prefix);
+  if (exact) return exact;
+
+  const aliasMatches = agents.filter((agent) => agent.aliases?.includes(prefix));
+  if (aliasMatches.length === 1) return aliasMatches[0]!;
+  if (aliasMatches.length > 1) {
+    throw new Error(`"${prefix}" is an alias for multiple agents: ${aliasMatches.map((a) => a.name).join(", ")}`);
+  }
+
+  const matches = agents.filter((agent) => agent.name.startsWith(prefix));
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw new Error(`"${prefix}" is ambiguous: ${matches.map((a) => a.name).join(", ")}`);
+  }
+  return null;
+}
+
+export function agentNameOwner(name: string): AgentState | null {
+  return listAgents().find((agent) => agent.name === name || agent.aliases?.includes(name)) ?? null;
+}
+
 // Exact match wins; otherwise the prefix must be unambiguous.
 export function resolveAgentName(prefix: string, names: string[]): string {
   if (names.includes(prefix)) return prefix;
@@ -118,10 +152,10 @@ export function resolveAgentName(prefix: string, names: string[]): string {
 }
 
 export function resolveAgent(prefix: string): AgentState {
-  const names = listAgents().map((a) => a.name);
-  if (names.length === 0) throw new Error("no agents exist — create one with `am new <name>`");
-  const name = resolveAgentName(prefix, names);
-  return readAgent(name)!;
+  if (listAgents().length === 0) throw new Error("no agents exist — create one with `am new <name>`");
+  const agent = matchAgent(prefix);
+  if (!agent) throw new Error(`no agent matches "${prefix}"`);
+  return agent;
 }
 
 interface LastAttached {
@@ -138,4 +172,15 @@ export function recordAttached(name: string): void {
   const last = readLastAttached();
   if (last.current === name) return;
   writeJsonAtomic(lastAttachedFile(), { current: name, previous: last.current });
+}
+
+export function renameLastAttached(oldName: string, newName: string): void {
+  const last = readLastAttached();
+  const next = {
+    current: last.current === oldName ? newName : last.current,
+    previous: last.previous === oldName ? newName : last.previous,
+  };
+  if (next.current !== last.current || next.previous !== last.previous) {
+    writeJsonAtomic(lastAttachedFile(), next);
+  }
 }

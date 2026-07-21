@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { listAgents, readAgent, resolveAgent } from "../state";
+import { matchAgent, resolveAgent } from "../state";
 import { queueAppend, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
 import { deliverNext, enterDelayMs } from "../deliver";
@@ -17,15 +17,6 @@ function requireLiveSession(prefix: string) {
 
 // Like resolveAgent, but a no-match returns null (the caller stores it in the
 // outbox) while an ambiguous prefix still errors.
-function localMatch(prefix: string): string | null {
-  const names = listAgents().map((a) => a.name);
-  if (names.includes(prefix)) return prefix;
-  const matches = names.filter((n) => n.startsWith(prefix));
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`"${prefix}" is ambiguous: ${matches.join(", ")}`);
-  return null;
-}
-
 // No local agent and (the fleet forward already declined) no reachable remote:
 // queue for store-and-forward instead of erroring. A collector that owns this
 // name sweeps it out. Surfaces any of this sender's messages that expired
@@ -57,9 +48,8 @@ export async function sendCommand(
   message: string,
   opts: { now: boolean; from?: string },
 ): Promise<void> {
-  const match = localMatch(prefix);
-  if (!match) return outboxFallback(prefix, message, opts);
-  const agent = readAgent(match)!;
+  const agent = matchAgent(prefix);
+  if (!agent) return outboxFallback(prefix, message, opts);
   if (!hasSession(agent.tmuxSession)) {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
   }

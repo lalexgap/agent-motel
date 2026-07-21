@@ -15,6 +15,7 @@ import {
   splitAddr,
 } from "../src/comms";
 import { configFile } from "../src/paths";
+import { writeAgent } from "../src/state";
 
 let home: string;
 
@@ -37,6 +38,23 @@ describe("resolveSender", () => {
     delete process.env.AGENTMGR_AGENT;
     expect(resolveSender()).toBeUndefined();
     expect(resolveSender("  ")).toBeUndefined();
+  });
+
+  test("canonicalizes an inherited previous name after a live rename", () => {
+    const now = new Date().toISOString();
+    writeAgent({
+      name: "api-v2",
+      aliases: ["api"],
+      status: "working",
+      dir: "/tmp",
+      tmuxSession: "agentmgr-api-v2",
+      createdAt: now,
+      updatedAt: now,
+    });
+    process.env.AGENTMGR_AGENT = "api";
+
+    expect(resolveSender()).toBe("api-v2");
+    expect(resolveSender("remote:api")).toBe("remote:api");
   });
 });
 

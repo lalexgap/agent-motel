@@ -45,6 +45,17 @@ export function killSession(session: string): void {
   tmux("kill-session", "-t", `=${session}`);
 }
 
+// tmux can rename a session while clients and the foreground process remain
+// attached. This is the key to changing a managed agent's visible identity
+// without interrupting its current turn.
+export function renameSession(session: string, newSession: string): void {
+  const result = tmux("rename-session", "-t", `=${session}`, newSession);
+  if (result.exitCode !== 0) {
+    throw new Error(`tmux rename-session failed: ${result.stderr.trim()}`);
+  }
+  configureAgentSession(newSession);
+}
+
 // The agentmgr scroll bindings, as tmux command argv (sans the leading
 // "tmux"). Exported so the local setup (configureAgentSession) and the hub's
 // remote ssh assertion (showAgent) stay in lockstep — they drifted once and

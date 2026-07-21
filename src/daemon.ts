@@ -1,6 +1,6 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { listAgents, readAgent, setStatus } from "./state";
+import { agentNamesAndAliases, listAgents, matchAgent, setStatus } from "./state";
 import { queueAppend, queueDepth } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
@@ -41,7 +41,7 @@ export function nextPollMs(current: number, hotMs: number, maxMs: number, collec
 // rather than being dropped *and* acked (= lost). msgId dedup keeps the retry
 // from double-delivering the entries that did get through. [fixes review M1]
 async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
-  const target = readAgent(entry.to);
+  const target = matchAgent(entry.to);
   // No readable state for this name. If a live managed session still exists,
   // the state is merely damaged (quarantined), not gone — defer (no ack)
   // rather than eat mail addressed to a running agent; the remote's TTL
@@ -49,18 +49,18 @@ async function injectCollected(entry: OutboxEntry, host: string): Promise<boolea
   if (!target) return !hasSession(sessionName(entry.to));
   if (entry.msgId && seenRecently(entry.msgId)) return true; // already delivered — dedup
   const sender = collectedSender(entry.from, entry.fromHost, host);
-  const att = attribute(sender, entry.to, entry.body, "send", entry.msgId);
+  const att = attribute(sender, target.name, entry.body, "send", entry.msgId);
   if (!att.allowed) {
     // loop guard tripped — defer (don't ack) so it's retried, not lost
     log(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
     return false;
   }
-  queueAppend(entry.to, att.body);
+  queueAppend(target.name, att.body);
   if (target.status === "idle" || target.status === "starting") {
     try {
-      await deliverNext(entry.to);
+      await deliverNext(target.name);
     } catch (error) {
-      log(`outbox delivery to ${entry.to} failed: ${error}`);
+      log(`outbox delivery to ${target.name} failed: ${error}`);
     }
   }
   return true;
@@ -110,7 +110,7 @@ let collecting = false;
 async function collectFromRemotes(): Promise<number> {
   if (collecting) return 0; // a prior sweep is still running — don't overlap
   const remotes = loadConfig().remotes ?? [];
-  const localNames = listAgents().map((a) => a.name);
+  const localNames = listAgents().flatMap(agentNamesAndAliases);
   if (remotes.length === 0 || localNames.length === 0) return 0;
   collecting = true;
   let total = 0;

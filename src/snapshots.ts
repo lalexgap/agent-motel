@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, snapshotsDir } from "./paths";
 
@@ -23,6 +23,17 @@ export function readSnapshot(name: string): string[] | null {
 
 export function removeSnapshot(name: string): void {
   rmSync(snapshotFile(name), { force: true });
+}
+
+export function snapshotExists(name: string): boolean {
+  return existsSync(snapshotFile(name));
+}
+
+export function renameSnapshot(oldName: string, newName: string): void {
+  if (snapshotExists(newName)) {
+    throw new Error(`snapshot storage already exists for "${newName}" — run \`am gc\` or choose another name`);
+  }
+  if (snapshotExists(oldName)) renameSync(snapshotFile(oldName), snapshotFile(newName));
 }
 
 // Every stored snapshot with the agent name it belongs to — the name↔file

@@ -7,7 +7,7 @@ import { cliEntrypoint } from "../settings";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
 import { loadConfig } from "../config";
-import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./fleetActions";
 import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -402,6 +402,7 @@ export async function sidebarCommand(): Promise<void> {
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
+    rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
     cd: cdHandler,
     cdPrefill: (key: string) => {
