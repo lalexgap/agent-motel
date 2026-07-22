@@ -60,7 +60,7 @@ am pick                                 # open the classic picker
 am peek <name>                          # print the current screen
 ```
 
-In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to control it, `ctrl-q` to return to the sidebar, `ctrl-n` to create an agent, `s` to toggle most-recently-active sorting, and `Esc` to detach. Inside an attached session, `ctrl-q` returns to the hub without stopping the agent.
+In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to control it, `ctrl-q` to return to the sidebar, `ctrl-n` to create an agent, `s` to sort each group by recent activity, and `Esc` to detach. Inside an attached session, `ctrl-q` returns to the hub without stopping the agent.
 
 ### Message and coordinate
 

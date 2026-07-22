@@ -404,7 +404,7 @@ export async function sidebarCommand(): Promise<void> {
     handoff: handoffHandler,
     rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
-    resort: () => toggleSortMode() === "recent" ? "sorted by most recent activity" : "sorted by status within groups",
+    resort: () => toggleSortMode() === "recent" ? "sorted by most recent activity within groups" : "sorted by status within groups",
     cd: cdHandler,
     cdPrefill: (key: string) => {
       const { host, name } = splitFleetKey(key);

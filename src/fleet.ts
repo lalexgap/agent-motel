@@ -231,13 +231,6 @@ function activityTime(row: FleetRow): number {
 }
 
 export function sortFleetRows(rows: FleetRow[], mode: GroupMode, sort: SortMode = "status"): FleetRow[] {
-  if (sort === "recent") {
-    return [...rows].sort((a, b) =>
-      activityTime(b) - activityTime(a)
-      || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
-      || fleetKey(a).localeCompare(fleetKey(b)),
-    );
-  }
   const sectionOrder = new Map<string, number>();
   if (mode === "host") {
     for (const row of rows) {
@@ -251,7 +244,13 @@ export function sortFleetRows(rows: FleetRow[], mode: GroupMode, sort: SortMode 
     const sectionCmp = mode === "dir"
       ? sectionA.localeCompare(sectionB)
       : (sectionOrder.get(sectionA) ?? 0) - (sectionOrder.get(sectionB) ?? 0);
-    return sectionCmp || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || a.name.localeCompare(b.name);
+    if (sectionCmp) return sectionCmp;
+    if (sort === "recent") {
+      return activityTime(b) - activityTime(a)
+        || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
+        || fleetKey(a).localeCompare(fleetKey(b));
+    }
+    return STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || a.name.localeCompare(b.name);
   });
 }
 
@@ -308,7 +307,7 @@ export function fleetPickerItems(): PickerItem[] {
   const items: PickerItem[] = sorted.map((r) => {
     return {
       name: fleetKey(r),
-      section: sortMode === "recent" ? "" : sectionFor(r, groupMode),
+      section: sectionFor(r, groupMode),
       secondary: r.status === "exited",
       icon: STATUS_ICONS[r.status],
       iconStyle: STATUS_COLORS[r.status],
@@ -335,7 +334,7 @@ export function fleetPickerItems(): PickerItem[] {
   for (const host of unreachable) {
     items.push({
       name: `${host}:`,
-      section: sortMode === "recent" ? "" : host,
+      section: host,
       secondary: false,
       icon: "✕",
       iconStyle: STATUS_COLORS.dead,

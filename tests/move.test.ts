@@ -207,7 +207,7 @@ describe("sortFleetRows", () => {
     ]);
   });
 
-  test("can sort the whole fleet by most recent activity across groups", () => {
+  test("sorts by most recent activity within each group", () => {
     const base = { provider: "claude", queued: 0, dir: "/tmp/app" } as const;
     const rows = [
       { ...base, name: "older-local", status: "working", updatedAt: "2026-07-20T10:00:00Z" },
@@ -216,9 +216,9 @@ describe("sortFleetRows", () => {
     ];
 
     expect(sortFleetRows(rows as never, "host", "recent").map((row) => row.name)).toEqual([
-      "newest-remote",
       "middle-local",
       "older-local",
+      "newest-remote",
     ]);
   });
 });

@@ -148,7 +148,7 @@ describe("editMenuHelp", () => {
 });
 
 describe("sidebar sort control", () => {
-  test("surfaces the recent-activity toggle in the key bar", () => {
+  test("surfaces the within-group activity toggle in the key bar", () => {
     expect(tmuxKeyBar("list", { resort: () => "ok" })).toContain(" s ");
   });
 });

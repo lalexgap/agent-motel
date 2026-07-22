@@ -101,7 +101,7 @@ export interface PickerHandlers {
   rename?: (name: string, newName: string) => Feedback | Promise<Feedback>;
   // Toggle the list grouping (host ↔ directory); returns banner feedback.
   regroup?: () => Feedback;
-  // Toggle status/group ordering ↔ one global most-recently-active list.
+  // Toggle status ordering ↔ most-recently-active ordering within each group.
   resort?: () => Feedback;
   // Relocate an agent to a new directory (r key opens a prefilled prompt).
   cd?: (name: string, dir: string) => Feedback | Promise<Feedback>;
@@ -913,7 +913,7 @@ export async function pick(
         shortcut: "a",
       },
       handlers.regroup && { id: "regroup", label: "Toggle host/project grouping", keywords: "group directory", shortcut: "g" },
-      handlers.resort && { id: "resort", label: "Toggle recent-activity sort", keywords: "sort newest latest updated", shortcut: "s" },
+      handlers.resort && { id: "resort", label: "Toggle within-group activity sort", keywords: "sort recent newest latest updated", shortcut: "s" },
       target && handlers.move && { id: "move", label: `Move ${name}`, keywords: "remote host relocate", shortcut: "e m" },
       target && handlers.clone && { id: "clone", label: `Clone ${name}`, keywords: "copy fork remote", shortcut: "e c" },
       target && handlers.handoff && { id: "handoff", label: `Handoff ${name}`, keywords: "provider transcript", shortcut: "e h" },
@@ -1278,7 +1278,7 @@ export async function pick(
         `${key("/")} search conversations`,
         `${key("ctrl-k")} command palette`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
-        ...(handlers.resort ? [`${key("s")} toggle recent-activity sort`] : []),
+        ...(handlers.resort ? [`${key("s")} sort by activity within groups`] : []),
         `${key("a")} show exited agents`,
         ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
         `${key("q / esc")} ${handlers.quit ? "detach" : "quit"}`,
