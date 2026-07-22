@@ -101,6 +101,8 @@ export interface PickerHandlers {
   rename?: (name: string, newName: string) => Feedback | Promise<Feedback>;
   // Toggle the list grouping (host ↔ directory); returns banner feedback.
   regroup?: () => Feedback;
+  // Toggle status/group ordering ↔ one global most-recently-active list.
+  resort?: () => Feedback;
   // Relocate an agent to a new directory (r key opens a prefilled prompt).
   cd?: (name: string, dir: string) => Feedback | Promise<Feedback>;
   cdPrefill?: (name: string) => string;
@@ -688,6 +690,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.create ? [{ key: "n", label: "new" }] : []),
       { key: "f", label: "filter" },
       ...(handlers.regroup ? [{ key: "g", label: "group" }] : []),
+      ...(handlers.resort ? [{ key: "s", label: "sort" }] : []),
       ...(hasEditActions(handlers) ? [{ key: "e", label: "edit" }] : []),
       { key: "ctrl-p", label: "commands" },
       { key: "?", label: "keys" },
@@ -910,6 +913,7 @@ export async function pick(
         shortcut: "a",
       },
       handlers.regroup && { id: "regroup", label: "Toggle host/project grouping", keywords: "group directory", shortcut: "g" },
+      handlers.resort && { id: "resort", label: "Toggle recent-activity sort", keywords: "sort newest latest updated", shortcut: "s" },
       target && handlers.move && { id: "move", label: `Move ${name}`, keywords: "remote host relocate", shortcut: "e m" },
       target && handlers.clone && { id: "clone", label: `Clone ${name}`, keywords: "copy fork remote", shortcut: "e c" },
       target && handlers.handoff && { id: "handoff", label: `Handoff ${name}`, keywords: "provider transcript", shortcut: "e h" },
@@ -1274,6 +1278,7 @@ export async function pick(
         `${key("/")} search conversations`,
         `${key("ctrl-k")} command palette`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
+        ...(handlers.resort ? [`${key("s")} toggle recent-activity sort`] : []),
         `${key("a")} show exited agents`,
         ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
         `${key("q / esc")} ${handlers.quit ? "detach" : "quit"}`,
@@ -1578,6 +1583,11 @@ export async function pick(
         case "regroup":
           mode = "list";
           if (handlers.regroup) feedback = asFeedback(handlers.regroup());
+          items = load();
+          break;
+        case "resort":
+          mode = "list";
+          if (handlers.resort) feedback = asFeedback(handlers.resort());
           items = load();
           break;
         case "move":
@@ -2085,6 +2095,9 @@ export async function pick(
         feedback = null;
       } else if (key === "g" && handlers.regroup) {
         feedback = asFeedback(handlers.regroup());
+        items = load();
+      } else if (key === "s" && handlers.resort) {
+        feedback = asFeedback(handlers.resort());
         items = load();
       } else if (key === "e" && hasEditActions(handlers)) {
         // Agent-mutating actions live one level down: e opens the edit menu

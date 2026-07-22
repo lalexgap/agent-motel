@@ -192,11 +192,18 @@ async function refreshPreview(key: string, host: string, agentName: string): Pro
 // worktree dir would put every agent alone — else its dir). Toggled with
 // `g`; session-local.
 export type GroupMode = "host" | "dir";
+export type SortMode = "status" | "recent";
 let groupMode: GroupMode = "host";
+let sortMode: SortMode = "status";
 
 export function toggleGroupMode(): GroupMode {
   groupMode = groupMode === "host" ? "dir" : "host";
   return groupMode;
+}
+
+export function toggleSortMode(): SortMode {
+  sortMode = sortMode === "status" ? "recent" : "status";
+  return sortMode;
 }
 
 export function sectionFor(row: FleetRow, mode: GroupMode): string {
@@ -218,7 +225,19 @@ const STATUS_PRIORITY: Record<AgentRow["status"], number> = {
   dead: 6,
 };
 
-export function sortFleetRows(rows: FleetRow[], mode: GroupMode): FleetRow[] {
+function activityTime(row: FleetRow): number {
+  const time = Date.parse(row.updatedAt);
+  return Number.isFinite(time) ? time : 0;
+}
+
+export function sortFleetRows(rows: FleetRow[], mode: GroupMode, sort: SortMode = "status"): FleetRow[] {
+  if (sort === "recent") {
+    return [...rows].sort((a, b) =>
+      activityTime(b) - activityTime(a)
+      || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
+      || fleetKey(a).localeCompare(fleetKey(b)),
+    );
+  }
   const sectionOrder = new Map<string, number>();
   if (mode === "host") {
     for (const row of rows) {
@@ -285,11 +304,11 @@ export function fleetPickerItems(): PickerItem[] {
       ? { ...row, diff: cachedGitDiffSummary(row.dir) }
       : row,
   );
-  const sorted = sortFleetRows(withDiff, groupMode);
+  const sorted = sortFleetRows(withDiff, groupMode, sortMode);
   const items: PickerItem[] = sorted.map((r) => {
     return {
       name: fleetKey(r),
-      section: sectionFor(r, groupMode),
+      section: sortMode === "recent" ? "" : sectionFor(r, groupMode),
       secondary: r.status === "exited",
       icon: STATUS_ICONS[r.status],
       iconStyle: STATUS_COLORS[r.status],
@@ -316,7 +335,7 @@ export function fleetPickerItems(): PickerItem[] {
   for (const host of unreachable) {
     items.push({
       name: `${host}:`,
-      section: host,
+      section: sortMode === "recent" ? "" : host,
       secondary: false,
       icon: "✕",
       iconStyle: STATUS_COLORS.dead,

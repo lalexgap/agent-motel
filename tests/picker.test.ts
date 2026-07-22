@@ -10,6 +10,7 @@ import {
   parseMouseEvent,
   renamedPickerKey,
   splitKeys,
+  tmuxKeyBar,
   visibleWidth,
   wrapTokens,
 } from "../src/picker";
@@ -143,6 +144,12 @@ describe("renamedPickerKey", () => {
 describe("editMenuHelp", () => {
   test("surfaces rename in the selected-agent actions", () => {
     expect(editMenuHelp({ rename: () => "ok" })).toContain("n rename");
+  });
+});
+
+describe("sidebar sort control", () => {
+  test("surfaces the recent-activity toggle in the key bar", () => {
+    expect(tmuxKeyBar("list", { resort: () => "ok" })).toContain(" s ");
   });
 });
 

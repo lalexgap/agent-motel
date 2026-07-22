@@ -30,7 +30,7 @@ import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } f
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
 import { resolveTask } from "./task";
-import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
+import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode, toggleSortMode } from "./fleet";
 import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
@@ -382,6 +382,7 @@ async function pickerFlow(): Promise<void> {
     handoff: handoffHandler,
     rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    resort: () => toggleSortMode() === "recent" ? "sorted by most recent activity" : "sorted by status within groups",
     cd: cdHandler,
     cdPrefill: (key: string) => {
       const { host, name } = splitFleetKey(key);

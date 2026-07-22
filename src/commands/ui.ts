@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
-import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
+import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode, toggleSortMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
 import { loadConfig } from "../config";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./fleetActions";
@@ -404,6 +404,7 @@ export async function sidebarCommand(): Promise<void> {
     handoff: handoffHandler,
     rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    resort: () => toggleSortMode() === "recent" ? "sorted by most recent activity" : "sorted by status within groups",
     cd: cdHandler,
     cdPrefill: (key: string) => {
       const { host, name } = splitFleetKey(key);
