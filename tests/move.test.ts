@@ -206,6 +206,21 @@ describe("sortFleetRows", () => {
       "gone-remote",
     ]);
   });
+
+  test("can sort the whole fleet by most recent activity across groups", () => {
+    const base = { provider: "claude", queued: 0, dir: "/tmp/app" } as const;
+    const rows = [
+      { ...base, name: "older-local", status: "working", updatedAt: "2026-07-20T10:00:00Z" },
+      { ...base, name: "newest-remote", status: "idle", updatedAt: "2026-07-22T10:00:00Z", host: "home.example" },
+      { ...base, name: "middle-local", status: "needs-attention", updatedAt: "2026-07-21T10:00:00Z" },
+    ];
+
+    expect(sortFleetRows(rows as never, "host", "recent").map((row) => row.name)).toEqual([
+      "newest-remote",
+      "middle-local",
+      "older-local",
+    ]);
+  });
 });
 
 describe("swallowed-Enter detection", () => {
