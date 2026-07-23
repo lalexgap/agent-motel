@@ -24,7 +24,6 @@ export interface PickerItem {
   // Right-aligned activity text, with an optional color on unselected rows.
   right?: string;
   rightStyle?: string;
-  rightSelectedStyle?: string;
   // Extra text the filter matches against (task, dir) besides the name.
   search?: string;
   // Already-formatted detail lines shown in the sidebar under the list for
@@ -1328,10 +1327,7 @@ export async function pick(
         const labelSeg = selectedRow
           ? `${THEME.bright}${BOLD}${label}${NORMAL_WEIGHT}${restore}`
           : `${item.labelStyle ?? THEME.text}${label}${restore}`;
-        const rightStyle = selectedRow
-          ? (item.rightSelectedStyle ?? THEME.muted)
-          : (item.rightStyle ?? THEME.muted);
-        const rightSeg = right ? ` ${rightStyle}${right}${restore}` : "";
+        const rightSeg = right ? ` ${selectedRow ? THEME.muted : (item.rightStyle ?? THEME.muted)}${right}${restore}` : "";
         const queueSeg = queue ? ` ${THEME.yellow}${queue}${restore}` : "";
         const badgeStyle = (selectedRow ? item.badgeSelectedStyle : undefined) ?? item.badgeStyle ?? THEME.muted;
         const badgeSeg = badge ? ` ${badgeStyle}${badge}${restore} ` : "";

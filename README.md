@@ -5,9 +5,9 @@ Agent Motel is a CLI for running multiple [Claude Code](https://claude.com/claud
 ```text
 $ am
 agents (3) · f filters         │ ⏺ Updating src/api/client.ts…
-❯ ● api-refactor   working 2q  │ ✻ Churning (12s · 8.2k tokens)
-  ⚠ bugfix-381  needs-attention│
-  ○ docs-pass             idle │
+❯ ● api-refactor          2q   │ ✻ Churning (12s · 8.2k tokens)
+  ⚠ bugfix-381                 │
+  ○ docs-pass                  │
                                │
 status   working (2 queued)    │
 dir      ~/code/api            │

@@ -269,13 +269,6 @@ export function sidebarStatus(status: AgentRow["status"]): string {
   return status;
 }
 
-function sidebarStatusStyle(status: AgentRow["status"]): string {
-  if (status === "working") return GREEN;
-  if (status === "waiting" || status === "needs-attention") return AMBER;
-  if (status === "exited" || status === "dead") return RED;
-  return MUTED;
-}
-
 function diffDetail(row: FleetRow): string {
   // null = the dir isn't a git checkout; undefined on a remote row = the
   // remote am predates diff-in-ls and will never fill it in.
@@ -311,9 +304,6 @@ export function fleetPickerItems(): PickerItem[] {
       statusLabel: sidebarStatus(r.status),
       label: r.name,
       labelStyle: r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG,
-      right: sidebarStatus(r.status),
-      rightStyle: sidebarStatusStyle(r.status),
-      rightSelectedStyle: sidebarStatusStyle(r.status),
       badge: r.provider === "codex" ? "cdx" : "cld",
       badgeStyle: r.provider === "codex" ? MUTED : PURPLE,
       badgeSelectedStyle: r.provider === "codex" ? BLUE : PURPLE,
