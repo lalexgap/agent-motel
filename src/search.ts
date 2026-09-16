@@ -27,6 +27,7 @@ export interface SearchSnippet {
 }
 
 export interface SearchResult {
+  score?: number;
   agentName?: string; // absent for unregistered historical sessions
   host?: string; // set on federated (remote) results
   sessionId?: string;
@@ -42,6 +43,7 @@ export interface SearchResult {
 }
 
 export interface SearchOptions {
+  registeredOnly?: boolean;
   all?: boolean; // widen to every historical session, not just registered + trash
   fleet?: boolean; // federate over config.remotes (suppressed by localOnly)
   localOnly?: boolean; // never recurse to remotes (set on the federated leg)
@@ -49,8 +51,9 @@ export interface SearchOptions {
   perFileCap?: number; // cap matches scanned per file (default 50)
 }
 
-interface CorpusEntry {
+export interface CorpusEntry {
   file: string;
+  task?: string;
   provider: Provider;
   agentName?: string;
   sessionId?: string;
@@ -71,7 +74,7 @@ const LIVE_STATUSES = new Set<DisplayStatus>(["starting", "idle", "working", "wa
 // Build the file→metadata map the search ranges over. Registered agents and
 // trashed agents come first (they carry a name and a direct pick-up command);
 // with --all, every other session on disk is added as an adoptable history hit.
-function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
+export function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
   const corpus = new Map<string, CorpusEntry>();
 
   for (const agent of listAgents()) {
@@ -87,6 +90,7 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
       file,
       provider: agentProvider(agent),
       agentName: agent.name,
+      task: agent.task,
       sessionId: agent.sessionId ?? agent.claudeSessionId,
       dir: agent.dir,
       status,
@@ -95,6 +99,8 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
       command: live ? `am j ${agent.name}` : `am resume ${agent.name}`,
     });
   }
+
+  if (opts.registeredOnly) return corpus;
 
   for (const trashed of listTrashed()) {
     let file: string;
@@ -108,6 +114,7 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
       file,
       provider: agentProvider(trashed),
       agentName: trashed.name,
+      task: trashed.task,
       sessionId: trashed.sessionId ?? trashed.claudeSessionId,
       dir: trashed.dir,
       scope: "trash",

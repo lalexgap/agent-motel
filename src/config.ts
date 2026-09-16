@@ -14,6 +14,11 @@ export function localHostIdentity(): string {
 }
 
 export interface Config {
+  embeddings?: {
+    provider: "openai" | "openrouter";
+    model?: string;
+    apiKeyEnv?: string;
+  };
   // Provider a new agent runs on when neither --codex nor --claude is given
   // (and, in the create form, the preselected provider). "claude" or "codex".
   defaultProvider: Provider;

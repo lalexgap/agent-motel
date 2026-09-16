@@ -148,6 +148,53 @@ am restore api                     # restore a removed agent
 am gc                              # preview cleanup (--apply to run it)
 ```
 
+### Search by concept (optional)
+
+Embedding search supports OpenRouter and direct OpenAI API keys. Add this field
+to `~/.agent-manager/config.json` (keep your existing settings):
+
+```json
+{
+  "embeddings": {
+    "provider": "openrouter",
+    "model": "openai/text-embedding-3-small"
+  }
+}
+```
+
+Set `OPENROUTER_API_KEY` in the environment where `am` runs, then:
+
+```sh
+am index                                  # registered agents + trash
+am search "making message delivery reliable" --semantic
+am search "making message delivery reliable" --hybrid
+am index --all                            # also index historical sessions
+am search "old authentication work" --semantic --all
+```
+
+For direct OpenAI, use `"provider": "openai"`, `"model": "text-embedding-3-small"`,
+and `OPENAI_API_KEY`. The model is optional; these are the defaults. Set
+`"apiKeyEnv": "MY_EMBEDDING_KEY"` inside `embeddings` to use a different environment
+variable. Claude/Anthropic keys cannot generate embeddings.
+
+`am index` sends user/assistant conversation text and initial tasks to the selected
+embedding provider; tool output is excluded. Provider usage charges apply. Vectors
+and searchable text are cached locally in `~/.agent-manager/search.sqlite`; keys
+are never stored there. Indexing is explicit: rerun it after conversations change.
+Only new text chunks need embedding requests, and interrupted runs reuse completed
+batches. Files still changing during indexing are retried on the next run. Changing
+the provider or model requires running `am index` again.
+
+Plain `am search` stays literal and works without a key. With `embeddings` configured,
+the picker's `/` search adds concept results after a short pause in typing. It falls
+back to literal results if embeddings are unavailable and indicates when the index
+needs refreshing. Search queries are also sent to the provider. Results show the
+closest indexed conversations, so a result isn't a guarantee of relevance.
+
+Embedding search is local in this version; `--fleet` remains available for literal
+search. Use `am -H <host> index` and `am -H <host> search --semantic "concept"` to
+index/search a remote host, with credentials configured on that host.
+
 ### Quota headroom
 
 ```sh

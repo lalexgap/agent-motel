@@ -1,4 +1,5 @@
 import { search, type SearchResult, type SearchSnippet } from "../search";
+import { searchWithEmbeddings } from "../semanticSearch";
 import { relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS } from "./ls";
 
 const RESET = "\x1b[0m";
@@ -9,6 +10,8 @@ const SCOPE_GLYPH = { trash: "🗑", history: "±" } as const;
 const ROLE_LABEL = { user: "you", assistant: "agent", tool: "tool" } as const;
 
 export interface SearchCmdOptions {
+  semantic?: boolean;
+  hybrid?: boolean;
   all?: boolean;
   fleet?: boolean;
   localOnly?: boolean;
@@ -16,13 +19,14 @@ export interface SearchCmdOptions {
   limit?: number;
 }
 
-export function searchCommand(query: string, opts: SearchCmdOptions): void {
-  const results = search(query, {
-    all: opts.all,
-    fleet: opts.fleet,
-    localOnly: opts.localOnly,
-    limit: opts.limit,
-  });
+export async function searchCommand(query: string, opts: SearchCmdOptions): Promise<void> {
+  if (opts.semantic && opts.hybrid) throw new Error("Choose --semantic or --hybrid, not both.");
+  if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) {
+    throw new Error("--limit must be a positive integer.");
+  }
+  const results = opts.semantic || opts.hybrid
+    ? await searchWithEmbeddings(query, { ...opts, onWarning: (message) => console.error(`Search: ${message}`) })
+    : search(query, opts);
 
   if (opts.json) {
     console.log(JSON.stringify(results, null, 2));
@@ -59,7 +63,7 @@ function headerLine(r: SearchResult): string {
     r.provider === "codex" ? "codex" : "",
   ].filter(Boolean);
   const badge = badges.length ? ` ${DIM}${badges.join(" · ")}${RESET}` : "";
-  const count = `${r.matchCount} match${r.matchCount === 1 ? "" : "es"}`;
+  const count = r.score !== undefined ? "semantic" : `${r.matchCount} match${r.matchCount === 1 ? "" : "es"}`;
   const when = r.updatedAt > 0 ? ` · ${relativeTime(new Date(r.updatedAt).toISOString())}` : "";
   return `${glyph} ${BOLD}${title}${RESET}${badge}  ${DIM}${count}${when}${RESET}`;
 }
@@ -72,6 +76,7 @@ function locationLine(r: SearchResult): string {
 
 function snippetLine(s: SearchSnippet): string {
   const role = `${DIM}${ROLE_LABEL[s.kind]}${RESET} `;
+  if (s.matchLen === 0) return `${role}${s.text}`;
   const pre = s.text.slice(0, s.matchStart);
   const hit = s.text.slice(s.matchStart, s.matchStart + s.matchLen);
   const post = s.text.slice(s.matchStart + s.matchLen);

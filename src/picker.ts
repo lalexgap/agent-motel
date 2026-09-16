@@ -1,5 +1,7 @@
 import { completeDir, completeDirRemote } from "./dirComplete";
 import { localAgentMatches, search } from "./search";
+import { loadConfig } from "./config";
+import { searchWithEmbeddings } from "./semanticSearch";
 import { startUsagePolling, usageBadge } from "./usage";
 import { effortsForModel, findModel, type ModelOption, type ProviderCatalog } from "./catalog";
 
@@ -958,6 +960,10 @@ export async function pick(
   // chatOrder preserves the search ranking. The list derives from CURRENT items
   // each render (so status glyphs stay live), restricted to these names.
   let chatQuery = "";
+  let chatTimer: ReturnType<typeof setTimeout> | undefined;
+  let chatRequest: AbortController | undefined;
+  let chatRevision = 0;
+  let chatStatus = "";
   let chatMatch: Map<string, string> | null = null;
   let chatOrder: string[] = [];
   let cursor = Math.max(0, items.findIndex((i) => i.name === initial));
@@ -1136,11 +1142,11 @@ export async function pick(
 
   const paletteTotal = () => paletteMatches().length + paletteAgentMatches().length;
 
-  // Run `am search` over local agents' chats for the current query. Synchronous
-  // (ripgrep does the whole corpus in tens of ms) so it can run per keystroke
-  // without an async dance. Local registered agents only — they're the rows the
-  // picker can actually select; history/remote stay on the `am search` CLI.
   const runChatSearch = () => {
+    clearTimeout(chatTimer);
+    chatRequest?.abort();
+    const revision = ++chatRevision;
+    chatStatus = "";
     const query = chatQuery.trim();
     if (!query) {
       chatMatch = null;
@@ -1148,13 +1154,37 @@ export async function pick(
       return;
     }
     try {
-      const { order, snippets } = localAgentMatches(search(query, { limit: 100 }));
+      const { order, snippets } = localAgentMatches(search(query, { limit: 100, registeredOnly: true }));
       chatMatch = snippets;
       chatOrder = order;
     } catch {
-      chatMatch = null;
+      chatMatch = new Map();
       chatOrder = [];
     }
+    if (!loadConfig().embeddings) return;
+    chatStatus = " · searching concepts…";
+    chatTimer = setTimeout(async () => {
+      const controller = new AbortController();
+      chatRequest = controller;
+      let warning = "";
+      try {
+        const results = await searchWithEmbeddings(query, {
+          hybrid: true, limit: 100, registeredOnly: true, signal: controller.signal,
+          onWarning: (message) => { warning = message; },
+        });
+        if (!pickerActive || revision !== chatRevision) return;
+        const { order, snippets } = localAgentMatches(results);
+        chatMatch = snippets;
+        chatOrder = order;
+        chatStatus = warning.startsWith("Literal results only:") ? " · literal only" : warning ? " · index needs refresh" : " · concepts + text";
+        if (warning) feedback = { text: warning, level: "warn" };
+        render();
+      } catch {
+        if (!pickerActive || revision !== chatRevision) return;
+        chatStatus = " · literal only";
+        render();
+      }
+    }, 350);
   };
 
   // The zoomed create flow is a centered, borderless TUI dialog: a #16161e
@@ -1412,11 +1442,11 @@ export async function pick(
         : mode === "rename-name"
           ? { text: `${THEME.blue}rename to${THEME.sidebar}  ${renameName}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
           : mode === "search"
-            ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+            ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}${chatStatus}`, style: THEME.sidebar }
             : mode === "filter"
               ? { text: `${THEME.blue}filter${THEME.sidebar}  ${filter}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
               : chatMatch
-                ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches · esc clears${THEME.sidebar}`, style: THEME.sidebar }
+                ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches${chatStatus} · esc clears${THEME.sidebar}`, style: THEME.sidebar }
                 : filter
                   ? { text: `${THEME.muted}filter: ${filter} · ⌫ clears${THEME.sidebar}`, style: THEME.sidebar }
                   : mode === "edit"
@@ -1644,6 +1674,9 @@ export async function pick(
     const finish = (value: string | null) => {
       finished = true;
       pickerActive = false;
+      clearTimeout(chatTimer);
+      chatRequest?.abort();
+      chatRevision++;
       if (mode === "new-form" || mode === "palette") setForm(false); // un-zoom if we exit mid-overlay
       unsubscribe();
       clearInterval(renderRefresh);
@@ -1916,8 +1949,7 @@ export async function pick(
             filter = "";
             roleFilter = null;
             chatQuery = "";
-            chatMatch = null;
-            chatOrder = [];
+            runChatSearch();
             items = load();
             cursorName = key;
             const idx = filtered().findIndex((i) => i.name === key);
@@ -2196,7 +2228,7 @@ export async function pick(
       if (mode === "search") {
         // Esc clears the chat search entirely; Enter keeps the matched list up
         // (mode → list) so you can navigate and jump/resume a result. Editing
-        // the query re-runs the search synchronously (ripgrep is fast).
+        // the query refreshes literal hits immediately and debounces concept search.
         if (key === "\x1b") {
           chatQuery = "";
           runChatSearch();
