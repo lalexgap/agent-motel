@@ -124,7 +124,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
   if (!Bun.which(provider)) {
-    throw new Error(`${provider} is not installed on this machine — install it or pick the other provider (--to)`);
+    throw new Error(`${provider} is not installed on this machine — install it or pick the other provider (--claude / --codex)`);
   }
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
@@ -215,10 +215,14 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
 
   if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);
-  if (hooksChanged && !opts.quiet) {
-    console.log(
-      `  codex will ask to review am's hooks on startup — choose "Trust all and continue" (one-time; without it status tracking stays blind)`,
-    );
+  // Quiet callers (the concierge, the HTTP API, `am run`) still need this one:
+  // until it is answered the agent sits at the trust prompt, reporting nothing
+  // and never picking up its queued task. Goes to stderr so it stays out of
+  // whatever a quiet caller is printing.
+  if (hooksChanged) {
+    const notice = `codex will ask to review am's hooks on startup — choose "Trust all and continue" (one-time; without it status tracking stays blind)`;
+    if (opts.quiet) console.error(`warning: ${notice}`);
+    else console.log(`  ${notice}`);
   }
 
   const jump = opts.jump ?? (!!process.stdout.isTTY && !!process.stdin.isTTY);
