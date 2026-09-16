@@ -147,6 +147,14 @@ describe("agents api", () => {
     expect(res.status).toBe(409);
   });
 
+  test("POST spawn with an unknown provider → 400", async () => {
+    const res = await fetch(
+      url("/api/agents"),
+      auth({ method: "POST", body: JSON.stringify({ name: "echo", provider: "gpt" }) }),
+    );
+    expect(res.status).toBe(400);
+  });
+
   test("POST spawn without name → 400", async () => {
     const res = await fetch(url("/api/agents"), auth({ method: "POST", body: JSON.stringify({}) }));
     expect(res.status).toBe(400);
