@@ -116,6 +116,8 @@ usage:
   am role show <name>         print a role's instructions
   am role add <name> -m msg   define a role (-m - or --file for long prompts;
                               --description adds a short UI summary; --force replaces)
+  am role model <name> --claude|--codex --model <model>
+                              set a role default (--clear removes it)
   am role rm <name>           remove a custom role (built-ins are protected)
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
@@ -578,10 +580,14 @@ async function main(): Promise<void> {
       break;
     case "role":
     case "roles":
+      if (args.flags.claude && args.flags.codex) throw new Error("select only one provider");
       roleCommand(args.positional[0], args.positional[1], {
         json: !!args.flags.json,
         instructions: await resolveTask(args.flags),
         description: args.flags.description as string | undefined,
+        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
+        model: args.flags.model as string | undefined,
+        clear: !!args.flags.clear,
         force: !!args.flags.force,
       });
       break;
