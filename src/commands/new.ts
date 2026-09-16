@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { CONCIERGE_ROLE, requireRole } from "../roles";
+import { CONCIERGE_ROLE, modelForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
 // These grew provider-awareness and moved to providers.ts; re-exported so
@@ -120,6 +120,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     ? (opts.roleInstructions ? { name: opts.role, instructions: opts.roleInstructions } : requireRole(opts.role))
     : undefined;
   const roleInstructions = opts.roleInstructions ?? role?.instructions;
+  const model = modelForRole(opts.role, provider, opts.model);
   // Fail loudly now rather than spawning a tmux session that dies instantly
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
@@ -128,8 +129,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
-  if (opts.model || opts.effort) {
-    const complaints = validateSelection(providerCatalog(provider), { model: opts.model, effort: opts.effort });
+  if (model || opts.effort) {
+    const complaints = validateSelection(providerCatalog(provider), { model, effort: opts.effort });
     for (const complaint of complaints) {
       if (complaint.fatal) throw new Error(`${complaint.message} (see \`am models\`)`);
       if (!opts.quiet) console.error(`warning: ${complaint.message}`);
@@ -174,6 +175,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
+    model,
     reportTo,
     role: role?.name,
     roleInstructions,

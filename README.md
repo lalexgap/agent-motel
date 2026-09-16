@@ -91,7 +91,7 @@ There is one concierge per fleet, not per machine: if a concierge already exists
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, model, permissions, or tools. The concierge is a protected built-in role; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also set a default model for each provider. The concierge is a protected built-in role; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -100,8 +100,13 @@ am role add security-reviewer \
   --description "Reviews authentication and data exposure" \
   -m "Review changes for trust-boundary, authentication, and disclosure risks. Report findings; do not implement fixes."
 am new auth-audit --role security-reviewer -m "Review the current branch"
+am role model security-reviewer --claude --model opus
+am role model security-reviewer --codex --model gpt-5.6-luna
+am role model security-reviewer --codex --clear
 am role rm security-reviewer
 ```
+
+Model defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--model` overrides the role default; without either, the provider chooses its default. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
 
 Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to replace an existing custom definition. Selected instructions are snapshotted into agent state, so existing agents keep their role across resume, restore, move, clone, and handoff even if the registry later changes. Role registries are host-local; manage a remote with `am -H <host> role ...` before creating that role there.
 

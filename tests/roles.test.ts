@@ -10,6 +10,8 @@ import {
   removeRole,
   requireRole,
   roleForAgent,
+  modelForRole,
+  setRoleModel,
 } from "../src/roles";
 import { roleOptionsForHost } from "../src/commands/ui";
 
@@ -91,5 +93,50 @@ describe("role registry", () => {
     expect(roleForAgent({ name: "concierge" })).toBe("concierge");
     expect(roleForAgent({ name: "worker" })).toBeUndefined();
     expect(roleForAgent({ name: "worker", role: "reviewer" })).toBe("reviewer");
+  });
+});
+
+describe("role model defaults", () => {
+  beforeEach(() => {
+    addRole({ name: "shepherd", instructions: "Shepherd the PR." });
+  });
+
+  test("persists independent provider defaults and honors explicit overrides", () => {
+    setRoleModel("shepherd", "claude", "opus");
+    setRoleModel("shepherd", "codex", "gpt-5.6-luna");
+    expect(requireRole("shepherd").models).toEqual({ claude: "opus", codex: "gpt-5.6-luna" });
+    expect(modelForRole("shepherd", "claude")).toBe("opus");
+    expect(modelForRole("shepherd", "codex")).toBe("gpt-5.6-luna");
+    expect(modelForRole("shepherd", "codex", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(modelForRole("shepherd", "codex", "")).toBe("gpt-5.6-luna");
+    expect(listRoles().find((role) => role.name === "shepherd")?.models?.claude).toBe("opus");
+  });
+
+  test("falls back to provider defaults and clears only the selected provider", () => {
+    expect(modelForRole("shepherd", "codex")).toBeUndefined();
+    expect(modelForRole(undefined, "codex")).toBeUndefined();
+    expect(modelForRole("removed-role", "codex")).toBeUndefined();
+    setRoleModel("shepherd", "claude", "opus");
+    setRoleModel("shepherd", "codex", "gpt-5.6-luna");
+    setRoleModel("shepherd", "codex", undefined);
+    expect(modelForRole("shepherd", "codex")).toBeUndefined();
+    expect(modelForRole("shepherd", "claude")).toBe("opus");
+  });
+
+  test("preserves instructions and defaults when updating the other", () => {
+    setRoleModel("shepherd", "claude", "opus");
+    expect(requireRole("shepherd").instructions).toBe("Shepherd the PR.");
+    addRole({ name: "shepherd", instructions: "Updated instructions", force: true });
+    expect(requireRole("shepherd").models?.claude).toBe("opus");
+    expect(() => setRoleModel("missing", "claude", "opus")).toThrow(/unknown role/);
+    expect(() => setRoleModel("shepherd", "claude", "  ")).toThrow(/empty/);
+  });
+
+  test("built-in model defaults are configurable while instructions remain protected", () => {
+    const instructions = requireRole(CONCIERGE_ROLE).instructions;
+    setRoleModel(CONCIERGE_ROLE, "codex", "gpt-5.6-luna");
+    expect(requireRole(CONCIERGE_ROLE)).toMatchObject({ builtIn: true, instructions, models: { codex: "gpt-5.6-luna" } });
+    expect(listRoles()[0]?.models?.codex).toBe("gpt-5.6-luna");
+    expect(() => removeRole(CONCIERGE_ROLE)).toThrow(/built in/);
   });
 });
