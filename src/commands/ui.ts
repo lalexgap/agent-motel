@@ -1,3 +1,4 @@
+import { groupPickerHandlers } from "../groupUi";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +63,7 @@ export function remoteNewCommandArgs(opts: {
   model?: string;
   effort?: string;
   role?: string;
+  group?: string;
 }): string[] {
   const args = ["new", opts.name, "--no-jump"];
   if (opts.task) args.push("-m", opts.task);
@@ -70,6 +72,7 @@ export function remoteNewCommandArgs(opts: {
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
   if (opts.role) args.push("--role", opts.role);
+  if (opts.group) args.push("--group", opts.group);
   return args;
 }
 
@@ -415,6 +418,7 @@ export async function sidebarCommand(): Promise<void> {
       model: string | undefined,
       effort: string | undefined,
       role: string | undefined,
+      group: string | undefined,
     ) => {
       if (host) {
         // Spawn on the remote via its own am; dir (if given) is a path on that
@@ -427,6 +431,7 @@ export async function sidebarCommand(): Promise<void> {
           model,
           effort,
           role,
+          group,
         });
         const res = sshAm(host, args);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${host} failed`);
@@ -440,6 +445,7 @@ export async function sidebarCommand(): Promise<void> {
         model,
         effort,
         role,
+        group,
         jump: false,
         quiet: true,
       });
@@ -457,7 +463,8 @@ export async function sidebarCommand(): Promise<void> {
     clone: cloneHandler,
     handoff: handoffHandler,
     rename: renameHandler,
-    regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    ...groupPickerHandlers,
+    regroup: () => `grouped by ${toggleGroupMode()}`,
     resort: () => {
       const mode = toggleSortMode();
       return mode === "recent"

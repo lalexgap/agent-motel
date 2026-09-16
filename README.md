@@ -107,6 +107,31 @@ Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to 
 
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 
+### Subject groups
+
+Keep agents working on a subject together, even across repositories and hosts.
+
+```sh
+am group create advertiser-portal
+am group set portal-api advertiser-portal
+am group set server:portal-ui advertiser-portal --create
+am new portal-tests --group advertiser-portal -m "Test the portal"
+am ls --group advertiser-portal
+am group list --json
+am group clear portal-api
+am group delete unused-group
+```
+
+In the hub or picker, use the command palette to **Create group…**, then
+**Move agent to group…** (also `e`, `g`). Tab cycles groups; typing a new name
+creates and assigns it, and `ungrouped` clears membership. The create-agent form
+also offers a group field. Press `g` to cycle host, directory, and subject views.
+Matching group names across hosts appear in one section, with Ungrouped last.
+
+An agent has one optional group; roles and reporting relationships are separate.
+Membership survives rename, resume, handoff, move/clone, and removal/restore.
+See [Subject groups](docs/agent-groups.md) for host scope and storage details.
+
 ### Message and coordinate
 
 ```sh
@@ -202,7 +227,7 @@ The token-protected API can list, message, create, stop, and resume agents, with
 
 - **Sessions:** Each agent runs in a detached tmux session, so it keeps working when you leave.
 - **Status and queues:** Provider hooks update status and deliver queued messages after a turn. A small auto-started daemon streams changes to the hub and HTTP API, but is not required for delivery. Remote hosts push their changes too: the hub holds one `ssh <host> am __events` subscription per remote and refetches on each event, so a cross-machine status change lands in about an ssh round trip; polling stays on as the fallback for hosts whose `am` predates the subscription.
-- **Persistence:** Tasks, snapshots, queues, and conversation references live as plain files under `~/.agent-manager/`.
+- **Persistence:** Tasks, snapshots, queues, and conversation references live as plain files under `~/.agent-manager/`. Subject groups use a small SQLite database in its `groups/` directory.
 - **Providers:** Claude hooks use generated per-launch settings. Agent Motel installs guarded hooks in `~/.codex/config.toml` for Codex; approve **Trust all and continue** on the first managed launch.
 
 Claude Code Remote Control is enabled by default for claude agents; codex has no equivalent, so codex agents (the default) get none. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`.

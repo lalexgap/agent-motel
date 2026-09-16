@@ -206,6 +206,7 @@ export interface AgentRow {
   worktreeBranch?: string;
   createdAt?: string;
   reportTo?: string;
+  group?: string;
   role?: string;
   // The agent that spawned this one (AGENTMGR_AGENT at `am new`). Surfaced as
   // the "parent" line in the sidebar; absent for human-spawned agents.
@@ -321,15 +322,16 @@ export function formatRows(rows: (AgentRow & { host?: string })[]): string[] {
   const withHost = rows.some((r) => r.host);
   const hostWidth = withHost ? Math.max(4, ...rows.map((r) => (r.host ?? "local").length)) : 0;
   const hostHeader = withHost ? `${"HOST".padEnd(hostWidth)}  ` : "";
+  const groupWidth = Math.max(5, ...rows.map((r) => (r.group ?? "–").length));
   const roleWidth = Math.max(4, ...rows.map((r) => (r.role ?? "–").length));
   const lines = [
-    `  ${"NAME".padEnd(nameWidth)}  ${hostHeader}${"STATUS".padEnd(statusWidth)}  AGENT   ${"ROLE".padEnd(roleWidth)}  QUEUED  ACTIVITY  DIR`,
+    `  ${"NAME".padEnd(nameWidth)}  ${hostHeader}${"STATUS".padEnd(statusWidth)}  AGENT   ${"ROLE".padEnd(roleWidth)}  ${"GROUP".padEnd(groupWidth)}  QUEUED  ACTIVITY  DIR`,
   ];
   for (const r of rows) {
     const queued = r.queued > 0 ? String(r.queued) : "–";
     const host = withHost ? `${(r.host ?? "local").padEnd(hostWidth)}  ` : "";
     lines.push(
-      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${host}${statusOf(r).padEnd(statusWidth)}  ${r.provider.padEnd(6)}  ${(r.role ?? "–").padEnd(roleWidth)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
+      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${host}${statusOf(r).padEnd(statusWidth)}  ${r.provider.padEnd(6)}  ${(r.role ?? "–").padEnd(roleWidth)}  ${(r.group ?? "–").padEnd(groupWidth)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
     );
   }
   return lines;
@@ -362,11 +364,12 @@ export function sortLsRows<T extends AgentRow & { host?: string }>(rows: T[], so
   });
 }
 
-export function lsCommand(opts: { json: boolean; localOnly?: boolean; role?: string; sort?: string }): void {
+export function lsCommand(opts: { json: boolean; localOnly?: boolean; role?: string; group?: string; sort?: string }): void {
   // Imported lazily to keep ls.ts free of a fleet→ls→fleet import cycle at
   // module-eval time (fleet imports agentRows from here).
   const { fleetRows } = require("../fleet") as typeof import("../fleet");
   const fleet = fleetRows({ localOnly: opts.localOnly });
+  fleet.rows = filterRowsByGroup(fleet.rows, opts.group);
   fleet.rows = sortLsRows(filterRowsByRole(fleet.rows, opts.role), opts.sort);
   if (opts.json) {
     // Diff stats ride along in the JSON: the hub polls remote fleets through
@@ -385,4 +388,8 @@ export function lsCommand(opts: { json: boolean; localOnly?: boolean; role?: str
   const lines = formatRows(fleet.rows);
   for (const host of fleet.unreachable) lines.push(`\x1b[2m  (${host} unreachable)\x1b[0m`);
   console.log(lines.join("\n"));
+}
+
+export function filterRowsByGroup<T extends { group?: string }>(rows: T[], group?: string): T[] {
+  return group ? rows.filter((row) => group === "ungrouped" ? !row.group : row.group === group) : rows;
 }

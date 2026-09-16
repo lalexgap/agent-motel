@@ -1,3 +1,4 @@
+import { requireGroup, setAgentGroup, withGroupsTransaction } from "../groups";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
@@ -72,6 +73,7 @@ export interface NewOptions {
   model?: string;
   // Optional reasoning-effort override; undefined = the provider default.
   effort?: string;
+  group?: string;
   role?: string;
   // Internal lifecycle override: preserve the original role snapshot even if
   // the registry changed since the source agent was created.
@@ -99,6 +101,7 @@ export interface NewOptions {
 
 export async function newCommand(opts: NewOptions): Promise<void> {
   const { name } = opts;
+  if (opts.group) requireGroup(opts.group);
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error("agent name must be alphanumeric with dashes/underscores");
   }
@@ -202,7 +205,11 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // Register the agent BEFORE its queue and session exist: the SessionStart
   // hook reads the state file to drain the queue, and gc's orphan scan treats
   // a queue without a registered owner as garbage.
-  writeAgent(state);
+  withGroupsTransaction(() => {
+    if (opts.group) requireGroup(opts.group);
+    writeAgent(state);
+    if (opts.group) setAgentGroup(name, opts.group);
+  });
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
 

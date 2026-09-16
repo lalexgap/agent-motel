@@ -1,3 +1,4 @@
+import { setAgentGroup, withGroupsTransaction } from "../groups";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { readAgent, updateAgentStatus, writeAgent } from "../state";
@@ -39,7 +40,10 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
 
   updateAgentStatus(state, "exited", "restored; not running");
   state.workingSince = undefined;
-  writeAgent(state);
+  withGroupsTransaction(() => {
+    if (state.group) setAgentGroup(state.name, state.group, true);
+    writeAgent(state);
+  });
   console.log(`restored agent "${name}" (removed ${trashedAt})`);
 
   if (opts.resume === false) {

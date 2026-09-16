@@ -1,3 +1,4 @@
+import { agentGroup, withGroupsTransaction } from "../groups";
 import { removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear } from "../queue";
 import { removeSnapshot } from "../snapshots";
@@ -11,7 +12,15 @@ export function stopAgent(agent: AgentState): void {
   setStatus(agent.name, "exited", "stopped by operator");
 }
 
-export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void {
+export function destroyAgent(agent: AgentState, opts: { clean: boolean; expectedGroup?: string }): void {
+  if (opts.expectedGroup !== undefined) {
+    return withGroupsTransaction(() => {
+      if (opts.expectedGroup !== (agentGroup(agent.name) ?? "ungrouped")) {
+        throw new Error(`group changed during move of "${agent.name}"; source retained with its latest group, destination contains the earlier snapshot — reconcile the two copies before retrying`);
+      }
+      destroyAgent(agent, { clean: opts.clean });
+    });
+  }
   if (hasSession(agent.tmuxSession)) killSession(agent.tmuxSession);
 
   if (opts.clean && agent.worktreePath && agent.repoRoot) {
@@ -31,14 +40,15 @@ export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void 
   // survive rm untouched, so the snapshot is all that's needed to bring it
   // back; restore checks the dir at recovery time and recreates the worktree
   // from its branch if --clean had removed it.
-  trashState(agent);
-
-  queueClear(agent.name);
-  removeSnapshot(agent.name);
-  removeAgent(agent.name);
+  withGroupsTransaction(() => {
+    trashState({ ...agent, group: agentGroup(agent.name) });
+    queueClear(agent.name);
+    removeSnapshot(agent.name);
+    removeAgent(agent.name);
+  });
 }
 
-export function rmCommand(prefix: string, opts: { clean: boolean }): void {
+export function rmCommand(prefix: string, opts: { clean: boolean; expectedGroup?: string }): void {
   const agent = resolveAgent(prefix);
   destroyAgent(agent, opts);
   console.log(`removed agent "${agent.name}"`);
