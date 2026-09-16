@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
-import { agentProvider, readAgent, resolveAgent } from "./state";
+import { type Provider, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
@@ -152,15 +152,21 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   // POST /api/agents — spawn a new (local) agent
   if (parts.length === 1 && parts[0] === "agents" && method === "POST") {
     const body = (await req.json().catch(() => null)) as
-      | { name?: string; task?: string; dir?: string; codex?: boolean; role?: string }
+      | { name?: string; task?: string; dir?: string; provider?: string; codex?: boolean; role?: string }
       | null;
     if (!body?.name) return json({ error: "name required" }, 400);
+    // `provider` names either one; the older boolean `codex` only ever meant
+    // "not the default", so it can't ask for claude now that codex IS the
+    // default — clients that want claude send provider.
+    if (body.provider && body.provider !== "claude" && body.provider !== "codex") {
+      return json({ error: `provider must be "claude" or "codex"` }, 400);
+    }
     try {
       await newCommand({
         name: body.name,
         message: body.task,
         dir: body.dir,
-        provider: body.codex ? "codex" : undefined,
+        provider: (body.provider as Provider | undefined) ?? (body.codex ? "codex" : undefined),
         role: body.role,
         jump: false,
         quiet: true,

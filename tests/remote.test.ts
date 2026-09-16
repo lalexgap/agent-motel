@@ -96,7 +96,7 @@ describe("chooseOpener", () => {
 });
 
 describe("buildNotifyCommand", () => {
-  const base: Config = { defaultProvider: "claude", conciergeProvider: "claude", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30 };
+  const base: Config = { defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30 };
 
   test("notifyCommand wins on any platform", () => {
     const config = { ...base, notifyCommand: "curl -d \"$AM_MESSAGE\" ntfy.sh/x" };
