@@ -21,7 +21,7 @@ The full-screen hub shows every agent in a sidebar with a live preview of the se
 
 ## Install
 
-Requires [Bun](https://bun.sh), tmux, and at least one supported agent CLI:
+Requires [Bun](https://bun.sh), tmux, and at least one supported agent CLI (new agents default to Codex — see [Create and navigate](#create-and-navigate) to change that):
 
 - [Claude Code](https://claude.com/claude-code)
 - [Codex CLI](https://developers.openai.com/codex/cli) 0.133 or newer
@@ -205,7 +205,7 @@ The token-protected API can list, message, create, stop, and resume agents, with
 - **Persistence:** Tasks, snapshots, queues, and conversation references live as plain files under `~/.agent-manager/`.
 - **Providers:** Claude hooks use generated per-launch settings. Agent Motel installs guarded hooks in `~/.codex/config.toml` for Codex; approve **Trust all and continue** on the first managed launch.
 
-Claude Code Remote Control is enabled by default. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`.
+Claude Code Remote Control is enabled by default for claude agents; codex has no equivalent, so codex agents (the default) get none. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`.
 
 ## Development
 
