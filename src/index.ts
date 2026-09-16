@@ -225,7 +225,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "group", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "group", "if-group", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -741,7 +741,7 @@ async function main(): Promise<void> {
       break;
     }
     case "rm":
-      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean });
+      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean, expectedGroup: args.flags["if-group"] as string | undefined });
       break;
     case "restore":
       await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });

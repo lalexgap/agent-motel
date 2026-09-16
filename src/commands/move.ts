@@ -387,7 +387,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
   }
 
-  if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
+  if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false, expectedGroup: agent.group ?? "ungrouped" });
   let message = opts.clone
     ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
     : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
@@ -516,7 +516,10 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     }),
   );
 
-  if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
+  if (!opts.copy && !opts.clone) {
+    const removed = await sshAmAsync(host, ["rm", name, "--if-group", remote.state.group ?? "ungrouped"], { timeoutMs: 15000 });
+    if (removed.exitCode !== 0) throw new Error(`source removal failed; destination copy retained: ${removed.stderr.trim() || removed.stdout.trim()}`);
+  }
   let message = opts.clone
     ? `cloned "${name}" ← ${host} (original still on ${host})`
     : `moved "${name}" ← ${host} (now in ${storedDir})${opts.copy ? " (remote copy kept)" : ""}`;

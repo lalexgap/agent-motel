@@ -332,10 +332,7 @@ async function refreshPreview(key: string, host: string, agentName: string): Pro
   previewCache.set(key, { lines, fetchedAt: Date.now(), inFlight: false });
 }
 
-// Sidebar grouping: by host (local first, then each remote) or by project
-// (repoRoot when the agent lives in a worktree — grouping by the literal
-// worktree dir would put every agent alone — else its dir). Toggled with
-// `g`; session-local.
+// Grouping is session-local; directory grouping uses the repo for worktrees.
 export type GroupMode = "host" | "dir" | "subject";
 export type SortMode = "status" | "recent" | "role";
 let groupMode: GroupMode = "host";

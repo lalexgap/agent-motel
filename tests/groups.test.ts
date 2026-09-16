@@ -123,6 +123,34 @@ describe("subject groups", () => {
     expect(readAgent("invalid")).toBeNull();
   });
 
+  test("move cleanup preserves assignments changed since the transfer snapshot", async () => {
+    writeAgent(agent("portal"));
+    await assignGroup("portal", "first", true);
+    const snapshot = readAgent("portal")!;
+    await assignGroup("portal", "second", true);
+    expect(() => destroyAgent(snapshot, { clean: false, expectedGroup: "first" })).toThrow("source retained");
+    expect(readAgent("portal")?.group).toBe("second");
+    expect(readTrashedState("portal")).toBeNull();
+    await assignGroup("portal");
+    expect(() => destroyAgent(snapshot, { clean: false, expectedGroup: "first" })).toThrow("source retained");
+    expect(readAgent("portal")?.group).toBeUndefined();
+    destroyAgent(readAgent("portal")!, { clean: false, expectedGroup: "ungrouped" });
+    expect(readAgent("portal")).toBeNull();
+  });
+
+  test("remote move cleanup CLI checks even an originally ungrouped snapshot", async () => {
+    writeAgent(agent("portal"));
+    await assignGroup("portal", "later", true);
+    const refused = await result(cli("rm", "portal", "--if-group", "ungrouped"));
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("source retained");
+    expect(readAgent("portal")?.group).toBe("later");
+    const removed = await result(cli("rm", "portal", "--if-group", "later"));
+    expect(removed.code).toBe(0);
+    expect(readAgent("portal")).toBeNull();
+    expect(readTrashedState("portal")?.group).toBe("later");
+  });
+
   test("a failed transaction rolls back membership and new definitions", () => {
     createGroup("first");
     setAgentGroup("portal", "first");

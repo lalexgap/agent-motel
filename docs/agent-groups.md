@@ -77,6 +77,9 @@ The daemon watches the group directory for fleet updates.
 Rename, stop/resume, and directory changes preserve membership. Handoffs inherit
 the source group. Move/clone transfers it and creates the destination definition;
 a grouped push refuses an older destination before stopping the source. Removal
+checks that a move's source membership still matches the transferred snapshot;
+if it changed during transfer, the move reports an error and retains both copies
+for reconciliation instead of dropping the newer assignment. Ordinary removal
 and garbage collection snapshot membership in trash, and restore recreates the
 definition if necessary. New agents otherwise do not inherit their parent's
 group. Existing agents remain ungrouped without a migration.

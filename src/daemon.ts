@@ -182,9 +182,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       publish("changed");
     }, 20);
   };
-  // State is file-backed and may be changed by any short-lived `am` process,
-  // not just hooks. Watching both trees makes the daemon a complete event hub
-  // for creates/removes/status changes and queue-depth changes.
+  // CLI processes and hooks write directly, outside the daemon.
   const fileWatchers = [agentsDir(), queueDir(), groupsDir()].map((dir) =>
     watch(dir, { recursive: true }, scheduleFileEvent),
   );
