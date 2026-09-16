@@ -38,10 +38,10 @@ function seedAgent(name: string, overrides: Partial<AgentState> = {}): void {
 }
 
 describe("conciergeNewOptions", () => {
-  test("pins claude, runs in-place in the home dir, and passes the reserved gate", () => {
+  test("runs in-place in the home dir on the default provider and passes the reserved gate", () => {
     const opts = conciergeNewOptions();
     expect(opts.name).toBe(CONCIERGE_NAME);
-    expect(opts.provider).toBe("claude");
+    expect(opts.provider).toBe("codex");
     expect(opts.dir).toBe(homedir());
     expect(opts.inPlace).toBe(true);
     expect(opts.concierge).toBe(true);
@@ -56,8 +56,8 @@ describe("conciergeNewOptions", () => {
   });
 
   test("config.conciergeProvider picks the provider", () => {
-    writeConfig({ conciergeProvider: "codex" });
-    expect(conciergeNewOptions().provider).toBe("codex");
+    writeConfig({ conciergeProvider: "claude" });
+    expect(conciergeNewOptions().provider).toBe("claude");
   });
 });
 

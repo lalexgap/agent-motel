@@ -38,7 +38,7 @@ bun link
 ```sh
 am new api-refactor -m "refactor the API layer"  # create and attach
 am new bugfix --dir ~/code/other-repo            # use another repo
-am new gpt-take --codex --no-jump                # use Codex, stay in the hub
+am new claude-take --claude --no-jump            # use Claude Code, stay in the hub
 
 am                         # open the hub
 am ls                      # list agents (--json; --role/--sort for scripts)
@@ -63,6 +63,8 @@ am pick                                 # open the classic picker
 am peek <name>                          # print the current screen
 ```
 
+Agents run on Codex by default. `--claude` or `--codex` picks the provider for one agent; `"defaultProvider": "claude" | "codex"` in `~/.agent-manager/config.json` changes the default for all of them.
+
 In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to control it, `ctrl-q` to return to the sidebar, `ctrl-n` to create an agent, `r` to filter by role, `s` to cycle status/recent/role sorting, and `Esc` to detach. Inside an attached session, `ctrl-q` returns to the hub without stopping the agent.
 
 ### Models and reasoning effort
@@ -85,7 +87,7 @@ am concierge which agent touched the auth flow?
 
 `concierge` is a reserved singleton agent that acts as the motel's front desk: its only job is answering questions about the other agents and doing safe fleet management for you — summarize what everyone is doing, find the agent that worked on something (via `am search`), revive exited agents, queue messages, and point you at the right session. In the hub, press `c` (or pick "Ask the concierge" in the `ctrl-k` palette) to jump to it from anywhere; its row is marked `✦ concierge` in cyan, and it is created on first use and revived automatically when its session has exited. It won't stop, interrupt, or remove agents unless you explicitly ask.
 
-There is one concierge per fleet, not per machine: if a concierge already exists on any reachable host, `am concierge` and the `c` key route to it over ssh instead of opening a rival one. Pin its home with `"conciergeHost"` in `~/.agent-manager/config.json` (`"local"` or a host alias — set the same value on every machine to share one front desk), and pick its provider with `"conciergeProvider": "claude" | "codex"` (default `claude`; applies when it's first created).
+There is one concierge per fleet, not per machine: if a concierge already exists on any reachable host, `am concierge` and the `c` key route to it over ssh instead of opening a rival one. Pin its home with `"conciergeHost"` in `~/.agent-manager/config.json` (`"local"` or a host alias — set the same value on every machine to share one front desk), and pick its provider with `"conciergeProvider": "claude" | "codex"` (default `codex`; applies when it's first created).
 
 ### Roles
 

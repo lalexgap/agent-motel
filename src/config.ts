@@ -15,7 +15,7 @@ export function localHostIdentity(): string {
 
 export interface Config {
   // Provider a new agent runs on when neither --codex nor --claude is given
-  // (and, in the create form, the preselected provider). "claude" or "codex".
+  // (and, in the create form, the preselected provider). "codex" or "claude".
   defaultProvider: Provider;
   // Notify when an agent goes idle (in addition to the always-on
   // needs-attention notifications).
@@ -97,8 +97,8 @@ export interface Config {
 }
 
 const DEFAULTS: Config = {
-  defaultProvider: "claude",
-  conciergeProvider: "claude",
+  defaultProvider: "codex",
+  conciergeProvider: "codex",
   notifyOnIdle: true,
   idleNotifyMinSeconds: 30,
   remoteControl: true,

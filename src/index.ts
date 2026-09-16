@@ -69,7 +69,7 @@ usage:
                                a file — both dodge shell quoting for long tasks;
                                --no-jump to stay; non-TTY callers never jump;
                                --codex / --claude pick the provider, overriding
-                               config.defaultProvider (default: claude);
+                               config.defaultProvider (default: codex);
                                --model / --effort override the provider defaults)
                               --role applies a named behavior preset
                               git repos get a fresh worktree on branch am/<name>
@@ -104,7 +104,7 @@ usage:
                               and routing. One per fleet: an existing
                               concierge on any reachable host is adopted, or
                               pin it with config.conciergeHost; provider via
-                              config.conciergeProvider (default claude).
+                              config.conciergeProvider (default codex).
                               Created on first use, revived automatically
                               (press c in the hub; --no-jump queues the
                               question and stays)
