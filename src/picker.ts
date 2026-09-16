@@ -157,6 +157,7 @@ export interface PickerHandlers {
     model: string | undefined,
     effort: string | undefined,
     role: string | undefined,
+    group?: string,
   ) => Promise<string>;
   // Configured remote hosts. When non-empty, the create flow adds a
   // "where" step (local vs a remote) after the dir prompt.
@@ -184,8 +185,12 @@ export interface PickerHandlers {
   // Previous names remain exact routing aliases; live sessions are renamed
   // in place, so the handler may complete while the provider is still busy.
   rename?: (name: string, newName: string) => Feedback | Promise<Feedback>;
-  // Toggle the list grouping (host ↔ directory); returns banner feedback.
+  // Cycle list grouping (host → directory → subject); returns banner feedback.
   regroup?: () => Feedback;
+  editGroup?: (action: "create" | "set" | "delete", value: string, agent?: string) => Promise<string>;
+  groupChoices?: (action: "create" | "set" | "delete") => string[];
+  subjectSections?: () => string[] | undefined;
+  newGroupOptions?: (host?: string) => string[];
   // Toggle status ordering ↔ most-recently-active ordering within each group.
   resort?: () => Feedback;
   // Relocate an agent to a new directory (r key opens a prefilled prompt).
@@ -487,7 +492,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "search" | "palette" | "new-form" | "cd-dir" | "rename-name" | "edit" | "help";
+type Mode = "list" | "filter" | "search" | "palette" | "new-form" | "cd-dir" | "rename-name" | "group-name" | "edit" | "help";
 
 export interface PaletteCommand {
   id: string;
@@ -757,6 +762,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.clone ? [{ key: "c", label: "clone" }] : []),
       ...(handlers.handoff ? [{ key: "h", label: "handoff" }] : []),
       ...(handlers.rename ? [{ key: "n", label: "rename" }] : []),
+      ...(handlers.editGroup ? [{ key: "g", label: "group" }] : []),
       ...(handlers.cd ? [{ key: "r", label: "cd" }] : []),
       ...(handlers.stop ? [{ key: "x", label: "stop" }] : []),
       ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
@@ -768,6 +774,8 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       { key: "⏎", label: "run" },
       { key: "esc", label: "close" },
     ];
+  } else if (mode === "group-name") {
+    hints = [{ key: "tab", label: "choose" }, { key: "⏎", label: "save" }, { key: "esc", label: "cancel" }];
   } else if (mode === "filter" || mode === "search" || mode === "cd-dir" || mode === "rename-name") {
     hints = [
       { key: "⏎", label: mode === "cd-dir" ? "move" : mode === "rename-name" ? "rename" : "apply" },
@@ -853,7 +861,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
 }
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
-  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.remove);
+  return !!(handlers.editGroup || handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.remove);
 }
 
 // The edit menu's footer line, built from whichever actions are wired.
@@ -863,6 +871,7 @@ export function editMenuHelp(handlers: PickerHandlers): string {
     handlers.clone && "c clone",
     handlers.handoff && "h handoff",
     handlers.rename && "n rename",
+    handlers.editGroup && "g group",
     handlers.cd && "r cd",
     handlers.stop && "x stop",
     handlers.remove && "d remove",
@@ -878,12 +887,13 @@ export function renamedPickerKey(key: string, newName: string): string {
 // The create form's fields. "where" (local vs a configured remote) only
 // appears when remotes exist, mirroring the old stepped flow. Provider/model/
 // effort are always shown — they apply equally to local and remote spawns.
-export function formFields(hasRemotes: boolean, hasRoles = false): string[] {
+export function formFields(hasRemotes: boolean, hasRoles = false, hasGroups = false): string[] {
   // "where" (location) sits just before "dir" so you pick the host first — the
   // dir field then completes against that host on the first Tab.
   const fields = hasRemotes
     ? ["name", "task", "where", "dir", "provider", "model", "effort"]
     : ["name", "task", "dir", "provider", "model", "effort"];
+  if (hasGroups) fields.splice(fields.indexOf("provider"), 0, "group");
   if (hasRoles) fields.splice(fields.indexOf("provider"), 0, "role");
   return fields;
 }
@@ -971,6 +981,7 @@ export async function pick(
   let paletteQuery = "";
   let paletteCursor = 0;
   let paletteReturnMode: Mode = "list";
+  let newGroup = "";
   let newName = "";
   let newTask = "";
   let newDir = "";
@@ -999,7 +1010,7 @@ export async function pick(
   let newRoleIdx = 0;
   // Full-screen create form: which field has the focus ring, and the dir
   // autocomplete candidates to display (when the last Tab was ambiguous).
-  let fields = formFields(hostOptions.length > 1, roleOptions.length > 1);
+  let fields = formFields(hostOptions.length > 1, roleOptions.length > 1, !!handlers.newGroupOptions);
   let formIdx = 0;
   let formCandidates: string[] = [];
   // Remote Dir completion runs over ssh: dirQuerying drives the "(querying …)"
@@ -1010,6 +1021,10 @@ export async function pick(
   let roleQueryGen = 0;
   let cdDir = "";
   let cdTarget: string | null = null;
+  let groupName = "";
+  let groupAction: "create" | "set" | "delete" = "create";
+  let groupTarget: string | undefined;
+  let groupPending = false;
   let renameName = "";
   let renameTarget: string | null = null;
   let creating = false;
@@ -1100,7 +1115,10 @@ export async function pick(
         keywords: "tree flat parent child nesting indentation",
         shortcut: "t",
       },
-      handlers.regroup && { id: "regroup", label: "Toggle host/project grouping", keywords: "group directory", shortcut: "g" },
+      handlers.editGroup && { id: "group-create", label: "Create group…", keywords: "subject new" },
+      handlers.editGroup && { id: "group-delete", label: "Delete empty group…", keywords: "subject remove" },
+      target && handlers.editGroup && { id: "group-set", label: `Move ${name} to group…`, keywords: "subject assign ungrouped", shortcut: "e g" },
+      handlers.regroup && { id: "regroup", label: "Cycle host/directory/subject grouping", keywords: "group directory subject", shortcut: "g" },
       handlers.resort && { id: "resort", label: "Cycle status/recent/role sort", keywords: "sort recent newest latest updated role", shortcut: "s" },
       roleFilter ? { id: "role:all", label: "Show all roles", keywords: "role filter clear", shortcut: "r" } : undefined,
       ...filterRoles.filter((role) => role !== "unassigned")
@@ -1172,6 +1190,7 @@ export async function pick(
       effort: "effort",
       where: "where",
       role: "role",
+      group: "group",
     };
     const cardWidth = Math.max(1, Math.min(76, cols - 4));
     // Rows: 1-cell marker column, 11-cell label, value, 2-cell right pad.
@@ -1216,6 +1235,9 @@ export async function pick(
       } else if (field === "dir") {
         value = newDir + cursor;
         hint = `${THEME.faint}tab complete${rowBase}`;
+      } else if (field === "group") {
+        value = (newGroup || `${THEME.muted}Ungrouped${rowBase}`) + cursor;
+        hint = `${THEME.faint}← → choose · or type${rowBase}`;
       } else if (field === "model") {
         const options = currentModelOptions();
         const selected = options.find((option) => option.id === newModel);
@@ -1407,7 +1429,9 @@ export async function pick(
       { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
     ];
     const prompt: Cell | null =
-      mode === "cd-dir"
+      mode === "group-name"
+        ? { text: `${THEME.blue}${groupAction} group${THEME.sidebar}  ${groupName}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+        : mode === "cd-dir"
         ? { text: `${THEME.blue}cd to${THEME.sidebar}  ${cdDir}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
         : mode === "rename-name"
           ? { text: `${THEME.blue}rename to${THEME.sidebar}  ${renameName}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
@@ -1456,11 +1480,12 @@ export async function pick(
       : [];
     const visibleMetaBlock = mode === "help" ? [] : metaBlock;
 
-    // Section headers are rendered only when the matches span more than one
-    // section (a lone "local" header is noise); they consume list rows, so
-    // capacity shrinks by the section count.
+    // Subject labels remain useful even when only one section is visible.
     const sections = [...new Set(matches.map((i) => i.section ?? ""))];
-    const showSections = sections.length > 1;
+    const subjectSections = handlers.subjectSections?.();
+    const emptySections = subjectSections && !filter && !roleFilter && !chatMatch
+      ? subjectSections.filter((section) => !items.some((item) => item.section === section)) : [];
+    const showSections = subjectSections !== undefined || sections.length > 1;
     const headerRows = showSections ? sections.length : 0;
 
     // Window the list around the cursor so long agent lists stay navigable.
@@ -1493,7 +1518,7 @@ export async function pick(
         `${key("t")} toggle tree/flat list`,
         `${key("/")} search conversations`,
         `${key("ctrl-k")} command palette`,
-        ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
+        ...(handlers.regroup ? [`${key("g")} group host/dir/subject`] : []),
         ...(handlers.resort ? [`${key("s")} cycle status/recent/role sort`] : []),
         `${key("a")} show exited agents`,
         ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
@@ -1564,7 +1589,11 @@ export async function pick(
       if (end < matches.length) {
         side.push({ text: `${THEME.muted}↓ ${matches.length - end} more${THEME.sidebar}`, style: THEME.sidebar });
       }
-      if (matches.length === 0) {
+      for (const section of emptySections) {
+        if (side.length >= bodyRows - visibleMetaBlock.length - 1) break;
+        side.push({ text: `  ${section} · no agents`, style: THEME.muted });
+      }
+      if (matches.length === 0 && !emptySections.length) {
         side.push({
           text: items.length === 0 ? "  no agents — n creates one" : "  no matches",
           style: THEME.muted,
@@ -1660,6 +1689,7 @@ export async function pick(
     const beginCreate = () => {
       if (!handlers.create) return;
       mode = "new-form";
+      newGroup = "";
       newName = "";
       newTask = "";
       newDir = handlers.defaultDir?.(cursorName) ?? "";
@@ -1687,7 +1717,7 @@ export async function pick(
         const previousFormIdx = formIdx;
         roleOptions = [{ name: "", description: "No custom role" }, ...roles];
         newRoleIdx = selected ? Math.max(0, roleOptions.findIndex((role) => role.name === selected)) : 0;
-        fields = formFields(hostOptions.length > 1, roleOptions.length > 1);
+        fields = formFields(hostOptions.length > 1, roleOptions.length > 1, !!handlers.newGroupOptions);
         formIdx = preservedFieldIndex(previousFields, previousFormIdx, fields);
       };
       try {
@@ -1785,11 +1815,12 @@ export async function pick(
       const provider = PROVIDER_OPTIONS[newProviderIdx];
       const effort = newEffort || undefined;
       const role = roleOptions[newRoleIdx]?.name || undefined;
-      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host, provider, newModel.trim() || undefined, effort, role).then(
+      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host, provider, newModel.trim() || undefined, effort, role, newGroup.trim() || undefined).then(
         (created) => {
           if (!handlers.select) return finish(created);
           creating = false;
           mode = "list";
+          newGroup = "";
           newName = "";
           newTask = "";
           newDir = "";
@@ -1822,6 +1853,17 @@ export async function pick(
           render();
         },
       );
+    };
+
+    const openGroupPrompt = (action: "create" | "set" | "delete", target?: string) => {
+      mode = "group-name";
+      groupAction = action;
+      groupTarget = target;
+      groupName = "";
+      const choices = handlers.groupChoices?.(action) ?? [];
+      feedback = { text: action === "set"
+        ? `Type a group (new names create it), or ungrouped. Tab cycles: ${choices.join(", ")}`
+        : `Type ${action === "create" ? "a new" : "an empty"} group; host:group targets a remote. ${choices.join(", ")}`, level: "info" };
     };
 
     const runAction = (handler: (name: string) => Feedback) => {
@@ -1974,6 +2016,11 @@ export async function pick(
           mode = "list";
           showHierarchy = !showHierarchy;
           feedback = { text: showHierarchy ? "showing parent tree" : "showing flat list", level: "info" };
+          break;
+        case "group-create":
+        case "group-delete":
+        case "group-set":
+          openGroupPrompt(id.slice(6) as "create" | "set" | "delete", target?.name);
           break;
         case "regroup":
           mode = "list";
@@ -2234,6 +2281,8 @@ export async function pick(
         } else if (key === "h" && handlers.handoff) {
           mode = "list";
           runDeferred("handing off", handlers.handoff);
+        } else if (key === "g" && handlers.editGroup) {
+          openGroupPrompt("set", target.name);
         } else if (key === "n" && handlers.rename) {
           mode = "rename-name";
           renameTarget = target.name;
@@ -2270,6 +2319,7 @@ export async function pick(
         };
         if (key === "\x1b") {
           mode = "list";
+          newGroup = "";
           newName = "";
           newTask = "";
           newDir = "";
@@ -2357,9 +2407,13 @@ export async function pick(
             const current = Math.max(0, options.indexOf(newEffort || "default"));
             const next = options[cycleField(current, options.length, dir)]!;
             newEffort = next === "default" ? "" : next;
+          } else if (field === "group") {
+            const options = ["", ...(handlers.newGroupOptions?.(hostOptions[newHostIdx] === "local" ? undefined : hostOptions[newHostIdx]) ?? [])];
+            newGroup = options[cycleField(Math.max(0, options.indexOf(newGroup)), options.length, dir)]!;
           } else if (field === "role") newRoleIdx = cycleField(newRoleIdx, roleOptions.length, dir);
           else if (field === "where") {
             newHostIdx = cycleField(newHostIdx, hostOptions.length, dir);
+            newGroup = "";
             refreshRoleOptions();
             refreshCatalogs();
           }
@@ -2369,6 +2423,7 @@ export async function pick(
             feedback = null;
           }
           else if (field === "task") newTask = newTask.slice(0, -1);
+          else if (field === "group") newGroup = newGroup.slice(0, -1);
           else if (field === "model") {
             newModel = newModel.slice(0, -1);
             reconcileEffort();
@@ -2388,6 +2443,7 @@ export async function pick(
             }
           }
           else if (field === "task") newTask += key;
+          else if (field === "group") newGroup += key;
           else if (field === "model") {
             newModel += key;
             reconcileEffort();
@@ -2435,6 +2491,33 @@ export async function pick(
         } else if (key >= " " && !key.startsWith("\x1b")) {
           cdDir += key;
         }
+        return render();
+      }
+
+      if (mode === "group-name") {
+        if (groupPending) return;
+        if (key === "\x1b") {
+          mode = "list";
+          feedback = null;
+        } else if (key === "\t") {
+          const choices = handlers.groupChoices?.(groupAction) ?? [];
+          if (choices.length) groupName = choices[(choices.indexOf(groupName) + 1) % choices.length]!;
+        } else if (key === "\r" || key === "\n") {
+          if (!groupName.trim()) {
+            feedback = { text: "group name is required; use ungrouped to clear", level: "warn" };
+          } else if (handlers.editGroup) {
+            groupPending = true;
+            feedback = { text: "saving group…", level: "info" };
+            void handlers.editGroup(groupAction, groupName.trim(), groupTarget).then((message) => {
+              mode = "list";
+              feedback = asFeedback(message);
+              items = load();
+            }, (error: Error) => {
+              feedback = { text: error.message, level: "error" };
+            }).finally(() => { groupPending = false; if (!finished) render(); });
+          }
+        } else if (key === "\x7f" || key === "\b") groupName = groupName.slice(0, -1);
+        else if (key >= " " && !key.startsWith("\x1b")) groupName += key;
         return render();
       }
 

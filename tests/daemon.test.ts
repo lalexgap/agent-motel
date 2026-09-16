@@ -1,3 +1,4 @@
+import { createGroup } from "../src/groups";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,6 +98,19 @@ describe("daemon", () => {
       Bun.sleep(1000).then(() => { throw new Error("timed out waiting for fleet event"); }),
     ]);
     expect(decoder.decode(result.value)).toContain('"event":"changed"');
+    await reader.cancel();
+  });
+
+  test("empty group creation emits a fleet update", async () => {
+    const response = await daemonRequest("/events", { timeoutMs: 0 });
+    const reader = response!.body!.getReader();
+    await reader.read();
+    createGroup("advertiser-portal");
+    const result = await Promise.race([
+      reader.read(),
+      Bun.sleep(1000).then(() => { throw new Error("timed out waiting for group event"); }),
+    ]);
+    expect(new TextDecoder().decode(result.value)).toContain('"event":"changed"');
     await reader.cancel();
   });
 

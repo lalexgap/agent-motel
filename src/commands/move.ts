@@ -1,3 +1,4 @@
+import { setAgentGroup, withGroupsTransaction } from "../groups";
 import { existsSync, realpathSync, renameSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -153,7 +154,10 @@ export function importPayload(raw: string): string {
   if (!existsSync(state.dir)) throw new Error(`target dir does not exist: ${state.dir}`);
   const imported = { ...state, workingSince: undefined };
   updateAgentStatus(imported, "exited", "moved from another host");
-  writeAgent(imported);
+  withGroupsTransaction(() => {
+    if (state.group) setAgentGroup(state.name, state.group, true);
+    writeAgent(imported);
+  });
   for (const message of payload.queue ?? []) queueAppend(state.name, message);
   return state.name;
 }
@@ -325,6 +329,11 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     storedDir = targetDir;
     transcriptDir =
       (await sshRunAsync(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
+  }
+
+  if (agent.group) {
+    const group = await sshAmAsync(host, ["group", "create", agent.group], { timeoutMs: 5000 });
+    if (group.exitCode !== 0) throw new Error(`destination cannot preserve group "${agent.group}"; upgrade am on ${host}: ${group.stderr.trim()}`);
   }
 
   if (!opts.clone) {

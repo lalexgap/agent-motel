@@ -138,7 +138,11 @@ export function apiTokenFile(): string {
 }
 
 export function ensureDirs(): void {
-  for (const dir of [agentsDir(), rolesDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir()]) {
+  for (const dir of [groupsDir(), agentsDir(), rolesDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir()]) {
     mkdirSync(dir, { recursive: true });
   }
+}
+
+export function groupsDir(): string {
+  return join(baseDir(), "groups");
 }

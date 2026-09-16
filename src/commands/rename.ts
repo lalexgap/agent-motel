@@ -1,3 +1,4 @@
+import { renameGroupMember, withGroupsTransaction } from "../groups";
 import { existsSync, renameSync } from "node:fs";
 import {
   agentNameOwner,
@@ -123,8 +124,11 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
     // renamed. Carry the freshest state forward instead of overwriting it
     // with the snapshot taken during validation.
     const renamed = nextState(readAgent(oldName) ?? agent, newName);
-    writeAgent(renamed);
-    removeAgent(oldName);
+    withGroupsTransaction(() => {
+      renameGroupMember(oldName, newName);
+      writeAgent(renamed);
+      removeAgent(oldName);
+    });
     stateRenamed = true;
     rewriteRelationships(oldName, newName);
     renameLastAttached(oldName, newName);

@@ -336,15 +336,19 @@ async function refreshPreview(key: string, host: string, agentName: string): Pro
 // (repoRoot when the agent lives in a worktree — grouping by the literal
 // worktree dir would put every agent alone — else its dir). Toggled with
 // `g`; session-local.
-export type GroupMode = "host" | "dir";
+export type GroupMode = "host" | "dir" | "subject";
 export type SortMode = "status" | "recent" | "role";
 let groupMode: GroupMode = "host";
 let sortMode: SortMode = "status";
 
 export function toggleGroupMode(): GroupMode {
-  groupMode = groupMode === "host" ? "dir" : "host";
+  groupMode = groupMode === "host" ? "dir" : groupMode === "dir" ? "subject" : "host";
   return groupMode;
 }
+
+export function subjectView(): boolean { return groupMode === "subject"; }
+
+export function showSubjects(): void { groupMode = "subject"; }
 
 export function toggleSortMode(): SortMode {
   sortMode = sortMode === "status" ? "recent" : sortMode === "recent" ? "role" : "status";
@@ -356,6 +360,7 @@ export function sectionFor(row: FleetRow, mode: GroupMode): string {
   // different paths per machine (~ vs /home/u vs a /mnt symlink target), and
   // any path-string normalization would still split those into separate
   // sections.
+  if (mode === "subject") return row.group ?? "Ungrouped";
   if (mode === "dir") return basename(row.repoRoot ?? row.dir);
   return row.host ?? "local";
 }
@@ -386,8 +391,10 @@ export function sortFleetRows(rows: FleetRow[], mode: GroupMode, sort: SortMode 
   return [...rows].sort((a, b) => {
     const sectionA = sectionFor(a, mode);
     const sectionB = sectionFor(b, mode);
-    const sectionCmp = mode === "dir"
-      ? sectionA.localeCompare(sectionB)
+    const sectionCmp = mode !== "host"
+      ? mode === "subject" && (sectionA === "Ungrouped" || sectionB === "Ungrouped")
+        ? Number(sectionA === "Ungrouped") - Number(sectionB === "Ungrouped")
+        : sectionA.localeCompare(sectionB)
       : (sectionOrder.get(sectionA) ?? 0) - (sectionOrder.get(sectionB) ?? 0);
     if (sectionCmp) return sectionCmp;
     if (sort === "recent") {
@@ -462,7 +469,7 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
     iconStyle: STATUS_COLORS[r.status],
     status: r.status,
     statusLabel: sidebarStatus(r.status),
-    label: concierge?.label ?? r.name,
+    label: concierge?.label ?? (groupMode === "subject" && r.host ? `${r.name}@${r.host}` : r.name),
     labelStyle: concierge?.labelStyle ?? (r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG),
     role: r.role,
     badge: r.provider === "codex" ? "cdx" : "cld",
@@ -473,8 +480,9 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
     rightStyle: CYAN,
     statusAge: since,
     // "front desk"/"assistant" make palette queries find the concierge.
-    search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.role ?? "unassigned"} ${r.host ?? "local"} ${spawnedBy ?? ""}${concierge ? " front desk assistant" : ""}`,
+    search: `${r.group ?? "ungrouped"} ${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.role ?? "unassigned"} ${r.host ?? "local"} ${spawnedBy ?? ""}${concierge ? " front desk assistant" : ""}`,
     meta: [
+      `group    ${r.group ?? "Ungrouped"}`,
       `role     ${r.role ? `${CYAN}${r.role}${FG}` : "—"}`,
       ...(spawnedBy ? [`parent   ${spawnedBy}`] : []),
       `host     ${r.host ?? "local"}`,

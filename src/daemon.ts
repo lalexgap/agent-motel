@@ -1,5 +1,5 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
-import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
+import { groupsDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
 import { agentNamesAndAliases, listAgents, matchAgent, setStatus } from "./state";
 import { queueAppend, queueDepth } from "./queue";
 import { hasSession, sessionName } from "./tmux";
@@ -185,7 +185,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // State is file-backed and may be changed by any short-lived `am` process,
   // not just hooks. Watching both trees makes the daemon a complete event hub
   // for creates/removes/status changes and queue-depth changes.
-  const fileWatchers = [agentsDir(), queueDir()].map((dir) =>
+  const fileWatchers = [agentsDir(), queueDir(), groupsDir()].map((dir) =>
     watch(dir, { recursive: true }, scheduleFileEvent),
   );
 

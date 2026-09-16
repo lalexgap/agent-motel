@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { groupPickerHandlers } from "./groupUi";
+import { groupCommand } from "./commands/group";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, type Provider } from "./state";
 import { queueDepth } from "./queue";
@@ -112,6 +114,16 @@ usage:
                               models and reasoning-effort levels the installed
                               providers actually offer (what --model / --effort
                               accept; -H <host> asks that machine)
+  am group create <name>     create a subject group on this host
+  am group list [--json]     list subject groups across the fleet
+  am group set <agent> <group> [--create]
+                              assign an agent (host:agent supported)
+  am group clear <agent>     move an agent to Ungrouped
+  am group delete <name>     delete an empty group on this host
+  am ls --group <name|ungrouped>
+                              filter agents by subject
+  am new / run ... --group <name>
+                              create an agent in an existing group
   am role list [--json]       list built-in and custom roles
   am role show <name>         print a role's instructions
   am role add <name> -m msg   define a role (-m - or --file for long prompts;
@@ -213,7 +225,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "group", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -404,6 +416,7 @@ async function pickerFlow(): Promise<void> {
       model: string | undefined,
       effort: string | undefined,
       role: string | undefined,
+      group: string | undefined,
     ) => {
       await newCommand({
         name,
@@ -413,6 +426,7 @@ async function pickerFlow(): Promise<void> {
         model,
         effort,
         role,
+        group,
         jump: false,
         quiet: true,
       });
@@ -430,7 +444,8 @@ async function pickerFlow(): Promise<void> {
     clone: cloneHandler,
     handoff: handoffHandler,
     rename: renameHandler,
-    regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    ...groupPickerHandlers,
+    regroup: () => `grouped by ${toggleGroupMode()}`,
     resort: () => {
       const mode = toggleSortMode();
       return mode === "recent"
@@ -513,6 +528,7 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
+        group: args.flags.group as string | undefined,
         resume: args.flags.resume as string | boolean | undefined,
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
@@ -534,6 +550,7 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
+        group: args.flags.group as string | undefined,
         timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
@@ -552,6 +569,7 @@ async function main(): Promise<void> {
         json: !!args.flags.json,
         localOnly: !!args.flags["local-only"],
         role: args.flags.role as string | undefined,
+        group: args.flags.group as string | undefined,
         sort: args.flags.sort as string | undefined,
       });
       break;
@@ -575,6 +593,9 @@ async function main(): Promise<void> {
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         json: !!args.flags.json,
       });
+      break;
+    case "group":
+      await groupCommand(args.positional[0], args.positional.slice(1), { json: !!args.flags.json, localOnly: !!args.flags["local-only"], create: !!args.flags.create });
       break;
     case "role":
     case "roles":

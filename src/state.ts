@@ -1,3 +1,4 @@
+import { agentGroup, setAgentGroup, withGroupsTransaction } from "./groups";
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentsDir, ensureDirs, lastAttachedFile } from "./paths";
@@ -44,6 +45,8 @@ export interface AgentState {
   transcriptPath?: string;
   // The initial -m message: what this agent is for. Searchable in the picker.
   task?: string;
+  // Joined from the group store on read; status writes never persist it.
+  group?: string;
   // Optional named behavior preset. Instructions are snapshotted so resumes,
   // moves, and handoffs keep their behavior if the registry later changes.
   role?: string;
@@ -88,7 +91,7 @@ function readStateFile(file: string): AgentState | null {
       // raced another quarantiner (or the file vanished) — already handled
     }
   }
-  return state;
+  return state ? { ...state, group: agentGroup(state.name) } : null;
 }
 
 export function readAgent(name: string): AgentState | null {
@@ -100,7 +103,8 @@ export function writeAgent(state: AgentState): void {
   state.updatedAt = new Date().toISOString();
   // Atomic: state files are written by several processes at once (hooks, the
   // CLI, the daemon) and read constantly.
-  writeJsonAtomic(stateFile(state.name), state);
+  const { group: _group, ...stored } = state;
+  writeJsonAtomic(stateFile(state.name), stored);
 }
 
 export function updateAgentStatus(
@@ -129,7 +133,10 @@ export function setStatus(name: string, status: AgentStatus, reason?: string): v
 }
 
 export function removeAgent(name: string): void {
-  rmSync(stateFile(name), { force: true });
+  withGroupsTransaction(() => {
+    rmSync(stateFile(name), { force: true });
+    setAgentGroup(name);
+  });
 }
 
 export function listAgents(): AgentState[] {

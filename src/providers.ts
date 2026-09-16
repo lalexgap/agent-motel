@@ -46,6 +46,10 @@ Agent names are global. Choose a short, globally unique kebab-case name using <p
 - am interrupt <name> "msg"     abort its turn and redirect it
 - am wait <name>                block until that agent's turn ends, then print its final message — \`am send x "..." && am wait x\` is a request/response pair
 - am peek <name>                print that agent's current screen without attaching (what is it doing right now?)
+- am group list --json          subject groups across the fleet
+- am group create <group>       create a subject group
+- am group set <agent> <group> --create   assign an agent (host:agent works); group clear <agent> removes membership
+- am ls --group <group>         list agents working on a subject; new/run accept --group <group>
 - am ls --json                  every agent's status and queue depth
 - am stop <name> · am resume <name> · am rename <name> <new-name> · am rm <name>
 

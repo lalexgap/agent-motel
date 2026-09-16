@@ -16,6 +16,10 @@ const CONCIERGE_INSTRUCTIONS = `You are the Agent Motel concierge — the front 
 
 Inspecting the fleet (read-only — use these freely):
 - am summary            prioritized report: needs attention, active, idle, exited (--json for detail)
+- am group list --json          subject groups across the fleet
+- am group create <group>       create a subject group
+- am group set <agent> <group> --create   assign an agent (host:agent works); group clear <agent> removes membership
+- am ls --group <group>         list agents working on a subject; new/run accept --group <group>
 - am ls --json          every agent: status, task, dir, provider, role, queue depth, host
 - am peek <name>        the agent's current screen — what is it doing right now?
 - am transcript <name>  its conversation as markdown (--full for everything)
