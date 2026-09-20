@@ -26,6 +26,7 @@ import { resumeCommand, reviveAgent } from "./commands/resume";
 import { conciergeCommand, ensureConcierge } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
 import { searchCommand } from "./commands/search";
+import { indexConversations } from "./semanticSearch";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
@@ -154,8 +155,9 @@ usage:
   am queue <name> [--clear]   show or clear an agent's pending queue
   am transcript <name> [--full] [--out file]
                               render the agent's conversation as markdown
-  am search <query> [--all] [--fleet] [--limit n] [--json]
-                              full-text search agent chats; prints matching
+  am index [--all]            generate/update conversation embeddings (API key required)
+  am search <query> [--semantic | --hybrid] [--all] [--fleet] [--limit n] [--json]
+                              search agent chats (literal by default); prints matching
                               agents + snippets + the command to pick each up
                               (default: registered agents + trash; --all widens
                                to every past session; --fleet spans config.remotes)
@@ -673,10 +675,17 @@ async function main(): Promise<void> {
         out: args.flags.out as string | undefined,
       });
       break;
+    case "index": {
+      const stats = await indexConversations({ all: !!args.flags.all }, undefined, (message) => console.error(message));
+      console.log(`Indexed ${stats.files} conversations; ${stats.skipped} unchanged; ${stats.embedded} new embeddings.`);
+      break;
+    }
     case "search":
     case "s":
       requirePositional(args, 0, "search query");
-      searchCommand(args.positional.join(" "), {
+      await searchCommand(args.positional.join(" "), {
+        semantic: !!args.flags.semantic,
+        hybrid: !!args.flags.hybrid,
         all: !!args.flags.all,
         fleet: !!args.flags.fleet,
         localOnly: !!args.flags["local-only"],
