@@ -1713,6 +1713,7 @@ export async function pick(
       newModel = "";
       newEffort = "";
       newRoleIdx = 0;
+      newFanoutIdx = 0;
       formIdx = 0;
       formCandidates = [];
       dirQuerying = false;
