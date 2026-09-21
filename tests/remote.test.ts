@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isForwardable, stripHostArgs, type SshResult } from "../src/remote";
+import { isForwardable, sshAmTtyCommand, stripHostArgs, type SshResult } from "../src/remote";
+import { shQuote } from "../src/tmux";
 
 const remoteModule = new URL("../src/remote.ts", import.meta.url).pathname;
 import { chooseOpener } from "../src/commands/click";
@@ -118,5 +119,31 @@ describe("buildNotifyCommand", () => {
       "notify-send", "t", "m",
     ]);
     expect(buildNotifyCommand("t", "m", base, { platform: "linux", has: () => false })).toBeNull();
+  });
+});
+
+describe("sshAmTtyCommand", () => {
+  test("survives a pane's shell: ssh gets a tty and a login-shell am", () => {
+    const dir = mkdtempSync(join(tmpdir(), "am-tty-"));
+    writeFileSync(join(dir, "ssh"), '#!/bin/bash\nprintf "%s\\n" "$@"\n');
+    chmodSync(join(dir, "ssh"), 0o755);
+    const mux = process.env.AM_SSH_NO_MUX;
+    process.env.AM_SSH_NO_MUX = "1";
+    try {
+      const command = sshAmTtyCommand("server", ["peek", "api", "--subagent", "abc", "--follow"]);
+      const run = Bun.spawnSync(["bash", "-c", command], {
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, AM_SSH_NO_MUX: "1" },
+      });
+      expect(run.stdout.toString().trimEnd().split("\n")).toEqual([
+        "-t",
+        "server",
+        "--",
+        `bash -lc ${shQuote("'am' 'peek' 'api' '--subagent' 'abc' '--follow'")}`,
+      ]);
+    } finally {
+      if (mux === undefined) delete process.env.AM_SSH_NO_MUX;
+      else process.env.AM_SSH_NO_MUX = mux;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

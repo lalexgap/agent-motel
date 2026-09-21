@@ -13,6 +13,7 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   renameSubagents,
+  renderSubagentScreen,
   subagentActivity,
   subagentSummary,
   summarize,
@@ -138,7 +139,7 @@ describe("summarize", () => {
   const started = (id: string, type: string) => ({ id, type, startedAt: "2026-09-21T10:00:00.000Z" });
 
   test("counts only what's running and names the types", () => {
-    expect(summarize([started("a", "Explore"), started("b", "code-review")])).toEqual({
+    expect(summarize([started("a", "Explore"), started("b", "code-review")])).toMatchObject({
       active: 2,
       types: "code-review, Explore",
       detail: "2 subagents · code-review, Explore",
@@ -154,6 +155,15 @@ describe("summarize", () => {
   test("a wide fan-out is capped with a +n", () => {
     const wide = [started("a", "one"), started("b", "two"), started("c", "three"), started("d", "four")];
     expect(summarize(wide)!.detail).toBe("4 subagents · four, three +2");
+  });
+
+  test("carries the running records for the sidebar's nested rows, capped", () => {
+    const summary = summarize([started("a", "Explore"), started("b", "code-review")])!;
+    expect(summary.running!.map((r) => r.id)).toEqual(["a", "b"]);
+    const many = Array.from({ length: 12 }, (_, i) => started(`s${i}`, "Explore"));
+    // The most recent stay; a runaway fan-out can't swamp the list.
+    expect(summarize(many)!.running!.map((r) => r.id)).toEqual(["s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"]);
+    expect(summarize(many)!.active).toBe(12);
   });
 
   test("finished records summarize to nothing", () => {
@@ -547,5 +557,22 @@ describe("matchSubagent", () => {
   test("an ambiguous id prefix is an error, an unknown query is null", () => {
     expect(() => matchSubagent(records, "aaaa")).toThrow(/longer id/);
     expect(matchSubagent(records, "nope")).toBeNull();
+  });
+});
+
+describe("renderSubagentScreen", () => {
+  test("shows the subagent's words and tool calls, not tool output", () => {
+    const lines = renderSubagentScreen([
+      { kind: "user", text: "find the hook handlers\nand report back" },
+      { kind: "tool", name: "Grep", input: "{\"pattern\":\"hook\"}", output: "src/hook.ts:12\nsrc/hook.ts:40" },
+      { kind: "assistant", text: "They live in hook.ts.\nTwo handlers." },
+    ]);
+    expect(lines).toEqual([
+      "❯ find the hook handlers and report back",
+      '⏺ Grep({"pattern":"hook"})',
+      "They live in hook.ts.",
+      "Two handlers.",
+    ]);
+    expect(lines.join("\n")).not.toContain("src/hook.ts:12");
   });
 });

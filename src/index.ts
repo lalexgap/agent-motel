@@ -34,7 +34,8 @@ import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } f
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
 import { resolveTask } from "./task";
-import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, toggleGroupMode, toggleSortMode } from "./fleet";
+import { cachedRemotePreview, cachedRemoteRow, cachedRemoteSubagentPreview, fleetPickerItems, fleetRows, splitFleetKey, splitSubagentKey, toggleGroupMode, toggleSortMode } from "./fleet";
+import { readSubagents, subagentNoOutputNote, subagentScreen } from "./subagents";
 import { loadConfig, localHostIdentity, shortHost } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
@@ -153,6 +154,9 @@ usage:
                               blocked/exited/timeout
   am peek <name> [--lines n]  print the agent's screen (last n lines) without
                               attaching; dead agents show their last snapshot
+  am peek <name> --subagent <id|type> [--follow]
+                              a subagent's output instead — its own words and
+                              tool calls; --follow redraws until it finishes
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
@@ -399,6 +403,16 @@ async function pickerFlow(): Promise<void> {
       return `removed ${name}`;
     },
     preview: (key: string) => {
+      // A subagent row previews its transcript: there is no pane to capture.
+      const sub = splitSubagentKey(key);
+      if (sub) {
+        const { host, name } = splitFleetKey(sub.agentKey);
+        if (host) return cachedRemoteSubagentPreview(host, name, sub.id) ?? [`(fetching subagent output from ${shortHost(host)}…)`];
+        const agent = readAgent(name);
+        const record = agent ? readSubagents(name).find((r) => r.id === sub.id) : undefined;
+        if (!agent || !record) return ["(subagent no longer recorded)"];
+        return subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
+      }
       const { host, name } = splitFleetKey(key);
       if (host) {
         if (!name) return [`(${host} unreachable)`];
@@ -656,7 +670,11 @@ async function main(): Promise<void> {
       });
       break;
     case "peek":
-      peekCommand(requirePositional(args, 0, "agent name"), { lines: numberFlag(args, "lines") });
+      await peekCommand(requirePositional(args, 0, "agent name"), {
+        lines: numberFlag(args, "lines"),
+        subagent: args.flags.subagent as string | undefined,
+        follow: !!args.flags.follow,
+      });
       break;
     case "outbox":
       outboxCommand({ clear: !!args.flags.clear });

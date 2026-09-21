@@ -15,7 +15,7 @@ export interface SubagentLine {
   detail: string;
 }
 
-function ageOf(record: SubagentRecord, now: number): string {
+export function ageOf(record: SubagentRecord, now: number): string {
   const end = record.endedAt ? Date.parse(record.endedAt) : now;
   return formatDuration(Math.max(0, (end - Date.parse(record.startedAt)) / 1000));
 }

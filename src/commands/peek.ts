@@ -1,7 +1,10 @@
-import { resolveAgent } from "../state";
+import { readAgent, resolveAgent, type AgentState } from "../state";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { readSnapshot } from "../snapshots";
 import { displayStatus } from "./ls";
+import { readSubagents, subagentNoOutputNote, subagentScreen, type SubagentRecord } from "../subagents";
+import { matchSubagent } from "./transcript";
+import { ageOf } from "./subagents";
 
 // `am peek <name>`: print the agent's current screen without attaching — for
 // a human over ssh, or an orchestrating agent checking what a peer is doing
@@ -17,11 +20,72 @@ export function formatPeek(lines: string[], opts: { lines?: number; colors: bool
   return opts.colors ? text : stripSgr(text);
 }
 
-export function peekCommand(prefix: string, opts: { lines?: number }): void {
+const FOLLOW_MS = 2000;
+
+// `am peek <name> --subagent <id|type>`: a subagent has no screen, so its
+// transcript stands in — the same lines the hub shows when its row is
+// selected. --follow redraws until the subagent finishes, which is what the
+// hub's right pane runs (locally, or over ssh exactly like an attach).
+async function peekSubagent(
+  agent: AgentState,
+  query: string,
+  opts: { lines?: number; follow?: boolean },
+): Promise<void> {
+  const records = readSubagents(agent.name);
+  if (records.length === 0) throw new Error(`agent "${agent.name}" has no recorded subagents`);
+  const matched = matchSubagent(records, query);
+  if (!matched) {
+    const known = [...new Set(records.map((r) => r.type))].join(", ");
+    throw new Error(`no subagent matches "${query}" — ${agent.name} has: ${known}`);
+  }
+  let record: SubagentRecord = matched;
+  const frame = (): string[] => {
+    const body = subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
+    const tail = opts.lines && opts.lines > 0 ? body.slice(-opts.lines) : body;
+    const state = record.endedAt ? " · finished" : "";
+    return [`⤷ ${record.type} · ${agent.name} · ${ageOf(record, Date.now())}${state}`, "", ...tail];
+  };
+  if (!opts.follow) {
+    console.log(frame().join("\n"));
+    return;
+  }
+  const draw = () => process.stdout.write(`\x1b[2J\x1b[H${frame().join("\n")}\n`);
+  for (;;) {
+    draw();
+    if (record.endedAt) {
+      if (record.message) console.log(`\n✔ ${record.message}`);
+      return;
+    }
+    await Bun.sleep(FOLLOW_MS);
+    // Pinned to the id once matched: a type query must not drift to a newer
+    // subagent of the same type mid-follow.
+    const id = record.id;
+    const next = readSubagents(agent.name).find((r) => r.id === id);
+    if (!next) {
+      console.log("\n(subagent no longer recorded)");
+      return;
+    }
+    record = next;
+    // The record only closes on the parent's turn-end hook: an agent that is
+    // removed or whose session died mid-run leaves it open forever.
+    if (!record.endedAt && (!readAgent(agent.name) || !hasSession(agent.tmuxSession))) {
+      draw();
+      console.log(`\n(${agent.name} has no live session — the subagent died with it)`);
+      return;
+    }
+  }
+}
+
+export async function peekCommand(
+  prefix: string,
+  opts: { lines?: number; subagent?: string; follow?: boolean },
+): Promise<void> {
   if (opts.lines !== undefined && (!Number.isInteger(opts.lines) || opts.lines < 0)) {
     throw new Error(`--lines must be a non-negative integer, got ${opts.lines}`);
   }
   const agent = resolveAgent(prefix);
+  if (opts.subagent) return peekSubagent(agent, opts.subagent, opts);
+  if (opts.follow) throw new Error("--follow applies to --subagent; attach to an agent to watch its screen");
   const colors = !!process.stdout.isTTY;
 
   // Capture WITH colors regardless of the output target — formatPeek is the
