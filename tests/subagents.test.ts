@@ -18,6 +18,7 @@ import {
   isHarnessNoise,
   subagentLabel,
   renderSubagentScreen,
+  renderToolResult,
   subagentActivity,
   summarizeToolOutput,
   subagentSummary,
@@ -654,7 +655,7 @@ describe("renderSubagentScreen", () => {
       "⏺ Looking now.",
       "",
       "⏺ Grep(hook)",
-      "  ⎿  src/hook.ts:12 (+1 lines)",
+      "  ⎿  Found 2 results",
       "⏺ Bash(sleep 5)",
       "  ⎿  (no output)",
       "",
@@ -689,7 +690,7 @@ describe("renderSubagentScreen", () => {
       "⏺ Bash(b)",
       "  ⎿  …",
       "⏺ Read(c)",
-      "  ⎿  fast",
+      "  ⎿  Read 1 line",
       "⏺ Bash(d)",
       "  ⎿  …",
     ]);
@@ -725,6 +726,89 @@ describe("renderSubagentScreen", () => {
     ]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith("❯ Base directory for this skill: /x");
+  });
+});
+
+describe("renderToolResult", () => {
+  const call = (name: string, input: string, output: string | undefined, colors = false, error?: boolean) =>
+    renderToolResult({ kind: "tool", name, input, output, ...(error ? { error } : {}) }, colors);
+
+  test("an Edit is its diff, removed red and added green", () => {
+    const lines = call(
+      "Edit",
+      JSON.stringify({ file_path: "/x/src/hook.ts", old_string: "const x = 1;", new_string: "const x = 2;\nconst y = 3;" }),
+      "The file has been updated successfully.",
+      true,
+    );
+    expect(lines).toEqual([
+      "\x1b[2m  ⎿  Updated hook.ts with 2 additions and 1 removal\x1b[0m",
+      "\x1b[31m       - const x = 1;\x1b[0m",
+      "\x1b[32m       + const x = 2;\x1b[0m",
+      "\x1b[32m       + const y = 3;\x1b[0m",
+    ]);
+  });
+
+  test("a long diff is capped per side, long lines keep their indentation", () => {
+    const old = Array.from({ length: 12 }, (_, i) => `old ${i}`).join("\n");
+    const lines = call("Edit", JSON.stringify({ file_path: "a.ts", old_string: old, new_string: "" }), "ok");
+    expect(lines.filter((l) => l.includes("- old"))).toHaveLength(8);
+    expect(lines.at(-1)).toContain("… (+4 lines)");
+    const wide = call("Edit", JSON.stringify({ file_path: "a.ts", old_string: "", new_string: "    " + "x".repeat(200) }), "ok");
+    expect(wide[1]).toBe("       +     " + "x".repeat(95) + "…");
+  });
+
+  test("a replace-all Edit says its counts are per occurrence", () => {
+    const lines = call("Edit", JSON.stringify({ file_path: "a.ts", old_string: "a", new_string: "b", replace_all: true }), "ok");
+    expect(lines[0]).toBe("  ⎿  Updated a.ts with 1 addition and 1 removal per occurrence");
+  });
+
+  test("a rejected or in-flight Edit is not shown as a diff that landed", () => {
+    const input = JSON.stringify({ file_path: "a.ts", old_string: "a", new_string: "b" });
+    expect(call("Edit", input, "<tool_use_error>String to replace not found in file.\nString: a</tool_use_error>", false, true))
+      .toEqual(["  ⎿  String to replace not found in file. (+1 lines)"]);
+    expect(call("Edit", input, undefined)).toEqual(["  ⎿  …"]);
+    expect(call("Write", JSON.stringify({ file_path: "a.ts", content: "x" }), "<tool_use_error>File has not been read yet.</tool_use_error>", false, true))
+      .toEqual(["  ⎿  File has not been read yet."]);
+    expect(call("Read", "{}", "<tool_use_error>File does not exist.</tool_use_error>", false, true)).toEqual(["  ⎿  File does not exist."]);
+    expect(call("Bash", "{}", "Exit code 1\nnot found", false, true)).toEqual(["  ⎿  Exit code 1", "  ⎿     not found"]);
+  });
+
+  test("a Write shows what it wrote; Read and searches say how much came back", () => {
+    expect(call("Write", JSON.stringify({ file_path: "/x/notes.md", content: "a\nb\nc" }), "File created"))
+      .toEqual(["  ⎿  Wrote 3 lines to notes.md", "       + a", "       + b", "       + c"]);
+    expect(call("Read", "{}", "     1→import x\n     2→\n     3→export y\n\n<system-reminder>\nnote\n</system-reminder>")).toEqual(["  ⎿  Read 3 lines"]);
+    expect(call("Read", "{}", "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"))
+      .toEqual(["  ⎿  Read an empty file"]);
+    expect(call("Grep", "{}", "src/a.ts:1:x\nsrc/b.ts:9:x")).toEqual(["  ⎿  Found 2 results"]);
+    expect(call("Grep", "{}", "Found 2 files\nsrc/a.ts\nsrc/b.ts")).toEqual(["  ⎿  Found 2 files"]);
+    expect(call("Glob", "{}", "No files found")).toEqual(["  ⎿  Found nothing"]);
+  });
+
+  test("an MCP tool that happens to share a built-in's name gets the generic summary", () => {
+    expect(call("mcp__fs__Read", "{}", "     1→x\n     2→y")).toEqual(["  ⎿  1→x (+1 lines)"]);
+  });
+
+  test("a command shows its first lines and folds the rest", () => {
+    const out = Array.from({ length: 8 }, (_, i) => `line ${i}`).join("\n");
+    const lines = call("Bash", JSON.stringify({ command: "gh pr checks 1" }), out);
+    expect(lines).toEqual([
+      "  ⎿  line 0",
+      "  ⎿     line 1",
+      "  ⎿     line 2",
+      "  ⎿     line 3",
+      "  ⎿     line 4",
+      "  ⎿     … (+3 lines)",
+    ]);
+    expect(call("Bash", "{}", "")).toEqual(["  ⎿  (no output)"]);
+    expect(call("Bash", "{}", undefined)).toEqual(["  ⎿  …"]);
+  });
+
+  test("harness text inside a result is not the result", () => {
+    const out = "This agent is isolated in the worktree /x — do not cd elsewhere\nactual output\n<system-reminder>\nnoise\n</system-reminder>";
+    expect(call("Bash", "{}", out)).toEqual(["  ⎿  actual output"]);
+    expect(summarizeToolOutput(out)).toBe("actual output");
+    const closedMidLine = "actual output\n<system-reminder>\nnoise\nmore noise</system-reminder>";
+    expect(call("Bash", "{}", closedMidLine)).toEqual(["  ⎿  actual output"]);
   });
 });
 
