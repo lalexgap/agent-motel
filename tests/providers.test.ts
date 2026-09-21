@@ -51,6 +51,15 @@ describe("agentSystemPrompt", () => {
     expect(engineer).toContain("# Your role: engineer");
   });
 
+  test("points reviews at the reviewer role, except for the reviewer itself", () => {
+    const prompt = agentSystemPrompt("worker");
+    expect(prompt).toContain("--role reviewer --in-place");
+    expect(prompt).toContain("[high]/[medium]/[low]");
+    const reviewer = agentSystemPrompt("worker", { role: "reviewer", roleInstructions: "Judge it." });
+    expect(reviewer).not.toContain("--role reviewer --in-place");
+    expect(reviewer).toContain("# Your role: reviewer");
+  });
+
   test("adds the reporting briefing only when a target is set", () => {
     const prompt = agentSystemPrompt("worker", { reportTo: "lead" });
     expect(prompt).toContain('You are reporting to "lead"');
