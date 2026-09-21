@@ -532,9 +532,14 @@ export function splitSubagentKey(key: string): { agentKey: string; id: string } 
 // They have no pane to attach to; selecting one shows its transcript.
 export function subagentPickerItems(r: FleetRow): PickerItem[] {
   const parentKey = fleetKey(r);
-  return (r.subagents?.running ?? []).map((sub) => ({
+  const running = r.subagents?.running ?? [];
+  const ids = new Set(running.map((sub) => sub.id));
+  return running.map((sub) => ({
     name: subagentKey(parentKey, sub.id),
-    parent: parentKey,
+    // A subagent's own subagent nests under it, the way the provider's task
+    // list shows only the top level; an orphan (its parent already gone)
+    // falls back to the agent.
+    parent: sub.parentId && ids.has(sub.parentId) ? subagentKey(parentKey, sub.parentId) : parentKey,
     section: sectionFor(r, groupMode),
     icon: "⤷",
     iconStyle: GREEN,

@@ -273,6 +273,22 @@ describe("subagent rows", () => {
     expect(item!.search).toContain("general-purpose");
   });
 
+  test("a subagent's subagent nests under it; an orphan falls back to the agent", () => {
+    const nested: FleetRow = {
+      ...row,
+      subagents: {
+        active: 3, types: "", detail: "",
+        running: [
+          { id: "top", type: "general-purpose", startedAt: "2026-09-21T10:00:00.000Z" },
+          { id: "child", type: "general-purpose", parentId: "top", startedAt: "2026-09-21T10:01:00.000Z" },
+          { id: "orphan", type: "Explore", parentId: "gone", startedAt: "2026-09-21T10:02:00.000Z" },
+        ],
+      },
+    };
+    const items = subagentPickerItems(nested);
+    expect(items.map((i) => i.parent)).toEqual(["server:api", subagentKey("server:api", "top"), "server:api"]);
+  });
+
   test("keys round-trip through the separator", () => {
     const key = subagentKey("server:api", "aaaa1111bbbb");
     expect(splitSubagentKey(key)).toEqual({ agentKey: "server:api", id: "aaaa1111bbbb" });

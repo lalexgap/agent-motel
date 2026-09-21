@@ -1,9 +1,12 @@
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -246,6 +249,9 @@ export interface RunningSubagent {
   id: string;
   type: string;
   description?: string;
+  // A subagent's own subagent (Claude's sidecar names the parent): nested
+  // under it rather than shown as a sibling of the agent's own fan-out.
+  parentId?: string;
   startedAt: string;
 }
 
@@ -348,6 +354,8 @@ interface SubagentMeta {
   description?: string;
   name?: string;
   requestShape?: string;
+  parentAgentId?: string;
+  spawnDepth?: number;
 }
 
 // The sidecar Claude writes beside a subagent's transcript at spawn. Codex has
@@ -383,9 +391,12 @@ export function subagentDescription(agent: AgentState, subagentId: string, trans
 // soon after, and its ledger row is all that remains.
 export function describeRunning(agent: AgentState, summary: SubagentSummary | null): SubagentSummary | null {
   if (!summary?.running || agentProvider(agent) !== "claude") return summary;
-  const running = summary.running.map((sub) =>
-    sub.description ? sub : { ...sub, description: subagentDescription(agent, sub.id) },
-  );
+  const running = summary.running.map((sub) => {
+    const meta = readSubagentMeta(agent, sub.id);
+    const description = sub.description ?? (typeof meta?.description === "string" && meta.description.trim() ? meta.description : undefined);
+    const parentId = typeof meta?.parentAgentId === "string" && meta.parentAgentId ? meta.parentAgentId : undefined;
+    return { ...sub, description, parentId };
+  });
   const types: string[] = [];
   for (const sub of [...running].reverse()) {
     const label = subagentLabel(sub);
@@ -529,4 +540,78 @@ export function subagentNoOutputNote(agent: AgentState): string {
   return agentProvider(agent) === "codex"
     ? "no output yet — codex reports a subagent's transcript when it stops"
     : "no output yet — the subagent hasn't written a turn";
+}
+
+// The hook that would close a record can go missing — a background subagent
+// killed with an interrupted turn, a session that died and was resumed — and
+// a spared background record then reads as running forever. Claude leaves a
+// second trail: when a background subagent ends, the parent's transcript
+// receives a task notification naming it. Scan what the transcript has added
+// since the last look and close every open record it reports. Claude only;
+// returns how many records it closed.
+const NOTIFICATION_TAIL_BYTES = 1_000_000;
+const scanned = new Map<string, number>(); // transcript path → bytes already scanned
+
+export function reconcileOpenSubagents(agent: AgentState): number {
+  if (agentProvider(agent) !== "claude") return 0;
+  const open = readSubagents(agent.name).filter((r) => !r.endedAt);
+  if (open.length === 0) return 0;
+  let file: string;
+  try {
+    file = locateTranscript(agent);
+  } catch {
+    return 0;
+  }
+  let size: number;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return 0;
+  }
+  const from = scanned.get(file) ?? Math.max(0, size - NOTIFICATION_TAIL_BYTES);
+  if (size <= from) return 0;
+  const text = readRange(file, from, size);
+  scanned.set(file, size);
+  let closed = 0;
+  for (const record of open) {
+    const ended = completionIn(text, record.id);
+    if (!ended) continue;
+    recordSubagentStop(agent.name, { id: record.id, type: record.type, message: ended.summary });
+    closed++;
+  }
+  return closed;
+}
+
+function readRange(file: string, from: number, to: number): string {
+  const fd = openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(to - from);
+    readSync(fd, buf, 0, buf.length, from);
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The notification as it sits in the transcript's JSON: tags with escaped
+// newlines between them. Pure.
+export function completionIn(text: string, id: string): { status: string; summary?: string } | null {
+  const at = text.indexOf(`<task-id>${id}</task-id>`);
+  if (at === -1) return null;
+  const rest = text.slice(at, at + 2000);
+  const status = /<status>(\w+)<\/status>/.exec(rest);
+  if (!status || status[1] === "running") return null;
+  const summary = /<summary>([^<]*)<\/summary>/.exec(rest);
+  return { status: status[1]!, summary: unescapeJson(summary?.[1] ?? "").trim() || undefined };
+}
+
+// The text was cut out of a JSON string, so quotes and newlines arrive as
+// their escapes. Decode them the way JSON would; leave it as-is if it isn't
+// a well-formed fragment.
+function unescapeJson(fragment: string): string {
+  try {
+    return JSON.parse(`"${fragment}"`) as string;
+  } catch {
+    return fragment;
+  }
 }

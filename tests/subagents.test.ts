@@ -13,8 +13,10 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   renameSubagents,
+  completionIn,
   describeRunning,
   describeToolCall,
+  reconcileOpenSubagents,
   isHarnessNoise,
   subagentLabel,
   renderSubagentScreen,
@@ -492,6 +494,43 @@ describe("subagentActivity", () => {
     // Codex has no sidecar: passed through untouched.
     expect(describeRunning({ ...agent, provider: "codex" }, summary)).toBe(summary);
     expect(describeRunning(agent, null)).toBeNull();
+  });
+
+  test("describeRunning nests a subagent's subagent by the sidecar's parentAgentId", () => {
+    const agent = agentWithSubagentFiles({ "sub-b": [turn([{ type: "text", text: "x" }])] });
+    writeFileSync(
+      join(home, "session", "subagents", "agent-sub-b.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", description: "Second review pass", parentAgentId: "sub-a", spawnDepth: 2 }),
+    );
+    const summary = describeRunning(agent, {
+      active: 2, types: "", detail: "", running: [record("sub-a"), record("sub-b")],
+    })!;
+    expect(summary.running!.map((r) => r.parentId)).toEqual([undefined, "sub-a"]);
+  });
+
+  test("reconcileOpenSubagents closes records the parent transcript reports finished", () => {
+    const agent = agentWithSubagentFiles({});
+    recordSubagentStart("api", { id: "gone1", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStart("api", { id: "alive1", type: "general-purpose", at: "2026-09-21T10:01:00.000Z" });
+    // The notification lands in the parent's JSONL as text with escaped newlines.
+    const note = JSON.stringify({ type: "queue-operation", content: "<task-notification>\n<task-id>gone1</task-id>\n<status>completed</status>\n<summary>Agent \"Shepherd PR 1\" finished</summary>\n</task-notification>" });
+    writeFileSync(agent.transcriptPath!, note + "\n", { flag: "a" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const records = readSubagents("api");
+    expect(records.find((r) => r.id === "gone1")).toMatchObject({ endedAt: expect.any(String), message: 'Agent "Shepherd PR 1" finished' });
+    expect(records.find((r) => r.id === "alive1")!.endedAt).toBeUndefined();
+    // Already scanned: nothing new to find.
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+  });
+
+  test("completionIn reads the notification's status and summary, ignoring a running one", () => {
+    const text = '<task-id>abc</task-id>\\n<tool-use-id>t</tool-use-id>\\n<status>completed</status>\\n<summary>done</summary>';
+    expect(completionIn(text, "abc")).toEqual({ status: "completed", summary: "done" });
+    // Scraped from JSON, so escapes come back decoded.
+    expect(completionIn('<task-id>q</task-id><status>completed</status><summary>Agent \\"x\\" finished</summary>', "q")!.summary).toBe('Agent "x" finished');
+    expect(completionIn(text, "zzz")).toBeNull();
+    expect(completionIn("<task-id>abc</task-id><status>running</status>", "abc")).toBeNull();
   });
 
   test("codex reports no transcript until its subagent stops — no live line", () => {

@@ -1,5 +1,5 @@
 import { agentProvider, listAgents, resolveAgent, type AgentState } from "../state";
-import { readSubagents, subagentActivity, subagentLabel, type SubagentRecord } from "../subagents";
+import { readSubagents, reconcileOpenSubagents, subagentActivity, subagentLabel, type SubagentRecord } from "../subagents";
 import { formatDuration } from "./hook";
 import { displayStatus, relativeTime } from "./ls";
 
@@ -96,6 +96,7 @@ function agentIsLive(agent: AgentState): boolean {
 }
 
 function agentReport(agent: AgentState): string[] {
+  if (agentIsLive(agent)) reconcileOpenSubagents(agent);
   const records = readSubagents(agent.name);
   if (records.length === 0) {
     const hint = agentProvider(agent) === "codex" ? "" : " (its Task-tool runs appear here)";
@@ -125,7 +126,10 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
   // before any Stop hook could close them.
   const running = listAgents()
     .filter(agentIsLive)
-    .map((agent) => ({ agent, records: readSubagents(agent.name).filter((r) => !r.endedAt) }))
+    .map((agent) => {
+      reconcileOpenSubagents(agent);
+      return { agent, records: readSubagents(agent.name).filter((r) => !r.endedAt) };
+    })
     .filter((entry) => entry.records.length > 0);
   if (opts.json) {
     console.log(
