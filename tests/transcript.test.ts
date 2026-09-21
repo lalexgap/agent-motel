@@ -219,7 +219,7 @@ describe("parseCodexTranscript", () => {
         type: "response_item",
         payload: { type: "local_shell_call", call_id: "s1", action: { type: "exec", command: ["ls"] } },
       }),
-      JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "s1", output: "a.ts\nb.ts" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "local_shell_call_output", call_id: "s1", output: "a.ts\nb.ts" } }),
     ].join("\n");
     const tool = parseCodexTranscript(jsonl).turns[0] as any;
     expect(tool.name).toBe("shell");

@@ -593,7 +593,7 @@ describe("renderSubagentScreen", () => {
       { colors: true },
     );
     expect(lines[0]).toBe("⏺ Bash(gh pr checks 1)");
-    expect(lines[1]).toBe("\x1b[2m  ⎿  …\x1b[0m");
+    expect(lines[1]).toBe("\x1b[2m  ⎿  …\x1b[22m");
   });
 
   test("the trailing run of unanswered calls is in flight; earlier ones were cut off", () => {

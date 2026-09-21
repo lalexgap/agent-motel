@@ -387,7 +387,8 @@ export function renderSubagentScreen(
   turns: Turn[],
   opts: { colors?: boolean; finished?: boolean } = {},
 ): string[] {
-  const dim = (text: string) => (opts.colors ? `\x1b[2m${text}\x1b[0m` : text);
+  // Undo the dim alone: a full reset would drop the picker's background too.
+  const dim = (text: string) => (opts.colors ? `\x1b[2m${text}\x1b[22m` : text);
   let inFlight = turns.length;
   while (!opts.finished && inFlight > 0 && turns[inFlight - 1]!.kind === "tool") inFlight--;
   const lines: string[] = [];
