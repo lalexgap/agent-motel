@@ -13,7 +13,7 @@ import { basename, dirname, join } from "node:path";
 import { subagentsDir, subagentsFile } from "./paths";
 import { readFileTail } from "./fsutil";
 import { agentProvider, type AgentState } from "./state";
-import { locateTranscript } from "./transcript";
+import { locateTranscript, parseTranscript, type Turn } from "./transcript";
 
 // In-session subagents (Claude Code's Task tool, Codex's subagents) run inside
 // the parent provider process: no tmux session of their own, and the pane
@@ -226,12 +226,26 @@ function sweepStaleTemps(): void {
   }
 }
 
+export interface RunningSubagent {
+  id: string;
+  type: string;
+  startedAt: string;
+}
+
+// Rows the sidebar nests under an agent, capped so a runaway fan-out can't
+// swamp the list. Most recent last, like the ledger.
+const RUNNING_ROWS = 8;
+
 export interface SubagentSummary {
   active: number;
   // The types running, capped: "Explore, code-review +2".
   types: string;
   // Display-ready rollup for the status column: "2 subagents · Explore".
   detail: string;
+  // The running subagents themselves, for the hub's nested rows. Travels in
+  // `am ls --json`, so remote agents get rows in the same fetch — absent
+  // from a remote whose am predates it, which then shows the rollup only.
+  running?: RunningSubagent[];
 }
 
 // The types of what's running, most recent first, capped so a wide fan-out
@@ -245,7 +259,8 @@ export function summarize(records: SubagentRecord[]): SubagentSummary | null {
   }
   const shown = types.slice(0, 2).join(", ") + (types.length > 2 ? ` +${types.length - 2}` : "");
   const noun = open.length === 1 ? "subagent" : "subagents";
-  return { active: open.length, types: shown, detail: `${open.length} ${noun} · ${shown}` };
+  const running = open.slice(-RUNNING_ROWS).map(({ id, type, startedAt }) => ({ id, type, startedAt }));
+  return { active: open.length, types: shown, detail: `${open.length} ${noun} · ${shown}`, running };
 }
 
 export function subagentSummary(name: string): SubagentSummary | null {
@@ -356,4 +371,38 @@ function describeSidechainEntry(entry: Record<string, any>): string | null {
     }
   }
   return described;
+}
+
+const SCREEN_TAIL_BYTES = 256_000;
+
+// A subagent's transcript as a screen: its own words and the tools it reached
+// for, one line each, newest last. Tool output is left out — the parent's
+// pane doesn't show it either, and it's most of the bytes. Pure.
+export function renderSubagentScreen(turns: Turn[]): string[] {
+  const lines: string[] = [];
+  for (const turn of turns) {
+    if (turn.kind === "user") lines.push(`❯ ${clipMessage(turn.text, 120)}`);
+    else if (turn.kind === "assistant") lines.push(...turn.text.split("\n"));
+    else lines.push(`⏺ ${turn.name}(${clipMessage(turn.input, 100)})`);
+  }
+  return lines;
+}
+
+// The subagent's transcript as screen lines, or null when there is none to
+// read yet. Its own file is preferred (the stop hook reports it); a running
+// claude subagent's is derived from its id; codex reports nothing until stop.
+export function subagentScreen(agent: AgentState, record: SubagentRecord): string[] | null {
+  const own = record.transcriptPath && existsSync(record.transcriptPath) ? record.transcriptPath : null;
+  const file = own ?? (agentProvider(agent) === "claude" ? subagentTranscriptFile(agent, record.id) : null);
+  if (!file || !existsSync(file)) return null;
+  const text = readFileTail(file, SCREEN_TAIL_BYTES);
+  if (!text) return null;
+  return renderSubagentScreen(parseTranscript(agentProvider(agent), text, { sidechain: { ownFile: true } }).turns);
+}
+
+// Why a subagent shows no output, in the provider's terms.
+export function subagentNoOutputNote(agent: AgentState): string {
+  return agentProvider(agent) === "codex"
+    ? "no output yet — codex reports a subagent's transcript when it stops"
+    : "no output yet — the subagent hasn't written a turn";
 }

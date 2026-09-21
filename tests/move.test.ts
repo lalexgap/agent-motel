@@ -264,8 +264,8 @@ describe("sortFleetRows", () => {
   });
 });
 
-describe("fleetPickerItem parent relationship", () => {
-  test("uses host-qualified parent keys and shows the parent in details", () => {
+describe("fleetPickerItem spawned-by relationship", () => {
+  test("shows who spawned it on the card without nesting it under them", () => {
     const base = {
       name: "child",
       spawnedBy: "parent",
@@ -276,9 +276,9 @@ describe("fleetPickerItem parent relationship", () => {
       dir: "/tmp/app",
     } as const;
 
-    expect(fleetPickerItem(base as never)).toMatchObject({ parent: "parent" });
+    expect(fleetPickerItem(base as never).parent).toBeUndefined();
     const remote = fleetPickerItem({ ...base, host: "server" } as never);
-    expect(remote.parent).toBe("server:parent");
+    expect(remote.parent).toBeUndefined();
     expect(remote.meta).toContain("parent   parent");
   });
 

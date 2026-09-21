@@ -22,6 +22,9 @@ export interface PickerItem {
   // False for synthetic fleet rows such as an unreachable-host marker. These
   // rows are visible fleet context, but are not unassigned agents.
   roleFilterable?: boolean;
+  // False for rows with nothing to attach to (a built-in subagent): the hub
+  // previews them, the classic picker can't jump into them.
+  attachable?: boolean;
   // Row styling is split into the activity column and compact provider chip.
   labelStyle?: string;
   badge?: string;
@@ -70,13 +73,12 @@ export function visibleItemsForRole(
   filter: string,
   showAll: boolean,
   role: string | null,
-  showHierarchy = true,
 ): PickerItem[] {
   // Choosing a role is an explicit search, just like typing a text filter, so
   // matching exited agents should not disappear behind the default view.
   const visible = visibleItems(items, filter, showAll || !!role)
     .filter((item) => matchesPickerRole(item, role));
-  return showHierarchy ? nestPickerItems(visible) : visible;
+  return nestPickerItems(visible);
 }
 
 export function nestPickerItems(items: PickerItem[]): PickerItem[] {
@@ -774,7 +776,6 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.concierge ? [{ key: "c", label: "concierge" }] : []),
       { key: "f", label: "filter" },
       { key: "r", label: "role" },
-      { key: "t", label: "tree/flat" },
       ...(handlers.regroup ? [{ key: "g", label: "group" }] : []),
       ...(handlers.resort ? [{ key: "s", label: "sort" }] : []),
       ...(hasEditActions(handlers) ? [{ key: "e", label: "edit" }] : []),
@@ -1068,7 +1069,6 @@ export async function pick(
   };
 
   let showAll = false;
-  let showHierarchy = true;
   let roleFilter: string | null = null;
   const matchesRole = (item: PickerItem) => matchesPickerRole(item, roleFilter);
   const filtered = () => {
@@ -1083,7 +1083,7 @@ export async function pick(
         .filter(matchesRole)
         .map((i) => ({ ...i, meta: [`match    ${chatMatch!.get(i.name) ?? ""}`, ...(i.meta ?? [])] }));
     }
-    return visibleItemsForRole(items, filter, showAll, roleFilter, showHierarchy);
+    return visibleItemsForRole(items, filter, showAll, roleFilter);
   };
 
   const paletteCommands = (): PaletteCommand[] => {
@@ -1106,12 +1106,6 @@ export async function pick(
         label: showAll ? "Hide exited agents" : "Show exited agents",
         keywords: "all dead stopped",
         shortcut: "a",
-      },
-      {
-        id: "toggle-hierarchy",
-        label: showHierarchy ? "Flatten agent hierarchy" : "Show agent hierarchy",
-        keywords: "tree flat parent child nesting indentation",
-        shortcut: "t",
       },
       handlers.regroup && { id: "regroup", label: "Toggle host/project grouping", keywords: "group directory", shortcut: "g" },
       handlers.resort && { id: "resort", label: "Cycle status/recent/role sort", keywords: "sort recent newest latest updated role", shortcut: "s" },
@@ -1400,7 +1394,9 @@ export async function pick(
       handlers.highlight(selected.name);
     }
 
-    const current = items.filter((item) => item.status !== "exited" && item.status !== "dead");
+    // Subagent rows carry a status for their glyph but aren't agents — the
+    // tally is what the operator is running, not what those are running.
+    const current = items.filter((item) => item.attachable !== false && item.status !== "exited" && item.status !== "dead");
     const running = current.filter((item) => ["working", "starting", "waiting"].includes(item.status ?? "")).length;
     const needs = current.filter((item) => item.status === "needs-attention").length;
     const idle = current.filter((item) => item.status === "idle").length;
@@ -1503,7 +1499,6 @@ export async function pick(
         ...(handlers.concierge ? [`${key("c")} ask the concierge`] : []),
         `${key("f")} filter names/tasks`,
         `${key("r")} filter by role`,
-        `${key("t")} toggle tree/flat list`,
         `${key("/")} search conversations`,
         `${key("ctrl-k")} command palette`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
@@ -1916,6 +1911,12 @@ export async function pick(
     const activateSelection = () => {
       const match = filtered()[cursor];
       if (!match) return;
+      // The hub can show a subagent (its pane follows the transcript); the
+      // classic picker's "jump" has nowhere to go.
+      if (!handlers.select && match.attachable === false) {
+        feedback = { text: `${match.label} is a subagent — no session to jump into (${match.meta?.at(-1)?.replace(/^output\s+/, "") ?? "see am peek --subagent"})`, level: "info" };
+        return;
+      }
       if (!handlers.select) return finish(match.name);
       feedback = asFeedback(handlers.select(match.name));
       items = load();
@@ -2009,11 +2010,6 @@ export async function pick(
         case "toggle-all":
           mode = "list";
           showAll = !showAll;
-          break;
-        case "toggle-hierarchy":
-          mode = "list";
-          showHierarchy = !showHierarchy;
-          feedback = { text: showHierarchy ? "showing parent tree" : "showing flat list", level: "info" };
           break;
         case "regroup":
           mode = "list";
@@ -2558,9 +2554,6 @@ export async function pick(
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;
-      } else if (key === "t") {
-        showHierarchy = !showHierarchy;
-        feedback = { text: showHierarchy ? "showing parent tree" : "showing flat list", level: "info" };
       } else if (key === "r") {
         const options = pickerRoleFilterOptions(items);
         const current = roleFilter ? options.indexOf(roleFilter) : -1;

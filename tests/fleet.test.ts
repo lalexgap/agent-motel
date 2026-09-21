@@ -6,6 +6,10 @@ import {
   resetFleetCacheForTests,
   setFleetFetchForTests,
   subscribeFleetCache,
+  fleetPickerItem,
+  splitSubagentKey,
+  subagentKey,
+  subagentPickerItems,
   type FleetRow,
 } from "../src/fleet";
 
@@ -221,5 +225,53 @@ describe("hostRenderState", () => {
 
   test("a host that never succeeded and has no stream reads unreachable once settled", () => {
     expect(hostRenderState({ okAt: 0, inFlight: null }, false, now)).toBe("unreachable");
+  });
+});
+
+describe("subagent rows", () => {
+  const row: FleetRow = {
+    name: "api",
+    host: "server",
+    status: "working",
+    provider: "claude",
+    queued: 0,
+    updatedAt: "2026-09-21T10:00:00.000Z",
+    dir: "/tmp",
+    spawnedBy: "lead",
+    subagents: {
+      active: 2,
+      types: "code-review, Explore",
+      detail: "2 subagents · code-review, Explore",
+      running: [
+        { id: "aaaa1111bbbb", type: "Explore", startedAt: "2026-09-21T10:00:00.000Z" },
+        { id: "cccc2222dddd", type: "code-review", startedAt: "2026-09-21T10:01:00.000Z" },
+      ],
+    },
+  };
+
+  test("nest under their agent's key and can't be attached to", () => {
+    const items = subagentPickerItems(row);
+    expect(items.map((i) => i.parent)).toEqual(["server:api", "server:api"]);
+    expect(items.map((i) => i.label)).toEqual(["Explore", "code-review"]);
+    expect(items.every((i) => i.attachable === false && i.roleFilterable === false)).toBe(true);
+    expect(items[0]!.meta?.at(-1)).toBe("output   am peek api --subagent aaaa1111 --follow");
+  });
+
+  test("keys round-trip through the separator", () => {
+    const key = subagentKey("server:api", "aaaa1111bbbb");
+    expect(splitSubagentKey(key)).toEqual({ agentKey: "server:api", id: "aaaa1111bbbb" });
+    expect(splitSubagentKey("server:api")).toBeNull();
+  });
+
+  test("an agent's own row no longer nests under whoever spawned it", () => {
+    const item = fleetPickerItem(row);
+    expect(item.parent).toBeUndefined();
+    // Still a fact on the card.
+    expect(item.meta?.some((line) => line.startsWith("parent   lead"))).toBe(true);
+  });
+
+  test("a remote host that predates running records yields no rows", () => {
+    const older: FleetRow = { ...row, subagents: { active: 1, types: "Explore", detail: "1 subagent · Explore" } };
+    expect(subagentPickerItems(older)).toEqual([]);
   });
 });

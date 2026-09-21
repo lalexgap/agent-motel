@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
-import { cachedRemoteRow, fleetPickerItems, splitFleetKey, startFleetEventWatch, subscribeFleetCache, toggleGroupMode, toggleSortMode } from "../fleet";
-import { sshAm, sshAmAsync, sshRun } from "../remote";
+import { cachedRemoteRow, fleetPickerItems, splitFleetKey, splitSubagentKey, subagentKey, startFleetEventWatch, subscribeFleetCache, toggleGroupMode, toggleSortMode } from "../fleet";
+import { amCommandString, sshAm, sshAmAsync, sshRun } from "../remote";
 import { loadConfig, shortHost } from "../config";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./fleetActions";
 import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerHandlers } from "../picker";
@@ -269,7 +269,31 @@ export async function sidebarCommand(): Promise<void> {
   // Point the right pane at an agent (key = name, or host:name for remote).
   // With focus=false (scroll preview) the sidebar keeps focus; enter/→ pass
   // focus=true to move into the session.
+  // A subagent has no pane of its own: the right pane runs a follow-mode
+  // `am peek --subagent` of its transcript instead — locally, or over ssh the
+  // way an attach would. Focus just moves into that viewer.
+  const showSubagent = (agentKey: string, id: string, focus: boolean): Feedback | null => {
+    const { host, name } = splitFleetKey(agentKey);
+    const pane = ensureRightPane();
+    if (!pane) return { text: "could not create the agent pane", level: "error" };
+    const key = subagentKey(agentKey, id);
+    if (shown !== key) {
+      const peekArgs = ["peek", name, "--subagent", id, "--follow"];
+      const command = host
+        ? `env -u TMUX ssh ${shQuote(host)} -- ${shQuote(amCommandString(peekArgs))}`
+        : `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} ${peekArgs.map(shQuote).join(" ")}`;
+      tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name} ⤷ ${id.slice(0, 8)}`);
+      const respawned = tmux("respawn-pane", "-k", "-t", pane, command);
+      if (respawned.exitCode !== 0) return { text: `subagent view failed: ${respawned.stderr.trim()}`, level: "error" };
+      shown = key;
+    }
+    if (focus) tmux("select-pane", "-t", pane);
+    return null;
+  };
+
   const showAgent = (key: string, focus: boolean): Feedback | null => {
+    const sub = splitSubagentKey(key);
+    if (sub) return showSubagent(sub.agentKey, sub.id, focus);
     const { host, name } = splitFleetKey(key);
     const pane = ensureRightPane();
     if (!pane) return { text: "could not create the agent pane", level: "error" };

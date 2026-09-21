@@ -319,7 +319,31 @@ export function cachedRemotePreview(host: string, agentName: string): string[] |
   return previewCache.get(key)?.lines ?? null;
 }
 
+// A subagent's preview comes from `am peek --subagent` on its host — the
+// same stale-while-revalidate cache, keyed like its sidebar row.
+export function cachedRemoteSubagentPreview(host: string, agentName: string, id: string): string[] | null {
+  const key = subagentKey(`${host}:${agentName}`, id);
+  const entry = previewCache.get(key);
+  if (!entry || (!entry.inFlight && Date.now() - entry.fetchedAt >= PREVIEW_REFRESH_MS)) {
+    previewCache.set(key, {
+      lines: entry?.lines ?? null,
+      fetchedAt: entry?.fetchedAt ?? 0,
+      inFlight: true,
+    });
+    void refreshSubagentPreview(key, host, agentName, id);
+  }
+  return previewCache.get(key)?.lines ?? null;
+}
+
 const PREVIEW_TIMEOUT_MS = 8000;
+
+async function refreshSubagentPreview(key: string, host: string, agentName: string, id: string): Promise<void> {
+  const result = await sshAmAsync(host, ["peek", agentName, "--subagent", id, "--lines", "80"], {
+    timeoutMs: PREVIEW_TIMEOUT_MS,
+  }).catch(() => null);
+  const lines = result && result.exitCode === 0 ? result.stdout.replace(/\n+$/, "").split("\n") : null;
+  previewCache.set(key, { lines, fetchedAt: Date.now(), inFlight: false });
+}
 
 async function refreshPreview(key: string, host: string, agentName: string): Promise<void> {
   // Raw tmux over ssh (no login shell needed): capture the agent's pane.
@@ -449,13 +473,12 @@ function diffDetail(row: FleetRow): string {
 export function fleetPickerItem(r: FleetRow): PickerItem {
   const concierge = conciergeRow(r);
   const since = relativeTime(r.statusChangedAt ?? r.updatedAt);
-  // The concierge creates independent top-level workers for the operator; it
-  // is fleet chrome, not the root of a workload tree.
+  // Who created it is a fact for the card, not a tree: agents no longer
+  // spawn agents, and what nests under a row is its built-in subagents.
+  // The concierge creates workers for the operator, so it isn't shown at all.
   const spawnedBy = r.spawnedBy === CONCIERGE_NAME ? undefined : r.spawnedBy;
-  const parent = spawnedBy ? fleetKey({ name: spawnedBy, host: r.host }) : undefined;
   return {
     name: fleetKey(r),
-    parent,
     section: sectionFor(r, groupMode),
     secondary: r.status === "exited",
     icon: STATUS_ICONS[r.status],
@@ -489,6 +512,49 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
   };
 }
 
+// Sidebar keys for a subagent: the agent's own key, then the subagent id.
+// The separator can't appear in an agent name (alphanumeric, dash,
+// underscore) or a host alias.
+export const SUBAGENT_KEY_SEP = "⤷";
+
+export function subagentKey(agentKey: string, id: string): string {
+  return `${agentKey}${SUBAGENT_KEY_SEP}${id}`;
+}
+
+export function splitSubagentKey(key: string): { agentKey: string; id: string } | null {
+  const at = key.indexOf(SUBAGENT_KEY_SEP);
+  if (at === -1) return null;
+  return { agentKey: key.slice(0, at), id: key.slice(at + SUBAGENT_KEY_SEP.length) };
+}
+
+// The built-in subagents running under an agent, as rows nested beneath it.
+// They have no pane to attach to; selecting one shows its transcript.
+export function subagentPickerItems(r: FleetRow): PickerItem[] {
+  const parentKey = fleetKey(r);
+  return (r.subagents?.running ?? []).map((sub) => ({
+    name: subagentKey(parentKey, sub.id),
+    parent: parentKey,
+    section: sectionFor(r, groupMode),
+    icon: "⤷",
+    iconStyle: GREEN,
+    status: "working",
+    statusLabel: "subagent",
+    label: sub.type,
+    labelStyle: FG,
+    roleFilterable: false,
+    attachable: false,
+    statusAge: relativeTime(sub.startedAt),
+    search: `${sub.type} ${r.name} subagent`,
+    meta: [
+      `subagent ${CYAN}${sub.type}${FG}`,
+      `of       ${r.name}`,
+      `host     ${r.host ?? "local"}`,
+      `started  ${relativeTime(sub.startedAt)}`,
+      `output   am peek ${r.name} --subagent ${sub.id.slice(0, 8)} --follow`,
+    ],
+  }));
+}
+
 export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
   // Local active agents get live diffs from the non-blocking cache — any dir
@@ -501,7 +567,7 @@ export function fleetPickerItems(): PickerItem[] {
       : row,
   );
   const sorted = sortFleetRows(withDiff, groupMode, sortMode);
-  const items: PickerItem[] = sorted.map(fleetPickerItem);
+  const items: PickerItem[] = sorted.flatMap((row) => [fleetPickerItem(row), ...subagentPickerItems(row)]);
   for (const host of unreachable) {
     items.push({
       name: `${host}:`,
