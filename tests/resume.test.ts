@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyResumeOverrides, preferenceEffect } from "../src/commands/resume";
+import { applyResumeOverrides, foldChangeIntoPrompt, preferenceEffect } from "../src/commands/resume";
 import { buildResumeCommand } from "../src/providers";
 import type { AgentState } from "../src/state";
 
@@ -35,7 +35,8 @@ function agent(overrides: Partial<AgentState> = {}): AgentState {
 describe("applyResumeOverrides", () => {
   test("stores the new fan-out preference", () => {
     const a = agent();
-    expect(applyResumeOverrides(a, { preferSubagents: true })).toEqual({});
+    // claude rebuilds its primer, so nothing to say or deliver — just stored.
+    expect(applyResumeOverrides(a, { preferSubagents: true })).toEqual({ stored: true });
     expect(a.preferSubagents).toBe(true);
   });
 
@@ -60,9 +61,20 @@ describe("applyResumeOverrides", () => {
 
   test("resuming again with the same value re-instructs nobody", () => {
     const a = agent({ provider: "codex", preferSubagents: true });
-    expect(applyResumeOverrides(a, { preferSubagents: true })).toEqual({});
+    expect(applyResumeOverrides(a, { preferSubagents: true })).toEqual({ stored: false });
     // Still a real change when it differs from what was stored.
     expect(applyResumeOverrides(a, { preferSubagents: false }).message).toBeDefined();
+  });
+
+  test("a flag matching the config default pins the value without re-instructing", () => {
+    // An unset preference already follows config.preferSubagents (false by
+    // default), so --no-prefer-subagents changes nothing the agent would notice.
+    const a = agent({ provider: "codex" });
+    const effect = applyResumeOverrides(a, { preferSubagents: false });
+    expect(effect.message).toBeUndefined();
+    expect(effect.note).toBeUndefined();
+    expect(effect.stored).toBe(true);
+    expect(a.preferSubagents).toBe(false);
   });
 
   test("the resumed claude session is primed with the new preference", () => {
@@ -71,6 +83,25 @@ describe("applyResumeOverrides", () => {
     const plan = buildResumeCommand("claude", a, {});
     const prompt = plan.command[plan.command.indexOf("--append-system-prompt") + 1]!;
     expect(prompt).toContain("prefer your own built-in subagents");
+  });
+});
+
+describe("foldChangeIntoPrompt", () => {
+  test("codex resuming WITH a task gets the change ahead of it, not queued", () => {
+    // `-m` becomes a launch positional for codex, so a queued instruction
+    // would be typed in mid-turn — after the task already started.
+    const folded = foldChangeIntoPrompt("codex", "CHANGE", "do the thing");
+    expect(folded.message).toBe("CHANGE\n\ndo the thing");
+    expect(folded.queue).toBeUndefined();
+  });
+
+  test("without a task, or on claude, the change is queued as its own message", () => {
+    expect(foldChangeIntoPrompt("codex", "CHANGE", undefined)).toEqual({ message: undefined, queue: "CHANGE" });
+    expect(foldChangeIntoPrompt("claude", "CHANGE", "do it")).toEqual({ message: "do it", queue: "CHANGE" });
+  });
+
+  test("no change passes the task through untouched", () => {
+    expect(foldChangeIntoPrompt("codex", undefined, "do it")).toEqual({ message: "do it" });
   });
 });
 

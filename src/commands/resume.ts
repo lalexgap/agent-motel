@@ -5,6 +5,7 @@ import { ensureDaemon } from "../daemon";
 import { queueAppend, queuePopId } from "../queue";
 import { buildResumeCommand, fanOutChangeMessage, scrubNestedSessionEnv } from "../providers";
 import { CONCIERGE_ROLE, roleForAgent } from "../roles";
+import { loadConfig } from "../config";
 import { ensureCodexHooks } from "../codexHooks";
 import { agentEnv } from "./new";
 
@@ -22,6 +23,9 @@ export interface ResumeOverrides {
   // Delivered to the agent on its way back up, for a provider that can't be
   // handed a fresh system prompt.
   message?: string;
+  // The stored value actually changed, so a failed launch has something to
+  // roll back.
+  stored?: boolean;
 }
 
 // How a changed fan-out preference reaches the resumed session:
@@ -42,7 +46,7 @@ export function preferenceEffect(
   }
   if (provider !== "codex") return {};
   return {
-    note: `saved: ${target} — codex takes it as a message at its first turn, not in its primer`,
+    note: `saved: ${target} — codex takes it as a message before its next turn, not in its primer`,
     message: fanOutChangeMessage(preferSubagents),
   };
 }
@@ -51,11 +55,28 @@ export function preferenceEffect(
 // from the agent's state.
 export function applyResumeOverrides(agent: AgentState, opts: ResumeOpts): ResumeOverrides {
   if (opts.preferSubagents === undefined) return {};
-  // Re-resuming with the same flag (shell history, a retry after a crash)
-  // changes nothing — don't re-instruct the agent about it.
-  if (opts.preferSubagents === agent.preferSubagents) return {};
+  const stored = opts.preferSubagents !== agent.preferSubagents;
+  // An unset preference follows config, so a flag matching the config default
+  // pins the value without changing how the agent behaves — worth storing,
+  // not worth re-instructing the agent about. Re-resuming with the same flag
+  // (shell history, a retry after a crash) changes nothing either.
+  const effective = agent.preferSubagents ?? loadConfig().preferSubagents;
   agent.preferSubagents = opts.preferSubagents;
-  return preferenceEffect(agentProvider(agent), roleForAgent(agent), opts.preferSubagents);
+  if (opts.preferSubagents === effective) return { stored };
+  return { ...preferenceEffect(agentProvider(agent), roleForAgent(agent), opts.preferSubagents), stored };
+}
+
+// Codex takes `-m` as a launch positional, so it starts that task straight
+// away — a queued instruction would be typed in mid-turn. Fold the change into
+// the prompt instead, so the very first turn already runs under it.
+export function foldChangeIntoPrompt(
+  provider: Provider,
+  change: string | undefined,
+  message: string | undefined,
+): { message?: string; queue?: string } {
+  if (!change) return { message };
+  if (provider !== "codex" || !message) return { message, queue: change };
+  return { message: `${change}\n\n${message}` };
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
@@ -70,19 +91,21 @@ export async function reviveAgent(
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   // Before buildResumeCommand: the primer is built from the agent's state.
+  const previous = agent.preferSubagents;
   const overrides = applyResumeOverrides(agent, opts);
   const provider = agentProvider(agent);
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
 
-  const plan = buildResumeCommand(provider, agent, opts);
+  const folded = foldChangeIntoPrompt(provider, overrides.message, opts.message);
+  const plan = buildResumeCommand(provider, agent, { ...opts, message: folded.message });
   // Persist before launching, like `am new` does: the SessionStart hook does a
   // read-modify-write of this file, so a write after launch can be clobbered.
-  if (overrides.message || opts.preferSubagents !== undefined) writeAgent(agent);
+  if (overrides.stored) writeAgent(agent);
 
   // Queue before the session starts so the SessionStart hook finds it.
   const queued: string[] = [];
-  if (overrides.message) queued.push(queueAppend(agent.name, overrides.message));
+  if (folded.queue) queued.push(queueAppend(agent.name, folded.queue));
   if (plan.deferredMessage) queued.push(queueAppend(agent.name, plan.deferredMessage));
 
   try {
@@ -93,10 +116,14 @@ export async function reviveAgent(
       command: scrubNestedSessionEnv(plan.command),
     });
   } catch (error) {
-    // Nothing came up, so take back only what this call queued — otherwise a
-    // failed resume leaves the agent a "your preference changed" note that a
-    // later, unrelated resume would deliver.
+    // Nothing came up. Take back what this call queued and un-store the
+    // preference: leaving it stored would make the retry a no-op, and the
+    // agent would come back never having been told.
     for (const id of queued) queuePopId(agent.name, id);
+    if (overrides.stored) {
+      agent.preferSubagents = previous;
+      writeAgent(agent);
+    }
     throw error;
   }
   updateAgentStatus(agent, "starting", "resuming");
