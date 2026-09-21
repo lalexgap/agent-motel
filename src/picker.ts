@@ -1859,9 +1859,21 @@ export async function pick(
       );
     };
 
+    // A subagent row has no session to act on: every agent action refuses it
+    // here, rather than handing its key to a handler that would read it as an
+    // agent name (and, for a local stop/remove, report a success it never did).
+    const actionable = (target: PickerItem | undefined): target is PickerItem => {
+      if (!target) return false;
+      if (target.attachable === false) {
+        feedback = { text: `${target.label} is a subagent — act on its agent instead`, level: "info" };
+        return false;
+      }
+      return true;
+    };
+
     const runAction = (handler: (name: string) => Feedback) => {
       const target = filtered()[cursor];
-      if (!target) return;
+      if (!actionable(target)) return;
       feedback = asFeedback(handler(target.name));
       items = load();
       if (items.length === 0 && !handlers.create) return finish(null);
@@ -1871,7 +1883,7 @@ export async function pick(
     // into it when done — the picker stays interactive throughout.
     const runDeferred = (working: string, handler: (name: string) => Feedback | Promise<Feedback>) => {
       const target = filtered()[cursor];
-      if (!target) return;
+      if (!actionable(target)) return;
       feedback = { text: `${working} ${target.name}…`, level: "info" };
       Promise.resolve()
         .then(() => handler(target.name))
@@ -2034,28 +2046,28 @@ export async function pick(
           if (handlers.handoff) runDeferred("handing off", handlers.handoff);
           break;
         case "rename":
-          if (target && handlers.rename) {
+          if (actionable(target) && handlers.rename) {
             mode = "rename-name";
             renameTarget = target.name;
             renameName = "";
-          }
+          } else mode = "list";
           break;
         case "cd":
-          if (target && handlers.cd) {
+          if (actionable(target) && handlers.cd) {
             mode = "cd-dir";
             cdTarget = target.name;
             cdDir = handlers.cdPrefill?.(target.name) ?? "";
-          }
+          } else mode = "list";
           break;
         case "stop":
           mode = "list";
           if (handlers.stop) runAction(handlers.stop);
           break;
         case "remove":
-          if (target && handlers.remove) {
+          if (actionable(target) && handlers.remove) {
             mode = "edit";
             confirmRemove = target.name;
-          }
+          } else mode = "list";
           break;
         case "help":
           mode = "help";
@@ -2259,7 +2271,7 @@ export async function pick(
         const target = filtered()[cursor];
         const pending = confirmRemove;
         confirmRemove = null;
-        if (key === "\x1b" || key === "q" || !target) {
+        if (key === "\x1b" || key === "q" || !actionable(target)) {
           mode = "list";
         } else if (key === "m" && handlers.move) {
           mode = "list";
@@ -2570,7 +2582,7 @@ export async function pick(
       } else if (key === "e" && hasEditActions(handlers)) {
         // Agent-mutating actions live one level down: e opens the edit menu
         // for the highlighted agent, keeping the top level to view keys.
-        if (filtered()[cursor]) {
+        if (actionable(filtered()[cursor])) {
           mode = "edit";
           feedback = null;
         }

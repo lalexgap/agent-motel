@@ -5,7 +5,7 @@ import { agentProvider, listAgents, readAgent, recordAttached, type Provider } f
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { cachedRemoteRow, fleetPickerItems, splitFleetKey, splitSubagentKey, subagentKey, startFleetEventWatch, subscribeFleetCache, toggleGroupMode, toggleSortMode } from "../fleet";
-import { amCommandString, sshAm, sshAmAsync, sshRun } from "../remote";
+import { sshAm, sshAmAsync, sshAmTtyCommand, sshRun } from "../remote";
 import { loadConfig, shortHost } from "../config";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./fleetActions";
 import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerHandlers } from "../picker";
@@ -280,7 +280,7 @@ export async function sidebarCommand(): Promise<void> {
     if (shown !== key) {
       const peekArgs = ["peek", name, "--subagent", id, "--follow"];
       const command = host
-        ? `env -u TMUX ssh ${shQuote(host)} -- ${shQuote(amCommandString(peekArgs))}`
+        ? `env -u TMUX ${sshAmTtyCommand(host, peekArgs)}`
         : `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} ${peekArgs.map(shQuote).join(" ")}`;
       tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name} ⤷ ${id.slice(0, 8)}`);
       const respawned = tmux("respawn-pane", "-k", "-t", pane, command);

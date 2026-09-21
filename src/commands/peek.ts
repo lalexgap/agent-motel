@@ -1,4 +1,4 @@
-import { resolveAgent, type AgentState } from "../state";
+import { readAgent, resolveAgent, type AgentState } from "../state";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { readSnapshot } from "../snapshots";
 import { displayStatus } from "./ls";
@@ -31,17 +31,14 @@ async function peekSubagent(
   query: string,
   opts: { lines?: number; follow?: boolean },
 ): Promise<void> {
-  const find = (): SubagentRecord => {
-    const records = readSubagents(agent.name);
-    if (records.length === 0) throw new Error(`agent "${agent.name}" has no recorded subagents`);
-    const record = matchSubagent(records, query);
-    if (!record) {
-      const known = [...new Set(records.map((r) => r.type))].join(", ");
-      throw new Error(`no subagent matches "${query}" — ${agent.name} has: ${known}`);
-    }
-    return record;
-  };
-  let record = find();
+  const records = readSubagents(agent.name);
+  if (records.length === 0) throw new Error(`agent "${agent.name}" has no recorded subagents`);
+  const matched = matchSubagent(records, query);
+  if (!matched) {
+    const known = [...new Set(records.map((r) => r.type))].join(", ");
+    throw new Error(`no subagent matches "${query}" — ${agent.name} has: ${known}`);
+  }
+  let record: SubagentRecord = matched;
   const frame = (): string[] => {
     const body = subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
     const tail = opts.lines && opts.lines > 0 ? body.slice(-opts.lines) : body;
@@ -52,14 +49,30 @@ async function peekSubagent(
     console.log(frame().join("\n"));
     return;
   }
+  const draw = () => process.stdout.write(`\x1b[2J\x1b[H${frame().join("\n")}\n`);
   for (;;) {
-    process.stdout.write(`\x1b[2J\x1b[H${frame().join("\n")}\n`);
+    draw();
     if (record.endedAt) {
       if (record.message) console.log(`\n✔ ${record.message}`);
       return;
     }
     await Bun.sleep(FOLLOW_MS);
-    record = find();
+    // Pinned to the id once matched: a type query must not drift to a newer
+    // subagent of the same type mid-follow.
+    const id = record.id;
+    const next = readSubagents(agent.name).find((r) => r.id === id);
+    if (!next) {
+      console.log("\n(subagent no longer recorded)");
+      return;
+    }
+    record = next;
+    // The record only closes on the parent's turn-end hook: an agent that is
+    // removed or whose session died mid-run leaves it open forever.
+    if (!record.endedAt && (!readAgent(agent.name) || !hasSession(agent.tmuxSession))) {
+      draw();
+      console.log(`\n(${agent.name} has no live session — the subagent died with it)`);
+      return;
+    }
   }
 }
 

@@ -74,6 +74,13 @@ export function amCommandString(args: string[]): string {
   return ["am", ...args].map(shQuote).join(" ");
 }
 
+// An interactive `am <args>` on the host as one shell command string, for a
+// tmux pane to run (the hub's subagent view): the same login-shell + mux +
+// tty setup as sshAmInteractive, so `am` resolves on the remote's PATH.
+export function sshAmTtyCommand(host: string, args: string[]): string {
+  return sshArgv(host, amCommandString(args), true).map(shQuote).join(" ");
+}
+
 // argv for a long-lived streaming `am <args>` on the host (the `__events`
 // subscription) — the same login-shell + mux setup as sshAm, exposed so the
 // caller can own the child process itself (liveness kills, reconnects). The
