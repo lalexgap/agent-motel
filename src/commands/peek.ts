@@ -2,7 +2,7 @@ import { readAgent, resolveAgent, type AgentState } from "../state";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { readSnapshot } from "../snapshots";
 import { displayStatus } from "./ls";
-import { readSubagents, subagentNoOutputNote, subagentScreen, type SubagentRecord } from "../subagents";
+import { readSubagents, subagentLabel, subagentNoOutputNote, subagentScreen, type SubagentRecord } from "../subagents";
 import { matchSubagent } from "./transcript";
 import { ageOf } from "./subagents";
 
@@ -43,7 +43,7 @@ async function peekSubagent(
     const body = subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
     const tail = opts.lines && opts.lines > 0 ? body.slice(-opts.lines) : body;
     const state = record.endedAt ? " · finished" : "";
-    return [`⤷ ${record.type} · ${agent.name} · ${ageOf(record, Date.now())}${state}`, "", ...tail];
+    return [`⤷ ${subagentLabel(record)} · ${agent.name} · ${ageOf(record, Date.now())}${state}`, "", ...tail];
   };
   if (!opts.follow) {
     console.log(frame().join("\n"));

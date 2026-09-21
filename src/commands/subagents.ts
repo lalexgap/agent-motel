@@ -1,5 +1,5 @@
 import { agentProvider, listAgents, resolveAgent, type AgentState } from "../state";
-import { readSubagents, subagentActivity, type SubagentRecord } from "../subagents";
+import { readSubagents, subagentActivity, subagentLabel, type SubagentRecord } from "../subagents";
 import { formatDuration } from "./hook";
 import { displayStatus, relativeTime } from "./ls";
 
@@ -37,11 +37,11 @@ export function subagentLines(
     if (!record.endedAt && !live) {
       // Nothing recorded when it stopped, so any age would just keep climbing
       // for something that died with the session.
-      return { icon: "✕", type: record.type, id: record.id.slice(0, 8), age: "—", detail: "ended with the session" };
+      return { icon: "✕", type: subagentLabel(record), id: record.id.slice(0, 8), age: "—", detail: "ended with the session" };
     }
     return {
       icon: record.endedAt ? "✔" : "●",
-      type: record.type,
+      type: subagentLabel(record),
       id: record.id.slice(0, 8),
       age: ageOf(record, now),
       detail: (record.endedAt ? record.message : activity.get(record.id)) ?? "—",
@@ -67,14 +67,14 @@ interface ColumnWidths {
 // single header lines up with all of its groups — not just the first.
 export function columnWidths(lines: SubagentLine[]): ColumnWidths {
   return {
-    type: Math.max(4, ...lines.map((l) => l.type.length)),
+    type: Math.max(8, ...lines.map((l) => l.type.length)),
     id: Math.max(2, ...lines.map((l) => l.id.length)),
     age: Math.max(3, ...lines.map((l) => l.age.length)),
   };
 }
 
 export function subagentHeader(w: ColumnWidths): string {
-  return `  ${"TYPE".padEnd(w.type)}  ${"ID".padEnd(w.id)}  ${"AGE".padEnd(w.age)}  DETAIL`;
+  return `  ${"SUBAGENT".padEnd(w.type)}  ${"ID".padEnd(w.id)}  ${"AGE".padEnd(w.age)}  DETAIL`;
 }
 
 export function subagentRows(lines: SubagentLine[], w: ColumnWidths, width = 60): string[] {

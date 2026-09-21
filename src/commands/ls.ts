@@ -6,7 +6,7 @@ import { claudeProjectSlug } from "../transcript";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
-import { subagentSummary, type SubagentSummary } from "../subagents";
+import { describeRunning, subagentSummary, type SubagentSummary } from "../subagents";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -319,7 +319,7 @@ export function agentRows(): AgentRow[] {
   return listAgents().map((a) => {
     const status = displayStatus(a);
     const { roleInstructions: _roleInstructions, ...visible } = a;
-    const subagents = liveSubagents(status, () => subagentSummary(a.name));
+    const subagents = liveSubagents(status, () => describeRunning(a, subagentSummary(a.name)));
     return {
       ...visible,
       status,

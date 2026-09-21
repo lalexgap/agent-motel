@@ -77,7 +77,7 @@ am subagents api                   # api's subagents, running ones first
 am transcript api --subagent Explore  # read one subagent's side-chain
 ```
 
-While they run, the hub nests them under their agent (`⤷ Explore`) — select one and the right pane follows its output, which is what `am peek <name> --subagent <id|type> --follow` prints in a shell — and `am ls` shows the rollup on the parent's status (`working · 2 subagents · Explore`). They can't be messaged, interrupted, or attached to, and they die with the session that spawned them (most with the turn — a forked/background one runs on until it finishes) — use `am run` for work you need to steer.
+While they run, the hub nests them under their agent, labelled by what they were asked when the provider says (`⤷ Shepherd PR 74`, else `⤷ Explore`) — select one and the right pane follows its output, which is what `am peek <name> --subagent <id|type> --follow` prints in a shell — and `am ls` shows the rollup on the parent's status (`working · 2 subagents · Explore`). They can't be messaged, interrupted, or attached to, and they die with the session that spawned them (most with the turn — a forked/background one runs on until it finishes) — use `am run` for work you need to steer.
 
 Agents delegate this way by default: an implementor or a reviewer an agent needs is a subagent, and it spawns another am agent only when you explicitly ask for one. The fleet stays a flat list of things you asked for, each fanning out in-session.
 
