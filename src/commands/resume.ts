@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { agentProvider, resolveAgent, updateAgentStatus, writeAgent, type AgentState, type Provider } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
-import { queueAppend } from "../queue";
-import { buildResumeCommand, fanOutInstruction, scrubNestedSessionEnv } from "../providers";
+import { queueAppend, queuePopId } from "../queue";
+import { buildResumeCommand, fanOutChangeMessage, scrubNestedSessionEnv } from "../providers";
 import { CONCIERGE_ROLE, roleForAgent } from "../roles";
 import { ensureCodexHooks } from "../codexHooks";
 import { agentEnv } from "./new";
@@ -43,7 +43,7 @@ export function preferenceEffect(
   if (provider !== "codex") return {};
   return {
     note: `saved: ${target} — codex takes it as a message at its first turn, not in its primer`,
-    message: `[am] Your fan-out preference changed. From now on:\n\n${fanOutInstruction(preferSubagents)}`,
+    message: fanOutChangeMessage(preferSubagents),
   };
 }
 
@@ -51,6 +51,9 @@ export function preferenceEffect(
 // from the agent's state.
 export function applyResumeOverrides(agent: AgentState, opts: ResumeOpts): ResumeOverrides {
   if (opts.preferSubagents === undefined) return {};
+  // Re-resuming with the same flag (shell history, a retry after a crash)
+  // changes nothing — don't re-instruct the agent about it.
+  if (opts.preferSubagents === agent.preferSubagents) return {};
   agent.preferSubagents = opts.preferSubagents;
   return preferenceEffect(agentProvider(agent), roleForAgent(agent), opts.preferSubagents);
 }
@@ -73,16 +76,29 @@ export async function reviveAgent(
   if (provider === "codex") ensureCodexHooks();
 
   const plan = buildResumeCommand(provider, agent, opts);
-  // Queue before the session starts so the SessionStart hook finds it.
-  if (overrides.message) queueAppend(agent.name, overrides.message);
-  if (plan.deferredMessage) queueAppend(agent.name, plan.deferredMessage);
+  // Persist before launching, like `am new` does: the SessionStart hook does a
+  // read-modify-write of this file, so a write after launch can be clobbered.
+  if (overrides.message || opts.preferSubagents !== undefined) writeAgent(agent);
 
-  newSession({
-    session: agent.tmuxSession,
-    dir: agent.dir,
-    env: agentEnv(agent.name),
-    command: scrubNestedSessionEnv(plan.command),
-  });
+  // Queue before the session starts so the SessionStart hook finds it.
+  const queued: string[] = [];
+  if (overrides.message) queued.push(queueAppend(agent.name, overrides.message));
+  if (plan.deferredMessage) queued.push(queueAppend(agent.name, plan.deferredMessage));
+
+  try {
+    newSession({
+      session: agent.tmuxSession,
+      dir: agent.dir,
+      env: agentEnv(agent.name),
+      command: scrubNestedSessionEnv(plan.command),
+    });
+  } catch (error) {
+    // Nothing came up, so take back only what this call queued — otherwise a
+    // failed resume leaves the agent a "your preference changed" note that a
+    // later, unrelated resume would deliver.
+    for (const id of queued) queuePopId(agent.name, id);
+    throw error;
+  }
   updateAgentStatus(agent, "starting", "resuming");
   writeAgent(agent);
   return overrides.note ?? null;

@@ -17,11 +17,15 @@ const DELEGATION_AM_AGENTS_FIRST = `When asked to spin up, message, check on, or
 
 const DELEGATION_SUBAGENTS_FIRST = `When you FAN WORK OUT, prefer your own built-in subagents (the Task tool) over spawning am agents: they start instantly, inherit this session's context, and am reports them — \`am subagents\` lists them and the hub shows a rollup while they run. Spawn a real am agent only when the work genuinely needs its own room: something the operator will want to attach to, message, interrupt, or leave running past this turn — a subagent has no pane, takes no messages, and dies with your turn. When asked to spin up, message, check on, or stop OTHER AGENTS, still use the am CLI via Bash, never your Task tool:`;
 
-// The fan-out paragraph on its own, for re-instructing a running agent whose
-// preference changed (codex, which can't be handed a fresh system prompt on
-// resume, takes it as a message instead).
-export function fanOutInstruction(preferSubagents: boolean): string {
-  return preferSubagents ? DELEGATION_SUBAGENTS_FIRST : DELEGATION_AM_AGENTS_FIRST;
+// Re-instruction for an agent whose fan-out preference changed mid-life
+// (codex, which can't be handed a fresh system prompt on resume, takes it as a
+// message). Deliberately NOT the primer's paragraph: those are lead-ins to the
+// sections that follow them, and standalone they trail off into a list that
+// was never sent.
+export function fanOutChangeMessage(preferSubagents: boolean): string {
+  return preferSubagents
+    ? `[am] Your fan-out preference changed: from now on, prefer your own built-in subagents (the Task tool) over spawning am agents. They start instantly, inherit this session's context, and am reports them (\`am subagents\`). Spawn a real am agent only when the work needs its own room — something the operator will want to attach to, message, interrupt, or leave running past this turn. Spinning up, messaging, checking on and stopping OTHER agents still goes through the am CLI.`
+    : `[am] Your fan-out preference changed: from now on, delegate whole tasks to am agents (\`am new\` / \`am run\`) rather than your built-in subagents, so the operator can watch, message and steer that work. Keep your Task tool for scoped lookups and short-lived subtasks inside a task you own. Implementation goes to an engineer and review to a reviewer: \`am run <name> --role engineer|reviewer --in-place -m "<brief>"\`.`;
 }
 
 // Injected via --append-system-prompt (claude) or prepended to the initial

@@ -58,6 +58,13 @@ describe("applyResumeOverrides", () => {
     expect(effect.message).toContain("Your fan-out preference changed");
   });
 
+  test("resuming again with the same value re-instructs nobody", () => {
+    const a = agent({ provider: "codex", preferSubagents: true });
+    expect(applyResumeOverrides(a, { preferSubagents: true })).toEqual({});
+    // Still a real change when it differs from what was stored.
+    expect(applyResumeOverrides(a, { preferSubagents: false }).message).toBeDefined();
+  });
+
   test("the resumed claude session is primed with the new preference", () => {
     const a = agent();
     applyResumeOverrides(a, { preferSubagents: true });
@@ -79,7 +86,17 @@ describe("preferenceEffect", () => {
 
     const back = preferenceEffect("codex", undefined, false);
     expect(back.note).toContain("prefer am agents");
-    expect(back.message).toContain("Spawn a real am agent when delegating a WHOLE task");
+    expect(back.message).toContain("delegate whole tasks to am agents");
+  });
+
+  test("the delivered message stands on its own, unlike the primer paragraph", () => {
+    // The primer's paragraphs are lead-ins to the sections under them, so a
+    // standalone copy would trail off into a list that was never sent.
+    for (const prefer of [true, false]) {
+      const message = preferenceEffect("codex", undefined, prefer).message!;
+      expect(message.trimEnd().endsWith(":")).toBe(false);
+      expect(message).not.toContain("below");
+    }
   });
 
   test("the concierge says the setting can't apply instead of silently ignoring it", () => {
