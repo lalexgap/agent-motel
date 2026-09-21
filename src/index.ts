@@ -99,7 +99,7 @@ usage:
                               (--prefer-subagents changes how it fans work out
                                from here on — stored, and applied to the
                                resumed session: claude in its primer, codex as
-                               a message it reads before its next turn)
+                               a queued message)
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role

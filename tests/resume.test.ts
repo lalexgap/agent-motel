@@ -112,7 +112,7 @@ describe("preferenceEffect", () => {
 
   test("codex gets the new instruction as a message, and is told so", () => {
     const effect = preferenceEffect("codex", undefined, true);
-    expect(effect.note).toContain("takes it as a message");
+    expect(effect.note).toContain("queued message");
     expect(effect.message).toContain("prefer your own built-in subagents");
 
     const back = preferenceEffect("codex", undefined, false);

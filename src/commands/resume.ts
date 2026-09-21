@@ -46,7 +46,7 @@ export function preferenceEffect(
   }
   if (provider !== "codex") return {};
   return {
-    note: `saved: ${target} — codex takes it as a message before its next turn, not in its primer`,
+    note: `saved: ${target} — codex takes it as a queued message rather than in its primer, so it applies once it reads that message`,
     message: fanOutChangeMessage(preferSubagents),
   };
 }
@@ -68,7 +68,8 @@ export function applyResumeOverrides(agent: AgentState, opts: ResumeOpts): Resum
 
 // Codex takes `-m` as a launch positional, so it starts that task straight
 // away — a queued instruction would be typed in mid-turn. Fold the change into
-// the prompt instead, so the very first turn already runs under it.
+// the prompt instead, so that turn already runs under it. (An older backlog
+// still delivers ahead of it; the queue is FIFO and this doesn't jump it.)
 export function foldChangeIntoPrompt(
   provider: Provider,
   change: string | undefined,
@@ -103,12 +104,13 @@ export async function reviveAgent(
   // read-modify-write of this file, so a write after launch can be clobbered.
   if (overrides.stored) writeAgent(agent);
 
-  // Queue before the session starts so the SessionStart hook finds it.
+  // Queue before the session starts so the SessionStart hook finds it — and
+  // inside the try, because a queue write can fail too (a full or unwritable
+  // disk), and that must roll back exactly like a failed launch.
   const queued: string[] = [];
-  if (folded.queue) queued.push(queueAppend(agent.name, folded.queue));
-  if (plan.deferredMessage) queued.push(queueAppend(agent.name, plan.deferredMessage));
-
   try {
+    if (folded.queue) queued.push(queueAppend(agent.name, folded.queue));
+    if (plan.deferredMessage) queued.push(queueAppend(agent.name, plan.deferredMessage));
     newSession({
       session: agent.tmuxSession,
       dir: agent.dir,
@@ -116,13 +118,19 @@ export async function reviveAgent(
       command: scrubNestedSessionEnv(plan.command),
     });
   } catch (error) {
-    // Nothing came up. Take back what this call queued and un-store the
-    // preference: leaving it stored would make the retry a no-op, and the
-    // agent would come back never having been told.
-    for (const id of queued) queuePopId(agent.name, id);
-    if (overrides.stored) {
-      agent.preferSubagents = previous;
-      writeAgent(agent);
+    // Only roll back a session that never came up: newSession creates the
+    // session before configuring it, so a throw can arrive with the agent
+    // already live and primed for the new preference — reverting then would
+    // leave the stored state disagreeing with the running primer.
+    if (!hasSession(agent.tmuxSession)) {
+      // Take back what this call queued and un-store the preference: leaving
+      // it stored would make the retry a no-op, and the agent would come back
+      // never having been told.
+      for (const id of queued) queuePopId(agent.name, id);
+      if (overrides.stored) {
+        agent.preferSubagents = previous;
+        writeAgent(agent);
+      }
     }
     throw error;
   }
