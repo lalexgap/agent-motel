@@ -18,6 +18,7 @@ import { reviveAgent } from "./resume";
 import { readLastAttached } from "../state";
 import { ensureDaemon, watchDaemonEvents } from "../daemon";
 import { CONCIERGE_ROLE, listRoles } from "../roles";
+import type { RoleOption } from "../picker";
 import { catalogsForHost } from "./models";
 
 // Persistent split view: a hub tmux session whose left pane runs the sidebar
@@ -31,7 +32,7 @@ const HIGHLIGHT_DEBOUNCE_MS = 150;
 export function roleOptionsForHost(
   host: string | undefined,
   run: typeof sshAmAsync = sshAmAsync,
-): { name: string; description?: string }[] | Promise<{ name: string; description?: string }[]> {
+): RoleOption[] | Promise<RoleOption[]> {
   if (!host) return listRoles().filter((role) => role.name !== CONCIERGE_ROLE);
   return run(host, ["role", "list", "--json"], { timeoutMs: 4000 }).then((result) => {
     if (result.exitCode !== 0) {
@@ -41,12 +42,13 @@ export function roleOptionsForHost(
       const roles = JSON.parse(result.stdout) as unknown;
       if (!Array.isArray(roles)) throw new Error("role list is not an array");
       return roles
-        .filter((role): role is { name: string; description?: string } =>
+        .filter((role): role is { name: string; description?: string; provider?: string } =>
           !!role && typeof role === "object" && typeof (role as { name?: unknown }).name === "string")
         .filter((role) => role.name !== CONCIERGE_ROLE)
         .map((role) => ({
           name: role.name,
           ...(typeof role.description === "string" && role.description ? { description: role.description } : {}),
+          ...(role.provider === "claude" || role.provider === "codex" ? { provider: role.provider } : {}),
         }));
     } catch {
       throw new Error(`could not load roles from ${host}: invalid JSON response`);

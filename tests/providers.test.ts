@@ -42,6 +42,15 @@ describe("agentSystemPrompt", () => {
     expect(prompt).toContain("Avoid generic names");
   });
 
+  test("routes implementation to an engineer agent, except for the engineer itself", () => {
+    const prompt = agentSystemPrompt("worker");
+    expect(prompt).toContain("--role engineer --in-place");
+    expect(prompt).toContain("hand implementation to an engineer agent");
+    const engineer = agentSystemPrompt("worker", { role: "engineer", roleInstructions: "Write the code." });
+    expect(engineer).not.toContain("--role engineer --in-place");
+    expect(engineer).toContain("# Your role: engineer");
+  });
+
   test("adds the reporting briefing only when a target is set", () => {
     const prompt = agentSystemPrompt("worker", { reportTo: "lead" });
     expect(prompt).toContain('You are reporting to "lead"');

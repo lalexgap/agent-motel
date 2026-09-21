@@ -80,11 +80,13 @@ usage:
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens the provider's session picker)
-  am run <name> -m msg [--dir path] [--worktree b] [--codex]
+  am run <name> -m msg [--dir path] [--worktree b | --in-place] [--codex]
                        [--role name] [--timeout secs] [--rm] [--json]
                               spawn a real agent, wait for its turn, print its
                               final message (for fan-out: the agent stays in
-                              am ls unless --rm; exit 1 if blocked/timed out)
+                              am ls unless --rm; exit 1 if blocked/timed out;
+                              --in-place works in the caller's checkout:
+                              am run x --role engineer --in-place -m "...")
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
@@ -118,6 +120,10 @@ usage:
                               --description adds a short UI summary; --force replaces)
   am role model <name> --claude|--codex --model <model>
                               set a role default (--clear removes it)
+  am role provider <name> --claude|--codex
+                              pin the provider a role launches on
+                              (--clear unpins; --claude/--codex on the spawn
+                               still win)
   am role rm <name>           remove a custom role (built-ins are protected)
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
@@ -532,6 +538,7 @@ async function main(): Promise<void> {
         message: runMessage,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+        inPlace: !!args.flags["in-place"],
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,

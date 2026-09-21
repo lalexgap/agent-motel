@@ -11,6 +11,9 @@ export interface RunOptions {
   message: string;
   dir?: string;
   worktree?: string;
+  // Run in `dir` as-is instead of taking a fresh worktree — how an engineer
+  // agent implements into the caller's own checkout.
+  inPlace?: boolean;
   provider?: Provider;
   model?: string;
   effort?: string;
@@ -149,6 +152,7 @@ export async function runAgent(name: string, opts: RunOptions): Promise<RunResul
     message: opts.message,
     dir: opts.dir,
     worktree: opts.worktree,
+    inPlace: opts.inPlace,
     provider: opts.provider,
     model: opts.model,
     effort: opts.effort,

@@ -1,6 +1,6 @@
 import type { Provider } from "../state";
 import { providerCatalog, validateSelection } from "../catalog";
-import { addRole, getRole, listRoles, removeRole, setRoleModel } from "../roles";
+import { addRole, getRole, listRoles, removeRole, setRoleModel, setRoleProvider } from "../roles";
 
 export interface RoleCommandOptions {
   json?: boolean;
@@ -18,7 +18,8 @@ export function roleCommand(action: string | undefined, name: string | undefined
     if (opts.json) console.log(JSON.stringify(roles, null, 2));
     else if (!roles.length) console.log("no roles defined");
     else for (const role of roles) {
-      console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}${role.description ? `  · ${role.description}` : ""}`);
+      const pin = role.provider ? `  · ${role.provider}` : "";
+      console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}${pin}${role.description ? `  · ${role.description}` : ""}`);
     }
     return;
   }
@@ -31,10 +32,19 @@ export function roleCommand(action: string | undefined, name: string | undefined
     else {
       console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}`);
       if (role.description) console.log(role.description);
+      if (role.provider) console.log(`provider: ${role.provider}`);
       for (const [provider, model] of Object.entries(role.models ?? {})) console.log(`${provider} model: ${model}`);
       console.log("");
       console.log(role.instructions);
     }
+    return;
+  }
+  if (action === "provider") {
+    if (opts.clear ? !!opts.provider : !opts.provider) {
+      throw new Error("pass either --claude/--codex or --clear");
+    }
+    const role = setRoleProvider(name, opts.clear ? undefined : opts.provider);
+    console.log(role.provider ? `role "${name}" now launches on ${role.provider}` : `role "${name}" no longer pins a provider`);
     return;
   }
   if (action === "model") {
@@ -63,5 +73,5 @@ export function roleCommand(action: string | undefined, name: string | undefined
     console.log(`removed role "${name}"`);
     return;
   }
-  throw new Error(`unknown role action "${action}" — use list, show, add, model, or rm`);
+  throw new Error(`unknown role action "${action}" — use list, show, add, model, provider, or rm`);
 }
