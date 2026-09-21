@@ -32,6 +32,11 @@ export interface SubagentRecord {
   // "Explore", "general-purpose", a custom agent name — whatever the provider
   // reports as agent_type.
   type: string;
+  // What it was asked to do, when the provider says: Claude writes the Agent
+  // tool's description ("Shepherd PR 74", "/code-review 66 high") to a
+  // sidecar beside the transcript. Most of Claude's subagents are the
+  // default "general-purpose" type, so this is what tells them apart.
+  description?: string;
   startedAt: string;
   endedAt?: string;
   // last_assistant_message from the stop hook: the subagent's answer, capped.
@@ -42,7 +47,7 @@ export interface SubagentRecord {
 }
 
 type LedgerEvent =
-  | { ev: "start"; id: string; type?: string; at: string }
+  | { ev: "start"; id: string; type?: string; desc?: string; at: string }
   | { ev: "stop"; id: string; type?: string; at: string; msg?: string; transcript?: string }
   // A turn boundary closes the subagents still open, except the ones named in
   // `except` — forked/background subagents outlive the turn that spawned them
@@ -69,9 +74,15 @@ function append(name: string, event: LedgerEvent): void {
 
 export function recordSubagentStart(
   name: string,
-  sub: { id: string; type?: string; at?: string },
+  sub: { id: string; type?: string; description?: string; at?: string },
 ): void {
-  append(name, { ev: "start", id: sub.id, type: sub.type, at: sub.at ?? new Date().toISOString() });
+  append(name, {
+    ev: "start",
+    id: sub.id,
+    type: sub.type,
+    desc: sub.description ? clipMessage(sub.description, 120) : undefined,
+    at: sub.at ?? new Date().toISOString(),
+  });
   compactIfLarge(name);
 }
 
@@ -142,6 +153,7 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
       // A provider that reuses an id starts a NEW run: without this the
       // record stays closed and never reads as running again.
       record.startedAt = event.at;
+      record.description = event.desc;
       record.endedAt = undefined;
       record.message = undefined;
       record.transcriptPath = undefined;
@@ -187,7 +199,7 @@ function compactIfLarge(name: string): void {
   const kept = [...open, ...finished].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
   const lines: string[] = [];
   for (const record of kept) {
-    lines.push(JSON.stringify({ ev: "start", id: record.id, type: record.type, at: record.startedAt }));
+    lines.push(JSON.stringify({ ev: "start", id: record.id, type: record.type, desc: record.description, at: record.startedAt }));
     if (record.endedAt) {
       lines.push(
         JSON.stringify({
@@ -229,7 +241,13 @@ function sweepStaleTemps(): void {
 export interface RunningSubagent {
   id: string;
   type: string;
+  description?: string;
   startedAt: string;
+}
+
+// How a subagent is named to a person: what it was asked, else its type.
+export function subagentLabel(sub: { type: string; description?: string }): string {
+  return sub.description?.trim() || sub.type;
 }
 
 // Rows the sidebar nests under an agent, capped so a runaway fan-out can't
@@ -255,11 +273,12 @@ export function summarize(records: SubagentRecord[]): SubagentSummary | null {
   if (open.length === 0) return null;
   const types: string[] = [];
   for (const record of [...open].reverse()) {
-    if (!types.includes(record.type)) types.push(record.type);
+    const label = subagentLabel(record);
+    if (!types.includes(label)) types.push(label);
   }
   const shown = types.slice(0, 2).join(", ") + (types.length > 2 ? ` +${types.length - 2}` : "");
   const noun = open.length === 1 ? "subagent" : "subagents";
-  const running = open.slice(-RUNNING_ROWS).map(({ id, type, startedAt }) => ({ id, type, startedAt }));
+  const running = open.slice(-RUNNING_ROWS).map(({ id, type, description, startedAt }) => ({ id, type, description, startedAt }));
   return { active: open.length, types: shown, detail: `${open.length} ${noun} · ${shown}`, running };
 }
 
@@ -317,17 +336,53 @@ export function subagentTranscriptFile(agent: AgentState, subagentId: string): s
 // read is treated as foreground — the ledger should never hold a record open
 // on a guess.
 export function isBackgroundSubagent(agent: AgentState, subagentId: string): boolean {
-  // Codex has no such sidecar, and locating its rollout can walk the whole
-  // ~/.codex/sessions tree — not something to do per record inside a hook.
-  if (agentProvider(agent) !== "claude") return false;
+  return readSubagentMeta(agent, subagentId)?.requestShape === "background";
+}
+
+interface SubagentMeta {
+  agentType?: string;
+  description?: string;
+  name?: string;
+  requestShape?: string;
+}
+
+// The sidecar Claude writes beside a subagent's transcript at spawn. Codex has
+// no such file, and locating its rollout can walk the whole ~/.codex/sessions
+// tree — not something to do per record inside a hook.
+export function readSubagentMeta(agent: AgentState, subagentId: string): SubagentMeta | null {
+  if (agentProvider(agent) !== "claude") return null;
   const transcript = subagentTranscriptFile(agent, subagentId);
-  if (!transcript) return false;
+  if (!transcript) return null;
   try {
     const meta = JSON.parse(readFileSync(transcript.replace(/\.jsonl$/, ".meta.json"), "utf8"));
-    return meta?.requestShape === "background";
+    return meta && typeof meta === "object" ? (meta as SubagentMeta) : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function subagentDescription(agent: AgentState, subagentId: string): string | undefined {
+  const description = readSubagentMeta(agent, subagentId)?.description;
+  return typeof description === "string" && description.trim() ? description : undefined;
+}
+
+// Fill in descriptions the start hook didn't catch (the sidecar can land a
+// beat after the hook fires) from the live sidecar. Running ones only: a
+// finished subagent's files are gone soon after, and its ledger row is all
+// that remains.
+export function describeRunning(agent: AgentState, summary: SubagentSummary | null): SubagentSummary | null {
+  if (!summary?.running || agentProvider(agent) !== "claude") return summary;
+  const running = summary.running.map((sub) =>
+    sub.description ? sub : { ...sub, description: subagentDescription(agent, sub.id) },
+  );
+  const types: string[] = [];
+  for (const sub of [...running].reverse()) {
+    const label = subagentLabel(sub);
+    if (!types.includes(label)) types.push(label);
+  }
+  const shown = types.slice(0, 2).join(", ") + (types.length > 2 ? ` +${types.length - 2}` : "");
+  const noun = summary.active === 1 ? "subagent" : "subagents";
+  return { ...summary, running, types: shown, detail: `${summary.active} ${noun} · ${shown}` };
 }
 
 // What each of the given subagents is doing right now, keyed by id. Codex

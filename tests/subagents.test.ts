@@ -13,8 +13,10 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   renameSubagents,
+  describeRunning,
   describeToolCall,
   isHarnessNoise,
+  subagentLabel,
   renderSubagentScreen,
   subagentActivity,
   subagentSummary,
@@ -66,6 +68,15 @@ describe("subagent ledger", () => {
     });
     expect(records[0]!.message).toContain("found the hook handlers");
     expect(activeSubagents("api")).toHaveLength(0);
+  });
+
+  test("a start records what the subagent was asked, and it survives the transcript", () => {
+    recordSubagentStart("api", { id: "a1", type: "general-purpose", description: "Shepherd PR 74" });
+    expect(readSubagents("api")[0]).toMatchObject({ type: "general-purpose", description: "Shepherd PR 74" });
+    expect(subagentLabel(readSubagents("api")[0]!)).toBe("Shepherd PR 74");
+    // Without one, the type is all there is.
+    recordSubagentStart("api", { id: "a2", type: "Explore" });
+    expect(subagentLabel(readSubagents("api")[1]!)).toBe("Explore");
   });
 
   test("a running subagent stays active until its stop", () => {
@@ -159,6 +170,15 @@ describe("summarize", () => {
     expect(summarize(wide)!.detail).toBe("4 subagents · four, three +2");
   });
 
+  test("labels by what was asked when there is a description, so general-purpose rows tell apart", () => {
+    const summary = summarize([
+      { ...started("a", "general-purpose"), description: "Shepherd PR 74" },
+      { ...started("b", "general-purpose"), description: "/code-review 66 high" },
+    ])!;
+    expect(summary.types).toBe("/code-review 66 high, Shepherd PR 74");
+    expect(summary.running!.map((r) => r.description)).toEqual(["Shepherd PR 74", "/code-review 66 high"]);
+  });
+
   test("carries the running records for the sidebar's nested rows, capped", () => {
     const summary = summarize([started("a", "Explore"), started("b", "code-review")])!;
     expect(summary.running!.map((r) => r.id)).toEqual(["a", "b"]);
@@ -219,7 +239,7 @@ describe("am subagents output", () => {
 
   test("formatted table has a header and one row per subagent", () => {
     const out = formatSubagentLines(subagentLines(records, new Map()));
-    expect(out[0]).toContain("TYPE");
+    expect(out[0]).toContain("SUBAGENT");
     expect(out).toHaveLength(3);
     expect(out[1]).toContain("Explore");
   });
@@ -416,6 +436,25 @@ describe("subagentActivity", () => {
     writeFileSync(own, turn([{ type: "text", text: "reported" }]) + "\n");
     const activity = subagentActivity(agent, [{ ...record("sub-a"), transcriptPath: own }]);
     expect(activity.get("sub-a")).toBe("reported");
+  });
+
+  test("describeRunning fills a missing description from the live sidecar", () => {
+    const agent = agentWithSubagentFiles({ "sub-a": [turn([{ type: "text", text: "x" }])] });
+    writeFileSync(
+      join(home, "session", "subagents", "agent-sub-a.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", description: "Shepherd PR 74", requestShape: "background" }),
+    );
+    const summary = describeRunning(agent, {
+      active: 2,
+      types: "general-purpose",
+      detail: "2 subagents · general-purpose",
+      running: [record("sub-a"), { ...record("sub-b"), description: "already known" }],
+    })!;
+    expect(summary.running!.map((r) => r.description)).toEqual(["Shepherd PR 74", "already known"]);
+    expect(summary.detail).toBe("2 subagents · already known, Shepherd PR 74");
+    // Codex has no sidecar: passed through untouched.
+    expect(describeRunning({ ...agent, provider: "codex" }, summary)).toBe(summary);
+    expect(describeRunning(agent, null)).toBeNull();
   });
 
   test("codex reports no transcript until its subagent stops — no live line", () => {

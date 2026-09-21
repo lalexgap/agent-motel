@@ -257,6 +257,22 @@ describe("subagent rows", () => {
     expect(items[0]!.meta?.at(-1)).toBe("output   am peek api --subagent aaaa1111 --follow");
   });
 
+  test("a described subagent is labelled by what it was asked, with its type on the card", () => {
+    const described: FleetRow = {
+      ...row,
+      subagents: {
+        active: 1,
+        types: "Shepherd PR 74",
+        detail: "1 subagent · Shepherd PR 74",
+        running: [{ id: "eeee5555", type: "general-purpose", description: "Shepherd PR 74", startedAt: "2026-09-21T10:00:00.000Z" }],
+      },
+    };
+    const [item] = subagentPickerItems(described);
+    expect(item!.label).toBe("Shepherd PR 74");
+    expect(item!.meta).toContain("type     general-purpose");
+    expect(item!.search).toContain("general-purpose");
+  });
+
   test("keys round-trip through the separator", () => {
     const key = subagentKey("server:api", "aaaa1111bbbb");
     expect(splitSubagentKey(key)).toEqual({ agentKey: "server:api", id: "aaaa1111bbbb" });

@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { subagentLabel } from "./subagents";
 import { agentRows, cachedGitDiffSummary, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { CONCIERGE_NAME } from "./providers";
 import { loadConfig, shortHost } from "./config";
@@ -539,14 +540,15 @@ export function subagentPickerItems(r: FleetRow): PickerItem[] {
     iconStyle: GREEN,
     status: "working",
     statusLabel: "subagent",
-    label: sub.type,
+    label: subagentLabel(sub),
     labelStyle: FG,
     roleFilterable: false,
     attachable: false,
     statusAge: relativeTime(sub.startedAt),
-    search: `${sub.type} ${r.name} subagent`,
+    search: `${subagentLabel(sub)} ${sub.type} ${r.name} subagent`,
     meta: [
-      `subagent ${CYAN}${sub.type}${FG}`,
+      `subagent ${CYAN}${subagentLabel(sub)}${FG}`,
+      ...(sub.description ? [`type     ${sub.type}`] : []),
       `of       ${r.name}`,
       `host     ${r.host ?? "local"}`,
       `started  ${relativeTime(sub.startedAt)}`,

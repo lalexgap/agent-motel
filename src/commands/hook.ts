@@ -8,7 +8,13 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
-import { closeOpenSubagents, isBackgroundSubagent, recordSubagentStart, recordSubagentStop } from "../subagents";
+import {
+  closeOpenSubagents,
+  isBackgroundSubagent,
+  recordSubagentStart,
+  recordSubagentStop,
+  subagentDescription,
+} from "../subagents";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -191,7 +197,9 @@ export function recordSubagentEvent(
   const id = typeof payload.agent_id === "string" ? payload.agent_id : undefined;
   const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
   if (event === "subagent-start") {
-    if (id) recordSubagentStart(name, { id, type });
+    // The type alone rarely says much ("general-purpose"); what it was asked
+    // does, and Claude has written that beside the transcript by now.
+    if (id) recordSubagentStart(name, { id, type, description: subagentDescription(agent, id) });
     return;
   }
   if (event === "subagent-stop") {
