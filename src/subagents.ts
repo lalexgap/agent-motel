@@ -491,7 +491,10 @@ export function renderSubagentScreen(
 const RESULT_CHARS = 100;
 const RESULT_LINES = 5;
 const DIFF_LINES = 8;
-const SGR = { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", reset: "\x1b[0m" };
+// Each code undoes only itself — a full reset would also drop the row
+// background the picker paints behind a selected preview line.
+const SGR = { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m" };
+const SGR_UNDO: Record<string, string> = { [SGR.dim]: "\x1b[22m", [SGR.red]: "\x1b[39m", [SGR.green]: "\x1b[39m" };
 
 // Results the way the provider's view shows them per tool: an Edit is its
 // diff, a Write is the lines it wrote, a Read is how much was read, a search
@@ -500,7 +503,7 @@ const SGR = { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", reset: "\x1b[0
 // summary of what came back. Undefined output is a call still in flight.
 export function renderToolResult(turn: ToolTurn, colors: boolean): string[] {
   const { name, input, output, error } = turn;
-  const paint = (code: string, text: string) => (colors ? `${code}${text}${SGR.reset}` : text);
+  const paint = (code: string, text: string) => (colors ? `${code}${text}${SGR_UNDO[code]}` : text);
   const result = (text: string) => paint(SGR.dim, `  ⎿  ${text}`);
   const diffLine = (code: string, sign: string) => (l: string) => paint(code, `       ${sign} ${clipLine(l, RESULT_CHARS)}`);
   if (output === undefined) return [result("…")];
