@@ -132,6 +132,8 @@ usage:
                               --description adds a short UI summary; --force replaces)
   am role model <name> --claude|--codex --model <model>
                               set a role default (--clear removes it)
+  am role effort <name> --claude|--codex --effort <level>
+                              set a role's reasoning effort (--clear removes it)
   am role provider <name> --claude|--codex
                               pin the provider a role launches on
                               (--clear unpins; --claude/--codex on the spawn
@@ -621,6 +623,7 @@ async function main(): Promise<void> {
         description: args.flags.description as string | undefined,
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,
+        effort: args.flags.effort as string | undefined,
         clear: !!args.flags.clear,
         force: !!args.flags.force,
       });

@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
+import { CONCIERGE_ROLE, effortForRole, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
 // These grew provider-awareness and moved to providers.ts; re-exported so
@@ -127,6 +127,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // resume/move, where the agent's own provider is passed in.
   const provider = providerForRole(opts.role, loadConfig().defaultProvider, opts.provider);
   let model = modelForRole(opts.role, provider, opts.model);
+  let effort = effortForRole(opts.role, provider, opts.effort);
   // Fail loudly now rather than spawning a tmux session that dies instantly
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
@@ -135,18 +136,26 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
-  if (model || opts.effort) {
+  if (model || effort) {
     const catalog = providerCatalog(provider);
+    // Only a default that came from the role may be dropped; what the caller
+    // typed is theirs to be told about.
     const roleModel = !opts.model && model ? model : undefined;
-    let complaints = validateSelection(catalog, { model, effort: opts.effort });
-    // A role default naming a model this machine's provider doesn't offer (an
-    // older CLI, a different account) must not block the spawn — drop to the
-    // provider's own default instead, then re-check: the effort was validated
-    // against the unknown model's levels, and the default model's may differ.
+    const roleEffort = !opts.effort && effort ? effort : undefined;
+    let complaints = validateSelection(catalog, { model, effort });
+    // A role default this machine's provider doesn't offer (an older CLI, a
+    // different account, a model whose levels differ) must not block the
+    // spawn — drop to the provider's own default and re-check what's left,
+    // since the effort was validated against the model we just dropped.
     if (roleModel && complaints.some((c) => c.fatal && c.message.includes(`model "${roleModel}"`))) {
       if (!opts.quiet) console.error(`warning: unknown ${provider} model "${roleModel}" from role "${opts.role}" — using the ${provider} default`);
       model = undefined;
-      complaints = validateSelection(catalog, { effort: opts.effort });
+      complaints = validateSelection(catalog, { effort });
+    }
+    if (roleEffort && complaints.some((c) => c.fatal && c.message.includes(`effort "${roleEffort}"`))) {
+      if (!opts.quiet) console.error(`warning: ${provider} effort "${roleEffort}" from role "${opts.role}" isn't available here — using the ${provider} default`);
+      effort = undefined;
+      complaints = validateSelection(catalog, { model });
     }
     for (const complaint of complaints) {
       if (complaint.fatal) throw new Error(`${complaint.message} (see \`am models\`)`);
@@ -193,6 +202,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     model,
+    effort,
     reportTo,
     role: role?.name,
     roleInstructions,

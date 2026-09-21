@@ -105,7 +105,7 @@ There is one concierge per fleet, not per machine: if a concierge already exists
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge`, `engineer`, and `reviewer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+Roles are named instruction presets for agents. They add behavior and a visible identity without changing permissions or tools. Each role can also pin the provider it launches on and set a default model and reasoning effort for each provider. `concierge`, `engineer`, and `reviewer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -117,18 +117,19 @@ am new auth-audit --role security-reviewer -m "Review the current branch"
 am role model security-reviewer --claude --model opus
 am role model security-reviewer --codex --model gpt-5.6-luna
 am role model security-reviewer --codex --clear
+am role effort security-reviewer --claude --effort high
 am role provider security-reviewer --claude   # always launch this role on claude
 am role provider security-reviewer --clear
 am role rm security-reviewer
 ```
 
-Provider pins and model defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--claude`/`--codex` overrides the pin and an explicit `--model` overrides the model default; without either, the config default provider and the provider's own default model apply. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
+Provider pins, model defaults, and effort defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--claude`/`--codex`, `--model`, or `--effort` on the spawn overrides the role; without one, the config default provider applies and the provider picks its own model and effort. The built-ins set effort deliberately — `concierge` low (it answers questions about the fleet), `engineer` medium, `reviewer` high (judging a diff is the harder half) — and a role default the local provider doesn't support falls back to the provider default with a warning, the same way an unknown model does. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
 
 Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to replace an existing custom definition. Selected instructions are snapshotted into agent state, so existing agents keep their role across resume, restore, move, clone, and handoff even if the registry later changes. Role registries are host-local; manage a remote with `am -H <host> role ...` before creating that role there.
 
 #### The engineer role
 
-`engineer` is a built-in implementor: it takes a task another agent already thought through, writes the code, verifies it, commits it, opens a draft PR when the brief asks for one, and reports what it did — the point is to finish the job in one pass rather than negotiate with the caller. It launches on claude with `opus` by default (`gpt-5.6-sol` if you point it at codex), so the planning agent can run on something cheaper and still get good code:
+`engineer` is a built-in implementor: it takes a task another agent already thought through, writes the code, verifies it, commits it, opens a draft PR when the brief asks for one, and reports what it did — the point is to finish the job in one pass rather than negotiate with the caller. It launches on claude with `opus` at medium effort by default (`gpt-5.6-sol` if you point it at codex), so the planning agent can run on something cheaper and still get good code:
 
 ```sh
 am run motel-sort-impl --role engineer --in-place --timeout 900 -m "Add a --sort flag to am ls; follow the existing flag parsing in src/index.ts; run bun test; commit on branch am/ls-sort and open a draft PR"
@@ -138,7 +139,7 @@ am run motel-sort-impl --role engineer --in-place --timeout 900 -m "Add a --sort
 
 #### The reviewer role
 
-`reviewer` is the engineer's counterpart: it reads a PR, branch, or working tree, judges it against what the change claims to do, and reports findings — it never edits, commits, or changes a PR's state. It launches on claude with `fable` (`gpt-6-astra` on codex), because catching a real bug in someone else's diff is harder than writing the diff was:
+`reviewer` is the engineer's counterpart: it reads a PR, branch, or working tree, judges it against what the change claims to do, and reports findings — it never edits, commits, or changes a PR's state. It launches on claude with `fable` at high effort (`gpt-6-astra` on codex), because catching a real bug in someone else's diff is harder than writing the diff was:
 
 ```sh
 am run motel-64-review --role reviewer --in-place --timeout 900 -m "Review PR 64 against main; the risky part is the role-shadowing logic in src/roles.ts"
