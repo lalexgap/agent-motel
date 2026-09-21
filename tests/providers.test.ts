@@ -46,6 +46,12 @@ describe("agentSystemPrompt", () => {
     expect(prompt).not.toContain("--role engineer");
     expect(prompt).not.toContain("--role reviewer");
     expect(prompt).not.toContain("am run");
+    // Fleet-control commands and the spawn-time trust caveat left with the
+    // agents-spawning-agents model; peer messaging stayed.
+    expect(prompt).not.toContain("am interrupt");
+    expect(prompt).not.toContain("am wait");
+    expect(prompt).not.toContain("trust prompt");
+    expect(prompt).toContain("am send <name>");
   });
 
   test("a role's instructions still compose after the managed-agent guidance", () => {
@@ -67,7 +73,7 @@ describe("agentSystemPrompt", () => {
     });
     expect(prompt).toContain("# Your role: security-reviewer");
     expect(prompt).toContain("Inspect trust boundaries and authentication.");
-    expect(prompt).toContain("am ls --json");
+    expect(prompt).toContain("[am · from X]");
   });
 
   test("names the host it runs on and warns about machine-local URLs", () => {

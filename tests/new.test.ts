@@ -2,12 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { agentSystemPrompt, conversationArgs, scrubNestedSessionEnv } from "../src/commands/new";
 
 describe("agentSystemPrompt", () => {
-  test("names the agent and teaches the am command surface", () => {
+  test("names the agent and teaches what is left of the am command surface", () => {
     const prompt = agentSystemPrompt("worker-1");
     expect(prompt).toContain('"worker-1"');
     expect(prompt).toContain("am new");
-    expect(prompt).toContain("am ls --json");
-    expect(prompt).toContain("trust prompt");
+    // Peer messaging is what's left of the command surface: agents no longer
+    // manage other agents.
+    expect(prompt).toContain("am send <name>");
+    expect(prompt).not.toContain("am ls --json");
+    // The spawn-time trust caveat went with the agents-spawning-agents model.
+    expect(prompt).not.toContain("trust prompt");
   });
 });
 import { clipLine } from "../src/picker";
