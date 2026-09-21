@@ -98,7 +98,8 @@ usage:
                               restart an exited agent, resuming its conversation
                               (--prefer-subagents changes how it fans work out
                                from here on — stored, and applied to the
-                               resumed session on claude)
+                               resumed session: claude in its primer, codex as
+                               a message at its first turn)
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role

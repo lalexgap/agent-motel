@@ -17,6 +17,13 @@ const DELEGATION_AM_AGENTS_FIRST = `When asked to spin up, message, check on, or
 
 const DELEGATION_SUBAGENTS_FIRST = `When you FAN WORK OUT, prefer your own built-in subagents (the Task tool) over spawning am agents: they start instantly, inherit this session's context, and am reports them — \`am subagents\` lists them and the hub shows a rollup while they run. Spawn a real am agent only when the work genuinely needs its own room: something the operator will want to attach to, message, interrupt, or leave running past this turn — a subagent has no pane, takes no messages, and dies with your turn. When asked to spin up, message, check on, or stop OTHER AGENTS, still use the am CLI via Bash, never your Task tool:`;
 
+// The fan-out paragraph on its own, for re-instructing a running agent whose
+// preference changed (codex, which can't be handed a fresh system prompt on
+// resume, takes it as a message instead).
+export function fanOutInstruction(preferSubagents: boolean): string {
+  return preferSubagents ? DELEGATION_SUBAGENTS_FIRST : DELEGATION_AM_AGENTS_FIRST;
+}
+
 // Injected via --append-system-prompt (claude) or prepended to the initial
 // prompt (codex, which has no system-prompt flag) so managed agents know they
 // live under am — otherwise "spin up an agent" reaches for built-in subagents.

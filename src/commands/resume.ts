@@ -3,7 +3,8 @@ import { agentProvider, resolveAgent, updateAgentStatus, writeAgent, type AgentS
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { queueAppend } from "../queue";
-import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
+import { buildResumeCommand, fanOutInstruction, scrubNestedSessionEnv } from "../providers";
+import { CONCIERGE_ROLE, roleForAgent } from "../roles";
 import { ensureCodexHooks } from "../codexHooks";
 import { agentEnv } from "./new";
 
@@ -15,24 +16,43 @@ export interface ResumeOpts {
   preferSubagents?: boolean;
 }
 
-// Changing the preference means rewriting the primer, and only claude gets a
-// fresh one on resume (`--append-system-prompt`) — codex has no system-prompt
-// flag, so its primer only ever rides along with a session's FIRST prompt.
-// The new setting is still stored: a later handoff or `am new --resume` builds
-// its prompt from it. Returns the note to show, or null. Pure.
-export function preferenceNote(provider: Provider, preferSubagents: boolean | undefined): string | null {
-  if (preferSubagents === undefined || provider !== "codex") return null;
+export interface ResumeOverrides {
+  // Shown under the "resumed agent" line, when the change needs explaining.
+  note?: string;
+  // Delivered to the agent on its way back up, for a provider that can't be
+  // handed a fresh system prompt.
+  message?: string;
+}
+
+// How a changed fan-out preference reaches the resumed session:
+//   claude — rebuilt into its primer (`--append-system-prompt`);
+//   codex  — no system-prompt flag, so the new instruction is queued as a
+//            message, the way `am new --resume` already re-primes a codex
+//            agent with its role. It lands at the first turn, not at launch.
+// The concierge is the exception: its primer IS its role instructions, and
+// fleet management doesn't fan out, so the setting can't apply at all.
+export function preferenceEffect(
+  provider: Provider,
+  role: string | undefined,
+  preferSubagents: boolean,
+): ResumeOverrides {
   const target = preferSubagents ? "prefer its own subagents" : "prefer am agents";
-  return `saved: ${target} — codex can't be re-primed on resume, so this session keeps its original instructions (a new or handed-off agent picks it up)`;
+  if (role === CONCIERGE_ROLE) {
+    return { note: `saved, but "${CONCIERGE_ROLE}" runs on its role instructions alone — fan-out guidance doesn't apply to it` };
+  }
+  if (provider !== "codex") return {};
+  return {
+    note: `saved: ${target} — codex takes it as a message at its first turn, not in its primer`,
+    message: `[am] Your fan-out preference changed. From now on:\n\n${fanOutInstruction(preferSubagents)}`,
+  };
 }
 
 // Apply the overrides this resume carries before the launch command is built
-// from the agent's state. Returns a note when the change can't reach the
-// resumed session.
-export function applyResumeOverrides(agent: AgentState, opts: ResumeOpts): string | null {
-  if (opts.preferSubagents === undefined) return null;
+// from the agent's state.
+export function applyResumeOverrides(agent: AgentState, opts: ResumeOpts): ResumeOverrides {
+  if (opts.preferSubagents === undefined) return {};
   agent.preferSubagents = opts.preferSubagents;
-  return preferenceNote(agentProvider(agent), opts.preferSubagents);
+  return preferenceEffect(agentProvider(agent), roleForAgent(agent), opts.preferSubagents);
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
@@ -47,13 +67,14 @@ export async function reviveAgent(
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   // Before buildResumeCommand: the primer is built from the agent's state.
-  const note = applyResumeOverrides(agent, opts);
+  const overrides = applyResumeOverrides(agent, opts);
   const provider = agentProvider(agent);
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
 
   const plan = buildResumeCommand(provider, agent, opts);
   // Queue before the session starts so the SessionStart hook finds it.
+  if (overrides.message) queueAppend(agent.name, overrides.message);
   if (plan.deferredMessage) queueAppend(agent.name, plan.deferredMessage);
 
   newSession({
@@ -64,7 +85,7 @@ export async function reviveAgent(
   });
   updateAgentStatus(agent, "starting", "resuming");
   writeAgent(agent);
-  return note;
+  return overrides.note ?? null;
 }
 
 export async function resumeCommand(prefix: string, opts: ResumeOpts): Promise<void> {
