@@ -11,8 +11,8 @@ export interface RunOptions {
   message: string;
   dir?: string;
   worktree?: string;
-  // Run in `dir` as-is instead of taking a fresh worktree — how an engineer
-  // agent implements into the caller's own checkout.
+  // Run in `dir` as-is instead of taking a fresh worktree — for work that
+  // belongs in the caller's own checkout.
   inPlace?: boolean;
   provider?: Provider;
   model?: string;

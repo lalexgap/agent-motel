@@ -187,9 +187,9 @@ export function roleForAgent(agent: { name: string; role?: string }): string | u
   return agent.role ?? (agent.name === CONCIERGE_ROLE ? CONCIERGE_ROLE : undefined);
 }
 
-// Persist a role's settings. For a built-in that means the settings alone —
-// storing its instructions would freeze the user on today's copy (a later
-// edit would read back as a role of their own, via shadowsBuiltIn).
+// Persist a role's settings. For a built-in that means the settings alone:
+// getRole ignores stored instructions under a built-in's name, and writing
+// them would only leave a stale copy behind.
 function writeRoleSettings(role: AgentRole, settings: { provider?: Provider; models?: Partial<Record<Provider, string>> }): void {
   const own = role.builtIn ? {} : { custom: true, description: role.description, instructions: role.instructions };
   writeJsonAtomic(roleFile(role.name), { ...own, ...settings } satisfies StoredRole);
