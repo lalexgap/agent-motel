@@ -48,7 +48,7 @@ export interface SubagentRecord {
 
 type LedgerEvent =
   | { ev: "start"; id: string; type?: string; desc?: string; at: string }
-  | { ev: "stop"; id: string; type?: string; at: string; msg?: string; transcript?: string }
+  | { ev: "stop"; id: string; type?: string; desc?: string; at: string; msg?: string; transcript?: string }
   // A turn boundary closes the subagents still open, except the ones named in
   // `except` — forked/background subagents outlive the turn that spawned them
   // and report their own stop later.
@@ -88,12 +88,13 @@ export function recordSubagentStart(
 
 export function recordSubagentStop(
   name: string,
-  sub: { id: string; type?: string; message?: string; transcriptPath?: string; at?: string },
+  sub: { id: string; type?: string; description?: string; message?: string; transcriptPath?: string; at?: string },
 ): void {
   append(name, {
     ev: "stop",
     id: sub.id,
     type: sub.type,
+    desc: sub.description ? clipMessage(sub.description, 120) : undefined,
     at: sub.at ?? new Date().toISOString(),
     msg: sub.message ? clipMessage(sub.message) : undefined,
     transcript: sub.transcriptPath,
@@ -159,6 +160,9 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
       record.transcriptPath = undefined;
     } else {
       record.endedAt = event.at;
+      // The sidecar lands after the start hook has fired, so the stop is
+      // where the description usually reaches the ledger.
+      if (event.desc && !record.description) record.description = event.desc;
       if (event.msg) record.message = event.msg;
       if (event.transcript) record.transcriptPath = event.transcript;
     }
@@ -352,7 +356,10 @@ interface SubagentMeta {
 export function readSubagentMeta(agent: AgentState, subagentId: string): SubagentMeta | null {
   if (agentProvider(agent) !== "claude") return null;
   const transcript = subagentTranscriptFile(agent, subagentId);
-  if (!transcript) return null;
+  return transcript ? readMetaBeside(transcript) : null;
+}
+
+function readMetaBeside(transcript: string): SubagentMeta | null {
   try {
     const meta = JSON.parse(readFileSync(transcript.replace(/\.jsonl$/, ".meta.json"), "utf8"));
     return meta && typeof meta === "object" ? (meta as SubagentMeta) : null;
@@ -361,15 +368,19 @@ export function readSubagentMeta(agent: AgentState, subagentId: string): Subagen
   }
 }
 
-export function subagentDescription(agent: AgentState, subagentId: string): string | undefined {
-  const description = readSubagentMeta(agent, subagentId)?.description;
+// What the subagent was asked, from its sidecar. The stop hook hands over the
+// transcript path, which beats deriving it from the parent's.
+export function subagentDescription(agent: AgentState, subagentId: string, transcriptPath?: string): string | undefined {
+  if (agentProvider(agent) !== "claude") return undefined;
+  const meta = transcriptPath ? readMetaBeside(transcriptPath) : readSubagentMeta(agent, subagentId);
+  const description = meta?.description;
   return typeof description === "string" && description.trim() ? description : undefined;
 }
 
-// Fill in descriptions the start hook didn't catch (the sidecar can land a
-// beat after the hook fires) from the live sidecar. Running ones only: a
-// finished subagent's files are gone soon after, and its ledger row is all
-// that remains.
+// Fill in descriptions the start hook didn't catch from the live sidecar: it
+// lands a beat after that hook fires, so the ledger learns the description
+// only at the stop. Running ones only — a finished subagent's files are gone
+// soon after, and its ledger row is all that remains.
 export function describeRunning(agent: AgentState, summary: SubagentSummary | null): SubagentSummary | null {
   if (!summary?.running || agentProvider(agent) !== "claude") return summary;
   const running = summary.running.map((sub) =>

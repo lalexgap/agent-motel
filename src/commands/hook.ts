@@ -198,18 +198,21 @@ export function recordSubagentEvent(
   const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
   if (event === "subagent-start") {
     // The type alone rarely says much ("general-purpose"); what it was asked
-    // does, and Claude has written that beside the transcript by now.
+    // does. Claude writes that beside the transcript a beat after this hook
+    // fires, so the stop backfills what the start misses.
     if (id) recordSubagentStart(name, { id, type, description: subagentDescription(agent, id) });
     return;
   }
   if (event === "subagent-stop") {
     if (id) {
+      const transcriptPath =
+        typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined;
       recordSubagentStop(name, {
         id,
         type,
+        description: subagentDescription(agent, id, transcriptPath),
         message: typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined,
-        transcriptPath:
-          typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined,
+        transcriptPath,
       });
     }
     return;

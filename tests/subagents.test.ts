@@ -79,6 +79,29 @@ describe("subagent ledger", () => {
     expect(subagentLabel(readSubagents("api")[1]!)).toBe("Explore");
   });
 
+  test("a stop backfills the description the start missed, and never overrides one it had", () => {
+    recordSubagentStart("api", { id: "a1", type: "general-purpose" });
+    recordSubagentStop("api", { id: "a1", description: "Shepherd PR 74" });
+    recordSubagentStart("api", { id: "a2", type: "general-purpose", description: "from the start" });
+    recordSubagentStop("api", { id: "a2", description: "from the stop" });
+    expect(readSubagents("api").map((r) => r.description)).toEqual(["Shepherd PR 74", "from the start"]);
+  });
+
+  test("compaction carries a description the ledger learned at the stop", () => {
+    recordSubagentStart("api", { id: "late", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStop("api", { id: "late", description: "Shepherd PR 74", at: "2026-09-21T10:01:00.000Z" });
+    // Enough older finished runs to push the ledger past the cap; "late" is
+    // newest, so every compaction keeps it and rewrites its start line.
+    const filler = "x".repeat(400);
+    for (let i = 0; i < 200; i++) {
+      recordSubagentStart("api", { id: `f${i}`, type: "Explore", at: `2026-09-21T09:${String(i % 60).padStart(2, "0")}:00.000Z` });
+      recordSubagentStop("api", { id: `f${i}`, message: filler, at: "2026-09-21T09:59:59.000Z" });
+    }
+    const raw = readFileSync(subagentsFile("api"), "utf8");
+    expect(raw).toContain('"id":"late","type":"general-purpose","desc":"Shepherd PR 74"');
+    expect(readSubagents("api").at(-1)).toMatchObject({ id: "late", description: "Shepherd PR 74" });
+  });
+
   test("a running subagent stays active until its stop", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     expect(activeSubagents("api").map((r) => r.id)).toEqual(["a1"]);
@@ -310,6 +333,20 @@ describe("recordSubagentEvent", () => {
     // ESC (or `am interrupt`) aborts the turn: no stop hook ever fires.
     recordSubagentEvent("user-prompt-submit", agent, {});
     expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("the stop reads the sidecar beside the transcript it reports, which the start ran too early to see", () => {
+    const transcript = join(home, "agent-b2.jsonl");
+    recordSubagentEvent("subagent-start", agent, { agent_id: "b2", agent_type: "general-purpose" });
+    expect(readSubagents("api")[0]!.description).toBeUndefined();
+    writeFileSync(join(home, "agent-b2.meta.json"), JSON.stringify({ description: "Shepherd PR 74", requestShape: "background" }));
+    recordSubagentEvent("subagent-stop", agent, { agent_id: "b2", agent_transcript_path: transcript });
+    expect(readSubagents("api")[0]).toMatchObject({ description: "Shepherd PR 74", transcriptPath: transcript });
+    // Codex has no sidecar: nothing is read beside its rollout.
+    const codex = { ...agent, provider: "codex" as const };
+    recordSubagentEvent("subagent-start", codex, { agent_id: "c1" });
+    recordSubagentEvent("subagent-stop", codex, { agent_id: "c1", agent_transcript_path: transcript });
+    expect(readSubagents("api")[1]!.description).toBeUndefined();
   });
 
   test("a reused id starts a fresh run instead of resurrecting a closed one", () => {
