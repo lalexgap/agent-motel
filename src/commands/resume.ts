@@ -8,7 +8,9 @@ import { ensureCodexHooks } from "../codexHooks";
 import { agentEnv } from "./new";
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
-// (no console output) so the picker and sidebar can call it too.
+// (no console output) so the picker and sidebar can call it too. The agent's
+// own fan-out preference rides along in its state, so the rebuilt primer
+// matches the one it launched with.
 export async function reviveAgent(
   agent: AgentState,
   opts: { message?: string; remote?: boolean } = {},

@@ -18,6 +18,9 @@ export interface RunOptions {
   model?: string;
   effort?: string;
   role?: string;
+  // Fan out with built-in subagents instead of am agents; undefined = the
+  // config default.
+  preferSubagents?: boolean;
   // Seconds to wait for the task turn to finish before giving up. The agent
   // keeps running on timeout (it's a real agent) — only the wait gives up.
   timeoutSec?: number;
@@ -157,6 +160,7 @@ export async function runAgent(name: string, opts: RunOptions): Promise<RunResul
     model: opts.model,
     effort: opts.effort,
     role: opts.role,
+    preferSubagents: opts.preferSubagents,
     jump: false,
     quiet: true,
   });

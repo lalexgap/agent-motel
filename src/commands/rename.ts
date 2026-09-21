@@ -14,6 +14,7 @@ import { inboxDir, sharedDir } from "../paths";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { queueAppend, queueStorageExists, renameQueue } from "../queue";
 import { renameSnapshot, snapshotExists } from "../snapshots";
+import { renameSubagents, subagentsExist } from "../subagents";
 import { hasSession, renameSession, sessionName } from "../tmux";
 import { CONCIERGE_NAME } from "../providers";
 
@@ -95,6 +96,9 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   if (existsSync(inboxDir(newName))) {
     throw new Error(`inbox storage already exists for "${newName}" — run \`am gc\` or choose another name`);
   }
+  if (subagentsExist(newName)) {
+    throw new Error(`subagent ledger already exists for "${newName}" — run \`am gc\` or choose another name`);
+  }
   if (existsSync(sharedDir(newName))) {
     throw new Error(`shared-artifact storage already exists for "${newName}" — run \`am gc\` or choose another name`);
   }
@@ -106,12 +110,14 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   const hadQueue = queueStorageExists(oldName);
   const hadSnapshot = snapshotExists(oldName);
   const hadInbox = existsSync(inboxDir(oldName));
+  const hadSubagents = subagentsExist(oldName);
   const hadShared = existsSync(sharedDir(oldName));
   let stateRenamed = false;
   let sessionRenamed = false;
   try {
     renameQueue(oldName, newName);
     renameSnapshot(oldName, newName);
+    renameSubagents(oldName, newName);
     if (hadInbox) renameSync(inboxDir(oldName), inboxDir(newName));
     if (hadShared) renameSync(sharedDir(oldName), sharedDir(newName));
     if (live) {
@@ -137,6 +143,14 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
         if (hadSnapshot && snapshotExists(newName)) renameSnapshot(newName, oldName);
         if (hadQueue && queueStorageExists(newName)) renameQueue(newName, oldName);
         if (sessionRenamed && hasSession(newSession)) renameSession(newSession, oldSession);
+        // Last, and swallowed on its own: a hook that recreated the old
+        // ledger mid-rename makes this throw, which must not skip the
+        // rollbacks above.
+        try {
+          if (hadSubagents && subagentsExist(newName)) renameSubagents(newName, oldName);
+        } catch {
+          // the ledger is cosmetic next to state/queue/session placement
+        }
       } catch {
         // Preserve the original failure; recovery instructions are clearer
         // than replacing it with a secondary rollback error.

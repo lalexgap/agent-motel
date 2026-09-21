@@ -40,12 +40,47 @@ export function claudeProjectSlug(dir: string): string {
 
 const CLAUDE_HARNESS_PREFIXES = ["<command-name>", "<local-command-stdout>", "<system-reminder>"];
 
-export function parseClaudeTranscript(jsonl: string): Transcript {
+export interface ParseOpts {
+  // Render a subagent's side-chain instead of the main conversation. Claude
+  // Code only; codex keeps subagent turns out of the parent rollout.
+  // ownFile marks a dedicated subagent transcript, where every entry already
+  // belongs to that subagent.
+  sidechain?: { agentId?: string; ownFile?: boolean };
+}
+
+// Which entries belong to the conversation being rendered. The main chain is
+// everything not marked isSidechain; a subagent's chain is matched inside the
+// parent's session file, or taken wholesale from its own transcript.
+function claudeEntryFilter(
+  entries: Record<string, any>[],
+  opts: ParseOpts,
+): (entry: Record<string, any>) => boolean {
+  if (!opts.sidechain) return (entry) => entry.isSidechain !== true;
+  const { agentId, ownFile } = opts.sidechain;
+  // A dedicated transcript holds nothing but that subagent's turns.
+  if (ownFile) return () => true;
+  // Inside the parent's session file the side-chain must be matched, never
+  // assumed: rendering what merely looks like a side-chain would put the
+  // parent's conversation — or a sibling subagent's — under this one's name.
+  if (agentId !== undefined) {
+    return entries.some((e) => typeof e.agentId === "string")
+      ? (entry) => entry.agentId === agentId
+      : () => false;
+  }
+  return (entry) => entry.isSidechain === true;
+}
+
+export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Transcript {
   const transcript: Transcript = { source: "claude", turns: [] };
   const toolsById = new Map<string, Extract<Turn, { kind: "tool" }>>();
+  const entries = parseLines(jsonl);
+  const keep = claudeEntryFilter(entries, opts);
 
-  for (const entry of parseLines(jsonl)) {
-    if (entry.isSidechain || entry.isMeta) continue;
+  // isMeta marks harness noise in the main chain — but a subagent's own
+  // transcript opens with the brief it was given, and that IS the entry.
+  const keepMeta = opts.sidechain?.ownFile === true;
+  for (const entry of entries) {
+    if (!keep(entry) || (entry.isMeta && !keepMeta)) continue;
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     transcript.sessionId ??= entry.sessionId;
     transcript.dir ??= entry.cwd;
@@ -177,8 +212,8 @@ function extractCodexOutput(output: unknown): string {
   return output;
 }
 
-export function parseTranscript(provider: Provider, jsonl: string): Transcript {
-  return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl);
+export function parseTranscript(provider: Provider, jsonl: string, opts: ParseOpts = {}): Transcript {
+  return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl, opts);
 }
 
 // A single conversation line's searchable text, role-labeled. `am search` runs

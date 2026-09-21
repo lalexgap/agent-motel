@@ -93,6 +93,83 @@ describe("parseClaudeTranscript", () => {
   });
 });
 
+// Subagent turns live in the parent's session file, tagged isSidechain and
+// carrying the agent id the SubagentStart/Stop hooks report.
+const SIDECHAIN_JSONL = [
+  JSON.stringify({
+    type: "assistant",
+    sessionId: "s-1",
+    message: { role: "assistant", content: [{ type: "text", text: "main chain" }] },
+  }),
+  JSON.stringify({
+    type: "user",
+    isSidechain: true,
+    agentId: "sub-a",
+    message: { role: "user", content: "find the hook handlers" },
+  }),
+  JSON.stringify({
+    type: "assistant",
+    isSidechain: true,
+    agentId: "sub-a",
+    message: { role: "assistant", content: [{ type: "text", text: "they're in hook.ts" }] },
+  }),
+  JSON.stringify({
+    type: "assistant",
+    isSidechain: true,
+    agentId: "sub-b",
+    message: { role: "assistant", content: [{ type: "text", text: "other subagent" }] },
+  }),
+].join("\n");
+
+describe("parseClaudeTranscript — subagent side-chains", () => {
+  test("renders only the requested subagent's turns", () => {
+    const sub = parseClaudeTranscript(SIDECHAIN_JSONL, { sidechain: { agentId: "sub-a" } });
+    expect(sub.turns.map((t) => (t as any).text)).toEqual(["find the hook handlers", "they're in hook.ts"]);
+  });
+
+  test("the main chain still excludes every subagent", () => {
+    const main = parseClaudeTranscript(SIDECHAIN_JSONL);
+    expect(main.turns.map((t) => (t as any).text)).toEqual(["main chain"]);
+  });
+
+  test("a dedicated subagent transcript renders whole, brief included", () => {
+    const own = [
+      // The brief a subagent is handed is written as an isMeta entry, which
+      // is harness noise in the main chain but the opening turn here.
+      JSON.stringify({ type: "user", isMeta: true, isSidechain: true, message: { role: "user", content: "go" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
+    ].join("\n");
+    const sub = parseClaudeTranscript(own, { sidechain: { agentId: "sub-a", ownFile: true } });
+    expect(sub.turns.map((t) => (t as any).text)).toEqual(["go", "done"]);
+  });
+
+  test("a parent file with no side-chain yet renders nothing, never the parent's chat", () => {
+    // A subagent that has just started has flushed no turns — rendering the
+    // whole parent conversation under its name would leak the wrong chat.
+    const parentOnly = [
+      JSON.stringify({ type: "user", message: { role: "user", content: "secret parent prompt" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "parent reply" }] } }),
+    ].join("\n");
+    expect(parseClaudeTranscript(parentOnly, { sidechain: { agentId: "sub-a" } }).turns).toEqual([]);
+  });
+
+  test("an unknown id in a file that has ids renders nothing, not the parent's chat", () => {
+    const sub = parseClaudeTranscript(SIDECHAIN_JSONL, { sidechain: { agentId: "sub-zzz" } });
+    expect(sub.turns).toEqual([]);
+  });
+
+  test("untagged side-chains render nothing rather than every subagent at once", () => {
+    // An older transcript marks isSidechain but carries no agentId, so two
+    // parallel subagents are indistinguishable — merging them under one
+    // label would be worse than an empty result the caller can explain.
+    const untagged = [
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "one" }] } }),
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "two" }] } }),
+    ].join("\n");
+    expect(parseClaudeTranscript(untagged, { sidechain: { agentId: "sub-a" } }).turns).toEqual([]);
+  });
+});
+
 const CODEX_JSONL = [
   JSON.stringify({
     type: "session_meta",

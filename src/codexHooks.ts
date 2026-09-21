@@ -16,6 +16,10 @@ export const CODEX_HOOK_EVENTS: Record<string, string> = {
   // like the Claude side needs.
   PermissionRequest: "permission-request",
   Stop: "stop",
+  // Codex mirrors Claude Code's subagent events (same agent_id/agent_type and
+  // agent_transcript_path payload), so the same handlers cover both.
+  SubagentStart: "subagent-start",
+  SubagentStop: "subagent-stop",
 };
 
 export function codexHome(): string {

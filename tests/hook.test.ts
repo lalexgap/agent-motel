@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildInboxOutput, buildStopGate, formatInbox, hookEffects, shortTask } from "../src/commands/hook";
+import { buildInboxOutput, buildStopGate, formatInbox, hookEffects, isTurnBoundary, shortTask } from "../src/commands/hook";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
@@ -45,8 +45,28 @@ describe("hookEffects", () => {
     expect(hookEffects("permission-request", {}).notify).toBe("approval requested");
   });
 
+  test("subagent events keep the parent working without draining", () => {
+    expect(hookEffects("subagent-start", { agent_id: "a1", agent_type: "Explore" })).toEqual({ status: "working" });
+    expect(hookEffects("subagent-stop", { agent_id: "a1" })).toEqual({ status: "working" });
+  });
+
   test("unknown event throws", () => {
     expect(() => hookEffects("nope", {})).toThrow(/unknown hook event/);
+  });
+});
+
+describe("subagent-context hooks", () => {
+  test("a tool call inside a subagent still reports the parent as working", () => {
+    expect(hookEffects("post-tool-use", { agent_id: "a1" }).status).toBe("working");
+  });
+
+  test("isTurnBoundary ignores events that describe a subagent", () => {
+    expect(isTurnBoundary("user-prompt-submit", {})).toBe(true);
+    expect(isTurnBoundary("stop", {}, { status: "idle" })).toBe(true);
+    expect(isTurnBoundary("session-start", { source: "compact" })).toBe(false);
+    // From within a subagent: the parent's turn is still going.
+    expect(isTurnBoundary("stop", { agent_id: "a1" }, { status: "idle" })).toBe(false);
+    expect(isTurnBoundary("user-prompt-submit", { agent_id: "a1" })).toBe(false);
   });
 });
 

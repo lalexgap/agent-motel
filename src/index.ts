@@ -25,6 +25,7 @@ import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { conciergeCommand, ensureConcierge } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
+import { subagentsCommand } from "./commands/subagents";
 import { searchCommand } from "./commands/search";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
@@ -63,7 +64,7 @@ usage:
   am -                        jump to previous agent
   am new <name> [-m msg | -m - | --file path] [--dir path] [--codex]
                 [--remote | --no-remote] [--model <m>] [--effort <level>]
-                [--role <name>]
+                [--role <name>] [--prefer-subagents]
                               spawn a new agent in tmux and jump into it
                               (-m - reads the task from stdin, --file <path> from
                                a file — both dodge shell quoting for long tasks;
@@ -72,6 +73,12 @@ usage:
                                config.defaultProvider (default: codex);
                                --model / --effort override the provider defaults)
                               --role applies a named behavior preset
+                              --prefer-subagents tells the agent to fan work
+                              out with its own built-in subagents instead of
+                              spawning am agents (cheap and fast, but they have
+                              no pane and can't be messaged or interrupted);
+                              --no-prefer-subagents overrides
+                              config.preferSubagents the other way
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
                               --worktree <branch> picks the branch
@@ -158,8 +165,16 @@ usage:
   am outbox [--clear]         messages queued here for an unreachable target
                               (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
-  am transcript <name> [--full] [--out file]
+  am transcript <name> [--full] [--out file] [--subagent <id|type>]
                               render the agent's conversation as markdown
+                              (--subagent renders one in-session subagent's
+                               side-chain instead)
+  am subagents [<name>] [--json]
+                              in-session subagents (Claude Code's Task tool,
+                              codex subagents): what a name has fanned out to,
+                              or what is running right now on this host. They
+                              have no pane — use \`am run\` for work you need to
+                              attach to or steer
   am search <query> [--all] [--fleet] [--limit n] [--json]
                               full-text search agent chats; prints matching
                               agents + snippets + the command to pick each up
@@ -221,7 +236,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -292,7 +307,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek",
+  "report", "comms", "wait", "peek", "subagents",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -525,6 +540,11 @@ async function main(): Promise<void> {
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+        preferSubagents: args.flags["prefer-subagents"]
+          ? true
+          : args.flags["no-prefer-subagents"]
+            ? false
+            : undefined,
         inPlace: !!args.flags["in-place"],
         reportTo: args.flags["report-to"] as string | undefined,
         report: !!args.flags.report,
@@ -543,6 +563,11 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
+        preferSubagents: args.flags["prefer-subagents"]
+          ? true
+          : args.flags["no-prefer-subagents"]
+            ? false
+            : undefined,
         timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
@@ -678,7 +703,11 @@ async function main(): Promise<void> {
       transcriptCommand(requirePositional(args, 0, "agent name"), {
         full: !!args.flags.full,
         out: args.flags.out as string | undefined,
+        subagent: args.flags.subagent as string | undefined,
       });
+      break;
+    case "subagents":
+      subagentsCommand(args.positional[0], { json: !!args.flags.json });
       break;
     case "search":
     case "s":

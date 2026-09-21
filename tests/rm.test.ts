@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth } from "../src/queue";
+import { readSubagents, recordSubagentStart } from "../src/subagents";
 
 let home: string;
 
@@ -41,6 +42,14 @@ describe("stopAgent", () => {
 });
 
 describe("destroyAgent", () => {
+  test("takes the subagent ledger with it, so a reused name starts clean", () => {
+    const agent = makeAgent("alpha");
+    // Left open on purpose: a killed session fires no Stop hook.
+    recordSubagentStart("alpha", { id: "s1", type: "Explore" });
+    destroyAgent(agent, { clean: false });
+    expect(readSubagents("alpha")).toEqual([]);
+  });
+
   test("removes state and queue", () => {
     const agent = makeAgent("alpha");
     queueAppend("alpha", "pending");

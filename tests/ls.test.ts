@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterRowsByRole, paneWaitingInfo, sortLsRows, type AgentRow } from "../src/commands/ls";
+import { filterRowsByRole, liveSubagents, paneWaitingInfo, sortLsRows, type AgentRow } from "../src/commands/ls";
 
 const SEP = "─".repeat(40);
 
@@ -118,5 +118,25 @@ describe("gitDiffSummary", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("liveSubagents", () => {
+  const summary = { active: 2, types: "Explore", detail: "2 subagents · Explore" };
+
+  test("reports what a live agent is running", () => {
+    expect(liveSubagents("working", () => summary)).toEqual(summary);
+    expect(liveSubagents("working", () => null)).toBeUndefined();
+  });
+
+  test("a gone agent reports nothing and never reads its ledger", () => {
+    let reads = 0;
+    const read = () => {
+      reads++;
+      return summary;
+    };
+    expect(liveSubagents("dead", read)).toBeUndefined();
+    expect(liveSubagents("exited", read)).toBeUndefined();
+    expect(reads).toBe(0);
   });
 });

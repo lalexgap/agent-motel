@@ -1,4 +1,4 @@
-import { matchAgent, updateAgentStatus, writeAgent, type AgentStatus } from "../state";
+import { matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
 import { queueAppend, queueDepth, queuePop } from "../queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -8,6 +8,7 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
+import { closeOpenSubagents, isBackgroundSubagent, recordSubagentStart, recordSubagentStop } from "../subagents";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -42,6 +43,10 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
     case "user-prompt-submit":
     case "pre-tool-use":
     case "post-tool-use":
+    // A subagent starting or finishing means the parent is mid-turn. Its own
+    // lifecycle is recorded separately, in the subagent ledger.
+    case "subagent-start":
+    case "subagent-stop":
       return { status: "working" };
     case "stop":
       return { status: "idle", drainQueue: true };
@@ -169,10 +174,83 @@ function stopGate(name: string): string | null {
   }
 }
 
+// Fold a subagent hook payload into the ledger. Both providers report
+// agent_id/agent_type on start, plus the subagent's own transcript and final
+// message on stop. Either end of a turn closes anything still open, because a
+// subagent cannot outlive the turn that spawned it: a stop hook may never
+// arrive (an interrupt aborts the turn silently, a killed session fires
+// nothing at all), and the next turn's start — or the session that resumes
+// it — must not inherit the leftovers.
+export function recordSubagentEvent(
+  event: string,
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  effects?: HookEffects,
+): void {
+  const name = agent.name;
+  const id = typeof payload.agent_id === "string" ? payload.agent_id : undefined;
+  const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
+  if (event === "subagent-start") {
+    if (id) recordSubagentStart(name, { id, type });
+    return;
+  }
+  if (event === "subagent-stop") {
+    if (id) {
+      recordSubagentStop(name, {
+        id,
+        type,
+        message: typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined,
+        transcriptPath:
+          typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined,
+      });
+    }
+    return;
+  }
+  if (isTurnBoundary(event, payload, effects)) {
+    // Mid-session, forked subagents keep running past the turn and report
+    // their own stop. A session boundary spares nothing: no subagent outlives
+    // the provider process, and its leftover .meta.json would otherwise keep
+    // the record "running" across every later resume.
+    const sessionBoundary = event === "session-start" || event === "session-end";
+    closeOpenSubagents(
+      name,
+      sessionBoundary ? {} : { keepOpen: (record) => isBackgroundSubagent(agent, record.id) },
+    );
+  }
+}
+
+// When nothing can still be running under this agent: a turn starting, the
+// agent going idle (a stop, or the "waiting for your input" notification that
+// follows an interrupt, which fires no stop of its own), or the session
+// ending. Pure.
+export function isTurnBoundary(
+  event: string,
+  payload: Record<string, unknown>,
+  effects?: HookEffects,
+): boolean {
+  // Turn start: fires after an interrupt, and always before this turn's own
+  // subagents report in.
+  // A boundary event from inside a subagent describes the subagent, not the
+  // turn it runs in.
+  if (typeof payload.agent_id === "string" && payload.agent_id !== "") return false;
+  if (event === "user-prompt-submit" || event === "session-end") return true;
+  // Auto-compaction reports itself as a session start MID-TURN, with the
+  // turn's subagents still running — closing them there would erase a live
+  // fan-out from the hub.
+  if (event === "session-start") return payload.source !== "compact";
+  return effects?.status === "idle";
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const inheritedName = process.env.AGENTMGR_AGENT;
   if (!inheritedName) return; // not a managed session
   const payload = await readStdinPayload();
+  // A tool call made INSIDE a subagent fires the parent's hooks, with the
+  // parent's AGENTMGR_AGENT — the provider distinguishes the two by agent_id
+  // ("present only when the hook fires from within a subagent"). Status still
+  // belongs to the parent (it really is working), but anything that consumes
+  // the parent's state must not run in a subagent's context.
+  const fromSubagent = typeof payload.agent_id === "string" && payload.agent_id !== "";
 
   // A live tmux session can be renamed, but its provider process retains the
   // environment it inherited at launch. Previous names are exact aliases, so
@@ -187,7 +265,7 @@ export async function hookCommand(event: string): Promise<void> {
   // finishing — it never goes idle sitting on unread mail. Cleaner than typing
   // them into the pane (no Enter-swallow); the idle-drain still covers agents
   // that are already idle when a message arrives.
-  if (event === "stop") {
+  if (event === "stop" && !fromSubagent) {
     const gate = stopGate(name);
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed
@@ -204,15 +282,27 @@ export async function hookCommand(event: string): Promise<void> {
 
   const effects = hookEffects(event, payload);
 
+  // In-session subagents (Claude Code's Task tool, Codex's subagents) are
+  // invisible outside the pane, so their lifecycle goes to a per-agent ledger
+  // that `am ls`, the sidebar, and `am subagents` read. Needs the effects: an
+  // agent going idle is a boundary however it got there.
+  recordSubagentEvent(event, agent, payload, effects);
+
   const workingSince = agent.workingSince;
   const workedSeconds = workingSince
     ? Math.max(0, (Date.now() - Date.parse(workingSince)) / 1000)
     : 0;
 
   updateAgentStatus(agent, effects.status, effects.reason);
-  if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
-  // Codex includes the rollout file path; saves `am transcript` a search.
-  if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
+  // Subagent events describe the SUBAGENT, and both providers now give their
+  // subagents transcripts of their own — so never let one repoint the parent's
+  // conversation, which `am transcript`, `am search` and the activity reader
+  // all follow.
+  if (!event.startsWith("subagent-")) {
+    if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
+    // Codex includes the rollout file path; saves `am transcript` a search.
+    if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
+  }
   if (event === "user-prompt-submit" && !agent.workingSince) {
     agent.workingSince = new Date().toISOString();
   }
@@ -222,8 +312,13 @@ export async function hookCommand(event: string): Promise<void> {
   // Surface any queued peer messages into context so the agent reads them
   // automatically — at turn start (UserPromptSubmit) and between tool calls
   // mid-turn (PostToolUse), so a busy agent doesn't have to finish its turn first.
-  if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
-  else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+  // Draining here in a subagent's context would pop the parent's messages off
+  // its queue and inject them into a conversation the operator can't see or
+  // reply to — the parent would never learn the message arrived.
+  if (!fromSubagent) {
+    if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
+    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+  }
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
   let pane: string[] | null = null;
