@@ -59,7 +59,7 @@ ${fanOut}
 Agent names are global. Choose a short, globally unique kebab-case name using <project>-<scope>[-<role>] with 2–4 meaningful terms, for example motel-sidebar-sort or api-auth-review. When the operator explicitly asks for parallel agents on one task, use role suffixes such as -impl, -tests, and -review. Avoid generic names like worker, agent1, or test, and don't encode the provider or temporary status.
 
 - am new <name> [-m "task"] [--role <role>] [--dir <path> | --worktree <branch>] [--codex]   spawn-and-leave-running: fire-and-forget, you'll check on or message it later
-- am run <name> -m "task" [--role <role>] [--dir <path> | --worktree <branch> | --in-place] [--codex] [--rm]   spawn-wait-collect: spawns a real agent, BLOCKS until it finishes its turn, then prints its final message to stdout. This is the am-visible replacement for the Task tool when you need a result back — for fan-out of INDEPENDENT whole tasks, run one "am run" per item (background several with & then wait, or run them in sequence). The agent stays in am ls unless you pass --rm. Exits non-zero if it blocks on input or times out (--timeout <secs>, default 600). NOTE: the built-in Workflow tool is disabled for you on purpose — its fan-out spawns subagents am can't see; to parallelize whole tasks, run several "am run" agents instead.
+- am run <name> -m "task" [--role <role>] [--dir <path> | --worktree <branch> | --in-place] [--codex] [--rm]   spawn-wait-collect: spawns a real agent, BLOCKS until it finishes its turn, then prints its final message to stdout. This is the am-visible replacement for the Task tool when you need a result back — for fan-out of INDEPENDENT whole tasks, run one "am run" per item (background several with & then wait, or run them in sequence). The agent stays in am ls unless you pass --rm. Exits non-zero if it blocks on input or times out (--timeout <secs>, default 600). NOTE: the built-in Workflow tool is disabled for you on purpose — it fans out into a confusing mix of am agents and headless ones; to parallelize whole tasks, run several "am run" agents instead.
 - am role list · am role show <name>   named behavior presets. Before delegating, run am role list; if a listed role matches the task you're handing off (e.g. a shepherd role for PR shepherding), spawn with --role <role> and keep -m to the concrete target (the PR, the branch, the bug) — the role carries the how, -m the what. Only pass roles that actually appear in the list.
 - am send <name> "msg"          queue a message, delivered when that agent goes idle
   (for a message with backticks/quotes/newlines, pipe it instead to avoid shell
@@ -193,9 +193,10 @@ export interface LaunchPlan {
 function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): LaunchPlan {
   const remoteArgs = remoteControlArgs(opts.remote);
   const command = [
-    // Disable the multi-agent Workflow tool: its fan-out spawns in-process
-    // subagents that are invisible to am (no own session, no state file),
-    // producing a confusing mix of am agents and headless "claude agents".
+    // Disable the multi-agent Workflow tool: its fan-out produces a confusing
+    // mix of am agents and headless "claude agents" with no session or state
+    // file of their own (the subagent ledger records them, but they still
+    // can't be attached to or steered).
     // Managed agents fan out with `am run` instead, so every agent is a
     // first-class, visible am citizen. Kept BEFORE the next flag so the
     // variadic <tools...> can't swallow a trailing positional (the prompt).

@@ -55,20 +55,36 @@ export function jsonRecords(records: SubagentRecord[], live: boolean): (Subagent
   return records.map((record) => (record.endedAt ? record : { ...record, stale: true as const }));
 }
 
-export function formatSubagentLines(lines: SubagentLine[], width = 60): string[] {
-  const typeWidth = Math.max(4, ...lines.map((l) => l.type.length));
-  const idWidth = Math.max(2, ...lines.map((l) => l.id.length));
-  const ageWidth = Math.max(3, ...lines.map((l) => l.age.length));
-  const out = [
-    `  ${"TYPE".padEnd(typeWidth)}  ${"ID".padEnd(idWidth)}  ${"AGE".padEnd(ageWidth)}  DETAIL`,
-  ];
-  for (const line of lines) {
+interface ColumnWidths {
+  type: number;
+  id: number;
+  age: number;
+}
+
+// Widths come from every row that will be printed, so a host-wide listing's
+// single header lines up with all of its groups — not just the first.
+export function columnWidths(lines: SubagentLine[]): ColumnWidths {
+  return {
+    type: Math.max(4, ...lines.map((l) => l.type.length)),
+    id: Math.max(2, ...lines.map((l) => l.id.length)),
+    age: Math.max(3, ...lines.map((l) => l.age.length)),
+  };
+}
+
+export function subagentHeader(w: ColumnWidths): string {
+  return `  ${"TYPE".padEnd(w.type)}  ${"ID".padEnd(w.id)}  ${"AGE".padEnd(w.age)}  DETAIL`;
+}
+
+export function subagentRows(lines: SubagentLine[], w: ColumnWidths, width = 60): string[] {
+  return lines.map((line) => {
     const detail = line.detail.length > width ? line.detail.slice(0, width - 1) + "…" : line.detail;
-    out.push(
-      `${line.icon} ${line.type.padEnd(typeWidth)}  ${line.id.padEnd(idWidth)}  ${line.age.padEnd(ageWidth)}  ${detail}`,
-    );
-  }
-  return out;
+    return `${line.icon} ${line.type.padEnd(w.type)}  ${line.id.padEnd(w.id)}  ${line.age.padEnd(w.age)}  ${detail}`;
+  });
+}
+
+export function formatSubagentLines(lines: SubagentLine[], width = 60): string[] {
+  const w = columnWidths(lines);
+  return [subagentHeader(w), ...subagentRows(lines, w, width)];
 }
 
 // A gone session can't be running anything, whatever its ledger still says.
@@ -123,17 +139,18 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
     console.log("no subagents running — `am subagents <name>` shows an agent's finished ones");
     return;
   }
-  // One header for the whole listing: each agent's rows are grouped under its
-  // name, so repeating the column names per group is noise — dropping them
-  // entirely (as this did) left unlabeled columns.
+  // One header for the whole listing, sized over every group's rows: each
+  // agent's rows sit under its own name, so per-group headers would be noise
+  // and a header sized to the first group would leave the rest misaligned.
   const groups = running.map(({ agent, records }) => ({
     agent,
-    lines: formatSubagentLines(subagentLines(records, subagentActivity(agent, records))),
+    lines: subagentLines(records, subagentActivity(agent, records)),
   }));
-  const lines: string[] = [groups[0]!.lines[0]!];
+  const widths = columnWidths(groups.flatMap((g) => g.lines));
+  const lines: string[] = [subagentHeader(widths)];
   for (const group of groups) {
     lines.push(`${group.agent.name}  ${relativeTime(group.agent.updatedAt)}`);
-    lines.push(...group.lines.slice(1), "");
+    lines.push(...subagentRows(group.lines, widths), "");
   }
   console.log(lines.join("\n").trimEnd());
 }

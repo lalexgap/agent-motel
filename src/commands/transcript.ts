@@ -73,8 +73,8 @@ export function transcriptCommand(
   // conversation instead of a failed lookup.
   if (opts.subagent && transcript.turns.length === 0) {
     throw new Error(
-      `no turns found for "${opts.subagent}" in ${agent.name}'s session file (${source.missing ?? "no transcript of its own"}) — ` +
-        "it may not have produced a turn yet, or this transcript doesn't tag subagent turns",
+      `no turns found for "${opts.subagent}" in ${source.file}` +
+        `${source.missing ? ` (${source.missing})` : ""} — it may not have produced a turn yet`,
     );
   }
   const markdown = renderTranscript(transcript, { full: opts.full, agentName: source.label });

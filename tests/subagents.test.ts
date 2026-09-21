@@ -18,7 +18,14 @@ import {
   summarize,
   type SubagentRecord,
 } from "../src/subagents";
-import { formatSubagentLines, jsonRecords, subagentLines } from "../src/commands/subagents";
+import {
+  columnWidths,
+  formatSubagentLines,
+  jsonRecords,
+  subagentHeader,
+  subagentLines,
+  subagentRows,
+} from "../src/commands/subagents";
 import { recordSubagentEvent } from "../src/commands/hook";
 import { matchSubagent } from "../src/commands/transcript";
 
@@ -70,12 +77,30 @@ describe("subagent ledger", () => {
     recordSubagentStart("api", { id: "a2", type: "code-review" });
     recordSubagentStop("api", { id: "a2", message: "done" });
 
-    closeOpenSubagents("api", "2026-09-21T10:05:00.000Z");
+    closeOpenSubagents("api", { at: "2026-09-21T10:05:00.000Z" });
     const records = readSubagents("api");
     expect(records.every((r) => r.endedAt)).toBe(true);
     expect(records.find((r) => r.id === "a1")!.endedAt).toBe("2026-09-21T10:05:00.000Z");
     // The already-finished one keeps its own end time and message.
     expect(records.find((r) => r.id === "a2")!.message).toBe("done");
+  });
+
+  test("a spared subagent stays open while the rest close", () => {
+    recordSubagentStart("api", { id: "fg", type: "Explore" });
+    recordSubagentStart("api", { id: "bg", type: "code-review" });
+    // Forked subagents outlive the turn and report their own stop later.
+    closeOpenSubagents("api", { at: "2026-09-21T10:05:00.000Z", keepOpen: (r) => r.id === "bg" });
+    expect(activeSubagents("api").map((r) => r.id)).toEqual(["bg"]);
+
+    recordSubagentStop("api", { id: "bg", message: "3 findings", at: "2026-09-21T10:07:00.000Z" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("sparing every open subagent writes nothing at all", () => {
+    recordSubagentStart("api", { id: "bg", type: "code-review" });
+    const before = readFileSync(subagentsFile("api"), "utf8");
+    closeOpenSubagents("api", { keepOpen: () => true });
+    expect(readFileSync(subagentsFile("api"), "utf8")).toBe(before);
   });
 
   test("closing is a no-op when nothing is open", () => {
@@ -186,6 +211,21 @@ describe("am subagents output", () => {
     expect(out).toHaveLength(3);
     expect(out[1]).toContain("Explore");
   });
+
+  test("shared widths line every group up under one header", () => {
+    const narrow = subagentLines([records[0]!], new Map());
+    const wide = subagentLines(
+      [{ id: "eeee3333", type: "general-purpose", startedAt: "2026-09-21T10:00:00.000Z" }],
+      new Map(),
+    );
+    const widths = columnWidths([...narrow, ...wide]);
+    const header = subagentHeader(widths);
+    const [narrowRow] = subagentRows(narrow, widths);
+    const [wideRow] = subagentRows(wide, widths);
+    // The ID column starts at the same offset in the header and in every row.
+    expect(narrowRow!.indexOf("aaaa1111")).toBe(header.indexOf("ID"));
+    expect(wideRow!.indexOf("eeee3333")).toBe(header.indexOf("ID"));
+  });
 });
 
 describe("jsonRecords", () => {
@@ -204,17 +244,27 @@ describe("jsonRecords", () => {
 });
 
 describe("recordSubagentEvent", () => {
+  const agent: AgentState = {
+    name: "api",
+    status: "working",
+    dir: "/tmp",
+    tmuxSession: "agentmgr-api",
+    provider: "claude",
+    createdAt: "2026-09-21T10:00:00.000Z",
+    updatedAt: "2026-09-21T10:00:00.000Z",
+  };
+
   test("a new session closes the previous one's leftovers", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     // The session was killed: no stop hook ever ran for a1.
-    recordSubagentEvent("session-start", "api", {});
+    recordSubagentEvent("session-start", agent, {});
     expect(activeSubagents("api")).toEqual([]);
   });
 
   test("start and stop payloads fold into a record", () => {
-    recordSubagentEvent("subagent-start", "api", { agent_id: "b1", agent_type: "code-review" });
+    recordSubagentEvent("subagent-start", agent, { agent_id: "b1", agent_type: "code-review" });
     expect(activeSubagents("api").map((r) => r.type)).toEqual(["code-review"]);
-    recordSubagentEvent("subagent-stop", "api", {
+    recordSubagentEvent("subagent-stop", agent, {
       agent_id: "b1",
       agent_type: "code-review",
       last_assistant_message: "3 findings",
@@ -226,7 +276,7 @@ describe("recordSubagentEvent", () => {
   test("an interrupted turn's leftovers are closed when the next turn starts", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     // ESC (or `am interrupt`) aborts the turn: no stop hook ever fires.
-    recordSubagentEvent("user-prompt-submit", "api", {});
+    recordSubagentEvent("user-prompt-submit", agent, {});
     expect(activeSubagents("api")).toEqual([]);
   });
 
@@ -244,14 +294,29 @@ describe("recordSubagentEvent", () => {
 
   test("auto-compaction's session start does not close a live fan-out", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
-    recordSubagentEvent("session-start", "api", { source: "compact" });
+    recordSubagentEvent("session-start", agent, { source: "compact" });
     expect(activeSubagents("api")).toHaveLength(1);
-    recordSubagentEvent("session-start", "api", { source: "resume" });
+    recordSubagentEvent("session-start", agent, { source: "resume" });
     expect(activeSubagents("api")).toEqual([]);
   });
 
+  test("going idle is a boundary however it happened — including the idle notification", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // Esc aborts the turn (no stop hook); claude's "waiting for your input"
+    // notification is what tells am the agent went idle.
+    recordSubagentEvent("notification", agent, { message: "Claude is waiting for your input" }, { status: "idle" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("mid-turn events are not boundaries", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    recordSubagentEvent("post-tool-use", agent, {}, { status: "working" });
+    recordSubagentEvent("notification", agent, { message: "needs your permission" }, { status: "needs-attention" });
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
   test("a payload without an agent id is ignored, not recorded", () => {
-    recordSubagentEvent("subagent-start", "api", {});
+    recordSubagentEvent("subagent-start", agent, {});
     expect(readSubagents("api")).toEqual([]);
   });
 });
@@ -359,17 +424,27 @@ describe("jsonRecords", () => {
 });
 
 describe("recordSubagentEvent", () => {
+  const agent: AgentState = {
+    name: "api",
+    status: "working",
+    dir: "/tmp",
+    tmuxSession: "agentmgr-api",
+    provider: "claude",
+    createdAt: "2026-09-21T10:00:00.000Z",
+    updatedAt: "2026-09-21T10:00:00.000Z",
+  };
+
   test("a new session closes the previous one's leftovers", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     // The session was killed: no stop hook ever ran for a1.
-    recordSubagentEvent("session-start", "api", {});
+    recordSubagentEvent("session-start", agent, {});
     expect(activeSubagents("api")).toEqual([]);
   });
 
   test("start and stop payloads fold into a record", () => {
-    recordSubagentEvent("subagent-start", "api", { agent_id: "b1", agent_type: "code-review" });
+    recordSubagentEvent("subagent-start", agent, { agent_id: "b1", agent_type: "code-review" });
     expect(activeSubagents("api").map((r) => r.type)).toEqual(["code-review"]);
-    recordSubagentEvent("subagent-stop", "api", {
+    recordSubagentEvent("subagent-stop", agent, {
       agent_id: "b1",
       agent_type: "code-review",
       last_assistant_message: "3 findings",
@@ -381,7 +456,7 @@ describe("recordSubagentEvent", () => {
   test("an interrupted turn's leftovers are closed when the next turn starts", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     // ESC (or `am interrupt`) aborts the turn: no stop hook ever fires.
-    recordSubagentEvent("user-prompt-submit", "api", {});
+    recordSubagentEvent("user-prompt-submit", agent, {});
     expect(activeSubagents("api")).toEqual([]);
   });
 
@@ -399,14 +474,29 @@ describe("recordSubagentEvent", () => {
 
   test("auto-compaction's session start does not close a live fan-out", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
-    recordSubagentEvent("session-start", "api", { source: "compact" });
+    recordSubagentEvent("session-start", agent, { source: "compact" });
     expect(activeSubagents("api")).toHaveLength(1);
-    recordSubagentEvent("session-start", "api", { source: "resume" });
+    recordSubagentEvent("session-start", agent, { source: "resume" });
     expect(activeSubagents("api")).toEqual([]);
   });
 
+  test("going idle is a boundary however it happened — including the idle notification", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // Esc aborts the turn (no stop hook); claude's "waiting for your input"
+    // notification is what tells am the agent went idle.
+    recordSubagentEvent("notification", agent, { message: "Claude is waiting for your input" }, { status: "idle" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("mid-turn events are not boundaries", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    recordSubagentEvent("post-tool-use", agent, {}, { status: "working" });
+    recordSubagentEvent("notification", agent, { message: "needs your permission" }, { status: "needs-attention" });
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
   test("a payload without an agent id is ignored, not recorded", () => {
-    recordSubagentEvent("subagent-start", "api", {});
+    recordSubagentEvent("subagent-start", agent, {});
     expect(readSubagents("api")).toEqual([]);
   });
 });

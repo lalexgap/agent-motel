@@ -1,4 +1,4 @@
-import { matchAgent, updateAgentStatus, writeAgent, type AgentStatus } from "../state";
+import { matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
 import { queueAppend, queueDepth, queuePop } from "../queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -8,7 +8,7 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
-import { closeOpenSubagents, recordSubagentStart, recordSubagentStop } from "../subagents";
+import { closeOpenSubagents, isBackgroundSubagent, recordSubagentStart, recordSubagentStop } from "../subagents";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -181,12 +181,20 @@ function stopGate(name: string): string | null {
 // arrive (an interrupt aborts the turn silently, a killed session fires
 // nothing at all), and the next turn's start — or the session that resumes
 // it — must not inherit the leftovers.
-export function recordSubagentEvent(event: string, name: string, payload: Record<string, unknown>): void {
+export function recordSubagentEvent(
+  event: string,
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  effects?: HookEffects,
+): void {
+  const name = agent.name;
   const id = typeof payload.agent_id === "string" ? payload.agent_id : undefined;
   const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
   if (event === "subagent-start") {
     if (id) recordSubagentStart(name, { id, type });
-  } else if (event === "subagent-stop") {
+    return;
+  }
+  if (event === "subagent-stop") {
     if (id) {
       recordSubagentStop(name, {
         id,
@@ -196,19 +204,31 @@ export function recordSubagentEvent(event: string, name: string, payload: Record
           typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined,
       });
     }
-  } else if (
-    event === "stop" ||
-    event === "session-end" ||
-    // Auto-compaction reports itself as a session start MID-TURN, with the
-    // turn's subagents still running — closing them there would erase a live
-    // fan-out from the hub.
-    (event === "session-start" && payload.source !== "compact") ||
-    // Turn start: fires after an interrupt, and always before this turn's own
-    // subagents report in.
-    event === "user-prompt-submit"
-  ) {
-    closeOpenSubagents(name);
+    return;
   }
+  if (isTurnBoundary(event, payload, effects)) {
+    // Forked subagents keep running past the turn and report their own stop.
+    closeOpenSubagents(name, { keepOpen: (record) => isBackgroundSubagent(agent, record.id) });
+  }
+}
+
+// When nothing can still be running under this agent: a turn starting, the
+// agent going idle (a stop, or the "waiting for your input" notification that
+// follows an interrupt, which fires no stop of its own), or the session
+// ending. Pure.
+export function isTurnBoundary(
+  event: string,
+  payload: Record<string, unknown>,
+  effects?: HookEffects,
+): boolean {
+  // Turn start: fires after an interrupt, and always before this turn's own
+  // subagents report in.
+  if (event === "user-prompt-submit" || event === "session-end") return true;
+  // Auto-compaction reports itself as a session start MID-TURN, with the
+  // turn's subagents still running — closing them there would erase a live
+  // fan-out from the hub.
+  if (event === "session-start") return payload.source !== "compact";
+  return effects?.status === "idle";
 }
 
 export async function hookCommand(event: string): Promise<void> {
@@ -244,12 +264,13 @@ export async function hookCommand(event: string): Promise<void> {
     }
   }
 
+  const effects = hookEffects(event, payload);
+
   // In-session subagents (Claude Code's Task tool, Codex's subagents) are
   // invisible outside the pane, so their lifecycle goes to a per-agent ledger
-  // that `am ls`, the sidebar, and `am subagents` read.
-  recordSubagentEvent(event, name, payload);
-
-  const effects = hookEffects(event, payload);
+  // that `am ls`, the sidebar, and `am subagents` read. Needs the effects: an
+  // agent going idle is a boundary however it got there.
+  recordSubagentEvent(event, agent, payload, effects);
 
   const workingSince = agent.workingSince;
   const workedSeconds = workingSince

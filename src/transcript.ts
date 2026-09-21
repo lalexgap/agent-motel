@@ -76,8 +76,11 @@ export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Tran
   const entries = parseLines(jsonl);
   const keep = claudeEntryFilter(entries, opts);
 
+  // isMeta marks harness noise in the main chain — but a subagent's own
+  // transcript opens with the brief it was given, and that IS the entry.
+  const keepMeta = opts.sidechain?.ownFile === true;
   for (const entry of entries) {
-    if (!keep(entry) || entry.isMeta) continue;
+    if (!keep(entry) || (entry.isMeta && !keepMeta)) continue;
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     transcript.sessionId ??= entry.sessionId;
     transcript.dir ??= entry.cwd;

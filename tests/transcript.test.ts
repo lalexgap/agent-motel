@@ -132,9 +132,11 @@ describe("parseClaudeTranscript — subagent side-chains", () => {
     expect(main.turns.map((t) => (t as any).text)).toEqual(["main chain"]);
   });
 
-  test("a dedicated subagent transcript renders whole", () => {
+  test("a dedicated subagent transcript renders whole, brief included", () => {
     const own = [
-      JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
+      // The brief a subagent is handed is written as an isMeta entry, which
+      // is harness noise in the main chain but the opening turn here.
+      JSON.stringify({ type: "user", isMeta: true, isSidechain: true, message: { role: "user", content: "go" } }),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
     ].join("\n");
     const sub = parseClaudeTranscript(own, { sidechain: { agentId: "sub-a", ownFile: true } });

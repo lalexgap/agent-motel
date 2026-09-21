@@ -44,9 +44,10 @@ export interface SubagentRecord {
 type LedgerEvent =
   | { ev: "start"; id: string; type?: string; at: string }
   | { ev: "stop"; id: string; type?: string; at: string; msg?: string; transcript?: string }
-  // A turn boundary closes every subagent still open: they cannot outlive the
-  // parent's turn, and an interrupted turn fires no stop hook of its own.
-  | { ev: "turn-end"; at: string };
+  // A turn boundary closes the subagents still open, except the ones named in
+  // `except` — forked/background subagents outlive the turn that spawned them
+  // and report their own stop later.
+  | { ev: "turn-end"; at: string; except?: string[] };
 
 const MESSAGE_CHARS = 200;
 const KEEP_FINISHED = 20;
@@ -89,12 +90,20 @@ export function recordSubagentStop(
   compactIfLarge(name);
 }
 
-// Called at a turn boundary (stop / session-end). Cheap no-op when nothing is
-// open, so it can run on every turn without growing the file.
-export function closeOpenSubagents(name: string, at = new Date().toISOString()): void {
+// Called at a turn boundary (a turn starting, the agent going idle, the
+// session ending). Cheap no-op when nothing is open, so it can run on every
+// turn without growing the file. `keepOpen` spares subagents that legitimately
+// outlive the turn.
+export function closeOpenSubagents(
+  name: string,
+  opts: { at?: string; keepOpen?: (record: SubagentRecord) => boolean } = {},
+): void {
   if (!existsSync(subagentsFile(name))) return;
-  if (readSubagents(name).every((r) => r.endedAt)) return;
-  append(name, { ev: "turn-end", at });
+  const open = readSubagents(name).filter((r) => !r.endedAt);
+  if (open.length === 0) return;
+  const except = opts.keepOpen ? open.filter(opts.keepOpen).map((r) => r.id) : [];
+  if (except.length === open.length) return;
+  append(name, { ev: "turn-end", at: opts.at ?? new Date().toISOString(), except: except.length ? except : undefined });
 }
 
 function parseEvents(text: string): LedgerEvent[] {
@@ -118,7 +127,7 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
   for (const event of events) {
     if (event.ev === "turn-end") {
       for (const record of byId.values()) {
-        if (!record.endedAt) record.endedAt = event.at;
+        if (!record.endedAt && !event.except?.includes(record.id)) record.endedAt = event.at;
       }
       continue;
     }
@@ -285,6 +294,22 @@ export function subagentTranscriptFile(agent: AgentState, subagentId: string): s
   }
   const sessionDir = join(dirname(parent), basename(parent, ".jsonl"));
   return join(sessionDir, "subagents", `agent-${subagentId}.jsonl`);
+}
+
+// Claude Code writes a sidecar next to each subagent transcript describing how
+// it was launched. A forked ("background") subagent keeps running after the
+// parent's turn ends, so a turn boundary must not close it. Anything we can't
+// read is treated as foreground — the ledger should never hold a record open
+// on a guess.
+export function isBackgroundSubagent(agent: AgentState, subagentId: string): boolean {
+  const transcript = subagentTranscriptFile(agent, subagentId);
+  if (!transcript) return false;
+  try {
+    const meta = JSON.parse(readFileSync(transcript.replace(/\.jsonl$/, ".meta.json"), "utf8"));
+    return meta?.requestShape === "background";
+  } catch {
+    return false;
+  }
 }
 
 // What each of the given subagents is doing right now, keyed by id. Codex
