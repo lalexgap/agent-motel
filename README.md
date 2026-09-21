@@ -79,6 +79,8 @@ am transcript api --subagent Explore  # read one subagent's side-chain
 
 While they run, the hub and `am ls` show the rollup on the parent's status (`working · 2 subagents · Explore`). They can't be messaged, interrupted, or attached to, and they die with the parent's turn — use `am run` for work you need to steer.
 
+By default agents are told to delegate whole tasks to am agents. `am new <name> --prefer-subagents` flips that: the agent fans out with its own subagents and spawns an am agent only when the work needs its own room. `"preferSubagents": true` in `~/.agent-manager/config.json` makes it the default, and `--no-prefer-subagents` overrides it per agent. The preference is stored with the agent, so resume and handoff keep it.
+
 ### Models and reasoning effort
 
 ```sh

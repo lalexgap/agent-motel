@@ -60,6 +60,40 @@ describe("agentSystemPrompt", () => {
     expect(reviewer).toContain("# Your role: reviewer");
   });
 
+  test("--prefer-subagents flips the fan-out advice and drops the engineer hand-off", () => {
+    const subagentsFirst = agentSystemPrompt("worker", { preferSubagents: true });
+    expect(subagentsFirst).toContain("prefer your own built-in subagents");
+    expect(subagentsFirst).not.toContain("Spawn a real am agent when delegating a WHOLE task");
+    // Keeping the engineer/reviewer hand-offs would contradict the whole
+    // instruction: both send the work back out to am agents.
+    expect(subagentsFirst).not.toContain("--role engineer --in-place");
+    expect(subagentsFirst).not.toContain("--role reviewer --in-place");
+    // Peer control still goes through am — only fan-out changed.
+    expect(subagentsFirst).toContain("still use the am CLI via Bash");
+    expect(subagentsFirst).toContain("am send X");
+
+    const amFirst = agentSystemPrompt("worker", { preferSubagents: false });
+    expect(amFirst).toContain("Spawn a real am agent when delegating a WHOLE task");
+    expect(amFirst).not.toContain("prefer your own built-in subagents");
+  });
+
+  test("a resumed agent keeps the fan-out preference it launched with", () => {
+    const agent: AgentState = {
+      name: "worker",
+      status: "exited",
+      dir: "/tmp",
+      tmuxSession: "agentmgr-worker",
+      provider: "claude",
+      sessionId: "s-1",
+      preferSubagents: true,
+      createdAt: "2026-09-21T10:00:00.000Z",
+      updatedAt: "2026-09-21T10:00:00.000Z",
+    };
+    const plan = buildResumeCommand("claude", agent, {});
+    const prompt = plan.command[plan.command.indexOf("--append-system-prompt") + 1]!;
+    expect(prompt).toContain("prefer your own built-in subagents");
+  });
+
   test("adds the reporting briefing only when a target is set", () => {
     const prompt = agentSystemPrompt("worker", { reportTo: "lead" });
     expect(prompt).toContain('You are reporting to "lead"');

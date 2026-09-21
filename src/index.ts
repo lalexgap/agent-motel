@@ -64,7 +64,7 @@ usage:
   am -                        jump to previous agent
   am new <name> [-m msg | -m - | --file path] [--dir path] [--codex]
                 [--remote | --no-remote] [--model <m>] [--effort <level>]
-                [--role <name>]
+                [--role <name>] [--prefer-subagents]
                               spawn a new agent in tmux and jump into it
                               (-m - reads the task from stdin, --file <path> from
                                a file — both dodge shell quoting for long tasks;
@@ -73,6 +73,12 @@ usage:
                                config.defaultProvider (default: codex);
                                --model / --effort override the provider defaults)
                               --role applies a named behavior preset
+                              --prefer-subagents tells the agent to fan work
+                              out with its own built-in subagents instead of
+                              spawning am agents (cheap and fast, but they have
+                              no pane and can't be messaged or interrupted);
+                              --no-prefer-subagents overrides
+                              config.preferSubagents the other way
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
                               --worktree <branch> picks the branch
@@ -534,6 +540,11 @@ async function main(): Promise<void> {
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+        preferSubagents: args.flags["prefer-subagents"]
+          ? true
+          : args.flags["no-prefer-subagents"]
+            ? false
+            : undefined,
         inPlace: !!args.flags["in-place"],
         reportTo: args.flags["report-to"] as string | undefined,
         report: !!args.flags.report,
@@ -552,6 +563,11 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
+        preferSubagents: args.flags["prefer-subagents"]
+          ? true
+          : args.flags["no-prefer-subagents"]
+            ? false
+            : undefined,
         timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
