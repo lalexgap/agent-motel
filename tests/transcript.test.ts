@@ -212,6 +212,19 @@ describe("parseCodexTranscript", () => {
     const tool = transcript.turns.find((t) => t.kind === "tool") as any;
     expect(tool.output).toBe("3 fail");
   });
+
+  test("a local_shell_call pairs with its output by call_id too", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "local_shell_call", call_id: "s1", action: { type: "exec", command: ["ls"] } },
+      }),
+      JSON.stringify({ type: "response_item", payload: { type: "local_shell_call_output", call_id: "s1", output: "a.ts\nb.ts" } }),
+    ].join("\n");
+    const tool = parseCodexTranscript(jsonl).turns[0] as any;
+    expect(tool.name).toBe("shell");
+    expect(tool.output).toBe("a.ts\nb.ts");
+  });
 });
 
 describe("renderTranscript", () => {

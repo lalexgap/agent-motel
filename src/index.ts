@@ -416,7 +416,7 @@ async function pickerFlow(): Promise<void> {
         const agent = readAgent(name);
         const record = agent ? readSubagents(name).find((r) => r.id === sub.id) : undefined;
         if (!agent || !record) return ["(subagent no longer recorded)"];
-        return subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
+        return subagentScreen(agent, record, { colors: true }) ?? [subagentNoOutputNote(agent)];
       }
       const { host, name } = splitFleetKey(key);
       if (host) {

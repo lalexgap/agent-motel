@@ -40,7 +40,7 @@ async function peekSubagent(
   }
   let record: SubagentRecord = matched;
   const frame = (): string[] => {
-    const body = subagentScreen(agent, record) ?? [subagentNoOutputNote(agent)];
+    const body = subagentScreen(agent, record, { colors: !!process.stdout.isTTY }) ?? [subagentNoOutputNote(agent)];
     const tail = opts.lines && opts.lines > 0 ? body.slice(-opts.lines) : body;
     const state = record.endedAt ? " · finished" : "";
     return [`⤷ ${subagentLabel(record)} · ${agent.name} · ${ageOf(record, Date.now())}${state}`, "", ...tail];

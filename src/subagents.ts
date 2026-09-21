@@ -441,25 +441,79 @@ function describeSidechainEntry(entry: Record<string, any>): string | null {
 
 const SCREEN_TAIL_BYTES = 256_000;
 
-// A subagent's transcript as a screen: its own words and the tools it reached
-// for, one line each, newest last. Tool output is left out — the parent's
-// pane doesn't show it either, and it's most of the bytes. Pure.
-export function renderSubagentScreen(turns: Turn[]): string[] {
+// A subagent's transcript as a screen, newest last, laid out the way the
+// provider's own transcript view is: `⏺` opens each assistant message, a tool
+// call is `⏺ Tool(arg)` with its result folded to one dimmed `⎿` line
+// beneath, and messages are separated by a blank line. Colors are SGR and
+// off by default; a terminal turns them on. Only the trailing run of tool
+// calls can still be in flight (a message issues several at once, and their
+// results land in any order), and none once the subagent has finished; an
+// unanswered call anywhere else was cut off. Pure.
+export function renderSubagentScreen(
+  turns: Turn[],
+  opts: { colors?: boolean; finished?: boolean } = {},
+): string[] {
+  // Undo the dim alone: a full reset would drop the picker's background too.
+  const dim = (text: string) => (opts.colors ? `\x1b[2m${text}\x1b[22m` : text);
+  let inFlight = turns.length;
+  while (!opts.finished && inFlight > 0 && turns[inFlight - 1]!.kind === "tool") inFlight--;
   const lines: string[] = [];
   let briefed = false;
-  for (const turn of turns) {
+  let last: Turn["kind"] | null = null;
+  const gap = () => {
+    if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+  };
+  turns.forEach((turn, index) => {
     if (turn.kind === "user") {
       // The first user turn is the brief whatever it starts with — a subagent
       // spawned on a skill body has nothing else to show for what it was asked.
-      if (!briefed || !isHarnessNoise(turn.text)) lines.push(`❯ ${clipMessage(turn.text, 120)}`);
+      if (!briefed || !isHarnessNoise(turn.text)) {
+        gap();
+        lines.push(`❯ ${clipMessage(turn.text, 120)}`);
+      }
       briefed = true;
     } else if (turn.kind === "assistant") {
-      lines.push(...turn.text.split("\n"));
+      gap();
+      const [first, ...rest] = turn.text.split("\n");
+      lines.push(`⏺ ${first ?? ""}`, ...rest.map((line) => (line.trim() ? `  ${line}` : "")));
     } else {
+      // Consecutive tool calls stack; a message boundary gets the gap.
+      if (last !== "tool") gap();
       lines.push(`⏺ ${describeToolCall(turn.name, turn.input)}`);
+      const result =
+        turn.output === undefined && index < inFlight ? "(no result)" : summarizeToolOutput(turn.output);
+      lines.push(dim(`  ⎿  ${result}`));
     }
-  }
+    last = turn.kind;
+  });
   return lines;
+}
+
+const RESULT_CHARS = 100;
+
+// Terminal control sequences a command's output may carry — CSI (colors,
+// cursor moves, erases), OSC (titles, hyperlinks; unterminated runs to the
+// end), charset selects, and C0 controls other than newline/tab. The folded
+// line is styled as a whole, so none of them belong.
+const CONTROL_RE =
+  /\x1b\[[0-9;:?<=>]*[A-Za-z~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)|\x1b[()][\x20-\x7e]|[\x00-\x08\x0b-\x1f\x7f]/g;
+// Reminders the harness appends after a tool result aren't the result. Only
+// trailing blocks count: the string can also appear in genuine output.
+const REMINDER_RE = /(?:\s*<system-reminder>(?:(?!<\/?system-reminder>)[\s\S])*<\/system-reminder>)+\s*$/;
+
+// What the tool came back with, in one line: its first non-empty line and how
+// much more there was. Undefined output is a call still in flight.
+export function summarizeToolOutput(output: string | undefined): string {
+  if (output === undefined) return "…";
+  const nonEmpty = output
+    .replace(REMINDER_RE, "")
+    .replace(CONTROL_RE, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (nonEmpty.length === 0) return "(no output)";
+  const first = clipMessage(nonEmpty[0]!, RESULT_CHARS);
+  return nonEmpty.length > 1 ? `${first} (+${nonEmpty.length - 1} lines)` : first;
 }
 
 // User turns the harness injects — notifications, skill preambles, reminders —
@@ -515,13 +569,18 @@ function argText(value: unknown): string | null {
 // The subagent's transcript as screen lines, or null when there is none to
 // read yet. Its own file is preferred (the stop hook reports it); a running
 // claude subagent's is derived from its id; codex reports nothing until stop.
-export function subagentScreen(agent: AgentState, record: SubagentRecord): string[] | null {
+export function subagentScreen(
+  agent: AgentState,
+  record: SubagentRecord,
+  opts: { colors?: boolean } = {},
+): string[] | null {
   const own = record.transcriptPath && existsSync(record.transcriptPath) ? record.transcriptPath : null;
   const file = own ?? (agentProvider(agent) === "claude" ? subagentTranscriptFile(agent, record.id) : null);
   if (!file || !existsSync(file)) return null;
   const text = readFileTail(file, SCREEN_TAIL_BYTES);
   if (!text) return null;
-  return renderSubagentScreen(parseTranscript(agentProvider(agent), text, { sidechain: { ownFile: true } }).turns);
+  const { turns } = parseTranscript(agentProvider(agent), text, { sidechain: { ownFile: true } });
+  return renderSubagentScreen(turns, { ...opts, finished: !!record.endedAt });
 }
 
 // Why a subagent shows no output, in the provider's terms.

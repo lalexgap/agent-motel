@@ -19,6 +19,7 @@ import {
   subagentLabel,
   renderSubagentScreen,
   subagentActivity,
+  summarizeToolOutput,
   subagentSummary,
   summarize,
   type SubagentRecord,
@@ -639,41 +640,116 @@ describe("matchSubagent", () => {
 });
 
 describe("renderSubagentScreen", () => {
-  test("shows the subagent's words and tool calls, not tool output", () => {
+  test("lays turns out like the provider's transcript view, results folded to a line", () => {
     const lines = renderSubagentScreen([
       { kind: "user", text: "find the hook handlers\nand report back" },
+      { kind: "assistant", text: "Looking now." },
       { kind: "tool", name: "Grep", input: "{\"pattern\":\"hook\"}", output: "src/hook.ts:12\nsrc/hook.ts:40" },
+      { kind: "tool", name: "Bash", input: "{\"command\":\"sleep 5\"}", output: "" },
       { kind: "assistant", text: "They live in hook.ts.\nTwo handlers." },
     ]);
     expect(lines).toEqual([
       "❯ find the hook handlers and report back",
+      "",
+      "⏺ Looking now.",
+      "",
       "⏺ Grep(hook)",
-      "They live in hook.ts.",
-      "Two handlers.",
+      "  ⎿  src/hook.ts:12 (+1 lines)",
+      "⏺ Bash(sleep 5)",
+      "  ⎿  (no output)",
+      "",
+      "⏺ They live in hook.ts.",
+      "  Two handlers.",
     ]);
-    expect(lines.join("\n")).not.toContain("src/hook.ts:12");
+  });
+
+  test("a call still in flight shows an ellipsis, and colors dim the result lines", () => {
+    const lines = renderSubagentScreen(
+      [{ kind: "tool", name: "Bash", input: "{\"command\":\"gh pr checks 1\"}" }],
+      { colors: true },
+    );
+    expect(lines[0]).toBe("⏺ Bash(gh pr checks 1)");
+    expect(lines[1]).toBe("\x1b[2m  ⎿  …\x1b[22m");
+  });
+
+  test("the trailing run of unanswered calls is in flight; earlier ones were cut off", () => {
+    const turns = [
+      { kind: "tool", name: "Bash", input: "{\"command\":\"a\"}" },
+      { kind: "assistant", text: "Trying again." },
+      { kind: "tool", name: "Bash", input: "{\"command\":\"b\"}" },
+      { kind: "tool", name: "Read", input: "{\"file_path\":\"c\"}", output: "fast" },
+      { kind: "tool", name: "Bash", input: "{\"command\":\"d\"}" },
+    ] as const;
+    expect(renderSubagentScreen([...turns])).toEqual([
+      "⏺ Bash(a)",
+      "  ⎿  (no result)",
+      "",
+      "⏺ Trying again.",
+      "",
+      "⏺ Bash(b)",
+      "  ⎿  …",
+      "⏺ Read(c)",
+      "  ⎿  fast",
+      "⏺ Bash(d)",
+      "  ⎿  …",
+    ]);
+    const finished = renderSubagentScreen([...turns], { finished: true });
+    expect(finished.filter((l) => l.includes("…"))).toEqual([]);
+    expect(finished.filter((l) => l.includes("(no result)"))).toHaveLength(3);
+  });
+
+  test("blank lines inside a message stay blank, without doubling the gap after it", () => {
+    const lines = renderSubagentScreen([
+      { kind: "assistant", text: "One.\n\nTwo." },
+      { kind: "assistant", text: "Three." },
+    ]);
+    expect(lines).toEqual(["⏺ One.", "", "  Two.", "", "⏺ Three."]);
   });
 
   test("harness-injected user turns are not the subagent's conversation", () => {
     const lines = renderSubagentScreen([
-      { kind: "user", text: "Review PR #66" },
+      { kind: "user", text: "Review target: `66`" },
       { kind: "user", text: "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event" },
       { kind: "user", text: "Base directory for this skill: /home/x/.claude/skills/review" },
       { kind: "user", text: "<system-reminder>\nOther agents are running" },
-      { kind: "user", text: "Review target: `66`" },
     ]);
-    expect(lines).toEqual(["❯ Review PR #66", "❯ Review target: `66`"]);
+    expect(lines).toEqual(["❯ Review target: `66`"]);
     expect(isHarnessNoise("  [Request interrupted by user]")).toBe(true);
     expect(isHarnessNoise("Review the diff")).toBe(false);
   });
 
-  test("the brief is shown even when it is a skill body", () => {
+  test("the first user turn is the brief even when it starts like harness noise", () => {
     const lines = renderSubagentScreen([
-      { kind: "user", text: "Base directory for this skill: /home/x/.claude/skills/review\n\n# Review Code Changes" },
-      { kind: "user", text: "Base directory for this skill: /home/x/.claude/skills/other" },
-      { kind: "assistant", text: "Looking." },
+      { kind: "user", text: "Base directory for this skill: /x\n\nReview PR 66" },
+      { kind: "user", text: "Base directory for this skill: /y" },
     ]);
-    expect(lines).toEqual(["❯ Base directory for this skill: /home/x/.claude/skills/review # Review Code Changes", "Looking."]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("❯ Base directory for this skill: /x");
+  });
+});
+
+describe("summarizeToolOutput", () => {
+  test("first line plus how much more, empty and in-flight spelled out", () => {
+    expect(summarizeToolOutput("All checks were successful\n\nbuild  pass\ntest  pass")).toBe("All checks were successful (+2 lines)");
+    expect(summarizeToolOutput("one line")).toBe("one line");
+    expect(summarizeToolOutput("   \n")).toBe("(no output)");
+    expect(summarizeToolOutput(undefined)).toBe("…");
+    expect(summarizeToolOutput("x".repeat(300)).length).toBeLessThan(110);
+  });
+
+  test("terminal control sequences never reach the folded line", () => {
+    expect(summarizeToolOutput("\x1b[2J\x1b[H\x1b[32mok\x1b[0m\x07\r\n\x1b]0;title\x07more\x1b[K")).toBe("ok (+1 lines)");
+    expect(summarizeToolOutput("\x1b[1;1H\x1b[2K")).toBe("(no output)");
+    expect(summarizeToolOutput("\x1b[38:5:1m\x1b(Bred\x1b]8;;http://x")).toBe("red");
+  });
+
+  test("reminders the harness appended after the result are not the result", () => {
+    const reminder = "<system-reminder>\nOnly you see that output.\n</system-reminder>";
+    expect(summarizeToolOutput(reminder)).toBe("(no output)");
+    expect(summarizeToolOutput(`done\n\n${reminder}\n${reminder}`)).toBe("done");
+    expect(summarizeToolOutput(`src/a.ts:1: "<system-reminder>"\nsrc/b.ts:2: x\n${reminder}`)).toBe(
+      'src/a.ts:1: "<system-reminder>" (+1 lines)',
+    );
   });
 });
 

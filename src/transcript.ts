@@ -185,15 +185,21 @@ export function parseCodexTranscript(jsonl: string): Transcript {
       };
       if (payload.call_id) toolsByCallId.set(payload.call_id, tool);
       transcript.turns.push(tool);
-    } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
+    } else if (
+      payload.type === "function_call_output" ||
+      payload.type === "custom_tool_call_output" ||
+      payload.type === "local_shell_call_output"
+    ) {
       const tool = toolsByCallId.get(payload.call_id);
       if (tool) tool.output = extractCodexOutput(payload.output);
     } else if (payload.type === "local_shell_call") {
-      transcript.turns.push({
+      const tool: Extract<Turn, { kind: "tool" }> = {
         kind: "tool",
         name: "shell",
         input: compactValue(payload.action?.command ?? payload.action),
-      });
+      };
+      if (payload.call_id) toolsByCallId.set(payload.call_id, tool);
+      transcript.turns.push(tool);
     }
   }
   return transcript;
