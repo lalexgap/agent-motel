@@ -133,6 +133,21 @@ describe("exportSubagentRoles", () => {
     expect(readFileSync(join(claudeAgentsDir(), "engineer.md"), "utf8")).toBe("edited by hand");
   });
 
+  test("a lost manifest re-adopts files that still match what am would write", () => {
+    exportSubagentRoles();
+    rmSync(join(home, "am", "exported-agents.json"));
+    let report = exportSubagentRoles();
+    expect(report.skipped).toEqual([]);
+    expect(report.unchanged).toHaveLength(6);
+    // Adopted for real: a later role change rewrites them again.
+    addRole({ name: "auditor", instructions: "Audit it." });
+    exportSubagentRoles();
+    removeRole("auditor");
+    report = exportSubagentRoles();
+    expect(report.removed).toHaveLength(2);
+    expect(report.unchanged).toHaveLength(6);
+  });
+
   test("removing a role removes the files am wrote for it — and only those", () => {
     addRole({ name: "auditor", instructions: "Audit it." });
     exportSubagentRoles();

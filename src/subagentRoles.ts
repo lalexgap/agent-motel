@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { codexHome } from "./codexHooks";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { baseDir } from "./paths";
@@ -212,19 +212,22 @@ export function exportSubagentRoles(
       const ours = manifest.files[path];
       if (existsSync(path)) {
         const current = readFileSync(path, "utf8");
+        if (current === content) {
+          // Byte-identical to what we'd write, so claiming it is harmless —
+          // and it's how a lost manifest picks its files back up.
+          report.unchanged.push(path);
+          if (!opts.dryRun) manifest.files[path] = hash(content);
+          continue;
+        }
         if (ours === undefined || hash(current) !== ours) {
           // Not ours, or edited since — the user's file now.
           report.skipped.push(path);
           continue;
         }
-        if (current === content) {
-          report.unchanged.push(path);
-          continue;
-        }
       }
       report.written.push(path);
       if (!opts.dryRun) {
-        mkdirSync(join(path, ".."), { recursive: true });
+        mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, content);
         manifest.files[path] = hash(content);
       }
@@ -235,7 +238,7 @@ export function exportSubagentRoles(
   // ones we wrote and nobody touched.
   for (const [path, written] of Object.entries(manifest.files)) {
     if (wanted.has(path)) continue;
-    if (!providers.some((p) => path.startsWith(p === "claude" ? claudeAgentsDir() : codexAgentsDir()))) continue;
+    if (!providers.some((p) => path.startsWith((p === "claude" ? claudeAgentsDir() : codexAgentsDir()) + sep))) continue;
     if (existsSync(path)) {
       if (hash(readFileSync(path, "utf8")) !== written) {
         report.skipped.push(path);
