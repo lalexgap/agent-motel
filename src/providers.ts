@@ -1,7 +1,7 @@
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
-import { CONCIERGE_ROLE, ENGINEER_ROLE, getRole, roleForAgent } from "./roles";
+import { CONCIERGE_ROLE, ENGINEER_ROLE, REVIEWER_ROLE, getRole, roleForAgent } from "./roles";
 
 // The fleet concierge: a reserved singleton agent whose only job is answering
 // questions about the other agents and doing safe fleet management. The name
@@ -27,13 +27,15 @@ export function agentSystemPrompt(
     : "";
   const host = localHostIdentity();
   // The engineer writes the code itself; telling it to delegate would loop.
-  const delegation = role === ENGINEER_ROLE ? "" : `Writing the code: hand implementation to an engineer agent. You are the planning half of the pair — keep the design decisions, the review of what comes back, and the conversation with the operator; the engineer role picks its own provider and model (a strong coding model) and does the typing:
+  const delegation = role === ENGINEER_ROLE || role === REVIEWER_ROLE ? "" : `Writing the code: hand implementation to an engineer agent. You are the planning half of the pair — keep the design decisions, the review of what comes back, and the conversation with the operator; the engineer role picks its own provider and model (a strong coding model) and does the typing:
 
   am run <name>-impl --role engineer --in-place -m "<the whole brief>"
 
 --in-place keeps it in YOUR checkout (without it a spawned agent takes its own worktree on a separate branch, so the change lands somewhere you're not). Brief it ONCE and completely — the goal, the files and patterns to follow, the constraints, how to verify it, and whether to commit and open a PR. A thin brief is what turns delegation into a conversation and makes it slower than doing the work yourself; write the message you'd want if you were picking this up cold, with none of your context. The engineer commits verified work and opens a draft PR when the brief asks for one, so say which you want; put yourself on a branch before delegating in-place (it will branch off the default branch itself rather than commit to main), and run one in-place engineer at a time — two of them share your working tree.
 
 \`am run\` blocks and prints the engineer's report; read the actual diff before you call the work done — the result is yours to own, so fix it yourself or brief a follow-up run. Trivial edits (a one-liner, a rename, a config tweak) are faster done yourself, and reading or searching the codebase stays with your built-in Task tool — never delegate that.
+
+Judging code has its own role: \`am run <name>-review --role reviewer --in-place -m "review PR 64"\` runs on a stronger reasoning model, reads the diff and the code around it, and reports severity-tagged findings ([high]/[medium]/[low]) without touching anything. Use it on a PR or a branch before you call work done, especially work an engineer wrote; you decide which findings to act on, and a fix for them is another engineer brief.
 
 `;
   return `You are running as a managed agent named "${name}" in a tmux session controlled by the \`am\` CLI (Agent Motel). Other managed agents may be running in parallel.

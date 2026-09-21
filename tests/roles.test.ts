@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   CONCIERGE_ROLE,
   ENGINEER_ROLE,
+  REVIEWER_ROLE,
   addRole,
   getRole,
   listRoles,
@@ -102,6 +103,18 @@ describe("role registry", () => {
     expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-sol");
   });
 
+  test("ships a reviewer role on the strong reasoning models that never edits", () => {
+    const reviewer = requireRole(REVIEWER_ROLE);
+    expect(reviewer.builtIn).toBe(true);
+    expect(reviewer.provider).toBe("claude");
+    expect(reviewer.models).toEqual({ claude: "fable", codex: "gpt-6-astra" });
+    // review-loop and shepherd-pr parse these tags out of its report.
+    expect(reviewer.instructions).toContain("[high]");
+    expect(reviewer.instructions).toContain("[medium]");
+    expect(reviewer.instructions).toContain("you don't fix");
+    expect(() => removeRole(REVIEWER_ROLE)).toThrow(/built in/);
+  });
+
   test("adds, lists, reads, replaces, and removes a custom role", () => {
     addRole({ name: "security-reviewer", description: "Reviews auth", instructions: "Inspect trust boundaries." });
     expect(getRole("security-reviewer")).toMatchObject({
@@ -109,7 +122,7 @@ describe("role registry", () => {
       description: "Reviews auth",
       instructions: "Inspect trust boundaries.",
     });
-    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "engineer", "security-reviewer"]);
+    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "engineer", "reviewer", "security-reviewer"]);
     expect(() => addRole({ name: "security-reviewer", instructions: "new" })).toThrow(/--force/);
     addRole({ name: "security-reviewer", instructions: "New instructions", force: true });
     expect(requireRole("security-reviewer").instructions).toBe("New instructions");
@@ -120,7 +133,9 @@ describe("role registry", () => {
   test("rejects unsafe names and empty instructions", () => {
     expect(() => addRole({ name: "../escape", instructions: "no" })).toThrow(/role name/);
     expect(() => addRole({ name: "Reviewer", instructions: "no" })).toThrow(/role name/);
-    expect(() => addRole({ name: "reviewer", instructions: "  " })).toThrow(/empty/);
+    expect(() => addRole({ name: "auditor", instructions: "  " })).toThrow(/empty/);
+    // The built-in names are taken; a pre-existing file still shadows them.
+    expect(() => addRole({ name: "reviewer", instructions: "mine" })).toThrow(/built in/);
     expect(() => addRole({ name: "none", instructions: "no" })).toThrow(/reserved/);
     expect(() => addRole({ name: "unassigned", instructions: "no" })).toThrow(/reserved/);
     expect(getRole("../config")).toBeNull();

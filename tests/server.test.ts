@@ -89,10 +89,10 @@ describe("agents api", () => {
   });
 
   test("GET /api/roles lists built-in and custom definitions", async () => {
-    addRole({ name: "reviewer", instructions: "Review changes." });
+    addRole({ name: "changelog-writer", instructions: "Write the changelog." });
     const res = await fetch(url("/api/roles"), auth());
     const data = (await res.json()) as any;
-    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "engineer", "reviewer"]);
+    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "engineer", "reviewer", "changelog-writer"]);
   });
 
   test("GET /api/summary returns the prioritized fleet report", async () => {

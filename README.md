@@ -91,7 +91,7 @@ There is one concierge per fleet, not per machine: if a concierge already exists
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge` and `engineer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge`, `engineer`, and `reviewer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -121,6 +121,16 @@ am run motel-sort-impl --role engineer --in-place -m "Add a --sort flag to am ls
 ```
 
 `--in-place` is what keeps the engineer in the caller's checkout — without it a spawned agent takes its own worktree on branch `am/<name>`. `am run` blocks and prints the engineer's report; the calling agent reviews the diff and owns the result. Managed agents are told to work this way by default: plan and review themselves, delegate the typing, and brief the engineer completely in one message (goal, patterns to follow, how to verify, whether to commit and open a PR) instead of trading questions with it. Repoint it like any other role — `am role provider engineer --codex` when claude's quota runs out, `am role model engineer --claude --model sonnet` for a cheaper implementor — and if a role's default model isn't offered by the provider on that machine, the spawn falls back to the provider default with a warning instead of failing.
+
+#### The reviewer role
+
+`reviewer` is the engineer's counterpart: it reads a PR, branch, or working tree, judges it against what the change claims to do, and reports findings — it never edits, commits, or changes a PR's state. It launches on claude with `fable` (`gpt-6-astra` on codex), because catching a real bug in someone else's diff is harder than writing the diff was:
+
+```sh
+am run motel-64-review --role reviewer --in-place -m "Review PR 64 against main; the risky part is the role-shadowing logic in src/roles.ts"
+```
+
+Findings come back severity-tagged — `[high] src/roles.ts:83 — …` with a concrete failure scenario and a fix direction — which is the shape the `review-loop` and `shepherd-pr` skills parse. The calling agent decides what to act on; handing those findings to an `engineer` run is how they get fixed.
 
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 
