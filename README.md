@@ -126,6 +126,17 @@ Provider pins and model defaults apply to newly launched agents, including launc
 
 Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to replace an existing custom definition. Selected instructions are snapshotted into agent state, so existing agents keep their role across resume, restore, move, clone, and handoff even if the registry later changes. Role registries are host-local; manage a remote with `am -H <host> role ...` before creating that role there.
 
+#### Roles as the providers' own subagents
+
+Agents delegate to built-in subagents, and both providers let you define those by file — so am writes its roles there too. Three ship with am: `engineer` (implements a settled brief and reports once; opus / gpt-5.6-sol), `reviewer` (severity-tagged findings and a `Verdict:` line, never edits; fable / gpt-6-astra), and `shepherd` (takes a PR to merge-ready with the shepherd-pr skill, never merges; opus / gpt-5.6-sol). Every custom role is exported alongside them, and a custom role with a shipped name replaces it.
+
+```sh
+am role export             # ~/.claude/agents/<name>.md and ~/.codex/agents/<name>.toml
+am role export --dry-run   # show what would change
+```
+
+The export also runs after every role edit and on every `am new`, so the files track the registry. am only ever rewrites files it wrote itself: one you authored, or edited after am wrote it, is kept and reported. Claude picks a subagent by its type ("use the reviewer agent"), Codex by its `name` — the same words in an am-managed session or your own.
+
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 
 ### Message and coordinate

@@ -1,6 +1,7 @@
 import type { Provider } from "../state";
 import { providerCatalog, validateSelection } from "../catalog";
 import { addRole, getRole, listRoles, removeRole, setRoleModel, setRoleProvider } from "../roles";
+import { ensureSubagentRoles, exportSubagentRoles, formatExportReport } from "../subagentRoles";
 
 export interface RoleCommandOptions {
   json?: boolean;
@@ -10,6 +11,7 @@ export interface RoleCommandOptions {
   provider?: Provider;
   model?: string;
   clear?: boolean;
+  dryRun?: boolean;
 }
 
 export function roleCommand(action: string | undefined, name: string | undefined, opts: RoleCommandOptions = {}): void {
@@ -21,6 +23,13 @@ export function roleCommand(action: string | undefined, name: string | undefined
       const pin = role.provider ? `  · ${role.provider}` : "";
       console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}${pin}${role.description ? `  · ${role.description}` : ""}`);
     }
+    return;
+  }
+
+  if (action === "export") {
+    const providers = opts.provider ? [opts.provider] : undefined;
+    const report = exportSubagentRoles({ providers, dryRun: opts.dryRun });
+    console.log(formatExportReport(report, opts.dryRun).join("\n"));
     return;
   }
 
@@ -45,6 +54,7 @@ export function roleCommand(action: string | undefined, name: string | undefined
     }
     const role = setRoleProvider(name, opts.clear ? undefined : opts.provider);
     console.log(role.provider ? `role "${name}" now launches on ${role.provider}` : `role "${name}" no longer pins a provider`);
+    ensureSubagentRoles();
     return;
   }
   if (action === "model") {
@@ -60,18 +70,21 @@ export function roleCommand(action: string | undefined, name: string | undefined
     }
     setRoleModel(name, opts.provider, opts.clear ? undefined : opts.model);
     console.log(`${opts.clear ? "cleared" : "saved"} ${opts.provider} model for role "${name}"`);
+    ensureSubagentRoles();
     return;
   }
   if (action === "add") {
     if (!opts.instructions) throw new Error("role instructions required: pass -m <text>, -m -, or --file <path>");
     const role = addRole({ name, description: opts.description, instructions: opts.instructions, force: opts.force });
     console.log(`${opts.force ? "saved" : "added"} role "${role.name}"`);
+    ensureSubagentRoles();
     return;
   }
   if (action === "rm" || action === "remove") {
     removeRole(name);
     console.log(`removed role "${name}"`);
+    ensureSubagentRoles();
     return;
   }
-  throw new Error(`unknown role action "${action}" — use list, show, add, model, provider, or rm`);
+  throw new Error(`unknown role action "${action}" — use list, show, add, model, provider, export, or rm`);
 }
