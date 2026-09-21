@@ -148,16 +148,7 @@ export interface PickerHandlers {
   // Create a new agent; resolves to its key (name locally, host:name remote),
   // which the picker then jumps to (or selects, in persistent mode). host is
   // undefined for local, or a configured remote alias chosen in the flow.
-  create?: (
-    name: string,
-    task: string | undefined,
-    dir: string | undefined,
-    host: string | undefined,
-    provider: string | undefined,
-    model: string | undefined,
-    effort: string | undefined,
-    role: string | undefined,
-  ) => Promise<string>;
+  create?: (spec: CreateSpec) => Promise<string>;
   // Configured remote hosts. When non-empty, the create flow adds a
   // "where" step (local vs a remote) after the dir prompt.
   remotes?: string[];
@@ -869,6 +860,22 @@ export function editMenuHelp(handlers: PickerHandlers): string {
   return [...keys, "esc back"].join(" · ");
 }
 
+// What the create form collects. An object rather than a positional list:
+// eight same-typed `string | undefined` arguments in a row is an ordering
+// accident waiting to happen every time a field is added.
+export interface CreateSpec {
+  name: string;
+  task?: string;
+  dir?: string;
+  host?: string;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  role?: string;
+  // undefined = follow config.preferSubagents.
+  preferSubagents?: boolean;
+}
+
 export function renamedPickerKey(key: string, newName: string): string {
   const colon = key.indexOf(":");
   return colon >= 0 ? `${key.slice(0, colon + 1)}${newName}` : newName;
@@ -879,13 +886,30 @@ export function renamedPickerKey(key: string, newName: string): string {
 // effort are always shown — they apply equally to local and remote spawns.
 export function formFields(hasRemotes: boolean, hasRoles = false): string[] {
   // "where" (location) sits just before "dir" so you pick the host first — the
-  // dir field then completes against that host on the first Tab.
+  // dir field then completes against that host on the first Tab. "fan out"
+  // comes last: it's the one field most spawns leave alone.
   const fields = hasRemotes
-    ? ["name", "task", "where", "dir", "provider", "model", "effort"]
-    : ["name", "task", "dir", "provider", "model", "effort"];
+    ? ["name", "task", "where", "dir", "provider", "model", "effort", "fanout"]
+    : ["name", "task", "dir", "provider", "model", "effort", "fanout"];
   if (hasRoles) fields.splice(fields.indexOf("provider"), 0, "role");
   return fields;
 }
+
+// How the agent delegates work, as the form offers it. "default" leaves the
+// preference unset, so the agent follows config.preferSubagents.
+export const FANOUT_OPTIONS = ["default", "am agents", "subagents"];
+
+export function fanoutPreference(option: string | undefined): boolean | undefined {
+  if (option === "subagents") return true;
+  if (option === "am agents") return false;
+  return undefined;
+}
+
+const FANOUT_HINTS: Record<string, string> = {
+  "default": "follows config",
+  "am agents": "delegates, steerable",
+  "subagents": "in-session, no pane",
+};
 
 export function preservedFieldIndex(previous: string[], index: number, next: string[]): number {
   const focused = previous[index];
@@ -1005,6 +1029,9 @@ export async function pick(
     { name: "", description: "No custom role" },
   ];
   let newRoleIdx = 0;
+  // Fan-out preference: index into FANOUT_OPTIONS, starting on "default" so a
+  // spawn that doesn't care keeps following config.
+  let newFanoutIdx = 0;
   // Full-screen create form: which field has the focus ring, and the dir
   // autocomplete candidates to display (when the last Tab was ambiguous).
   let fields = formFields(hostOptions.length > 1, roleOptions.length > 1);
@@ -1180,6 +1207,7 @@ export async function pick(
       effort: "effort",
       where: "where",
       role: "role",
+      fanout: "fan out",
     };
     const cardWidth = Math.max(1, Math.min(76, cols - 4));
     // Rows: 1-cell marker column, 11-cell label, value, 2-cell right pad.
@@ -1244,6 +1272,9 @@ export async function pick(
         const options = currentEffortOptions();
         const selected = Math.max(0, options.indexOf(newEffort || "default"));
         value = optionStrip(options, selected, rowBase, field);
+      } else if (field === "fanout") {
+        value = optionStrip(FANOUT_OPTIONS, newFanoutIdx, rowBase, field);
+        hint = `${THEME.faint}${FANOUT_HINTS[FANOUT_OPTIONS[newFanoutIdx]!]}${rowBase}`;
       } else {
         value = optionStrip(hostOptions, newHostIdx, rowBase, field);
       }
@@ -1294,7 +1325,13 @@ export async function pick(
     const worktree = handlers.worktreeByDefault ? " in a worktree of" : " in";
     const selectedRole = roleOptions[newRoleIdx]?.name;
     const roleSummary = selectedRole ? ` as ${THEME.cyan}${selectedRole}${THEME.muted}` : "";
-    const summary = `${THEME.muted}  will run ${providerColor}${provider}${THEME.muted}${roleSummary} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.form}`;
+    // Only when it's been changed: "default" is what every other spawn does.
+    const fanout = FANOUT_OPTIONS[newFanoutIdx]!;
+    const fanoutSummary = fanoutPreference(fanout) === undefined
+      ? ""
+      : `${THEME.muted} fanning out to ${THEME.cyan}${fanout}${THEME.muted},`;
+    // Ahead of the dir: the dir is the long, clipped tail of this line.
+    const summary = `${THEME.muted}  will run ${providerColor}${provider}${THEME.muted}${roleSummary}${fanoutSummary} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.form}`;
     const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.form}`;
     card.push({ text: content(alignAnsi(summary, create, cardWidth)) });
     card.push({ text: content("") });
@@ -1811,7 +1848,17 @@ export async function pick(
       const provider = PROVIDER_OPTIONS[newProviderIdx];
       const effort = newEffort || undefined;
       const role = roleOptions[newRoleIdx]?.name || undefined;
-      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host, provider, newModel.trim() || undefined, effort, role).then(
+      handlers.create({
+        name: newName,
+        task: newTask || undefined,
+        dir: newDir.trim() || undefined,
+        host,
+        provider,
+        model: newModel.trim() || undefined,
+        effort,
+        role,
+        preferSubagents: fanoutPreference(FANOUT_OPTIONS[newFanoutIdx]),
+      }).then(
         (created) => {
           if (!handlers.select) return finish(created);
           creating = false;
@@ -1824,6 +1871,7 @@ export async function pick(
           newModel = "";
           newEffort = "";
           newRoleIdx = 0;
+          newFanoutIdx = 0;
           formIdx = 0;
           formCandidates = [];
           dirQuerying = false;
@@ -2304,6 +2352,7 @@ export async function pick(
           newModel = "";
           newEffort = "";
           newRoleIdx = 0;
+          newFanoutIdx = 0;
           formIdx = 0;
           formCandidates = [];
           dirQuerying = false;
@@ -2384,6 +2433,8 @@ export async function pick(
             const current = Math.max(0, options.indexOf(newEffort || "default"));
             const next = options[cycleField(current, options.length, dir)]!;
             newEffort = next === "default" ? "" : next;
+          } else if (field === "fanout") {
+            newFanoutIdx = cycleField(newFanoutIdx, FANOUT_OPTIONS.length, dir);
           } else if (field === "role") {
             newRoleIdx = cycleField(newRoleIdx, roleOptions.length, dir);
             applyRolePin();

@@ -64,6 +64,7 @@ export function remoteNewCommandArgs(opts: {
   model?: string;
   effort?: string;
   role?: string;
+  preferSubagents?: boolean;
 }): string[] {
   const args = ["new", opts.name, "--no-jump"];
   if (opts.task) args.push("-m", opts.task);
@@ -72,6 +73,11 @@ export function remoteNewCommandArgs(opts: {
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
   if (opts.role) args.push("--role", opts.role);
+  // Explicit either way: the remote machine has its own config default, and
+  // the form's choice must win over it.
+  if (opts.preferSubagents !== undefined) {
+    args.push(opts.preferSubagents ? "--prefer-subagents" : "--no-prefer-subagents");
+  }
   return args;
 }
 
@@ -408,44 +414,37 @@ export async function sidebarCommand(): Promise<void> {
       return `removed ${name}`;
     },
     remotes: config.remotes ?? [],
-    create: async (
-      name: string,
-      task: string | undefined,
-      dir: string | undefined,
-      host: string | undefined,
-      provider: string | undefined,
-      model: string | undefined,
-      effort: string | undefined,
-      role: string | undefined,
-    ) => {
-      if (host) {
+    create: async (spec) => {
+      if (spec.host) {
         // Spawn on the remote via its own am; dir (if given) is a path on that
         // host, so it's passed through untouched — the remote am expands ~.
         const args = remoteNewCommandArgs({
-          name,
-          task,
-          dir,
-          provider: provider as Provider | undefined,
-          model,
-          effort,
-          role,
+          name: spec.name,
+          task: spec.task,
+          dir: spec.dir,
+          provider: spec.provider as Provider | undefined,
+          model: spec.model,
+          effort: spec.effort,
+          role: spec.role,
+          preferSubagents: spec.preferSubagents,
         });
-        const res = sshAm(host, args);
-        if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${host} failed`);
-        return `${host}:${name}`;
+        const res = sshAm(spec.host, args);
+        if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${spec.host} failed`);
+        return `${spec.host}:${spec.name}`;
       }
       await newCommand({
-        name,
-        message: task,
-        dir,
-        provider: provider as Provider | undefined,
-        model,
-        effort,
-        role,
+        name: spec.name,
+        message: spec.task,
+        dir: spec.dir,
+        provider: spec.provider as Provider | undefined,
+        model: spec.model,
+        effort: spec.effort,
+        role: spec.role,
+        preferSubagents: spec.preferSubagents,
         jump: false,
         quiet: true,
       });
-      return name;
+      return spec.name;
     },
     // Dir prompt prefill: the highlighted agent's dir (related work usually
     // lives in the same project), else the hub's launch dir.
