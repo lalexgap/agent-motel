@@ -380,12 +380,70 @@ const SCREEN_TAIL_BYTES = 256_000;
 // pane doesn't show it either, and it's most of the bytes. Pure.
 export function renderSubagentScreen(turns: Turn[]): string[] {
   const lines: string[] = [];
+  let briefed = false;
   for (const turn of turns) {
-    if (turn.kind === "user") lines.push(`❯ ${clipMessage(turn.text, 120)}`);
-    else if (turn.kind === "assistant") lines.push(...turn.text.split("\n"));
-    else lines.push(`⏺ ${turn.name}(${clipMessage(turn.input, 100)})`);
+    if (turn.kind === "user") {
+      // The first user turn is the brief whatever it starts with — a subagent
+      // spawned on a skill body has nothing else to show for what it was asked.
+      if (!briefed || !isHarnessNoise(turn.text)) lines.push(`❯ ${clipMessage(turn.text, 120)}`);
+      briefed = true;
+    } else if (turn.kind === "assistant") {
+      lines.push(...turn.text.split("\n"));
+    } else {
+      lines.push(`⏺ ${describeToolCall(turn.name, turn.input)}`);
+    }
   }
   return lines;
+}
+
+// User turns the harness injects — notifications, skill preambles, reminders —
+// aren't the subagent's conversation, and a screen full of them hides what
+// it was actually asked.
+const HARNESS_NOISE = [
+  "[SYSTEM NOTIFICATION",
+  "[Request interrupted",
+  "<system-reminder>",
+  "<task-notification>",
+  "Base directory for this skill",
+];
+
+export function isHarnessNoise(text: string): boolean {
+  const head = text.trimStart();
+  return HARNESS_NOISE.some((prefix) => head.startsWith(prefix));
+}
+
+// The one argument a reader wants for each tool, in priority order: the
+// command, the path, the pattern, the question — never the JSON around it.
+// `path` last: Grep and Glob carry it alongside the pattern that matters.
+const SALIENT_ARGS = ["command", "file_path", "pattern", "query", "url", "skill", "description", "sql", "text", "prompt", "message", "function", "path"];
+const ARG_CHARS = 100;
+
+// A tool call the way the provider's own UI shows it: `Bash(git status)`,
+// `Read(src/hook.ts)`, `playwright:browser_click(Undo change button)`.
+// Falls back to the raw input when it isn't a JSON object.
+export function describeToolCall(name: string, input: string): string {
+  let args: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(input);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed;
+  } catch {
+    // free-form input (codex's shell command string, say)
+  }
+  const label = name.replace(/^mcp__(.+?)__(.+)$/, "$1:$2");
+  if (!args) return `${label}(${clipMessage(input, ARG_CHARS)})`;
+  const salient = SALIENT_ARGS.map((key) => argText(args![key])).find((v) => v !== null);
+  const extra = label === "Skill" && typeof args.args === "string" && args.args.trim() ? ` ${args.args}` : "";
+  if (salient) return `${label}(${clipMessage(salient + extra, ARG_CHARS)})`;
+  const first = Object.values(args).map(argText).find((v) => v !== null);
+  if (first) return `${label}(${clipMessage(first, ARG_CHARS)})`;
+  return Object.keys(args).length === 0 ? `${label}()` : `${label}(${clipMessage(input, ARG_CHARS)})`;
+}
+
+// A non-blank string argument, or an argv-style list of strings joined into
+// one (codex's `shell` passes `["bash","-lc","git status"]`). Null otherwise.
+function argText(value: unknown): string | null {
+  const text = Array.isArray(value) && value.every((v) => typeof v === "string") ? value.join(" ") : value;
+  return typeof text === "string" && text.trim() ? text : null;
 }
 
 // The subagent's transcript as screen lines, or null when there is none to
