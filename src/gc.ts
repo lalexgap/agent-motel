@@ -6,6 +6,7 @@ import { hasSession } from "./tmux";
 import { agentsDir, inboxRootDir, queueDir, sharedRootDir, trashDir, worktreesDir } from "./paths";
 import { queueEntryOwner } from "./queue";
 import { listSnapshots } from "./snapshots";
+import { listSubagentLedgers } from "./subagents";
 import { readJsonOrNull } from "./fsutil";
 import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
@@ -16,7 +17,7 @@ import { inferWorktree, withWorktreeMeta } from "./commands/move";
 //     gcAgentDays — reaped via the normal rm path, so they land in trash and
 //     stay restorable
 //   • trash snapshots older than gcTrashDays
-//   • orphaned queue/inbox/snapshot files whose agent no longer exists
+//   • orphaned queue/inbox/snapshot/subagent files whose agent no longer exists
 //   • unreferenced worktrees under ~/.agent-manager/worktrees — removed only
 //     when clean AND unclaimed by any live or restorable (trashed) agent; the
 //     branch itself survives in the repo, so committed work is never lost
@@ -32,7 +33,7 @@ export interface GcOptions {
 }
 
 export interface OrphanCandidate {
-  kind: "queue" | "inbox" | "shared" | "snapshot" | "corrupt-state";
+  kind: "queue" | "inbox" | "shared" | "snapshot" | "subagents" | "corrupt-state";
   path: string;
   // The agent name this file would belong to — re-checked at apply time so a
   // name that got (re)registered since planning is left alone.
@@ -108,6 +109,12 @@ function orphanScan(
   for (const s of listSnapshots()) {
     if (!liveNames.has(s.name) && olderThan(s.path, ORPHAN_GRACE_MS, now)) {
       orphans.push({ kind: "snapshot", path: s.path, owner: s.name });
+    }
+  }
+
+  for (const ledger of listSubagentLedgers()) {
+    if (!liveNames.has(ledger.name) && olderThan(ledger.path, ORPHAN_GRACE_MS, now)) {
+      orphans.push({ kind: "subagents", path: ledger.path, owner: ledger.name });
     }
   }
 

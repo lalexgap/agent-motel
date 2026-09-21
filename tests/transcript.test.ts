@@ -93,6 +93,60 @@ describe("parseClaudeTranscript", () => {
   });
 });
 
+// Subagent turns live in the parent's session file, tagged isSidechain and
+// carrying the agent id the SubagentStart/Stop hooks report.
+const SIDECHAIN_JSONL = [
+  JSON.stringify({
+    type: "assistant",
+    sessionId: "s-1",
+    message: { role: "assistant", content: [{ type: "text", text: "main chain" }] },
+  }),
+  JSON.stringify({
+    type: "user",
+    isSidechain: true,
+    agentId: "sub-a",
+    message: { role: "user", content: "find the hook handlers" },
+  }),
+  JSON.stringify({
+    type: "assistant",
+    isSidechain: true,
+    agentId: "sub-a",
+    message: { role: "assistant", content: [{ type: "text", text: "they're in hook.ts" }] },
+  }),
+  JSON.stringify({
+    type: "assistant",
+    isSidechain: true,
+    agentId: "sub-b",
+    message: { role: "assistant", content: [{ type: "text", text: "other subagent" }] },
+  }),
+].join("\n");
+
+describe("parseClaudeTranscript — subagent side-chains", () => {
+  test("renders only the requested subagent's turns", () => {
+    const sub = parseClaudeTranscript(SIDECHAIN_JSONL, { sidechain: { agentId: "sub-a" } });
+    expect(sub.turns.map((t) => (t as any).text)).toEqual(["find the hook handlers", "they're in hook.ts"]);
+  });
+
+  test("the main chain still excludes every subagent", () => {
+    const main = parseClaudeTranscript(SIDECHAIN_JSONL);
+    expect(main.turns.map((t) => (t as any).text)).toEqual(["main chain"]);
+  });
+
+  test("a dedicated subagent transcript (no ids to match) renders whole", () => {
+    const own = [
+      JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
+    ].join("\n");
+    const sub = parseClaudeTranscript(own, { sidechain: { agentId: "sub-a" } });
+    expect(sub.turns.map((t) => (t as any).text)).toEqual(["go", "done"]);
+  });
+
+  test("an unknown id in a file that has ids renders nothing, not the parent's chat", () => {
+    const sub = parseClaudeTranscript(SIDECHAIN_JSONL, { sidechain: { agentId: "sub-zzz" } });
+    expect(sub.turns).toEqual([]);
+  });
+});
+
 const CODEX_JSONL = [
   JSON.stringify({
     type: "session_meta",

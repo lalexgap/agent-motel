@@ -14,6 +14,7 @@ import { inboxDir, sharedDir } from "../paths";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { queueAppend, queueStorageExists, renameQueue } from "../queue";
 import { renameSnapshot, snapshotExists } from "../snapshots";
+import { renameSubagents, subagentsExist } from "../subagents";
 import { hasSession, renameSession, sessionName } from "../tmux";
 import { CONCIERGE_NAME } from "../providers";
 
@@ -95,6 +96,9 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   if (existsSync(inboxDir(newName))) {
     throw new Error(`inbox storage already exists for "${newName}" — run \`am gc\` or choose another name`);
   }
+  if (subagentsExist(newName)) {
+    throw new Error(`subagent ledger already exists for "${newName}" — run \`am gc\` or choose another name`);
+  }
   if (existsSync(sharedDir(newName))) {
     throw new Error(`shared-artifact storage already exists for "${newName}" — run \`am gc\` or choose another name`);
   }
@@ -106,12 +110,14 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   const hadQueue = queueStorageExists(oldName);
   const hadSnapshot = snapshotExists(oldName);
   const hadInbox = existsSync(inboxDir(oldName));
+  const hadSubagents = subagentsExist(oldName);
   const hadShared = existsSync(sharedDir(oldName));
   let stateRenamed = false;
   let sessionRenamed = false;
   try {
     renameQueue(oldName, newName);
     renameSnapshot(oldName, newName);
+    renameSubagents(oldName, newName);
     if (hadInbox) renameSync(inboxDir(oldName), inboxDir(newName));
     if (hadShared) renameSync(sharedDir(oldName), sharedDir(newName));
     if (live) {
@@ -134,6 +140,7 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
       try {
         if (hadShared && existsSync(sharedDir(newName))) renameSync(sharedDir(newName), sharedDir(oldName));
         if (hadInbox && existsSync(inboxDir(newName))) renameSync(inboxDir(newName), inboxDir(oldName));
+        if (hadSubagents && subagentsExist(newName)) renameSubagents(newName, oldName);
         if (hadSnapshot && snapshotExists(newName)) renameSnapshot(newName, oldName);
         if (hadQueue && queueStorageExists(newName)) renameQueue(newName, oldName);
         if (sessionRenamed && hasSession(newSession)) renameSession(newSession, oldSession);

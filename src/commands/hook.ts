@@ -8,6 +8,7 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, shouldReport } from "../comms";
+import { closeOpenSubagents, recordSubagentStart, recordSubagentStop } from "../subagents";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -42,6 +43,10 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
     case "user-prompt-submit":
     case "pre-tool-use":
     case "post-tool-use":
+    // A subagent starting or finishing means the parent is mid-turn. Its own
+    // lifecycle is recorded separately, in the subagent ledger.
+    case "subagent-start":
+    case "subagent-stop":
       return { status: "working" };
     case "stop":
       return { status: "idle", drainQueue: true };
@@ -169,6 +174,30 @@ function stopGate(name: string): string | null {
   }
 }
 
+// Fold a subagent hook payload into the ledger. Both providers report
+// agent_id/agent_type on start, plus the subagent's own transcript and final
+// message on stop. A turn boundary closes anything still open: an interrupted
+// turn kills its subagents without firing their stop hooks.
+function recordSubagentEvent(event: string, name: string, payload: Record<string, unknown>): void {
+  const id = typeof payload.agent_id === "string" ? payload.agent_id : undefined;
+  const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
+  if (event === "subagent-start") {
+    if (id) recordSubagentStart(name, { id, type });
+  } else if (event === "subagent-stop") {
+    if (id) {
+      recordSubagentStop(name, {
+        id,
+        type,
+        message: typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined,
+        transcriptPath:
+          typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined,
+      });
+    }
+  } else if (event === "stop" || event === "session-end") {
+    closeOpenSubagents(name);
+  }
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const inheritedName = process.env.AGENTMGR_AGENT;
   if (!inheritedName) return; // not a managed session
@@ -201,6 +230,11 @@ export async function hookCommand(event: string): Promise<void> {
       return;
     }
   }
+
+  // In-session subagents (Claude Code's Task tool, Codex's subagents) are
+  // invisible outside the pane, so their lifecycle goes to a per-agent ledger
+  // that `am ls`, the sidebar, and `am subagents` read.
+  recordSubagentEvent(event, name, payload);
 
   const effects = hookEffects(event, payload);
 

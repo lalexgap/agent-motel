@@ -67,6 +67,18 @@ Agents run on Codex by default. `--claude` or `--codex` picks the provider for o
 
 In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to control it, `ctrl-q` to return to the sidebar, `ctrl-n` to create an agent, `r` to filter by role, `s` to cycle status/recent/role sorting, and `Esc` to detach. Inside an attached session, `ctrl-q` returns to the hub without stopping the agent.
 
+### In-session subagents
+
+Agents also fan work out to their own built-in subagents (Claude Code's Task tool, Codex's subagents). Those run inside the parent session, so they have no pane to attach to — but both providers report them through hooks, and `am` records what ran:
+
+```sh
+am subagents                       # what is running right now, fleet-wide
+am subagents api                   # api's subagents, running ones first
+am transcript api --subagent Explore  # read one subagent's side-chain
+```
+
+While they run, the hub and `am ls` show the rollup on the parent's status (`working · 2 subagents · Explore`). They can't be messaged, interrupted, or attached to, and they die with the parent's turn — use `am run` for work you need to steer.
+
 ### Models and reasoning effort
 
 ```sh
@@ -231,6 +243,7 @@ The token-protected API can list, message, create, stop, and resume agents, with
 - **Status and queues:** Provider hooks update status and deliver queued messages after a turn. A small auto-started daemon streams changes to the hub and HTTP API, but is not required for delivery. Remote hosts push their changes too: the hub holds one `ssh <host> am __events` subscription per remote and refetches on each event, so a cross-machine status change lands in about an ssh round trip; polling stays on as the fallback for hosts whose `am` predates the subscription.
 - **Persistence:** Tasks, snapshots, queues, and conversation references live as plain files under `~/.agent-manager/`.
 - **Providers:** Claude hooks use generated per-launch settings. Agent Motel installs guarded hooks in `~/.codex/config.toml` for Codex; approve **Trust all and continue** on the first managed launch.
+- **Subagents:** `SubagentStart`/`SubagentStop` hooks append to a per-agent ledger in `~/.agent-manager/subagents/`; a turn boundary closes anything an interrupted turn left open. Live activity for claude agents is read from the parent session file, where subagent turns are tagged with the same agent id the hooks report.
 
 Claude Code Remote Control is enabled by default for claude agents; codex has no equivalent, so codex agents (the default) get none. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`.
 

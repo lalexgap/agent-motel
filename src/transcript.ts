@@ -40,12 +40,37 @@ export function claudeProjectSlug(dir: string): string {
 
 const CLAUDE_HARNESS_PREFIXES = ["<command-name>", "<local-command-stdout>", "<system-reminder>"];
 
-export function parseClaudeTranscript(jsonl: string): Transcript {
+export interface ParseOpts {
+  // Render a subagent's side-chain instead of the main conversation. Claude
+  // Code only; codex keeps subagent turns out of the parent rollout.
+  sidechain?: { agentId?: string };
+}
+
+// Which entries belong to the conversation being rendered. The main chain is
+// everything not marked isSidechain. A subagent's chain is matched by agentId
+// while it lives inside the parent's session file, and taken wholesale from a
+// dedicated subagent transcript, which has no sibling turns to separate it
+// from.
+function claudeEntryFilter(
+  entries: Record<string, any>[],
+  opts: ParseOpts,
+): (entry: Record<string, any>) => boolean {
+  if (!opts.sidechain) return (entry) => entry.isSidechain !== true;
+  const { agentId } = opts.sidechain;
+  if (agentId !== undefined && entries.some((e) => typeof e.agentId === "string")) {
+    return (entry) => entry.agentId === agentId;
+  }
+  return entries.some((e) => e.isSidechain === true) ? (entry) => entry.isSidechain === true : () => true;
+}
+
+export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Transcript {
   const transcript: Transcript = { source: "claude", turns: [] };
   const toolsById = new Map<string, Extract<Turn, { kind: "tool" }>>();
+  const entries = parseLines(jsonl);
+  const keep = claudeEntryFilter(entries, opts);
 
-  for (const entry of parseLines(jsonl)) {
-    if (entry.isSidechain || entry.isMeta) continue;
+  for (const entry of entries) {
+    if (!keep(entry) || entry.isMeta) continue;
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     transcript.sessionId ??= entry.sessionId;
     transcript.dir ??= entry.cwd;
@@ -177,8 +202,8 @@ function extractCodexOutput(output: unknown): string {
   return output;
 }
 
-export function parseTranscript(provider: Provider, jsonl: string): Transcript {
-  return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl);
+export function parseTranscript(provider: Provider, jsonl: string, opts: ParseOpts = {}): Transcript {
+  return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl, opts);
 }
 
 // A single conversation line's searchable text, role-labeled. `am search` runs

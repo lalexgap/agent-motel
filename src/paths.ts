@@ -59,6 +59,18 @@ export function snapshotsDir(): string {
   return join(baseDir(), "snapshots");
 }
 
+// Per-agent ledgers of the in-session subagents a provider fanned out to
+// (Claude Code's Task tool, Codex's subagents). They have no tmux session of
+// their own, so the SubagentStart/SubagentStop hooks are the only way to see
+// them; `am subagents` and the sidebar read these files.
+export function subagentsDir(): string {
+  return join(baseDir(), "subagents");
+}
+
+export function subagentsFile(name: string): string {
+  return join(subagentsDir(), `${name}.jsonl`);
+}
+
 // Append-only ledger of inter-agent messages: powers the rate limiter, the
 // "did X already report this stint?" backstop check, and `am comms`.
 export function commsLogFile(): string {

@@ -15,6 +15,10 @@ export const HOOK_EVENTS: Record<string, string> = {
   Stop: "stop",
   Notification: "notification",
   SessionEnd: "session-end",
+  // In-session subagents (the Task tool) have no pane of their own — these
+  // two events are the only way to see that an agent fanned work out.
+  SubagentStart: "subagent-start",
+  SubagentStop: "subagent-stop",
 };
 
 export function cliEntrypoint(): string {

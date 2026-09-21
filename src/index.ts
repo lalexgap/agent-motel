@@ -25,6 +25,7 @@ import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { conciergeCommand, ensureConcierge } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
+import { subagentsCommand } from "./commands/subagents";
 import { searchCommand } from "./commands/search";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
@@ -158,8 +159,15 @@ usage:
   am outbox [--clear]         messages queued here for an unreachable target
                               (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
-  am transcript <name> [--full] [--out file]
+  am transcript <name> [--full] [--out file] [--subagent <id|type>]
                               render the agent's conversation as markdown
+                              (--subagent renders one in-session subagent's
+                               side-chain instead)
+  am subagents [<name>]       in-session subagents (Claude Code's Task tool,
+                              codex subagents): what a name has fanned out to,
+                              or fleet-wide what is running right now. They
+                              have no pane — use \`am run\` for work you need to
+                              attach to or steer
   am search <query> [--all] [--fleet] [--limit n] [--json]
                               full-text search agent chats; prints matching
                               agents + snippets + the command to pick each up
@@ -292,7 +300,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek",
+  "report", "comms", "wait", "peek", "subagents",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -678,7 +686,11 @@ async function main(): Promise<void> {
       transcriptCommand(requirePositional(args, 0, "agent name"), {
         full: !!args.flags.full,
         out: args.flags.out as string | undefined,
+        subagent: args.flags.subagent as string | undefined,
       });
+      break;
+    case "subagents":
+      subagentsCommand(args.positional[0], { json: !!args.flags.json });
       break;
     case "search":
     case "s":

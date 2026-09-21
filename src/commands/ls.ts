@@ -6,6 +6,7 @@ import { claudeProjectSlug } from "../transcript";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
+import { subagentSummary, type SubagentSummary } from "../subagents";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -213,8 +214,12 @@ export interface AgentRow {
   // Previous exact names accepted for routing after a rename. Included in
   // fleet JSON so another host can forward old peer replies correctly.
   aliases?: string[];
-  // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
+  // Extra context for the status column, display-ready: the waiting indicator
+  // ("wake-up in 3m") for waiting agents, the subagent rollup for working ones.
   statusDetail?: string;
+  // In-session subagents currently running under this agent (the Task tool /
+  // codex subagents). Absent when none are.
+  subagents?: SubagentSummary;
   repoRoot?: string;
   // null = checked, dir is not a git checkout; undefined = not checked yet.
   diff?: DiffSummary | null;
@@ -297,18 +302,35 @@ export function cachedGitDiffSummary(dir: string): DiffSummary | null | undefine
   return cached ? cached.value : undefined;
 }
 
+// Subagents live and die inside a session, so a gone one can't have any —
+// its ledger may still hold an "open" record if the session was killed
+// mid-turn and no stop hook ever ran. Pure.
+// Lazy on purpose: the fleet can hold hundreds of exited agents and the hub
+// re-reads rows every second, so a gone agent never touches its ledger file.
+export function liveSubagents(
+  status: DisplayStatus,
+  read: () => SubagentSummary | null,
+): SubagentSummary | undefined {
+  if (status === "dead" || status === "exited") return undefined;
+  return read() ?? undefined;
+}
+
 export function agentRows(): AgentRow[] {
   return listAgents().map((a) => {
     const status = displayStatus(a);
     const { roleInstructions: _roleInstructions, ...visible } = a;
+    const subagents = liveSubagents(status, () => subagentSummary(a.name));
     return {
       ...visible,
       status,
       provider: agentProvider(a),
       role: roleForAgent(a),
       queued: queueDepth(a.name),
-      // waitingInfo is cached, so this second call is free.
-      statusDetail: status === "waiting" ? waitingInfo(a).detail : undefined,
+      subagents,
+      // waitingInfo is cached, so this second call is free. A waiting agent's
+      // own indicator wins the status column; otherwise the subagent rollup
+      // fills it, so a fanned-out turn reads as more than plain "working".
+      statusDetail: status === "waiting" ? waitingInfo(a).detail : subagents?.detail,
     };
   });
 }

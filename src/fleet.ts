@@ -476,6 +476,7 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
     search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.role ?? "unassigned"} ${r.host ?? "local"} ${spawnedBy ?? ""}${concierge ? " front desk assistant" : ""}`,
     meta: [
       `role     ${r.role ? `${CYAN}${r.role}${FG}` : "—"}`,
+      ...(r.subagents ? [`agents   ${GREEN}${r.subagents.active} · ${r.subagents.types}${FG}`] : []),
       ...(spawnedBy ? [`parent   ${spawnedBy}`] : []),
       `host     ${r.host ?? "local"}`,
       `provider ${r.provider}`,

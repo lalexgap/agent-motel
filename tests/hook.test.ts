@@ -45,6 +45,11 @@ describe("hookEffects", () => {
     expect(hookEffects("permission-request", {}).notify).toBe("approval requested");
   });
 
+  test("subagent events keep the parent working without draining", () => {
+    expect(hookEffects("subagent-start", { agent_id: "a1", agent_type: "Explore" })).toEqual({ status: "working" });
+    expect(hookEffects("subagent-stop", { agent_id: "a1" })).toEqual({ status: "working" });
+  });
+
   test("unknown event throws", () => {
     expect(() => hookEffects("nope", {})).toThrow(/unknown hook event/);
   });
