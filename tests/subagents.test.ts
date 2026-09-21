@@ -13,8 +13,11 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   renameSubagents,
+  completionIn,
   describeRunning,
+  lastEntryType,
   describeToolCall,
+  reconcileOpenSubagents,
   isHarnessNoise,
   subagentLabel,
   renderSubagentScreen,
@@ -494,6 +497,116 @@ describe("subagentActivity", () => {
     // Codex has no sidecar: passed through untouched.
     expect(describeRunning({ ...agent, provider: "codex" }, summary)).toBe(summary);
     expect(describeRunning(agent, null)).toBeNull();
+  });
+
+  test("describeRunning nests a subagent's subagent by the sidecar's parentAgentId", () => {
+    const agent = agentWithSubagentFiles({ "sub-b": [turn([{ type: "text", text: "x" }])] });
+    writeFileSync(
+      join(home, "session", "subagents", "agent-sub-b.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", description: "Second review pass", parentAgentId: "sub-a", spawnDepth: 2 }),
+    );
+    const summary = describeRunning(agent, {
+      active: 2, types: "", detail: "", running: [record("sub-a"), record("sub-b")],
+    })!;
+    expect(summary.running!.map((r) => r.parentId)).toEqual([undefined, "sub-a"]);
+  });
+
+  test("reconcileOpenSubagents closes records the parent transcript reports finished", () => {
+    const agent = agentWithSubagentFiles({});
+    recordSubagentStart("api", { id: "gone1", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStart("api", { id: "alive1", type: "general-purpose", at: "2026-09-21T10:01:00.000Z" });
+    // The notification lands in the parent's JSONL as text with escaped newlines.
+    writeFileSync(agent.transcriptPath!, notification("gone1", "2026-09-21T10:05:00.000Z", 'Agent "Shepherd PR 1" finished') + "\n", { flag: "a" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const records = readSubagents("api");
+    expect(records.find((r) => r.id === "gone1")).toMatchObject({ endedAt: expect.any(String), message: 'Agent "Shepherd PR 1" finished' });
+    expect(records.find((r) => r.id === "alive1")!.endedAt).toBeUndefined();
+    // Already scanned: nothing new to find.
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+  });
+
+  const notification = (id: string, timestamp: string, summary: string, status = "completed") =>
+    JSON.stringify({
+      type: "queue-operation",
+      timestamp,
+      content: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`,
+    });
+
+  test("a resumed subagent keeps its id: an earlier run's notification doesn't close the new run", () => {
+    const agent = agentWithSubagentFiles({});
+    // Run one stops (hook), its notification lands, then the resume re-fires start under the same id.
+    recordSubagentStart("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStop("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:09:46.431Z" });
+    writeFileSync(agent.transcriptPath!, notification("again", "2026-09-21T10:09:46.442Z", "finished") + "\n", { flag: "a" });
+    recordSubagentStart("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:09:46.558Z" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+    expect(readSubagents("api").find((r) => r.id === "again")!.endedAt).toBeUndefined();
+    // The run's own notification, once it lands, does close it.
+    writeFileSync(agent.transcriptPath!, notification("again", "2026-09-21T10:20:00.000Z", "finished for real") + "\n", { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    expect(readSubagents("api").find((r) => r.id === "again")!.message).toBe("finished for real");
+  });
+
+  test("a notification still being written waits for the next look instead of being skipped", () => {
+    const agent = agentWithSubagentFiles({});
+    recordSubagentStart("api", { id: "torn", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    const line = notification("torn", "2026-09-21T10:05:00.000Z", "done");
+    const cut = line.indexOf("<status>");
+    writeFileSync(agent.transcriptPath!, line.slice(0, cut), { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+    writeFileSync(agent.transcriptPath!, line.slice(cut) + "\n", { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+  });
+
+  test("a subagent's subagent is reported in its parent subagent's transcript", () => {
+    const agent = agentWithSubagentFiles({ top: [notification("child", "2026-09-21T10:05:00.000Z", "review done")] });
+    writeFileSync(
+      join(home, "session", "subagents", "agent-child.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", parentAgentId: "top", spawnDepth: 2 }),
+    );
+    recordSubagentStart("api", { id: "top", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStart("api", { id: "child", type: "general-purpose", at: "2026-09-21T10:01:00.000Z" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const byId = Object.fromEntries(readSubagents("api").map((r) => [r.id, r]));
+    expect(byId.child!.message).toBe("review done");
+    expect(byId.top!.endedAt).toBeUndefined();
+  });
+
+  test("a subagent silent for minutes after a tool result is dead; one mid-call is not", () => {
+    const { utimesSync } = require("node:fs");
+    const agent = agentWithSubagentFiles({
+      // Ends on a tool result the model never answered.
+      dead: [JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: {} }] } }), JSON.stringify({ type: "user", message: { content: [{ type: "tool_result" }] } })],
+      // Ends on the assistant's own call — a long sleep in flight.
+      sleeping: [JSON.stringify({ type: "user", message: { content: "go" } }), JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "sleep 1700" } }] } })],
+      fresh: [JSON.stringify({ type: "user", message: { content: "go" } })],
+    });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    for (const id of ["dead", "sleeping"]) utimesSync(join(home, "session", "subagents", `agent-${id}.jsonl`), old, old);
+    for (const id of ["dead", "sleeping", "fresh"]) recordSubagentStart("api", { id, type: "general-purpose" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const byId = Object.fromEntries(readSubagents("api").map((r) => [r.id, r]));
+    expect(byId.dead!.message).toContain("stopped mid-turn");
+    expect(byId.sleeping!.endedAt).toBeUndefined();
+    expect(byId.fresh!.endedAt).toBeUndefined();
+  });
+
+  test("lastEntryType survives a torn last line and a cut first line", () => {
+    expect(lastEntryType('{"type":"user"}\n{"type":"assistant"}\n{"type":"us')).toBe("assistant");
+    expect(lastEntryType('ype":"user"}\n')).toBeNull();
+  });
+
+  test("completionIn reads the notification's status and summary, ignoring a running one", () => {
+    const text = '<task-id>abc</task-id>\\n<tool-use-id>t</tool-use-id>\\n<status>completed</status>\\n<summary>done</summary>';
+    expect(completionIn(text, "abc")).toEqual({ status: "completed", summary: "done" });
+    // Scraped from JSON, so escapes come back decoded.
+    expect(completionIn('<task-id>q</task-id><status>completed</status><summary>Agent \\"x\\" finished</summary>', "q")!.summary).toBe('Agent "x" finished');
+    expect(completionIn(text, "zzz")).toBeNull();
+    expect(completionIn("<task-id>abc</task-id><status>running</status>", "abc")).toBeNull();
   });
 
   test("codex reports no transcript until its subagent stops — no live line", () => {
