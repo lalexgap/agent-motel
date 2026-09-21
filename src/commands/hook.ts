@@ -207,8 +207,15 @@ export function recordSubagentEvent(
     return;
   }
   if (isTurnBoundary(event, payload, effects)) {
-    // Forked subagents keep running past the turn and report their own stop.
-    closeOpenSubagents(name, { keepOpen: (record) => isBackgroundSubagent(agent, record.id) });
+    // Mid-session, forked subagents keep running past the turn and report
+    // their own stop. A session boundary spares nothing: no subagent outlives
+    // the provider process, and its leftover .meta.json would otherwise keep
+    // the record "running" across every later resume.
+    const sessionBoundary = event === "session-start" || event === "session-end";
+    closeOpenSubagents(
+      name,
+      sessionBoundary ? {} : { keepOpen: (record) => isBackgroundSubagent(agent, record.id) },
+    );
   }
 }
 
@@ -223,6 +230,9 @@ export function isTurnBoundary(
 ): boolean {
   // Turn start: fires after an interrupt, and always before this turn's own
   // subagents report in.
+  // A boundary event from inside a subagent describes the subagent, not the
+  // turn it runs in.
+  if (typeof payload.agent_id === "string" && payload.agent_id !== "") return false;
   if (event === "user-prompt-submit" || event === "session-end") return true;
   // Auto-compaction reports itself as a session start MID-TURN, with the
   // turn's subagents still running — closing them there would erase a live
@@ -235,6 +245,12 @@ export async function hookCommand(event: string): Promise<void> {
   const inheritedName = process.env.AGENTMGR_AGENT;
   if (!inheritedName) return; // not a managed session
   const payload = await readStdinPayload();
+  // A tool call made INSIDE a subagent fires the parent's hooks, with the
+  // parent's AGENTMGR_AGENT — the provider distinguishes the two by agent_id
+  // ("present only when the hook fires from within a subagent"). Status still
+  // belongs to the parent (it really is working), but anything that consumes
+  // the parent's state must not run in a subagent's context.
+  const fromSubagent = typeof payload.agent_id === "string" && payload.agent_id !== "";
 
   // A live tmux session can be renamed, but its provider process retains the
   // environment it inherited at launch. Previous names are exact aliases, so
@@ -249,7 +265,7 @@ export async function hookCommand(event: string): Promise<void> {
   // finishing — it never goes idle sitting on unread mail. Cleaner than typing
   // them into the pane (no Enter-swallow); the idle-drain still covers agents
   // that are already idle when a message arrives.
-  if (event === "stop") {
+  if (event === "stop" && !fromSubagent) {
     const gate = stopGate(name);
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed
@@ -296,8 +312,13 @@ export async function hookCommand(event: string): Promise<void> {
   // Surface any queued peer messages into context so the agent reads them
   // automatically — at turn start (UserPromptSubmit) and between tool calls
   // mid-turn (PostToolUse), so a busy agent doesn't have to finish its turn first.
-  if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
-  else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+  // Draining here in a subagent's context would pop the parent's messages off
+  // its queue and inject them into a conversation the operator can't see or
+  // reply to — the parent would never learn the message arrived.
+  if (!fromSubagent) {
+    if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
+    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+  }
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
   let pane: string[] | null = null;

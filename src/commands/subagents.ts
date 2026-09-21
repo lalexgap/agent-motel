@@ -35,7 +35,9 @@ export function subagentLines(
   const finished = records.filter((r) => r.endedAt).reverse();
   return [...running, ...finished].map((record) => {
     if (!record.endedAt && !live) {
-      return { icon: "✕", type: record.type, id: record.id.slice(0, 8), age: ageOf(record, now), detail: "ended with the session" };
+      // Nothing recorded when it stopped, so any age would just keep climbing
+      // for something that died with the session.
+      return { icon: "✕", type: record.type, id: record.id.slice(0, 8), age: "—", detail: "ended with the session" };
     }
     return {
       icon: record.endedAt ? "✔" : "●",

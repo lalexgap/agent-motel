@@ -302,6 +302,9 @@ export function subagentTranscriptFile(agent: AgentState, subagentId: string): s
 // read is treated as foreground — the ledger should never hold a record open
 // on a guess.
 export function isBackgroundSubagent(agent: AgentState, subagentId: string): boolean {
+  // Codex has no such sidecar, and locating its rollout can walk the whole
+  // ~/.codex/sessions tree — not something to do per record inside a hook.
+  if (agentProvider(agent) !== "claude") return false;
   const transcript = subagentTranscriptFile(agent, subagentId);
   if (!transcript) return false;
   try {

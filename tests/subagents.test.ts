@@ -315,6 +315,21 @@ describe("recordSubagentEvent", () => {
     expect(activeSubagents("api")).toHaveLength(1);
   });
 
+  test("a session boundary closes everything, background included", () => {
+    recordSubagentStart("api", { id: "bg", type: "code-review" });
+    // No provider process survives, so nothing it spawned can still be live —
+    // and a leftover background marker must not outlast the session.
+    recordSubagentEvent("session-end", agent, {}, { status: "exited" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("a boundary event from inside a subagent is not the parent's boundary", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // agent_id is set only when a hook fires from within a subagent.
+    recordSubagentEvent("stop", agent, { agent_id: "a1" }, { status: "idle" });
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
   test("a payload without an agent id is ignored, not recorded", () => {
     recordSubagentEvent("subagent-start", agent, {});
     expect(readSubagents("api")).toEqual([]);
@@ -492,6 +507,21 @@ describe("recordSubagentEvent", () => {
     recordSubagentStart("api", { id: "a1", type: "Explore" });
     recordSubagentEvent("post-tool-use", agent, {}, { status: "working" });
     recordSubagentEvent("notification", agent, { message: "needs your permission" }, { status: "needs-attention" });
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
+  test("a session boundary closes everything, background included", () => {
+    recordSubagentStart("api", { id: "bg", type: "code-review" });
+    // No provider process survives, so nothing it spawned can still be live —
+    // and a leftover background marker must not outlast the session.
+    recordSubagentEvent("session-end", agent, {}, { status: "exited" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("a boundary event from inside a subagent is not the parent's boundary", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // agent_id is set only when a hook fires from within a subagent.
+    recordSubagentEvent("stop", agent, { agent_id: "a1" }, { status: "idle" });
     expect(activeSubagents("api")).toHaveLength(1);
   });
 
