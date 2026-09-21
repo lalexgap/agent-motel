@@ -423,28 +423,20 @@ async function pickerFlow(): Promise<void> {
       if (snapshot) return [`(last screen — ${displayStatus(agent)})`, ...snapshot];
       return [`(no live session — ${displayStatus(agent)})`];
     },
-    create: async (
-      name: string,
-      task: string | undefined,
-      dir: string | undefined,
-      _host: string | undefined,
-      provider: string | undefined,
-      model: string | undefined,
-      effort: string | undefined,
-      role: string | undefined,
-    ) => {
+    create: async (spec) => {
       await newCommand({
-        name,
-        message: task,
-        dir: dir ? expandHome(dir) : undefined,
-        provider: provider as Provider | undefined,
-        model,
-        effort,
-        role,
+        name: spec.name,
+        message: spec.task,
+        dir: spec.dir ? expandHome(spec.dir) : undefined,
+        provider: spec.provider as Provider | undefined,
+        model: spec.model,
+        effort: spec.effort,
+        role: spec.role,
+        preferSubagents: spec.preferSubagents,
         jump: false,
         quiet: true,
       });
-      return name;
+      return spec.name;
     },
     // Dir prompt prefill: the highlighted agent's dir (related work usually
     // lives in the same project), else where `am` was launched from.

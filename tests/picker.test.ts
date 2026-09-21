@@ -10,6 +10,8 @@ import {
   modelOptionsFor,
   feedbackBanner,
   filterPaletteCommands,
+  FANOUT_OPTIONS,
+  fanoutPreference,
   formFields,
   matchesPickerRole,
   nestPickerItems,
@@ -205,15 +207,30 @@ describe("feedbackBanner", () => {
   });
 });
 
+describe("fanoutPreference", () => {
+  test("maps the form's options onto the stored preference", () => {
+    expect(fanoutPreference("subagents")).toBe(true);
+    expect(fanoutPreference("am agents")).toBe(false);
+    // "default" leaves it unset, so the agent follows config.preferSubagents.
+    expect(fanoutPreference("default")).toBeUndefined();
+    expect(fanoutPreference(undefined)).toBeUndefined();
+  });
+
+  test("every option the strip offers is mappable", () => {
+    expect(FANOUT_OPTIONS).toEqual(["default", "am agents", "subagents"]);
+    expect(FANOUT_OPTIONS.map(fanoutPreference)).toEqual([undefined, false, true]);
+  });
+});
+
 describe("formFields", () => {
   test("adds the where field (before dir) only when remotes exist", () => {
-    expect(formFields(false)).toEqual(["name", "task", "dir", "provider", "model", "effort"]);
-    expect(formFields(true)).toEqual(["name", "task", "where", "dir", "provider", "model", "effort"]);
+    expect(formFields(false)).toEqual(["name", "task", "dir", "provider", "model", "effort", "fanout"]);
+    expect(formFields(true)).toEqual(["name", "task", "where", "dir", "provider", "model", "effort", "fanout"]);
   });
 
   test("adds a role selector only when custom roles exist", () => {
-    expect(formFields(false, true)).toEqual(["name", "task", "dir", "role", "provider", "model", "effort"]);
-    expect(formFields(true, true)).toEqual(["name", "task", "where", "dir", "role", "provider", "model", "effort"]);
+    expect(formFields(false, true)).toEqual(["name", "task", "dir", "role", "provider", "model", "effort", "fanout"]);
+    expect(formFields(true, true)).toEqual(["name", "task", "where", "dir", "role", "provider", "model", "effort", "fanout"]);
   });
 
   test("preserves focus by field identity when async roles insert a field", () => {
