@@ -569,17 +569,55 @@ export function reconcileOpenSubagents(agent: AgentState): number {
     return 0;
   }
   const from = scanned.get(file) ?? Math.max(0, size - NOTIFICATION_TAIL_BYTES);
-  if (size <= from) return 0;
-  const text = readRange(file, from, size);
+  const text = size > from ? readRange(file, from, size) : "";
   scanned.set(file, size);
   let closed = 0;
   for (const record of open) {
-    const ended = completionIn(text, record.id);
+    const ended = completionIn(text, record.id) ?? diedMidTurn(agent, record.id);
     if (!ended) continue;
     recordSubagentStop(agent.name, { id: record.id, type: record.type, message: ended.summary });
     closed++;
   }
   return closed;
+}
+
+// A subagent killed with its parent's turn (an interrupt, a restart) writes
+// no notification and fires no hook. Its own transcript tells: the model
+// answers a tool result within seconds, so a transcript that ends on one and
+// hasn't been touched in minutes is a subagent nobody is running. A tool
+// call still in flight (a long sleep, a watch) ends on the assistant's turn
+// instead and stays open.
+const DEAD_AFTER_MS = 5 * 60 * 1000;
+
+function diedMidTurn(agent: AgentState, id: string, now = Date.now()): { status: string; summary: string } | null {
+  const file = subagentTranscriptFile(agent, id);
+  if (!file) return null;
+  let mtime: number;
+  let size: number;
+  try {
+    ({ mtimeMs: mtime, size } = statSync(file));
+  } catch {
+    return null;
+  }
+  if (now - mtime < DEAD_AFTER_MS) return null;
+  const tail = readRange(file, Math.max(0, size - 64_000), size);
+  const last = lastEntryType(tail);
+  if (last !== "user") return null;
+  return { status: "stopped", summary: "stopped mid-turn — no reply to its last tool result" };
+}
+
+// The type of the last complete JSON line. Pure.
+export function lastEntryType(jsonlTail: string): string | null {
+  const lines = jsonlTail.split("\n").filter((line) => line.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const entry = JSON.parse(lines[i]!);
+      if (typeof entry?.type === "string") return entry.type;
+    } catch {
+      // a torn last line, or the first line cut by the tail window
+    }
+  }
+  return null;
 }
 
 function readRange(file: string, from: number, to: number): string {

@@ -15,6 +15,7 @@ import {
   renameSubagents,
   completionIn,
   describeRunning,
+  lastEntryType,
   describeToolCall,
   reconcileOpenSubagents,
   isHarnessNoise,
@@ -522,6 +523,31 @@ describe("subagentActivity", () => {
     expect(records.find((r) => r.id === "alive1")!.endedAt).toBeUndefined();
     // Already scanned: nothing new to find.
     expect(reconcileOpenSubagents(agent)).toBe(0);
+  });
+
+  test("a subagent silent for minutes after a tool result is dead; one mid-call is not", () => {
+    const { utimesSync } = require("node:fs");
+    const agent = agentWithSubagentFiles({
+      // Ends on a tool result the model never answered.
+      dead: [JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: {} }] } }), JSON.stringify({ type: "user", message: { content: [{ type: "tool_result" }] } })],
+      // Ends on the assistant's own call — a long sleep in flight.
+      sleeping: [JSON.stringify({ type: "user", message: { content: "go" } }), JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "sleep 1700" } }] } })],
+      fresh: [JSON.stringify({ type: "user", message: { content: "go" } })],
+    });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    for (const id of ["dead", "sleeping"]) utimesSync(join(home, "session", "subagents", `agent-${id}.jsonl`), old, old);
+    for (const id of ["dead", "sleeping", "fresh"]) recordSubagentStart("api", { id, type: "general-purpose" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const byId = Object.fromEntries(readSubagents("api").map((r) => [r.id, r]));
+    expect(byId.dead!.message).toContain("stopped mid-turn");
+    expect(byId.sleeping!.endedAt).toBeUndefined();
+    expect(byId.fresh!.endedAt).toBeUndefined();
+  });
+
+  test("lastEntryType survives a torn last line and a cut first line", () => {
+    expect(lastEntryType('{"type":"user"}\n{"type":"assistant"}\n{"type":"us')).toBe("assistant");
+    expect(lastEntryType('ype":"user"}\n')).toBeNull();
   });
 
   test("completionIn reads the notification's status and summary, ignoring a running one", () => {
