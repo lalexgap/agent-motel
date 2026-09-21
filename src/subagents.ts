@@ -379,14 +379,21 @@ const SCREEN_TAIL_BYTES = 256_000;
 // provider's own transcript view is: `⏺` opens each assistant message, a tool
 // call is `⏺ Tool(arg)` with its result folded to one dimmed `⎿` line
 // beneath, and messages are separated by a blank line. Colors are SGR and
-// off by default; a terminal turns them on. Only the last tool call can
-// still be in flight, and none once the subagent has finished; any other
-// unanswered call was cut off. Pure.
+// off by default; a terminal turns them on. Only the trailing run of tool
+// calls can still be in flight (a message issues several at once), and none
+// once the subagent has finished; any other unanswered call was cut off.
+// Pure.
 export function renderSubagentScreen(
   turns: Turn[],
   opts: { colors?: boolean; finished?: boolean } = {},
 ): string[] {
   const dim = (text: string) => (opts.colors ? `\x1b[2m${text}\x1b[0m` : text);
+  let inFlight = turns.length;
+  while (!opts.finished && inFlight > 0) {
+    const turn = turns[inFlight - 1]!;
+    if (turn.kind !== "tool" || turn.output !== undefined) break;
+    inFlight--;
+  }
   const lines: string[] = [];
   let briefed = false;
   let last: Turn["kind"] | null = null;
@@ -410,8 +417,8 @@ export function renderSubagentScreen(
       // Consecutive tool calls stack; a message boundary gets the gap.
       if (last !== "tool") gap();
       lines.push(`⏺ ${describeToolCall(turn.name, turn.input)}`);
-      const pending = turn.output === undefined && !opts.finished && index === turns.length - 1;
-      const result = turn.output === undefined && !pending ? "(no result)" : summarizeToolOutput(turn.output);
+      const result =
+        turn.output === undefined && index < inFlight ? "(no result)" : summarizeToolOutput(turn.output);
       lines.push(dim(`  ⎿  ${result}`));
     }
     last = turn.kind;
@@ -422,11 +429,14 @@ export function renderSubagentScreen(
 const RESULT_CHARS = 100;
 
 // Terminal control sequences a command's output may carry — CSI (colors,
-// cursor moves, erases), OSC (titles, hyperlinks), and C0 controls other than
-// newline/tab. The folded line is styled as a whole, so none of them belong.
-const CONTROL_RE = /\x1b\[[0-9;?]*[A-Za-z~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|[\x00-\x08\x0b-\x1f\x7f]/g;
-// Reminders the harness appends to a tool result aren't the result.
-const REMINDER_RE = /<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g;
+// cursor moves, erases), OSC (titles, hyperlinks; unterminated runs to the
+// end), charset selects, and C0 controls other than newline/tab. The folded
+// line is styled as a whole, so none of them belong.
+const CONTROL_RE =
+  /\x1b\[[0-9;:?<=>]*[A-Za-z~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)|\x1b[()][\x20-\x7e]|[\x00-\x08\x0b-\x1f\x7f]/g;
+// Reminders the harness appends after a tool result aren't the result. Only
+// trailing blocks count: the string can also appear in genuine output.
+const REMINDER_RE = /(?:\s*<system-reminder>(?:(?!<\/?system-reminder>)[\s\S])*<\/system-reminder>)+\s*$/;
 
 // What the tool came back with, in one line: its first non-empty line and how
 // much more there was. Undefined output is a call still in flight.

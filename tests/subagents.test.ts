@@ -596,13 +596,27 @@ describe("renderSubagentScreen", () => {
     expect(lines[1]).toBe("\x1b[2m  ⎿  …\x1b[0m");
   });
 
-  test("only the last call can be in flight, and none once the subagent finished", () => {
+  test("the trailing run of unanswered calls is in flight; earlier ones were cut off", () => {
     const turns = [
       { kind: "tool", name: "Bash", input: "{\"command\":\"a\"}" },
+      { kind: "assistant", text: "Trying again." },
       { kind: "tool", name: "Bash", input: "{\"command\":\"b\"}" },
+      { kind: "tool", name: "Bash", input: "{\"command\":\"c\"}" },
     ] as const;
-    expect(renderSubagentScreen([...turns])).toEqual(["⏺ Bash(a)", "  ⎿  (no result)", "⏺ Bash(b)", "  ⎿  …"]);
-    expect(renderSubagentScreen([...turns], { finished: true })[3]).toBe("  ⎿  (no result)");
+    expect(renderSubagentScreen([...turns])).toEqual([
+      "⏺ Bash(a)",
+      "  ⎿  (no result)",
+      "",
+      "⏺ Trying again.",
+      "",
+      "⏺ Bash(b)",
+      "  ⎿  …",
+      "⏺ Bash(c)",
+      "  ⎿  …",
+    ]);
+    const finished = renderSubagentScreen([...turns], { finished: true });
+    expect(finished.filter((l) => l.includes("…"))).toEqual([]);
+    expect(finished.filter((l) => l.includes("(no result)"))).toHaveLength(3);
   });
 
   test("blank lines inside a message stay blank, without doubling the gap after it", () => {
@@ -647,13 +661,16 @@ describe("summarizeToolOutput", () => {
   test("terminal control sequences never reach the folded line", () => {
     expect(summarizeToolOutput("\x1b[2J\x1b[H\x1b[32mok\x1b[0m\x07\r\n\x1b]0;title\x07more\x1b[K")).toBe("ok (+1 lines)");
     expect(summarizeToolOutput("\x1b[1;1H\x1b[2K")).toBe("(no output)");
+    expect(summarizeToolOutput("\x1b[38:5:1m\x1b(Bred\x1b]8;;http://x")).toBe("red");
   });
 
-  test("a reminder the harness appended to the result is not the result", () => {
+  test("reminders the harness appended after the result are not the result", () => {
     const reminder = "<system-reminder>\nOnly you see that output.\n</system-reminder>";
     expect(summarizeToolOutput(reminder)).toBe("(no output)");
-    expect(summarizeToolOutput(`done\n\n${reminder}`)).toBe("done");
-    expect(summarizeToolOutput("partial\n<system-reminder>\ncut off")).toBe("partial");
+    expect(summarizeToolOutput(`done\n\n${reminder}\n${reminder}`)).toBe("done");
+    expect(summarizeToolOutput(`src/a.ts:1: "<system-reminder>"\nsrc/b.ts:2: x\n${reminder}`)).toBe(
+      'src/a.ts:1: "<system-reminder>" (+1 lines)',
+    );
   });
 });
 
