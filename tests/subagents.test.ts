@@ -601,7 +601,8 @@ describe("renderSubagentScreen", () => {
       { kind: "tool", name: "Bash", input: "{\"command\":\"a\"}" },
       { kind: "assistant", text: "Trying again." },
       { kind: "tool", name: "Bash", input: "{\"command\":\"b\"}" },
-      { kind: "tool", name: "Bash", input: "{\"command\":\"c\"}" },
+      { kind: "tool", name: "Read", input: "{\"file_path\":\"c\"}", output: "fast" },
+      { kind: "tool", name: "Bash", input: "{\"command\":\"d\"}" },
     ] as const;
     expect(renderSubagentScreen([...turns])).toEqual([
       "⏺ Bash(a)",
@@ -611,7 +612,9 @@ describe("renderSubagentScreen", () => {
       "",
       "⏺ Bash(b)",
       "  ⎿  …",
-      "⏺ Bash(c)",
+      "⏺ Read(c)",
+      "  ⎿  fast",
+      "⏺ Bash(d)",
       "  ⎿  …",
     ]);
     const finished = renderSubagentScreen([...turns], { finished: true });

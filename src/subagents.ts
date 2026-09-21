@@ -380,20 +380,16 @@ const SCREEN_TAIL_BYTES = 256_000;
 // call is `⏺ Tool(arg)` with its result folded to one dimmed `⎿` line
 // beneath, and messages are separated by a blank line. Colors are SGR and
 // off by default; a terminal turns them on. Only the trailing run of tool
-// calls can still be in flight (a message issues several at once), and none
-// once the subagent has finished; any other unanswered call was cut off.
-// Pure.
+// calls can still be in flight (a message issues several at once, and their
+// results land in any order), and none once the subagent has finished; an
+// unanswered call anywhere else was cut off. Pure.
 export function renderSubagentScreen(
   turns: Turn[],
   opts: { colors?: boolean; finished?: boolean } = {},
 ): string[] {
   const dim = (text: string) => (opts.colors ? `\x1b[2m${text}\x1b[0m` : text);
   let inFlight = turns.length;
-  while (!opts.finished && inFlight > 0) {
-    const turn = turns[inFlight - 1]!;
-    if (turn.kind !== "tool" || turn.output !== undefined) break;
-    inFlight--;
-  }
+  while (!opts.finished && inFlight > 0 && turns[inFlight - 1]!.kind === "tool") inFlight--;
   const lines: string[] = [];
   let briefed = false;
   let last: Turn["kind"] | null = null;
