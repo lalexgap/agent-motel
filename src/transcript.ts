@@ -60,10 +60,12 @@ function claudeEntryFilter(
   // A dedicated transcript holds nothing but that subagent's turns.
   if (ownFile) return () => true;
   // Inside the parent's session file the side-chain must be matched, never
-  // assumed: a subagent that hasn't flushed a turn yet would otherwise render
-  // the parent's whole conversation under the subagent's name.
-  if (agentId !== undefined && entries.some((e) => typeof e.agentId === "string")) {
-    return (entry) => entry.agentId === agentId;
+  // assumed: rendering what merely looks like a side-chain would put the
+  // parent's conversation — or a sibling subagent's — under this one's name.
+  if (agentId !== undefined) {
+    return entries.some((e) => typeof e.agentId === "string")
+      ? (entry) => entry.agentId === agentId
+      : () => false;
   }
   return (entry) => entry.isSidechain === true;
 }

@@ -15,7 +15,16 @@ export function matchSubagent(records: SubagentRecord[], query: string): Subagen
   return byType.length > 0 ? byType[byType.length - 1]! : null;
 }
 
-function subagentSource(agent: AgentState, query: string): { file: string; opts: ParseOpts; label: string } {
+interface TranscriptSource {
+  file: string;
+  opts: ParseOpts;
+  label: string;
+  // Why the subagent's own transcript wasn't used, for the error when the
+  // fallback to the parent's session file turns up nothing.
+  missing?: string;
+}
+
+function subagentSource(agent: AgentState, query: string): TranscriptSource {
   const records = readSubagents(agent.name);
   if (records.length === 0) {
     throw new Error(`agent "${agent.name}" has no recorded subagents`);
@@ -30,18 +39,20 @@ function subagentSource(agent: AgentState, query: string): { file: string; opts:
   if (record.transcriptPath && existsSync(record.transcriptPath)) {
     return { file: record.transcriptPath, opts: { sidechain: { ownFile: true } }, label };
   }
+  const missing = record.transcriptPath
+    ? `its transcript ${record.transcriptPath} is gone`
+    : record.endedAt
+      ? "it finished without reporting one"
+      : "it is still running";
   // Claude writes a running subagent's turns into the parent's session file,
   // tagged with the agent id. Codex doesn't, so a codex subagent is readable
   // only through the transcript its stop hook reports.
   if (agentProvider(agent) === "codex") {
-    const why = record.endedAt
-      ? "it finished without reporting one"
-      : "it is still running";
     throw new Error(
-      `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own (${why})`,
+      `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own (${missing})`,
     );
   }
-  return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label };
+  return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label, missing };
 }
 
 export function transcriptCommand(
@@ -49,10 +60,19 @@ export function transcriptCommand(
   opts: { full?: boolean; out?: string; subagent?: string },
 ): void {
   const agent = resolveAgent(prefix);
-  const source = opts.subagent
+  const source: TranscriptSource = opts.subagent
     ? subagentSource(agent, opts.subagent)
-    : { file: locateTranscript(agent), opts: {} as ParseOpts, label: agent.name };
+    : { file: locateTranscript(agent), opts: {}, label: agent.name };
   const transcript = parseTranscript(agentProvider(agent), readFileSync(source.file, "utf8"), source.opts);
+  // Reading the parent's file and matching nothing means the subagent's turns
+  // aren't identifiable there — an empty render would look like an empty
+  // conversation instead of a failed lookup.
+  if (opts.subagent && transcript.turns.length === 0) {
+    throw new Error(
+      `no turns found for "${opts.subagent}" in ${agent.name}'s session file (${source.missing ?? "no transcript of its own"}) — ` +
+        "it may not have produced a turn yet, or this transcript doesn't tag subagent turns",
+    );
+  }
   const markdown = renderTranscript(transcript, { full: opts.full, agentName: source.label });
   if (opts.out) {
     writeFileSync(opts.out, markdown);

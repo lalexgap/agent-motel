@@ -155,6 +155,17 @@ describe("parseClaudeTranscript — subagent side-chains", () => {
     const sub = parseClaudeTranscript(SIDECHAIN_JSONL, { sidechain: { agentId: "sub-zzz" } });
     expect(sub.turns).toEqual([]);
   });
+
+  test("untagged side-chains render nothing rather than every subagent at once", () => {
+    // An older transcript marks isSidechain but carries no agentId, so two
+    // parallel subagents are indistinguishable — merging them under one
+    // label would be worse than an empty result the caller can explain.
+    const untagged = [
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "one" }] } }),
+      JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content: [{ type: "text", text: "two" }] } }),
+    ].join("\n");
+    expect(parseClaudeTranscript(untagged, { sidechain: { agentId: "sub-a" } }).turns).toEqual([]);
+  });
 });
 
 const CODEX_JSONL = [

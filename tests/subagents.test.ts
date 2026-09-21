@@ -222,6 +222,25 @@ describe("recordSubagentEvent", () => {
     expect(readSubagents("api")[0]).toMatchObject({ message: "3 findings", transcriptPath: "/tmp/b1.jsonl" });
   });
 
+  test("an interrupted turn's leftovers are closed when the next turn starts", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // ESC (or `am interrupt`) aborts the turn: no stop hook ever fires.
+    recordSubagentEvent("user-prompt-submit", "api", {});
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("a reused id starts a fresh run instead of resurrecting a closed one", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStop("api", { id: "a1", message: "first", at: "2026-09-21T10:01:00.000Z" });
+    recordSubagentStart("api", { id: "a1", type: "Explore", at: "2026-09-21T10:02:00.000Z" });
+
+    const [record] = readSubagents("api");
+    expect(record).toMatchObject({ startedAt: "2026-09-21T10:02:00.000Z" });
+    expect(record!.endedAt).toBeUndefined();
+    expect(record!.message).toBeUndefined();
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
   test("a payload without an agent id is ignored, not recorded", () => {
     recordSubagentEvent("subagent-start", "api", {});
     expect(readSubagents("api")).toEqual([]);

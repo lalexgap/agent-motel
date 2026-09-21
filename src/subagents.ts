@@ -130,7 +130,12 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
     };
     if (event.type) record.type = event.type;
     if (event.ev === "start") {
+      // A provider that reuses an id starts a NEW run: without this the
+      // record stays closed and never reads as running again.
       record.startedAt = event.at;
+      record.endedAt = undefined;
+      record.message = undefined;
+      record.transcriptPath = undefined;
     } else {
       record.endedAt = event.at;
       if (event.msg) record.message = event.msg;
@@ -166,6 +171,7 @@ function compactIfLarge(name: string): void {
   } catch {
     return;
   }
+  sweepStaleTemps();
   const records = readSubagents(name);
   const open = records.filter((r) => !r.endedAt);
   const finished = records.filter((r) => r.endedAt).slice(-KEEP_FINISHED);
@@ -192,6 +198,22 @@ function compactIfLarge(name: string): void {
     renameSync(tmp, file);
   } catch {
     rmSync(tmp, { force: true });
+  }
+}
+
+const TEMP_GRACE_MS = 60 * 60 * 1000;
+
+// A hook killed between the write and the rename leaves its temp behind, and
+// gc only knows about .jsonl files — so compaction clears old ones itself.
+function sweepStaleTemps(): void {
+  try {
+    for (const f of readdirSync(subagentsDir())) {
+      if (!f.endsWith(".tmp")) continue;
+      const path = join(subagentsDir(), f);
+      if (Date.now() - statSync(path).mtimeMs > TEMP_GRACE_MS) rmSync(path, { force: true });
+    }
+  } catch {
+    // best effort — a failed sweep must never block a ledger write
   }
 }
 
