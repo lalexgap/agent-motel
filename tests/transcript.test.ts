@@ -56,7 +56,7 @@ const CLAUDE_JSONL = [
     sessionId: "s-1",
     message: {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "3 fail" }] }],
+      content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "3 fail" }], is_error: true }],
     },
   }),
   JSON.stringify({
@@ -85,6 +85,7 @@ describe("parseClaudeTranscript", () => {
     expect(tool.name).toBe("Bash");
     expect(tool.input).toContain("bun test");
     expect(tool.output).toBe("3 fail");
+    expect(tool.error).toBe(true);
   });
 
   test("survives a half-written trailing line", () => {

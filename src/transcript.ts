@@ -10,7 +10,7 @@ import { codexHome } from "./codexHooks";
 export type Turn =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string }
-  | { kind: "tool"; name: string; input: string; output?: string };
+  | { kind: "tool"; name: string; input: string; output?: string; error?: boolean };
 
 export interface Transcript {
   source: Provider;
@@ -102,7 +102,10 @@ export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Tran
           }
         } else if (block.type === "tool_result") {
           const tool = toolsById.get(block.tool_use_id);
-          if (tool) tool.output = flattenToolResult(block.content);
+          if (tool) {
+            tool.output = flattenToolResult(block.content);
+            if (block.is_error) tool.error = true;
+          }
         }
       }
     } else {

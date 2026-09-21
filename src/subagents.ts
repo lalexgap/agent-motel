@@ -414,7 +414,7 @@ export function renderSubagentScreen(
       if (last !== "tool") gap();
       lines.push(`⏺ ${describeToolCall(turn.name, turn.input)}`);
       if (turn.output === undefined && index < inFlight) lines.push(dim("  ⎿  (no result)"));
-      else lines.push(...renderToolResult(turn.name, turn.input, turn.output, !!opts.colors));
+      else lines.push(...renderToolResult(turn, !!opts.colors));
     }
     last = turn.kind;
   });
@@ -429,47 +429,64 @@ const SGR = { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", reset: "\x1b[0
 // Results the way the provider's view shows them per tool: an Edit is its
 // diff, a Write is the lines it wrote, a Read is how much was read, a search
 // is how much it found, and a command is its first few lines of output.
-// Everything else folds to a one-line summary.
-export function renderToolResult(name: string, input: string, output: string | undefined, colors: boolean): string[] {
+// Everything else — and any tool the harness rejected — folds to a one-line
+// summary of what came back. Undefined output is a call still in flight.
+export function renderToolResult(turn: ToolTurn, colors: boolean): string[] {
+  const { name, input, output, error } = turn;
   const paint = (code: string, text: string) => (colors ? `${code}${text}${SGR.reset}` : text);
   const result = (text: string) => paint(SGR.dim, `  ⎿  ${text}`);
-  const args = parseArgs(input);
-  const tool = name.replace(/^mcp__.+?__/, "");
+  const diffLine = (code: string, sign: string) => (l: string) => paint(code, `       ${sign} ${clipLine(l, RESULT_CHARS)}`);
+  if (output === undefined) return [result("…")];
+  const args = error ? null : parseArgs(input);
 
-  if (tool === "Edit" && args && typeof args.old_string === "string" && typeof args.new_string === "string") {
+  if (name === "Edit" && args && typeof args.old_string === "string" && typeof args.new_string === "string") {
     const removed = args.old_string ? args.old_string.split("\n") : [];
     const added = args.new_string ? args.new_string.split("\n") : [];
     const file = typeof args.file_path === "string" ? basename(args.file_path) : "file";
-    const lines = [result(`Updated ${file} with ${plural(added.length, "addition")} and ${plural(removed.length, "removal")}`)];
-    lines.push(...capped(removed, DIFF_LINES).map((l) => paint(SGR.red, `       - ${l}`)));
-    lines.push(...capped(added, DIFF_LINES).map((l) => paint(SGR.green, `       + ${l}`)));
+    const scope = args.replace_all === true ? " per occurrence" : "";
+    const lines = [result(`Updated ${file} with ${plural(added.length, "addition")} and ${plural(removed.length, "removal")}${scope}`)];
+    lines.push(...capped(removed, DIFF_LINES).map(diffLine(SGR.red, "-")));
+    lines.push(...capped(added, DIFF_LINES).map(diffLine(SGR.green, "+")));
     return lines;
   }
-  if (tool === "Write" && args && typeof args.content === "string") {
+  if (name === "Write" && args && typeof args.content === "string") {
     const content = args.content.split("\n");
     const file = typeof args.file_path === "string" ? basename(args.file_path) : "file";
-    return [
-      result(`Wrote ${plural(content.length, "line")} to ${file}`),
-      ...capped(content, RESULT_LINES).map((l) => paint(SGR.green, `       + ${l}`)),
-    ];
+    return [result(`Wrote ${plural(content.length, "line")} to ${file}`), ...capped(content, RESULT_LINES).map(diffLine(SGR.green, "+"))];
   }
-  if (output === undefined) return [result("…")];
   const lines = meaningfulLines(output);
-  if (tool === "Read") {
+  const command = name === "Bash" || name === "shell";
+  // A failed command's output is still its output; a failed Read or search
+  // came back with a complaint, not lines.
+  if (error && !command) return [result(summarizeToolOutput(output))];
+  if (name === "Read") {
     if (lines.length === 0) return [result(output.includes("contents are empty") ? "Read an empty file" : "Read 0 lines")];
-    return [result(`Read ${plural(lines.length, "line")}`)];
+    // The provider numbers every line it read, blank ones included.
+    const numbered = lines.filter((l) => /^\d+→/.test(l)).length;
+    return [result(`Read ${plural(numbered || lines.length, "line")}`)];
   }
-  if (tool === "Grep" || tool === "Glob") {
+  if (name === "Grep" || name === "Glob") {
     const none = lines.length === 0 || /^no (files|matches) found/i.test(lines[0] ?? "");
-    return [result(none ? "Found nothing" : `Found ${plural(lines.length, tool === "Glob" ? "file" : "result")}`)];
+    if (none) return [result("Found nothing")];
+    // Grep's files_with_matches mode leads with its own count.
+    const header = /^Found \d+ (files?|lines?|matches?)$/.exec(lines[0] ?? "");
+    return [result(header ? header[0] : `Found ${plural(lines.length, name === "Glob" ? "file" : "result")}`)];
   }
-  if (tool === "Bash" || tool === "shell") {
+  if (command) {
     if (lines.length === 0) return [result("(no output)")];
     const shown = lines.slice(0, RESULT_LINES).map((l, i) => result(i === 0 ? clipMessage(l, RESULT_CHARS) : `   ${clipMessage(l, RESULT_CHARS)}`));
     if (lines.length > RESULT_LINES) shown.push(result(`   … (+${lines.length - RESULT_LINES} lines)`));
     return shown;
   }
   return [result(summarizeToolOutput(output))];
+}
+
+type ToolTurn = Extract<Turn, { kind: "tool" }>;
+
+// clipMessage keeps one line of prose; this keeps a line of code, indentation
+// and all.
+function clipLine(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
 function parseArgs(input: string): Record<string, unknown> | null {
@@ -498,6 +515,8 @@ const CONTROL_RE =
 // Reminders the harness appends after a tool result aren't the result. Only
 // trailing blocks count: the string can also appear in genuine output.
 const REMINDER_RE = /(?:\s*<system-reminder>(?:(?!<\/?system-reminder>)[\s\S])*<\/system-reminder>)+\s*$/;
+// The tags the harness wraps a rejection in aren't part of the rejection.
+const ERROR_TAG_RE = /<\/?tool_use_error>/g;
 // Nor is the worktree-isolation notice it prepends.
 const RESULT_NOISE = ["This agent is isolated in the worktree"];
 
@@ -506,6 +525,7 @@ const RESULT_NOISE = ["This agent is isolated in the worktree"];
 function meaningfulLines(output: string): string[] {
   return output
     .replace(REMINDER_RE, "")
+    .replace(ERROR_TAG_RE, "")
     .replace(CONTROL_RE, "")
     .split("\n")
     .map((line) => line.trim())
