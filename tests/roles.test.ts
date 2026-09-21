@@ -12,8 +12,10 @@ import {
   removeRole,
   requireRole,
   roleForAgent,
+  effortForRole,
   modelForRole,
   providerForRole,
+  setRoleEffort,
   setRoleModel,
   setRoleProvider,
 } from "../src/roles";
@@ -233,6 +235,33 @@ describe("role model defaults", () => {
     expect(modelForRole("shepherd", "codex", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
     expect(modelForRole("shepherd", "codex", "")).toBe("gpt-5.6-luna");
     expect(listRoles().find((role) => role.name === "shepherd")?.models?.claude).toBe("opus");
+  });
+
+  test("persists a reasoning effort per provider alongside the model", () => {
+    setRoleEffort("shepherd", "claude", "high");
+    expect(requireRole("shepherd").efforts).toEqual({ claude: "high" });
+    expect(effortForRole("shepherd", "claude")).toBe("high");
+    expect(effortForRole("shepherd", "codex")).toBeUndefined();
+    expect(effortForRole("shepherd", "claude", "low")).toBe("low");
+    setRoleModel("shepherd", "claude", "opus");
+    expect(requireRole("shepherd").efforts).toEqual({ claude: "high" });
+    setRoleEffort("shepherd", "claude", undefined);
+    expect(effortForRole("shepherd", "claude")).toBeUndefined();
+    expect(modelForRole("shepherd", "claude")).toBe("opus");
+    expect(() => setRoleEffort("shepherd", "claude", " ")).toThrow(/empty/);
+  });
+
+  test("the built-ins spend effort where it matters", () => {
+    expect(requireRole(CONCIERGE_ROLE).efforts).toEqual({ claude: "low", codex: "low" });
+    expect(requireRole(ENGINEER_ROLE).efforts).toEqual({ claude: "medium", codex: "medium" });
+    expect(requireRole(REVIEWER_ROLE).efforts).toEqual({ claude: "high", codex: "high" });
+    // Overriding one provider's level leaves the other and the models alone.
+    setRoleEffort(REVIEWER_ROLE, "codex", "xhigh");
+    expect(requireRole(REVIEWER_ROLE)).toMatchObject({
+      builtIn: true,
+      efforts: { claude: "high", codex: "xhigh" },
+      models: { claude: "fable", codex: "gpt-6-astra" },
+    });
   });
 
   test("falls back to provider defaults and clears only the selected provider", () => {

@@ -18,6 +18,9 @@ export interface AgentRole {
   // or the model family the role's instructions assume.
   provider?: Provider;
   models?: Partial<Record<Provider, string>>;
+  // Reasoning effort per provider. Without one a spawn takes the provider's
+  // own default, which is per-model on codex and unstated on claude.
+  efforts?: Partial<Record<Provider, string>>;
 }
 
 const CONCIERGE_INSTRUCTIONS = `You are the Agent Motel concierge — the front desk for a fleet of coding agents managed by the \`am\` CLI. You run as a managed agent yourself, named "concierge", but your ONLY job is fleet management: answer the operator's questions about the other agents and carry out safe management actions via \`am\` commands in Bash. You are not a coding agent — never edit repositories, write code, or take over another agent's task yourself.
@@ -111,6 +114,7 @@ const BUILT_INS: Record<string, AgentRole> = {
     description: "Fleet concierge for status, routing, and safe agent management",
     instructions: CONCIERGE_INSTRUCTIONS,
     builtIn: true,
+    efforts: { claude: "low", codex: "low" },
   },
   [ENGINEER_ROLE]: {
     name: ENGINEER_ROLE,
@@ -119,6 +123,7 @@ const BUILT_INS: Record<string, AgentRole> = {
     builtIn: true,
     provider: "claude",
     models: { claude: "opus", codex: "gpt-5.6-sol" },
+    efforts: { claude: "medium", codex: "medium" },
   },
   [REVIEWER_ROLE]: {
     name: REVIEWER_ROLE,
@@ -127,6 +132,7 @@ const BUILT_INS: Record<string, AgentRole> = {
     builtIn: true,
     provider: "claude",
     models: { claude: "fable", codex: "gpt-6-astra" },
+    efforts: { claude: "high", codex: "high" },
   },
 };
 
@@ -143,6 +149,7 @@ interface StoredRole {
   custom?: boolean;
   provider?: Provider;
   models?: Partial<Record<Provider, string>>;
+  efforts?: Partial<Record<Provider, string>>;
   description?: string;
   // A custom role's own text. A built-in's file carries settings only, so
   // later edits to the shipped instructions still reach anyone who set a
@@ -184,6 +191,7 @@ function readCustomRole(name: string): AgentRole | null {
     instructions: stored.instructions.trim(),
     provider: storedProvider(stored),
     models: stored.models,
+    efforts: stored.efforts,
   };
 }
 
@@ -213,7 +221,12 @@ export function getRole(name: string): AgentRole | null {
   // setters, so its provider and models win as a unit while the instructions
   // stay whatever we ship today.
   return stored
-    ? { ...builtIn, provider: storedProvider(stored), models: stored.models ?? builtIn.models }
+    ? {
+      ...builtIn,
+      provider: storedProvider(stored),
+      models: stored.models ?? builtIn.models,
+      efforts: stored.efforts ?? builtIn.efforts,
+    }
     : builtIn;
 }
 
@@ -262,9 +275,9 @@ export function addRole(input: { name: string; description?: string; instruction
   const description = input.description?.trim() || undefined;
   ensureDirs();
   const existing = readCustomRole(name);
-  const { provider, models } = existing ?? {};
-  writeJsonAtomic(roleFile(name), { custom: true, description, instructions, provider, models } satisfies StoredRole);
-  return { name, description, instructions, provider, models };
+  const { provider, models, efforts } = existing ?? {};
+  writeJsonAtomic(roleFile(name), { custom: true, description, instructions, provider, models, efforts } satisfies StoredRole);
+  return { name, description, instructions, provider, models, efforts };
 }
 
 export function removeRole(name: string): void {
@@ -282,7 +295,10 @@ export function roleForAgent(agent: { name: string; role?: string }): string | u
 // Persist a role's settings. For a built-in that means the settings alone —
 // storing its instructions would freeze the user on today's copy (a later
 // edit would read back as a role of their own, via shadowsBuiltIn).
-function writeRoleSettings(role: AgentRole, settings: { provider?: Provider; models?: Partial<Record<Provider, string>> }): void {
+function writeRoleSettings(
+  role: AgentRole,
+  settings: { provider?: Provider; models?: Partial<Record<Provider, string>>; efforts?: Partial<Record<Provider, string>> },
+): void {
   const own = role.builtIn ? {} : { custom: true, description: role.description, instructions: role.instructions };
   writeJsonAtomic(roleFile(role.name), { ...own, ...settings } satisfies StoredRole);
 }
@@ -294,7 +310,19 @@ export function setRoleModel(name: string, provider: Provider, model: string | u
   if (model === undefined) delete models[provider];
   else models[provider] = model.trim();
   ensureDirs();
-  writeRoleSettings(role, { provider: role.provider, models });
+  writeRoleSettings(role, { provider: role.provider, models, efforts: role.efforts });
+  return requireRole(name);
+}
+
+// A role's reasoning effort for one provider (undefined clears it).
+export function setRoleEffort(name: string, provider: Provider, effort: string | undefined): AgentRole {
+  const role = requireRole(name);
+  if (effort !== undefined && !effort.trim()) throw new Error("effort cannot be empty; use --clear to remove the default");
+  const efforts = { ...role.efforts };
+  if (effort === undefined) delete efforts[provider];
+  else efforts[provider] = effort.trim();
+  ensureDirs();
+  writeRoleSettings(role, { provider: role.provider, models: role.models, efforts });
   return requireRole(name);
 }
 
@@ -302,7 +330,7 @@ export function setRoleModel(name: string, provider: Provider, model: string | u
 export function setRoleProvider(name: string, provider: Provider | undefined): AgentRole {
   const role = requireRole(name);
   ensureDirs();
-  writeRoleSettings(role, { provider, models: role.models });
+  writeRoleSettings(role, { provider, models: role.models, efforts: role.efforts });
   return requireRole(name);
 }
 
@@ -314,4 +342,8 @@ export function providerForRole(name: string | undefined, fallback: Provider, ex
 
 export function modelForRole(name: string | undefined, provider: Provider, explicit?: string): string | undefined {
   return explicit || (name ? getRole(name)?.models?.[provider] : undefined);
+}
+
+export function effortForRole(name: string | undefined, provider: Provider, explicit?: string): string | undefined {
+  return explicit || (name ? getRole(name)?.efforts?.[provider] : undefined);
 }
