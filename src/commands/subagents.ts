@@ -47,6 +47,14 @@ export function subagentLines(
   });
 }
 
+// A gone agent's open records are leftovers, not work in flight — say so in
+// the JSON too, so a script reading it draws the same conclusion the table
+// shows. Pure.
+export function jsonRecords(records: SubagentRecord[], live: boolean): (SubagentRecord & { stale?: true })[] {
+  if (live) return records;
+  return records.map((record) => (record.endedAt ? record : { ...record, stale: true as const }));
+}
+
 export function formatSubagentLines(lines: SubagentLine[], width = 60): string[] {
   const typeWidth = Math.max(4, ...lines.map((l) => l.type.length));
   const idWidth = Math.max(2, ...lines.map((l) => l.id.length));
@@ -85,7 +93,7 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
     const agent = resolveAgent(prefix);
     const records = readSubagents(agent.name);
     if (opts.json) {
-      console.log(JSON.stringify(records, null, 2));
+      console.log(JSON.stringify(jsonRecords(records, agentIsLive(agent)), null, 2));
       return;
     }
     console.log(agentReport(agent).join("\n"));

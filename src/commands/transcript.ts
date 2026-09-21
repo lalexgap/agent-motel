@@ -30,12 +30,15 @@ function subagentSource(agent: AgentState, query: string): { file: string; opts:
   if (record.transcriptPath && existsSync(record.transcriptPath)) {
     return { file: record.transcriptPath, opts: { sidechain: { ownFile: true } }, label };
   }
-  // Still running: claude writes its turns into the parent's session file,
-  // tagged with the agent id. Codex doesn't, so there is nothing to render
-  // until it finishes and reports its own transcript.
+  // Claude writes a running subagent's turns into the parent's session file,
+  // tagged with the agent id. Codex doesn't, so a codex subagent is readable
+  // only through the transcript its stop hook reports.
   if (agentProvider(agent) === "codex") {
+    const why = record.endedAt
+      ? "it finished without reporting one"
+      : "it is still running";
     throw new Error(
-      `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own yet (it is still running)`,
+      `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own (${why})`,
     );
   }
   return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label };

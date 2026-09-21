@@ -163,7 +163,8 @@ usage:
                               render the agent's conversation as markdown
                               (--subagent renders one in-session subagent's
                                side-chain instead)
-  am subagents [<name>]       in-session subagents (Claude Code's Task tool,
+  am subagents [<name>] [--json]
+                              in-session subagents (Claude Code's Task tool,
                               codex subagents): what a name has fanned out to,
                               or what is running right now on this host. They
                               have no pane — use \`am run\` for work you need to

@@ -140,10 +140,17 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
       try {
         if (hadShared && existsSync(sharedDir(newName))) renameSync(sharedDir(newName), sharedDir(oldName));
         if (hadInbox && existsSync(inboxDir(newName))) renameSync(inboxDir(newName), inboxDir(oldName));
-        if (hadSubagents && subagentsExist(newName)) renameSubagents(newName, oldName);
         if (hadSnapshot && snapshotExists(newName)) renameSnapshot(newName, oldName);
         if (hadQueue && queueStorageExists(newName)) renameQueue(newName, oldName);
         if (sessionRenamed && hasSession(newSession)) renameSession(newSession, oldSession);
+        // Last, and swallowed on its own: a hook that recreated the old
+        // ledger mid-rename makes this throw, which must not skip the
+        // rollbacks above.
+        try {
+          if (hadSubagents && subagentsExist(newName)) renameSubagents(newName, oldName);
+        } catch {
+          // the ledger is cosmetic next to state/queue/session placement
+        }
       } catch {
         // Preserve the original failure; recovery instructions are clearer
         // than replacing it with a secondary rollback error.

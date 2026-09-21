@@ -17,7 +17,8 @@ import {
   subagentSummary,
   summarize,
 } from "../src/subagents";
-import { formatSubagentLines, subagentLines } from "../src/commands/subagents";
+import { formatSubagentLines, jsonRecords, subagentLines } from "../src/commands/subagents";
+import { recordSubagentEvent } from "../src/commands/hook";
 import { matchSubagent } from "../src/commands/transcript";
 
 let home: string;
@@ -183,6 +184,47 @@ describe("am subagents output", () => {
     expect(out[0]).toContain("TYPE");
     expect(out).toHaveLength(3);
     expect(out[1]).toContain("Explore");
+  });
+});
+
+describe("jsonRecords", () => {
+  const open = { id: "a1", type: "Explore", startedAt: "2026-09-21T10:00:00.000Z" };
+  const done = { ...open, id: "a2", endedAt: "2026-09-21T10:01:00.000Z" };
+
+  test("a live agent's records pass through untouched", () => {
+    expect(jsonRecords([open, done], true)).toEqual([open, done]);
+  });
+
+  test("a gone agent's open records are marked stale, finished ones aren't", () => {
+    const [first, second] = jsonRecords([open, done], false);
+    expect(first).toMatchObject({ id: "a1", stale: true });
+    expect(second).toEqual(done);
+  });
+});
+
+describe("recordSubagentEvent", () => {
+  test("a new session closes the previous one's leftovers", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // The session was killed: no stop hook ever ran for a1.
+    recordSubagentEvent("session-start", "api", {});
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("start and stop payloads fold into a record", () => {
+    recordSubagentEvent("subagent-start", "api", { agent_id: "b1", agent_type: "code-review" });
+    expect(activeSubagents("api").map((r) => r.type)).toEqual(["code-review"]);
+    recordSubagentEvent("subagent-stop", "api", {
+      agent_id: "b1",
+      agent_type: "code-review",
+      last_assistant_message: "3 findings",
+      agent_transcript_path: "/tmp/b1.jsonl",
+    });
+    expect(readSubagents("api")[0]).toMatchObject({ message: "3 findings", transcriptPath: "/tmp/b1.jsonl" });
+  });
+
+  test("a payload without an agent id is ignored, not recorded", () => {
+    recordSubagentEvent("subagent-start", "api", {});
+    expect(readSubagents("api")).toEqual([]);
   });
 });
 

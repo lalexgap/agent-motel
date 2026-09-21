@@ -177,8 +177,10 @@ function stopGate(name: string): string | null {
 // Fold a subagent hook payload into the ledger. Both providers report
 // agent_id/agent_type on start, plus the subagent's own transcript and final
 // message on stop. A turn boundary closes anything still open: an interrupted
-// turn kills its subagents without firing their stop hooks.
-function recordSubagentEvent(event: string, name: string, payload: Record<string, unknown>): void {
+// turn kills its subagents without firing their stop hooks — and so does a
+// killed session, whose leftovers must not follow the agent into the session
+// that resumes it.
+export function recordSubagentEvent(event: string, name: string, payload: Record<string, unknown>): void {
   const id = typeof payload.agent_id === "string" ? payload.agent_id : undefined;
   const type = typeof payload.agent_type === "string" ? payload.agent_type : undefined;
   if (event === "subagent-start") {
@@ -193,7 +195,7 @@ function recordSubagentEvent(event: string, name: string, payload: Record<string
           typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined,
       });
     }
-  } else if (event === "stop" || event === "session-end") {
+  } else if (event === "stop" || event === "session-end" || event === "session-start") {
     closeOpenSubagents(name);
   }
 }
