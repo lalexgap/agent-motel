@@ -166,6 +166,13 @@ describe("am subagents output", () => {
     expect(lines[1]).toMatchObject({ type: "code-review", age: "2m0s", detail: "3 findings" });
   });
 
+  test("a gone session's open records read as ended, not running", () => {
+    const lines = subagentLines(records, new Map(), Date.parse("2026-09-21T10:03:00.000Z"), { live: false });
+    expect(lines[0]).toMatchObject({ icon: "✕", type: "Explore", detail: "ended with the session" });
+    // A genuinely finished one is unaffected.
+    expect(lines[1]).toMatchObject({ icon: "✔", detail: "3 findings" });
+  });
+
   test("no activity and no message renders a placeholder", () => {
     const [line] = subagentLines([records[0]!], new Map(), Date.parse("2026-09-21T10:00:30.000Z"));
     expect(line!.detail).toBe("—");

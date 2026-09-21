@@ -43,24 +43,29 @@ const CLAUDE_HARNESS_PREFIXES = ["<command-name>", "<local-command-stdout>", "<s
 export interface ParseOpts {
   // Render a subagent's side-chain instead of the main conversation. Claude
   // Code only; codex keeps subagent turns out of the parent rollout.
-  sidechain?: { agentId?: string };
+  // ownFile marks a dedicated subagent transcript, where every entry already
+  // belongs to that subagent.
+  sidechain?: { agentId?: string; ownFile?: boolean };
 }
 
 // Which entries belong to the conversation being rendered. The main chain is
-// everything not marked isSidechain. A subagent's chain is matched by agentId
-// while it lives inside the parent's session file, and taken wholesale from a
-// dedicated subagent transcript, which has no sibling turns to separate it
-// from.
+// everything not marked isSidechain; a subagent's chain is matched inside the
+// parent's session file, or taken wholesale from its own transcript.
 function claudeEntryFilter(
   entries: Record<string, any>[],
   opts: ParseOpts,
 ): (entry: Record<string, any>) => boolean {
   if (!opts.sidechain) return (entry) => entry.isSidechain !== true;
-  const { agentId } = opts.sidechain;
+  const { agentId, ownFile } = opts.sidechain;
+  // A dedicated transcript holds nothing but that subagent's turns.
+  if (ownFile) return () => true;
+  // Inside the parent's session file the side-chain must be matched, never
+  // assumed: a subagent that hasn't flushed a turn yet would otherwise render
+  // the parent's whole conversation under the subagent's name.
   if (agentId !== undefined && entries.some((e) => typeof e.agentId === "string")) {
     return (entry) => entry.agentId === agentId;
   }
-  return entries.some((e) => e.isSidechain === true) ? (entry) => entry.isSidechain === true : () => true;
+  return (entry) => entry.isSidechain === true;
 }
 
 export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Transcript {

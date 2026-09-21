@@ -165,7 +165,7 @@ usage:
                                side-chain instead)
   am subagents [<name>]       in-session subagents (Claude Code's Task tool,
                               codex subagents): what a name has fanned out to,
-                              or fleet-wide what is running right now. They
+                              or what is running right now on this host. They
                               have no pane — use \`am run\` for work you need to
                               attach to or steer
   am search <query> [--all] [--fleet] [--limit n] [--json]
@@ -229,7 +229,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {

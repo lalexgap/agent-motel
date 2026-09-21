@@ -1,7 +1,7 @@
 import { agentProvider, listAgents, resolveAgent, type AgentState } from "../state";
 import { readSubagents, subagentActivity, type SubagentRecord } from "../subagents";
 import { formatDuration } from "./hook";
-import { relativeTime } from "./ls";
+import { displayStatus, relativeTime } from "./ls";
 
 // `am subagents` — the in-session fan-out an agent's pane only hints at. With
 // a name: that agent's subagents, running ones first. Without: every agent
@@ -21,21 +21,30 @@ function ageOf(record: SubagentRecord, now: number): string {
 }
 
 // Running subagents show what they're doing (from the parent transcript);
-// finished ones show what they answered. Pure, so the shape is testable.
+// finished ones show what they answered. A record can only still be open on a
+// LIVE agent: a killed session fires no Stop hook, so its open records are
+// stale and must not read as running. Pure, so the shape is testable.
 export function subagentLines(
   records: SubagentRecord[],
   activity: Map<string, string>,
   now = Date.now(),
+  opts: { live?: boolean } = {},
 ): SubagentLine[] {
+  const live = opts.live ?? true;
   const running = records.filter((r) => !r.endedAt);
   const finished = records.filter((r) => r.endedAt).reverse();
-  return [...running, ...finished].map((record) => ({
-    icon: record.endedAt ? "✔" : "●",
-    type: record.type,
-    id: record.id.slice(0, 8),
-    age: ageOf(record, now),
-    detail: (record.endedAt ? record.message : activity.get(record.id)) ?? "—",
-  }));
+  return [...running, ...finished].map((record) => {
+    if (!record.endedAt && !live) {
+      return { icon: "✕", type: record.type, id: record.id.slice(0, 8), age: ageOf(record, now), detail: "ended with the session" };
+    }
+    return {
+      icon: record.endedAt ? "✔" : "●",
+      type: record.type,
+      id: record.id.slice(0, 8),
+      age: ageOf(record, now),
+      detail: (record.endedAt ? record.message : activity.get(record.id)) ?? "—",
+    };
+  });
 }
 
 export function formatSubagentLines(lines: SubagentLine[], width = 60): string[] {
@@ -54,13 +63,21 @@ export function formatSubagentLines(lines: SubagentLine[], width = 60): string[]
   return out;
 }
 
+// A gone session can't be running anything, whatever its ledger still says.
+function agentIsLive(agent: AgentState): boolean {
+  const status = displayStatus(agent);
+  return status !== "dead" && status !== "exited";
+}
+
 function agentReport(agent: AgentState): string[] {
   const records = readSubagents(agent.name);
   if (records.length === 0) {
     const hint = agentProvider(agent) === "codex" ? "" : " (its Task-tool runs appear here)";
     return [`${agent.name}: no subagents recorded${hint}`];
   }
-  return formatSubagentLines(subagentLines(records, subagentActivity(agent)));
+  const live = agentIsLive(agent);
+  const activity = live ? subagentActivity(agent) : new Map<string, string>();
+  return formatSubagentLines(subagentLines(records, activity, Date.now(), { live }));
 }
 
 export function subagentsCommand(prefix: string | undefined, opts: { json?: boolean } = {}): void {
@@ -75,9 +92,12 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
     return;
   }
 
-  // Fleet view: only what's running right now — finished subagents belong to
-  // their agent's own listing, not a cross-agent feed.
+  // Host-wide view: only what's running right now — finished subagents belong
+  // to their agent's own listing, not a cross-agent feed. Gone agents are
+  // skipped: their open records are leftovers from a session that was killed
+  // before any Stop hook could close them.
   const running = listAgents()
+    .filter(agentIsLive)
     .map((agent) => ({ agent, records: readSubagents(agent.name).filter((r) => !r.endedAt) }))
     .filter((entry) => entry.records.length > 0);
   if (opts.json) {

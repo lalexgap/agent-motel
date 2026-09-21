@@ -132,13 +132,23 @@ describe("parseClaudeTranscript — subagent side-chains", () => {
     expect(main.turns.map((t) => (t as any).text)).toEqual(["main chain"]);
   });
 
-  test("a dedicated subagent transcript (no ids to match) renders whole", () => {
+  test("a dedicated subagent transcript renders whole", () => {
     const own = [
       JSON.stringify({ type: "user", message: { role: "user", content: "go" } }),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
     ].join("\n");
-    const sub = parseClaudeTranscript(own, { sidechain: { agentId: "sub-a" } });
+    const sub = parseClaudeTranscript(own, { sidechain: { agentId: "sub-a", ownFile: true } });
     expect(sub.turns.map((t) => (t as any).text)).toEqual(["go", "done"]);
+  });
+
+  test("a parent file with no side-chain yet renders nothing, never the parent's chat", () => {
+    // A subagent that has just started has flushed no turns — rendering the
+    // whole parent conversation under its name would leak the wrong chat.
+    const parentOnly = [
+      JSON.stringify({ type: "user", message: { role: "user", content: "secret parent prompt" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "parent reply" }] } }),
+    ].join("\n");
+    expect(parseClaudeTranscript(parentOnly, { sidechain: { agentId: "sub-a" } }).turns).toEqual([]);
   });
 
   test("an unknown id in a file that has ids renders nothing, not the parent's chat", () => {

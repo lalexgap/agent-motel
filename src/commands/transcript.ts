@@ -25,12 +25,20 @@ function subagentSource(agent: AgentState, query: string): { file: string; opts:
     const known = [...new Set(records.map((r) => r.type))].join(", ");
     throw new Error(`no subagent matches "${query}" — ${agent.name} has: ${known}`);
   }
-  // A finished subagent has its own transcript file; one still running only
-  // exists inside the parent's session file, tagged with its agent id.
-  const file = record.transcriptPath && existsSync(record.transcriptPath)
-    ? record.transcriptPath
-    : locateTranscript(agent);
-  return { file, opts: { sidechain: { agentId: record.id } }, label: `${agent.name} ⤷ ${record.type}` };
+  const label = `${agent.name} ⤷ ${record.type}`;
+  // A finished subagent has its own transcript file.
+  if (record.transcriptPath && existsSync(record.transcriptPath)) {
+    return { file: record.transcriptPath, opts: { sidechain: { ownFile: true } }, label };
+  }
+  // Still running: claude writes its turns into the parent's session file,
+  // tagged with the agent id. Codex doesn't, so there is nothing to render
+  // until it finishes and reports its own transcript.
+  if (agentProvider(agent) === "codex") {
+    throw new Error(
+      `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own yet (it is still running)`,
+    );
+  }
+  return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label };
 }
 
 export function transcriptCommand(

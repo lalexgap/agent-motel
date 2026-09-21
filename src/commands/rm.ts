@@ -1,5 +1,6 @@
 import { removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear } from "../queue";
+import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
 import { hasSession, killSession } from "../tmux";
@@ -35,6 +36,9 @@ export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void 
 
   queueClear(agent.name);
   removeSnapshot(agent.name);
+  // Otherwise a later agent reusing the name inherits this one's subagents —
+  // including records left open by a kill that fired no Stop hook.
+  removeSubagents(agent.name);
   removeAgent(agent.name);
 }
 

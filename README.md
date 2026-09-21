@@ -72,7 +72,7 @@ In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to c
 Agents also fan work out to their own built-in subagents (Claude Code's Task tool, Codex's subagents). Those run inside the parent session, so they have no pane to attach to — but both providers report them through hooks, and `am` records what ran:
 
 ```sh
-am subagents                       # what is running right now, fleet-wide
+am subagents                       # what is running right now on this host
 am subagents api                   # api's subagents, running ones first
 am transcript api --subagent Explore  # read one subagent's side-chain
 ```
