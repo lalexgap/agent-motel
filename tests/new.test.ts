@@ -6,11 +6,10 @@ describe("agentSystemPrompt", () => {
     const prompt = agentSystemPrompt("worker-1");
     expect(prompt).toContain('"worker-1"');
     expect(prompt).toContain("am new");
-    // Peer messaging is what's left of the command surface: agents no longer
-    // manage other agents.
+    // Fleet control and the spawn-time trust caveat left with the
+    // agents-spawning-agents model; peer messaging stayed.
     expect(prompt).toContain("am send <name>");
     expect(prompt).not.toContain("am ls --json");
-    // The spawn-time trust caveat went with the agents-spawning-agents model.
     expect(prompt).not.toContain("trust prompt");
   });
 });
