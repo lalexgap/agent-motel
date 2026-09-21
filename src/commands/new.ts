@@ -15,6 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
@@ -158,6 +159,9 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   let hooksChanged = false;
   if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
+  // Same idea for the roles: the providers' agent files must match the
+  // registry before a session that might delegate to them starts.
+  ensureSubagentRoles();
 
   // Expand ~ ourselves rather than leaning on the shell: a --dir routed over
   // ssh arrives single-quoted (shQuote), so the remote shell never expands it.

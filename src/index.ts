@@ -126,6 +126,11 @@ usage:
                               (--clear unpins; --claude/--codex on the spawn
                                still win)
   am role rm <name>           remove a custom role (built-ins are protected)
+  am role export [--claude|--codex] [--dry-run]
+                              write the roles as the providers' own subagents
+                              (~/.claude/agents/<name>.md, ~/.codex/agents/
+                              <name>.toml) so "use the reviewer" works in any
+                              session; runs on every role edit and am new
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
   am send <name> -            read the message body from stdin (no shell quoting
@@ -596,6 +601,7 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         clear: !!args.flags.clear,
         force: !!args.flags.force,
+        dryRun: !!args.flags["dry-run"],
       });
       break;
     case "j":
