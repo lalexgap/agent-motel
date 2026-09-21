@@ -13,6 +13,8 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   renameSubagents,
+  describeToolCall,
+  isHarnessNoise,
   renderSubagentScreen,
   subagentActivity,
   subagentSummary,
@@ -569,10 +571,40 @@ describe("renderSubagentScreen", () => {
     ]);
     expect(lines).toEqual([
       "❯ find the hook handlers and report back",
-      '⏺ Grep({"pattern":"hook"})',
+      "⏺ Grep(hook)",
       "They live in hook.ts.",
       "Two handlers.",
     ]);
     expect(lines.join("\n")).not.toContain("src/hook.ts:12");
+  });
+
+  test("harness-injected user turns are not the subagent's conversation", () => {
+    const lines = renderSubagentScreen([
+      { kind: "user", text: "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event" },
+      { kind: "user", text: "Base directory for this skill: /home/x/.claude/skills/review" },
+      { kind: "user", text: "<system-reminder>\nOther agents are running" },
+      { kind: "user", text: "Review target: `66`" },
+    ]);
+    expect(lines).toEqual(["❯ Review target: `66`"]);
+    expect(isHarnessNoise("  [Request interrupted by user]")).toBe(true);
+    expect(isHarnessNoise("Review the diff")).toBe(false);
+  });
+});
+
+describe("describeToolCall", () => {
+  test("shows the salient argument the way the provider's UI does, not the JSON", () => {
+    expect(describeToolCall("Bash", '{"command":"sed -n 1,30p docs/x.md; echo ...","description":"Read docs"}')).toBe("Bash(sed -n 1,30p docs/x.md; echo ...)");
+    expect(describeToolCall("Read", '{"file_path":"/home/x/src/hook.ts","limit":40}')).toBe("Read(/home/x/src/hook.ts)");
+    expect(describeToolCall("Grep", '{"pattern":"inboxRootDir","path":"src"}')).toBe("Grep(inboxRootDir)");
+    expect(describeToolCall("Agent", '{"subagent_type":"reviewer","description":"Review PR #74","prompt":"Review the diff"}')).toBe("Agent(Review PR #74)");
+    expect(describeToolCall("Skill", '{"skill":"code-review","args":"main...HEAD high"}')).toBe("Skill(code-review main...HEAD high)");
+  });
+
+  test("mcp tools read as server:tool, and odd inputs degrade gracefully", () => {
+    expect(describeToolCall("mcp__playwright__browser_click", '{"target":"[data-test=x] button","element":"Undo change button"}')).toBe("playwright:browser_click([data-test=x] button)");
+    expect(describeToolCall("mcp__playwright__browser_close", "{}")).toBe("playwright:browser_close()");
+    expect(describeToolCall("shell", "ls -la")).toBe("shell(ls -la)");
+    expect(describeToolCall("Weird", '{"count":3}')).toBe('Weird({"count":3})');
+    expect(describeToolCall("Bash", `{"command":"${"x".repeat(300)}"}`).length).toBeLessThan(120);
   });
 });
