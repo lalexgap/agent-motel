@@ -56,7 +56,7 @@ Agents created in a git repository get a worktree on `am/<name>`. Pass `--in-pla
 
 ```sh
 am new <name> -m "task"                 # create an agent
-am new <name> -m "task" --role reviewer # apply custom instructions
+am new <name> -m "task" --role auditor  # apply custom instructions
 am new <name> --resume [session-id]     # adopt an existing conversation
 am run <name> -m "task"                # create, wait, and print the answer
 am pick                                 # open the classic picker
@@ -79,7 +79,7 @@ am transcript api --subagent Explore  # read one subagent's side-chain
 
 While they run, the hub and `am ls` show the rollup on the parent's status (`working · 2 subagents · Explore`). They can't be messaged, interrupted, or attached to, and they die with the session that spawned them (most with the turn — a forked/background one runs on until it finishes) — use `am run` for work you need to steer.
 
-By default agents are told to delegate whole tasks to am agents. `am new <name> --prefer-subagents` flips that: the agent fans out with its own subagents and spawns an am agent only when the work needs its own room. The hub's create form has the same choice as a `fan out` field. `"preferSubagents": true` in `~/.agent-manager/config.json` makes it the default, and `--no-prefer-subagents` overrides it per agent. The preference is stored with the agent, so resume and handoff keep it — and `am stop <name> && am resume <name> --prefer-subagents` changes it on an agent that already exists (claude rebuilds its primer on resume; codex is handed the new instruction as a queued message).
+Agents delegate this way by default: an implementor or a reviewer an agent needs is a subagent, and it spawns another am agent only when you explicitly ask for one. The fleet stays a flat list of things you asked for, each fanning out in-session.
 
 ### Models and reasoning effort
 
@@ -105,7 +105,7 @@ There is one concierge per fleet, not per machine: if a concierge already exists
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge`, `engineer`, and `reviewer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge` is a protected built-in role; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -125,26 +125,6 @@ am role rm security-reviewer
 Provider pins and model defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--claude`/`--codex` overrides the pin and an explicit `--model` overrides the model default; without either, the config default provider and the provider's own default model apply. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
 
 Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to replace an existing custom definition. Selected instructions are snapshotted into agent state, so existing agents keep their role across resume, restore, move, clone, and handoff even if the registry later changes. Role registries are host-local; manage a remote with `am -H <host> role ...` before creating that role there.
-
-#### The engineer role
-
-`engineer` is a built-in implementor: it takes a task another agent already thought through, writes the code, verifies it, commits it, opens a draft PR when the brief asks for one, and reports what it did — the point is to finish the job in one pass rather than negotiate with the caller. It launches on claude with `opus` by default (`gpt-5.6-sol` if you point it at codex), so the planning agent can run on something cheaper and still get good code:
-
-```sh
-am run motel-sort-impl --role engineer --in-place --timeout 900 -m "Add a --sort flag to am ls; follow the existing flag parsing in src/index.ts; run bun test; commit on branch am/ls-sort and open a draft PR"
-```
-
-`--in-place` is what keeps the engineer in the caller's checkout — without it a spawned agent takes its own worktree on branch `am/<name>`. `am run` blocks and prints the engineer's report; the calling agent reviews the diff and owns the result. Managed agents are told to work this way by default: plan and review themselves, delegate the typing, and brief the engineer completely in one message (goal, patterns to follow, how to verify, whether to commit and open a PR) instead of trading questions with it. Repoint it like any other role — `am role provider engineer --codex` when claude's quota runs out, `am role model engineer --claude --model sonnet` for a cheaper implementor — and if a role's default model isn't offered by the provider on that machine, the spawn falls back to the provider default with a warning instead of failing.
-
-#### The reviewer role
-
-`reviewer` is the engineer's counterpart: it reads a PR, branch, or working tree, judges it against what the change claims to do, and reports findings — it never edits, commits, or changes a PR's state. It launches on claude with `fable` (`gpt-6-astra` on codex), because catching a real bug in someone else's diff is harder than writing the diff was:
-
-```sh
-am run motel-64-review --role reviewer --in-place --timeout 900 -m "Review PR 64 against main; the risky part is the role-shadowing logic in src/roles.ts"
-```
-
-Findings come back severity-tagged — `[high] src/roles.ts:83 — …` with a concrete failure scenario and a fix direction — which is the shape the `review-loop` and `shepherd-pr` skills parse. The calling agent decides what to act on; handing those findings to an `engineer` run is how they get fixed. Both roles think for a long time on a real diff — pass a `--timeout` well above `am run`'s 600s default, or you'll collect a truncated report and a non-zero exit. Every reviewer report ends with a `Verdict:` line; a report without one is a run that died (a rate limit, a refusal) and exits 0 like any other, so callers should read a missing verdict as a failed pass, not as a clean diff.
 
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 

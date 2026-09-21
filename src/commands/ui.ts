@@ -64,7 +64,6 @@ export function remoteNewCommandArgs(opts: {
   model?: string;
   effort?: string;
   role?: string;
-  preferSubagents?: boolean;
 }): string[] {
   const args = ["new", opts.name, "--no-jump"];
   if (opts.task) args.push("-m", opts.task);
@@ -73,11 +72,6 @@ export function remoteNewCommandArgs(opts: {
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
   if (opts.role) args.push("--role", opts.role);
-  // Explicit either way: the remote machine has its own config default, and
-  // the form's choice must win over it.
-  if (opts.preferSubagents !== undefined) {
-    args.push(opts.preferSubagents ? "--prefer-subagents" : "--no-prefer-subagents");
-  }
   return args;
 }
 
@@ -426,7 +420,6 @@ export async function sidebarCommand(): Promise<void> {
           model: spec.model,
           effort: spec.effort,
           role: spec.role,
-          preferSubagents: spec.preferSubagents,
         });
         const res = sshAm(spec.host, args);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${spec.host} failed`);
@@ -440,7 +433,6 @@ export async function sidebarCommand(): Promise<void> {
         model: spec.model,
         effort: spec.effort,
         role: spec.role,
-        preferSubagents: spec.preferSubagents,
         jump: false,
         quiet: true,
       });

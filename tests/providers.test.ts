@@ -34,64 +34,24 @@ describe("agentSystemPrompt", () => {
     expect(prompt).not.toContain("You are reporting to");
   });
 
-  test("recommends descriptive, globally unique agent names", () => {
+  test("delegates through built-in subagents and never spawns am agents itself", () => {
     const prompt = agentSystemPrompt("worker");
-    expect(prompt).toContain("<project>-<scope>[-<role>]");
-    expect(prompt).toContain("motel-sidebar-sort");
-    expect(prompt).toContain("api-auth-review");
-    expect(prompt).toContain("Avoid generic names");
+    expect(prompt).toContain("fan out with your own built-in subagents");
+    expect(prompt).toContain("am subagents");
+    expect(prompt).toContain("Never spawn another am agent");
+    // The operator can still ask for one, and the fleet commands stay.
+    expect(prompt).toContain("am new <name>");
+    expect(prompt).toContain("am send X");
+    // Nothing left of the agents-spawning-agents model.
+    expect(prompt).not.toContain("--role engineer");
+    expect(prompt).not.toContain("--role reviewer");
+    expect(prompt).not.toContain("am run");
   });
 
-  test("routes implementation to an engineer agent, except for the engineer itself", () => {
-    const prompt = agentSystemPrompt("worker");
-    expect(prompt).toContain("--role engineer --in-place");
-    expect(prompt).toContain("hand implementation to an engineer agent");
-    const engineer = agentSystemPrompt("worker", { role: "engineer", roleInstructions: "Write the code." });
-    expect(engineer).not.toContain("--role engineer --in-place");
-    expect(engineer).toContain("# Your role: engineer");
-  });
-
-  test("points reviews at the reviewer role, except for the reviewer itself", () => {
-    const prompt = agentSystemPrompt("worker");
-    expect(prompt).toContain("--role reviewer --in-place");
-    expect(prompt).toContain("[high]/[medium]/[low]");
-    const reviewer = agentSystemPrompt("worker", { role: "reviewer", roleInstructions: "Judge it." });
-    expect(reviewer).not.toContain("--role reviewer --in-place");
-    expect(reviewer).toContain("# Your role: reviewer");
-  });
-
-  test("--prefer-subagents flips the fan-out advice and drops the engineer hand-off", () => {
-    const subagentsFirst = agentSystemPrompt("worker", { preferSubagents: true });
-    expect(subagentsFirst).toContain("prefer your own built-in subagents");
-    expect(subagentsFirst).not.toContain("Spawn a real am agent when delegating a WHOLE task");
-    // Keeping the engineer/reviewer hand-offs would contradict the whole
-    // instruction: both send the work back out to am agents.
-    expect(subagentsFirst).not.toContain("--role engineer --in-place");
-    expect(subagentsFirst).not.toContain("--role reviewer --in-place");
-    // Peer control still goes through am — only fan-out changed.
-    expect(subagentsFirst).toContain("still use the am CLI via Bash");
-    expect(subagentsFirst).toContain("am send X");
-
-    const amFirst = agentSystemPrompt("worker", { preferSubagents: false });
-    expect(amFirst).toContain("Spawn a real am agent when delegating a WHOLE task");
-    expect(amFirst).not.toContain("prefer your own built-in subagents");
-  });
-
-  test("a resumed agent keeps the fan-out preference it launched with", () => {
-    const agent: AgentState = {
-      name: "worker",
-      status: "exited",
-      dir: "/tmp",
-      tmuxSession: "agentmgr-worker",
-      provider: "claude",
-      sessionId: "s-1",
-      preferSubagents: true,
-      createdAt: "2026-09-21T10:00:00.000Z",
-      updatedAt: "2026-09-21T10:00:00.000Z",
-    };
-    const plan = buildResumeCommand("claude", agent, {});
-    const prompt = plan.command[plan.command.indexOf("--append-system-prompt") + 1]!;
-    expect(prompt).toContain("prefer your own built-in subagents");
+  test("a role's instructions still compose after the managed-agent guidance", () => {
+    const prompt = agentSystemPrompt("worker", { role: "shepherd", roleInstructions: "Shepherd it." });
+    expect(prompt).toContain("# Your role: shepherd");
+    expect(prompt).toContain("Shepherd it.");
   });
 
   test("adds the reporting briefing only when a target is set", () => {
@@ -181,17 +141,11 @@ describe("buildLaunchCommand", () => {
     expect(plan.deferredMessage).toBeUndefined();
   });
 
-  test("claude disables the Workflow tool without swallowing the prompt", () => {
+  test("claude gets its Workflow tool: built-in fan-out is the intended mechanism now", () => {
     const plan = buildLaunchCommand("claude", "worker", { message: "do the thing", remote: false });
-    const idx = plan.command.indexOf("--disallowedTools");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(plan.command[idx + 1]).toBe("Workflow");
-    // The variadic <tools...> must be followed by a flag, never the message
-    // positional — otherwise the prompt becomes a second "tool" and is lost.
-    expect(plan.command[idx + 2]!.startsWith("--")).toBe(true);
+    expect(plan.command).not.toContain("--disallowedTools");
     expect(plan.command.at(-1)).toBe("do the thing");
   });
-
   test("codex gets no --disallowedTools (it has no Workflow tool)", () => {
     const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", remote: false });
     expect(plan.command).not.toContain("--disallowedTools");

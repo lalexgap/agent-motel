@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CONCIERGE_ROLE,
-  ENGINEER_ROLE,
-  REVIEWER_ROLE,
   addRole,
   getRole,
   listRoles,
@@ -40,21 +38,6 @@ describe("role registry", () => {
     expect(() => addRole({ name: CONCIERGE_ROLE, instructions: "replace it" })).toThrow(/built in/);
   });
 
-  test("ships a protected engineer role defaulting to the strong coding models", () => {
-    const engineer = requireRole(ENGINEER_ROLE);
-    expect(engineer.builtIn).toBe(true);
-    // It lands the work end to end rather than handing back a dirty tree.
-    expect(engineer.instructions).toContain("DRAFT");
-    expect(engineer.instructions).toContain("Commit on the branch you were started on");
-    expect(engineer.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
-    expect(engineer.provider).toBe("claude");
-    expect(providerForRole(ENGINEER_ROLE, "codex")).toBe("claude");
-    expect(providerForRole(ENGINEER_ROLE, "codex", "codex")).toBe("codex");
-    expect(modelForRole(ENGINEER_ROLE, "claude")).toBe("opus");
-    expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-sol");
-    expect(() => removeRole(ENGINEER_ROLE)).toThrow(/built in/);
-  });
-
   test("an old concierge settings file is settings, not a role of the user's", () => {
     // Pre-marker `am role model concierge` wrote the instructions of the day;
     // a later edit to the shipped text must not turn that into their role.
@@ -71,56 +54,23 @@ describe("role registry", () => {
   });
 
   test("the marker keeps a user's role theirs even when its text matches ours", () => {
-    const shipped = requireRole(ENGINEER_ROLE).instructions;
+    const shipped = requireRole(CONCIERGE_ROLE).instructions;
     addRole({ name: "mine", instructions: shipped });
     const stored = JSON.parse(readFileSync(join(home, "roles", "mine.json"), "utf8"));
     expect(stored.custom).toBe(true);
   });
 
-  test("a user's own role of the same name shadows a later built-in", () => {
-    // Written before `engineer` shipped as a built-in (a fresh `am role add`
-    // over a built-in name is still refused): theirs must survive the upgrade,
-    // stay listed once, and stay replaceable and removable.
-    mkdirSync(join(home, "roles"), { recursive: true });
-    writeFileSync(
-      join(home, "roles", `${ENGINEER_ROLE}.json`),
-      JSON.stringify({ description: "Mine", instructions: "My own engineer." }),
-    );
-    expect(requireRole(ENGINEER_ROLE)).toMatchObject({ description: "Mine", instructions: "My own engineer." });
-    expect(requireRole(ENGINEER_ROLE).builtIn).toBeUndefined();
-    expect(listRoles().filter((role) => role.name === ENGINEER_ROLE)).toHaveLength(1);
-    addRole({ name: ENGINEER_ROLE, instructions: "Still mine.", force: true });
-    expect(requireRole(ENGINEER_ROLE).instructions).toBe("Still mine.");
-    removeRole(ENGINEER_ROLE);
-    // Removing it uncovers the built-in again, pin and models intact.
-    expect(requireRole(ENGINEER_ROLE)).toMatchObject({ builtIn: true, provider: "claude" });
-  });
-
-  test("settings on a built-in never freeze its instructions", () => {
-    // Storing the shipped text in the settings file would make the next
-    // release's edit read back as a role of the user's own.
-    setRoleProvider(REVIEWER_ROLE, "codex");
-    setRoleModel(REVIEWER_ROLE, "claude", "opus");
-    const stored = JSON.parse(readFileSync(join(home, "roles", `${REVIEWER_ROLE}.json`), "utf8"));
-    expect(stored.instructions).toBeUndefined();
-    expect(requireRole(REVIEWER_ROLE)).toMatchObject({
-      builtIn: true,
-      provider: "codex",
-      instructions: requireRole(REVIEWER_ROLE).instructions,
-    });
-    expect(requireRole(REVIEWER_ROLE).models).toEqual({ claude: "opus", codex: "gpt-6-astra" });
-  });
-
   test("a provider pin can be repointed, cleared, and survives a model change", () => {
-    setRoleProvider(ENGINEER_ROLE, "codex");
-    expect(requireRole(ENGINEER_ROLE).provider).toBe("codex");
-    expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-sol");
-    setRoleModel(ENGINEER_ROLE, "codex", "gpt-5.6-luna");
-    expect(requireRole(ENGINEER_ROLE).provider).toBe("codex");
-    setRoleProvider(ENGINEER_ROLE, undefined);
-    expect(requireRole(ENGINEER_ROLE).provider).toBeUndefined();
-    expect(providerForRole(ENGINEER_ROLE, "codex")).toBe("codex");
-    expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-luna");
+    addRole({ name: "auditor", instructions: "Audit it." });
+    setRoleProvider("auditor", "codex");
+    setRoleModel("auditor", "codex", "gpt-5.6-sol");
+    expect(requireRole("auditor").provider).toBe("codex");
+    setRoleModel("auditor", "codex", "gpt-5.6-luna");
+    expect(requireRole("auditor").provider).toBe("codex");
+    setRoleProvider("auditor", undefined);
+    expect(requireRole("auditor").provider).toBeUndefined();
+    expect(providerForRole("auditor", "codex")).toBe("codex");
+    expect(modelForRole("auditor", "codex")).toBe("gpt-5.6-luna");
   });
 
   test("custom roles pin providers too, and replacing instructions keeps the pin", () => {
@@ -132,31 +82,6 @@ describe("role registry", () => {
     expect(providerForRole(undefined, "codex")).toBe("codex");
   });
 
-  test("an engineer model default can be overridden and cleared per provider", () => {
-    setRoleModel(ENGINEER_ROLE, "claude", "sonnet");
-    expect(requireRole(ENGINEER_ROLE).models).toEqual({ claude: "sonnet", codex: "gpt-5.6-sol" });
-    setRoleModel(ENGINEER_ROLE, "claude", undefined);
-    expect(modelForRole(ENGINEER_ROLE, "claude")).toBeUndefined();
-    expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-sol");
-  });
-
-  test("ships a reviewer role on the strong reasoning models that never edits", () => {
-    const reviewer = requireRole(REVIEWER_ROLE);
-    expect(reviewer.builtIn).toBe(true);
-    expect(reviewer.provider).toBe("claude");
-    expect(reviewer.models).toEqual({ claude: "fable", codex: "gpt-6-astra" });
-    // review-loop and shepherd-pr scan its report for line-initial tags, so
-    // the template must show one and the prose must not compete with it.
-    const lines = reviewer.instructions.split("\n");
-    expect(lines.filter((line) => /^\[(high|medium|low)\]/.test(line))).toHaveLength(1);
-    expect(lines.filter((line) => /\[(high|medium|low)\]/.test(line))).toHaveLength(1);
-    expect(reviewer.instructions).toContain("final message IS the deliverable");
-    // The sentinel that tells a real review from a run that died.
-    expect(reviewer.instructions).toContain("starts \`Verdict:\`");
-    expect(reviewer.instructions).toContain("you don't fix");
-    expect(() => removeRole(REVIEWER_ROLE)).toThrow(/built in/);
-  });
-
   test("adds, lists, reads, replaces, and removes a custom role", () => {
     addRole({ name: "security-reviewer", description: "Reviews auth", instructions: "Inspect trust boundaries." });
     expect(getRole("security-reviewer")).toMatchObject({
@@ -164,7 +89,7 @@ describe("role registry", () => {
       description: "Reviews auth",
       instructions: "Inspect trust boundaries.",
     });
-    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "engineer", "reviewer", "security-reviewer"]);
+    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "security-reviewer"]);
     expect(() => addRole({ name: "security-reviewer", instructions: "new" })).toThrow(/--force/);
     addRole({ name: "security-reviewer", instructions: "New instructions", force: true });
     expect(requireRole("security-reviewer").instructions).toBe("New instructions");
@@ -176,8 +101,8 @@ describe("role registry", () => {
     expect(() => addRole({ name: "../escape", instructions: "no" })).toThrow(/role name/);
     expect(() => addRole({ name: "Reviewer", instructions: "no" })).toThrow(/role name/);
     expect(() => addRole({ name: "auditor", instructions: "  " })).toThrow(/empty/);
-    // The built-in names are taken; a pre-existing file still shadows them.
-    expect(() => addRole({ name: "reviewer", instructions: "mine" })).toThrow(/built in/);
+    // The built-in name is taken.
+    expect(() => addRole({ name: "concierge", instructions: "mine" })).toThrow(/built in/);
     expect(() => addRole({ name: "none", instructions: "no" })).toThrow(/reserved/);
     expect(() => addRole({ name: "unassigned", instructions: "no" })).toThrow(/reserved/);
     expect(getRole("../config")).toBeNull();

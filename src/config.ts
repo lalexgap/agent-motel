@@ -27,12 +27,6 @@ export interface Config {
   // claude.ai/code and the Claude mobile app. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
-  // Tell agents to fan work out with their own built-in subagents (the Task
-  // tool) instead of spawning am agents. Subagents are cheap and now visible
-  // (`am subagents`), but have no pane and can't be messaged or interrupted —
-  // so this trades steerability for speed. Per-agent override via
-  // `am new --prefer-subagents / --no-prefer-subagents`.
-  preferSubagents: boolean;
   // macOS bundle id notifications are posted as (icon + click target), e.g.
   // "com.mitchellh.ghostty" or "com.googlecode.iterm2". Requires
   // terminal-notifier (brew install terminal-notifier); without it — or with
@@ -108,7 +102,6 @@ const DEFAULTS: Config = {
   notifyOnIdle: true,
   idleNotifyMinSeconds: 30,
   remoteControl: true,
-  preferSubagents: false,
   apiPort: 8787,
   apiBind: "127.0.0.1",
   worktreeByDefault: true,
