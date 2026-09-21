@@ -91,7 +91,7 @@ There is one concierge per fleet, not per machine: if a concierge already exists
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also set a default model for each provider. The concierge is a protected built-in role; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge` and `engineer` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -103,12 +103,24 @@ am new auth-audit --role security-reviewer -m "Review the current branch"
 am role model security-reviewer --claude --model opus
 am role model security-reviewer --codex --model gpt-5.6-luna
 am role model security-reviewer --codex --clear
+am role provider security-reviewer --claude   # always launch this role on claude
+am role provider security-reviewer --clear
 am role rm security-reviewer
 ```
 
-Model defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--model` overrides the role default; without either, the provider chooses its default. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
+Provider pins and model defaults apply to newly launched agents, including launches from the hub and `am run`. An explicit `--claude`/`--codex` overrides the pin and an explicit `--model` overrides the model default; without either, the config default provider and the provider's own default model apply. Use `am role show <name>` to inspect defaults. Model defaults can also be set on built-in roles, and replacing role instructions with `--force` preserves them.
 
 Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to replace an existing custom definition. Selected instructions are snapshotted into agent state, so existing agents keep their role across resume, restore, move, clone, and handoff even if the registry later changes. Role registries are host-local; manage a remote with `am -H <host> role ...` before creating that role there.
+
+#### The engineer role
+
+`engineer` is a built-in implementor: it takes a task another agent already thought through, writes the code, verifies it, commits it, opens a draft PR when the brief asks for one, and reports what it did — the point is to finish the job in one pass rather than negotiate with the caller. It launches on claude with `opus` by default (`gpt-5.6-sol` if you point it at codex), so the planning agent can run on something cheaper and still get good code:
+
+```sh
+am run motel-sort-impl --role engineer --in-place -m "Add a --sort flag to am ls; follow the existing flag parsing in src/index.ts; run bun test; commit on branch am/ls-sort and open a draft PR"
+```
+
+`--in-place` is what keeps the engineer in the caller's checkout — without it a spawned agent takes its own worktree on branch `am/<name>`. `am run` blocks and prints the engineer's report; the calling agent reviews the diff and owns the result. Managed agents are told to work this way by default: plan and review themselves, delegate the typing, and brief the engineer completely in one message (goal, patterns to follow, how to verify, whether to commit and open a PR) instead of trading questions with it. Repoint it like any other role — `am role provider engineer --codex` when claude's quota runs out, `am role model engineer --claude --model sonnet` for a cheaper implementor — and if a role's default model isn't offered by the provider on that machine, the spawn falls back to the provider default with a warning instead of failing.
 
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 

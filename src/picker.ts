@@ -202,8 +202,7 @@ export interface PickerHandlers {
   defaultProvider?: string;
   // Used only for the create card's consequence preview.
   worktreeByDefault?: boolean;
-  roleOptions?: { name: string; description?: string }[] | ((host?: string) =>
-    { name: string; description?: string }[] | Promise<{ name: string; description?: string }[]>);
+  roleOptions?: RoleOption[] | ((host?: string) => RoleOption[] | Promise<RoleOption[]>);
   // What the providers on the target machine actually offer, so the create
   // form's model / effort fields list real choices instead of a guess. Async
   // for remote hosts (`am models --json` over ssh); absent = fall back to the
@@ -897,6 +896,15 @@ export function preservedFieldIndex(previous: string[], index: number, next: str
 
 // Provider cycle (mirrors the Where field). The first entry is the default.
 export const PROVIDER_OPTIONS = ["claude", "codex"];
+
+// A role offered by the create form. `provider` is the role's pin: selecting
+// the role moves the form's provider strip to it, the way a CLI spawn without
+// --claude/--codex would land there.
+export interface RoleOption {
+  name: string;
+  description?: string;
+  provider?: string;
+}
 // Effort cycle; "default" means omit the flag and let the provider decide.
 // Only a fallback now — the real levels come from the target machine's
 // provider catalog (see catalogOptions / `am models`).
@@ -993,7 +1001,7 @@ export async function pick(
   const currentEffortOptions = () =>
     effortStripOptions(catalogs, PROVIDER_OPTIONS[newProviderIdx], newModel, newEffort);
   const configuredRoles = (host?: string) => typeof handlers.roleOptions === "function" ? handlers.roleOptions(host) : (handlers.roleOptions ?? []);
-  let roleOptions: { name: string; description?: string }[] = [
+  let roleOptions: RoleOption[] = [
     { name: "", description: "No custom role" },
   ];
   let newRoleIdx = 0;
@@ -1682,7 +1690,7 @@ export async function pick(
       const selected = roleOptions[newRoleIdx]?.name;
       const host = hostOptions[newHostIdx] === "local" ? undefined : hostOptions[newHostIdx];
       const gen = ++roleQueryGen;
-      const applyRoles = (roles: { name: string; description?: string }[]) => {
+      const applyRoles = (roles: RoleOption[]) => {
         const previousFields = fields;
         const previousFormIdx = formIdx;
         roleOptions = [{ name: "", description: "No custom role" }, ...roles];
@@ -1765,6 +1773,18 @@ export async function pick(
       const catalog = catalogFor(catalogs, PROVIDER_OPTIONS[newProviderIdx]);
       if (newModel && catalog?.modelsExhaustive && !findModel(catalog, newModel)) newModel = "";
       reconcileEffort();
+    };
+
+    // Selecting a role that pins a provider moves the strip with it — the form
+    // then shows what the spawn would actually do (and its model/effort
+    // options follow that provider's catalog).
+    const applyRolePin = () => {
+      const pinned = roleOptions[newRoleIdx]?.provider;
+      const idx = pinned ? PROVIDER_OPTIONS.indexOf(pinned) : -1;
+      if (idx >= 0 && idx !== newProviderIdx) {
+        newProviderIdx = idx;
+        reconcileModelEffort();
+      }
     };
 
     // Editing the model narrows the effort list (codex levels are per model),
@@ -2357,8 +2377,10 @@ export async function pick(
             const current = Math.max(0, options.indexOf(newEffort || "default"));
             const next = options[cycleField(current, options.length, dir)]!;
             newEffort = next === "default" ? "" : next;
-          } else if (field === "role") newRoleIdx = cycleField(newRoleIdx, roleOptions.length, dir);
-          else if (field === "where") {
+          } else if (field === "role") {
+            newRoleIdx = cycleField(newRoleIdx, roleOptions.length, dir);
+            applyRolePin();
+          } else if (field === "where") {
             newHostIdx = cycleField(newHostIdx, hostOptions.length, dir);
             refreshRoleOptions();
             refreshCatalogs();

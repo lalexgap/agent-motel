@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { CONCIERGE_ROLE, modelForRole, requireRole } from "../roles";
+import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
 // These grew provider-awareness and moved to providers.ts; re-exported so
@@ -115,12 +115,15 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
-  const provider = opts.provider ?? loadConfig().defaultProvider;
   const role = opts.role
     ? (opts.roleInstructions ? { name: opts.role, instructions: opts.roleInstructions } : requireRole(opts.role))
     : undefined;
   const roleInstructions = opts.roleInstructions ?? role?.instructions;
-  const model = modelForRole(opts.role, provider, opts.model);
+  // A role may pin its provider (the engineer runs on claude by default);
+  // an explicit --claude/--codex still wins, as does a snapshotted role on
+  // resume/move, where the agent's own provider is passed in.
+  const provider = providerForRole(opts.role, loadConfig().defaultProvider, opts.provider);
+  let model = modelForRole(opts.role, provider, opts.model);
   // Fail loudly now rather than spawning a tmux session that dies instantly
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
@@ -130,8 +133,17 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
   if (model || opts.effort) {
+    const roleModel = !opts.model && model ? model : undefined;
     const complaints = validateSelection(providerCatalog(provider), { model, effort: opts.effort });
     for (const complaint of complaints) {
+      // A role default naming a model this machine's provider doesn't offer
+      // (an older CLI, a different account) must not block the spawn — drop
+      // to the provider's own default instead.
+      if (complaint.fatal && roleModel && complaint.message.includes(`model "${roleModel}"`)) {
+        if (!opts.quiet) console.error(`warning: ${complaint.message} — using the ${provider} default`);
+        model = undefined;
+        continue;
+      }
       if (complaint.fatal) throw new Error(`${complaint.message} (see \`am models\`)`);
       if (!opts.quiet) console.error(`warning: ${complaint.message}`);
     }

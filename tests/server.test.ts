@@ -92,7 +92,7 @@ describe("agents api", () => {
     addRole({ name: "reviewer", instructions: "Review changes." });
     const res = await fetch(url("/api/roles"), auth());
     const data = (await res.json()) as any;
-    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "reviewer"]);
+    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "engineer", "reviewer"]);
   });
 
   test("GET /api/summary returns the prioritized fleet report", async () => {
