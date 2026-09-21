@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { agentProvider, resolveAgent, type AgentState } from "../state";
 import { locateTranscript, parseTranscript, renderTranscript, type ParseOpts } from "../transcript";
-import { readSubagents, type SubagentRecord } from "../subagents";
+import { readSubagents, subagentTranscriptFile, type SubagentRecord } from "../subagents";
 
 // A subagent is addressed by id (or an unambiguous prefix of one) or by type,
 // where the most recent run of that type wins — ids are uuids nobody types.
@@ -44,14 +44,18 @@ function subagentSource(agent: AgentState, query: string): TranscriptSource {
     : record.endedAt
       ? "it finished without reporting one"
       : "it is still running";
-  // Claude writes a running subagent's turns into the parent's session file,
-  // tagged with the agent id. Codex doesn't, so a codex subagent is readable
-  // only through the transcript its stop hook reports.
+  // Only the stop hook reports that path, so a running claude subagent needs
+  // it derived from its id. Codex reports nothing until its subagent stops.
   if (agentProvider(agent) === "codex") {
     throw new Error(
       `codex keeps subagent turns out of the parent session — "${record.type}" has no transcript of its own (${missing})`,
     );
   }
+  const live = subagentTranscriptFile(agent, record.id);
+  if (live && existsSync(live)) {
+    return { file: live, opts: { sidechain: { ownFile: true } }, label };
+  }
+  // Older transcripts kept subagent turns inline in the parent's file.
   return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label, missing };
 }
 

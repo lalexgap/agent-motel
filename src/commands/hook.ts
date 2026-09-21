@@ -199,7 +199,10 @@ export function recordSubagentEvent(event: string, name: string, payload: Record
   } else if (
     event === "stop" ||
     event === "session-end" ||
-    event === "session-start" ||
+    // Auto-compaction reports itself as a session start MID-TURN, with the
+    // turn's subagents still running — closing them there would erase a live
+    // fan-out from the hub.
+    (event === "session-start" && payload.source !== "compact") ||
     // Turn start: fires after an interrupt, and always before this turn's own
     // subagents report in.
     event === "user-prompt-submit"
@@ -254,9 +257,15 @@ export async function hookCommand(event: string): Promise<void> {
     : 0;
 
   updateAgentStatus(agent, effects.status, effects.reason);
-  if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
-  // Codex includes the rollout file path; saves `am transcript` a search.
-  if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
+  // Subagent events describe the SUBAGENT, and both providers now give their
+  // subagents transcripts of their own — so never let one repoint the parent's
+  // conversation, which `am transcript`, `am search` and the activity reader
+  // all follow.
+  if (!event.startsWith("subagent-")) {
+    if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
+    // Codex includes the rollout file path; saves `am transcript` a search.
+    if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
+  }
   if (event === "user-prompt-submit" && !agent.workingSince) {
     agent.workingSince = new Date().toISOString();
   }

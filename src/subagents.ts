@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { subagentsDir, subagentsFile } from "./paths";
 import { readFileTail } from "./fsutil";
 import { agentProvider, type AgentState } from "./state";
@@ -271,33 +271,43 @@ export function listSubagentLedgers(): { name: string; path: string }[] {
 const ACTIVITY_TAIL_BYTES = 96_000;
 const ACTIVITY_CHARS = 72;
 
-// What each running subagent is doing right now, keyed by subagent id. Only
-// the stop hook reports a subagent's own transcript, so live activity has to
-// come from the parent's session file: Claude Code writes subagent turns there
-// inline, tagged isSidechain and carrying the same agent id the hook reported.
-// Codex keeps its subagent turns out of the parent rollout, so codex agents
-// get lifecycle without a live line.
-export function subagentActivity(agent: AgentState): Map<string, string> {
+// Claude Code gives each subagent its own transcript beside the parent's:
+//   <projects>/<slug>/<parent-session-id>/subagents/agent-<agent_id>.jsonl
+// The stop hook reports that path, but only once the subagent has finished —
+// while it runs, the id from the start hook is enough to derive it. Null when
+// the parent's own transcript can't be located.
+export function subagentTranscriptFile(agent: AgentState, subagentId: string): string | null {
+  let parent: string;
+  try {
+    parent = locateTranscript(agent);
+  } catch {
+    return null; // no session file yet
+  }
+  const sessionDir = join(dirname(parent), basename(parent, ".jsonl"));
+  return join(sessionDir, "subagents", `agent-${subagentId}.jsonl`);
+}
+
+// What each of the given subagents is doing right now, keyed by id. Codex
+// reports no transcript until its subagent stops, so codex agents get
+// lifecycle without a live line.
+export function subagentActivity(agent: AgentState, records: SubagentRecord[]): Map<string, string> {
   const activity = new Map<string, string>();
   if (agentProvider(agent) !== "claude") return activity;
-  let text: string | null;
-  try {
-    text = readFileTail(locateTranscript(agent), ACTIVITY_TAIL_BYTES);
-  } catch {
-    return activity; // no session file yet — nothing to tail
-  }
-  if (!text) return activity;
-  for (const line of text.split("\n")) {
-    if (!line.includes("\"isSidechain\":true")) continue; // cheap reject before JSON.parse
-    let entry: Record<string, any>;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
+  for (const record of records) {
+    const file = record.transcriptPath ?? subagentTranscriptFile(agent, record.id);
+    if (!file) continue;
+    const text = readFileTail(file, ACTIVITY_TAIL_BYTES);
+    if (!text) continue;
+    let described: string | null = null;
+    for (const line of text.split("\n")) {
+      if (!line.includes('"type":"assistant"')) continue; // cheap reject before JSON.parse
+      try {
+        described = describeSidechainEntry(JSON.parse(line)) ?? described;
+      } catch {
+        // a live subagent can be mid-write on its last line
+      }
     }
-    if (entry.isSidechain !== true || typeof entry.agentId !== "string") continue;
-    const described = describeSidechainEntry(entry);
-    if (described) activity.set(entry.agentId, described);
+    if (described) activity.set(record.id, described);
   }
   return activity;
 }

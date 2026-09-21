@@ -84,7 +84,8 @@ function agentReport(agent: AgentState): string[] {
     return [`${agent.name}: no subagents recorded${hint}`];
   }
   const live = agentIsLive(agent);
-  const activity = live ? subagentActivity(agent) : new Map<string, string>();
+  const open = records.filter((r) => !r.endedAt);
+  const activity = live ? subagentActivity(agent, open) : new Map<string, string>();
   return formatSubagentLines(subagentLines(records, activity, Date.now(), { live }));
 }
 
@@ -122,11 +123,17 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
     console.log("no subagents running — `am subagents <name>` shows an agent's finished ones");
     return;
   }
-  const lines: string[] = [];
-  for (const { agent, records } of running) {
-    lines.push(`${agent.name}  ${relativeTime(agent.updatedAt)}`);
-    lines.push(...formatSubagentLines(subagentLines(records, subagentActivity(agent))).slice(1));
-    lines.push("");
+  // One header for the whole listing: each agent's rows are grouped under its
+  // name, so repeating the column names per group is noise — dropping them
+  // entirely (as this did) left unlabeled columns.
+  const groups = running.map(({ agent, records }) => ({
+    agent,
+    lines: formatSubagentLines(subagentLines(records, subagentActivity(agent, records))),
+  }));
+  const lines: string[] = [groups[0]!.lines[0]!];
+  for (const group of groups) {
+    lines.push(`${group.agent.name}  ${relativeTime(group.agent.updatedAt)}`);
+    lines.push(...group.lines.slice(1), "");
   }
   console.log(lines.join("\n").trimEnd());
 }

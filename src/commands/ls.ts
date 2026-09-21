@@ -330,7 +330,9 @@ export function agentRows(): AgentRow[] {
       // waitingInfo is cached, so this second call is free. A waiting agent's
       // own indicator wins the status column; otherwise the subagent rollup
       // fills it, so a fanned-out turn reads as more than plain "working".
-      statusDetail: status === "waiting" ? waitingInfo(a).detail : subagents?.detail,
+      statusDetail: status === "waiting"
+        ? waitingInfo(a).detail
+        : subagents && clipDetail(subagents.detail),
     };
   });
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { subagentsFile } from "../src/paths";
@@ -16,6 +16,7 @@ import {
   subagentActivity,
   subagentSummary,
   summarize,
+  type SubagentRecord,
 } from "../src/subagents";
 import { formatSubagentLines, jsonRecords, subagentLines } from "../src/commands/subagents";
 import { recordSubagentEvent } from "../src/commands/hook";
@@ -241,6 +242,14 @@ describe("recordSubagentEvent", () => {
     expect(activeSubagents("api")).toHaveLength(1);
   });
 
+  test("auto-compaction's session start does not close a live fan-out", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    recordSubagentEvent("session-start", "api", { source: "compact" });
+    expect(activeSubagents("api")).toHaveLength(1);
+    recordSubagentEvent("session-start", "api", { source: "resume" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
   test("a payload without an agent id is ignored, not recorded", () => {
     recordSubagentEvent("subagent-start", "api", {});
     expect(readSubagents("api")).toEqual([]);
@@ -267,47 +276,156 @@ describe("matchSubagent", () => {
 });
 
 describe("subagentActivity", () => {
-  function agentWithTranscript(lines: string[], provider: AgentState["provider"] = "claude"): AgentState {
-    const file = join(home, "session.jsonl");
-    writeFileSync(file, lines.join("\n") + "\n");
+  // Claude Code writes each subagent's turns to its own file beside the
+  // parent's transcript: <session-id>/subagents/agent-<agent_id>.jsonl.
+  function agentWithSubagentFiles(
+    subagents: Record<string, string[]>,
+    provider: AgentState["provider"] = "claude",
+  ): AgentState {
+    const parent = join(home, "session.jsonl");
+    writeFileSync(parent, JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "parent" }] } }) + "\n");
+    const dir = join(home, "session", "subagents");
+    mkdirSync(dir, { recursive: true });
+    for (const [id, lines] of Object.entries(subagents)) {
+      writeFileSync(join(dir, `agent-${id}.jsonl`), lines.join("\n") + "\n");
+    }
     return {
       name: "api",
       status: "working",
       dir: "/tmp",
       tmuxSession: "agentmgr-api",
       provider,
-      transcriptPath: file,
+      transcriptPath: parent,
       createdAt: "2026-09-21T10:00:00.000Z",
       updatedAt: "2026-09-21T10:00:00.000Z",
     };
   }
 
-  const sidechain = (agentId: string, content: unknown[]) =>
-    JSON.stringify({ type: "assistant", isSidechain: true, agentId, message: { role: "assistant", content } });
+  const turn = (content: unknown[]) =>
+    JSON.stringify({ type: "assistant", isSidechain: true, message: { role: "assistant", content } });
+  const record = (id: string): SubagentRecord => ({ id, type: "Explore", startedAt: "2026-09-21T10:00:00.000Z" });
 
-  test("reports each subagent's latest tool call or reply, keyed by id", () => {
-    const agent = agentWithTranscript([
-      JSON.stringify({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: "parent" }] } }),
-      sidechain("sub-a", [{ type: "tool_use", name: "Grep", input: { pattern: "hook" } }]),
-      sidechain("sub-a", [{ type: "text", text: "Found it in hook.ts" }]),
-      sidechain("sub-b", [{ type: "tool_use", name: "Read", input: { file_path: "/tmp/x" } }]),
-    ]);
+  test("reports each subagent's latest tool call or reply from its own file", () => {
+    const agent = agentWithSubagentFiles({
+      "sub-a": [turn([{ type: "tool_use", name: "Grep", input: { pattern: "hook" } }]), turn([{ type: "text", text: "Found it in hook.ts" }])],
+      "sub-b": [turn([{ type: "tool_use", name: "Read", input: { file_path: "/tmp/x" } }])],
+    });
 
-    const activity = subagentActivity(agent);
+    const activity = subagentActivity(agent, [record("sub-a"), record("sub-b")]);
     expect(activity.get("sub-a")).toBe("Found it in hook.ts");
     expect(activity.get("sub-b")).toContain("Read");
-    expect(activity.has("parent")).toBe(false);
+    // The parent's own turns are in a different file and never leak in.
+    expect([...activity.values()].some((v) => v.includes("parent"))).toBe(false);
   });
 
-  test("codex keeps subagent turns out of the parent rollout — no live line", () => {
-    const agent = agentWithTranscript([sidechain("sub-a", [{ type: "text", text: "x" }])], "codex");
-    expect(subagentActivity(agent).size).toBe(0);
+  test("a recorded transcript path wins over the derived one", () => {
+    const agent = agentWithSubagentFiles({ "sub-a": [turn([{ type: "text", text: "derived" }])] });
+    const own = join(home, "own.jsonl");
+    writeFileSync(own, turn([{ type: "text", text: "reported" }]) + "\n");
+    const activity = subagentActivity(agent, [{ ...record("sub-a"), transcriptPath: own }]);
+    expect(activity.get("sub-a")).toBe("reported");
   });
 
-  test("a missing session file is not an error", () => {
-    const agent = agentWithTranscript([]);
+  test("codex reports no transcript until its subagent stops — no live line", () => {
+    const agent = agentWithSubagentFiles({ "sub-a": [turn([{ type: "text", text: "x" }])] }, "codex");
+    expect(subagentActivity(agent, [record("sub-a")]).size).toBe(0);
+  });
+
+  test("a subagent with no file yet is skipped, not an error", () => {
+    const agent = agentWithSubagentFiles({});
+    expect(subagentActivity(agent, [record("sub-a")]).size).toBe(0);
+  });
+
+  test("an unlocatable parent transcript yields no activity", () => {
+    const agent = agentWithSubagentFiles({});
     agent.transcriptPath = join(home, "gone.jsonl");
-    agent.sessionId = undefined;
-    expect(subagentActivity(agent).size).toBe(0);
+    expect(subagentActivity(agent, [record("sub-a")]).size).toBe(0);
+  });
+});
+
+describe("jsonRecords", () => {
+  const open = { id: "a1", type: "Explore", startedAt: "2026-09-21T10:00:00.000Z" };
+  const done = { ...open, id: "a2", endedAt: "2026-09-21T10:01:00.000Z" };
+
+  test("a live agent's records pass through untouched", () => {
+    expect(jsonRecords([open, done], true)).toEqual([open, done]);
+  });
+
+  test("a gone agent's open records are marked stale, finished ones aren't", () => {
+    const [first, second] = jsonRecords([open, done], false);
+    expect(first).toMatchObject({ id: "a1", stale: true });
+    expect(second).toEqual(done);
+  });
+});
+
+describe("recordSubagentEvent", () => {
+  test("a new session closes the previous one's leftovers", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // The session was killed: no stop hook ever ran for a1.
+    recordSubagentEvent("session-start", "api", {});
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("start and stop payloads fold into a record", () => {
+    recordSubagentEvent("subagent-start", "api", { agent_id: "b1", agent_type: "code-review" });
+    expect(activeSubagents("api").map((r) => r.type)).toEqual(["code-review"]);
+    recordSubagentEvent("subagent-stop", "api", {
+      agent_id: "b1",
+      agent_type: "code-review",
+      last_assistant_message: "3 findings",
+      agent_transcript_path: "/tmp/b1.jsonl",
+    });
+    expect(readSubagents("api")[0]).toMatchObject({ message: "3 findings", transcriptPath: "/tmp/b1.jsonl" });
+  });
+
+  test("an interrupted turn's leftovers are closed when the next turn starts", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    // ESC (or `am interrupt`) aborts the turn: no stop hook ever fires.
+    recordSubagentEvent("user-prompt-submit", "api", {});
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("a reused id starts a fresh run instead of resurrecting a closed one", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStop("api", { id: "a1", message: "first", at: "2026-09-21T10:01:00.000Z" });
+    recordSubagentStart("api", { id: "a1", type: "Explore", at: "2026-09-21T10:02:00.000Z" });
+
+    const [record] = readSubagents("api");
+    expect(record).toMatchObject({ startedAt: "2026-09-21T10:02:00.000Z" });
+    expect(record!.endedAt).toBeUndefined();
+    expect(record!.message).toBeUndefined();
+    expect(activeSubagents("api")).toHaveLength(1);
+  });
+
+  test("auto-compaction's session start does not close a live fan-out", () => {
+    recordSubagentStart("api", { id: "a1", type: "Explore" });
+    recordSubagentEvent("session-start", "api", { source: "compact" });
+    expect(activeSubagents("api")).toHaveLength(1);
+    recordSubagentEvent("session-start", "api", { source: "resume" });
+    expect(activeSubagents("api")).toEqual([]);
+  });
+
+  test("a payload without an agent id is ignored, not recorded", () => {
+    recordSubagentEvent("subagent-start", "api", {});
+    expect(readSubagents("api")).toEqual([]);
+  });
+});
+
+describe("matchSubagent", () => {
+  const records = [
+    { id: "aaaa1111", type: "Explore", startedAt: "2026-09-21T10:00:00.000Z", endedAt: "2026-09-21T10:01:00.000Z" },
+    { id: "aaaa2222", type: "Explore", startedAt: "2026-09-21T10:02:00.000Z" },
+    { id: "bbbb3333", type: "code-review", startedAt: "2026-09-21T10:03:00.000Z" },
+  ];
+
+  test("matches an exact id, an unambiguous prefix, and the latest of a type", () => {
+    expect(matchSubagent(records, "aaaa1111")!.id).toBe("aaaa1111");
+    expect(matchSubagent(records, "bbbb")!.id).toBe("bbbb3333");
+    expect(matchSubagent(records, "explore")!.id).toBe("aaaa2222");
+  });
+
+  test("an ambiguous id prefix is an error, an unknown query is null", () => {
+    expect(() => matchSubagent(records, "aaaa")).toThrow(/longer id/);
+    expect(matchSubagent(records, "nope")).toBeNull();
   });
 });
