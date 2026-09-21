@@ -93,13 +93,16 @@ How to review:
 - Every finding must pass a "how does this actually fail?" test: concrete inputs or state, and what goes wrong. If you can't write that sentence, it isn't a finding.
 
 Reporting — keep the shape, callers parse it:
-- One entry per finding, most severe first, each opening with a severity tag:
-  [high] path/to/file.ts:42 — one sentence on what is wrong.
-  Failure: the inputs or state that trigger it, and the wrong behavior that results.
-  Fix: the direction to take, not a patch.
-- [high] it breaks, loses data, or exposes something. [medium] wrong in a narrower case, or it will bite the next person. [low] worth knowing, not worth blocking.
+- Your final message IS the deliverable — the caller collects it from \`am run\` and reads nothing else. If a review skill or tool reports findings somewhere other than your message (a findings tool, a UI panel, a file), repeat them as text in the message anyway; findings the caller can't see don't exist.
+- One entry per finding, most severe first. The severity tag opens the line — no bullet, no indent, no quotes before it — and appears nowhere else in your report, so a scan for tagged lines finds exactly your findings:
+
+[high] path/to/file.ts:42 — one sentence on what is wrong.
+Failure: the inputs or state that trigger it, and the wrong behavior that results.
+Fix: the direction to take, not a patch.
+
+- Severities: high = it breaks, loses data, or exposes something; medium = wrong in a narrower case, or it will bite the next person; low = worth knowing, not worth blocking.
 - End with a one-line verdict (approve / fix the highs first / needs a rethink) and a note of anything you deliberately didn't cover — a generated file you skipped, a suite you couldn't run.
-- "No findings" is a good answer when it's true. Never pad the list with [low]s to look thorough, and never report the same issue twice under different severities.
+- "No findings" is a good answer when it's true. Never pad the list with low-severity filler to look thorough, and never report the same issue twice under different severities. In the verdict and anywhere else, name severities in prose rather than in brackets.
 - Don't ask the caller questions and don't wait for anything: review what's in front of you, state the assumption you reviewed under, and finish. You review it yourself — never spawn another am agent (your built-in Task tool is fine for scoped searches).`;
 
 const BUILT_INS: Record<string, AgentRole> = {
@@ -137,7 +140,14 @@ interface StoredRole {
   provider?: Provider;
   models?: Partial<Record<Provider, string>>;
   description?: string;
-  instructions: string;
+  // A custom role's own text. A built-in's file carries settings only, so
+  // later edits to the shipped instructions still reach anyone who set a
+  // provider pin or model default on it.
+  instructions?: string;
+}
+
+function storedProvider(stored: StoredRole | null): Provider | undefined {
+  return stored?.provider === "claude" || stored?.provider === "codex" ? stored.provider : undefined;
 }
 
 export function validateRoleName(name: string): void {
@@ -157,14 +167,18 @@ function roleFile(name: string): string {
   return join(rolesDir(), `${name}.json`);
 }
 
+function readStoredRole(name: string): StoredRole | null {
+  return readJsonOrNull<StoredRole>(roleFile(name));
+}
+
 function readCustomRole(name: string): AgentRole | null {
-  const stored = readJsonOrNull<StoredRole>(roleFile(name));
+  const stored = readStoredRole(name);
   if (!stored || typeof stored.instructions !== "string" || !stored.instructions.trim()) return null;
   return {
     name,
     description: typeof stored.description === "string" && stored.description.trim() ? stored.description.trim() : undefined,
     instructions: stored.instructions.trim(),
-    provider: stored.provider === "claude" || stored.provider === "codex" ? stored.provider : undefined,
+    provider: storedProvider(stored),
     models: stored.models,
   };
 }
@@ -183,11 +197,12 @@ export function getRole(name: string): AgentRole | null {
   const custom = readCustomRole(name);
   if (!builtIn) return custom;
   if (custom && shadowsBuiltIn(builtIn, custom)) return custom;
-  // Our own stored file holds only the built-in's configurable parts
-  // (provider, model defaults) — written whole by the setters, so it wins as
-  // a unit.
-  return custom
-    ? { ...builtIn, provider: custom.provider, models: custom.models ?? builtIn.models }
+  // Otherwise the file is this built-in's settings, written whole by the
+  // setters, so its provider and models win as a unit while the instructions
+  // stay whatever we ship today.
+  const stored = readStoredRole(name);
+  return stored
+    ? { ...builtIn, provider: storedProvider(stored), models: stored.models ?? builtIn.models }
     : builtIn;
 }
 
@@ -251,6 +266,14 @@ export function roleForAgent(agent: { name: string; role?: string }): string | u
   return agent.role ?? (agent.name === CONCIERGE_ROLE ? CONCIERGE_ROLE : undefined);
 }
 
+// Persist a role's settings. For a built-in that means the settings alone —
+// storing its instructions would freeze the user on today's copy (a later
+// edit would read back as a role of their own, via shadowsBuiltIn).
+function writeRoleSettings(role: AgentRole, settings: { provider?: Provider; models?: Partial<Record<Provider, string>> }): void {
+  const own = role.builtIn ? {} : { description: role.description, instructions: role.instructions };
+  writeJsonAtomic(roleFile(role.name), { ...own, ...settings } satisfies StoredRole);
+}
+
 export function setRoleModel(name: string, provider: Provider, model: string | undefined): AgentRole {
   const role = requireRole(name);
   if (model !== undefined && !model.trim()) throw new Error("model cannot be empty; use --clear to remove the default");
@@ -258,12 +281,7 @@ export function setRoleModel(name: string, provider: Provider, model: string | u
   if (model === undefined) delete models[provider];
   else models[provider] = model.trim();
   ensureDirs();
-  writeJsonAtomic(roleFile(name), {
-    description: role.description,
-    instructions: role.instructions,
-    provider: role.provider,
-    models,
-  } satisfies StoredRole);
+  writeRoleSettings(role, { provider: role.provider, models });
   return requireRole(name);
 }
 
@@ -271,12 +289,7 @@ export function setRoleModel(name: string, provider: Provider, model: string | u
 export function setRoleProvider(name: string, provider: Provider | undefined): AgentRole {
   const role = requireRole(name);
   ensureDirs();
-  writeJsonAtomic(roleFile(name), {
-    description: role.description,
-    instructions: role.instructions,
-    provider,
-    models: role.models,
-  } satisfies StoredRole);
+  writeRoleSettings(role, { provider, models: role.models });
   return requireRole(name);
 }
 

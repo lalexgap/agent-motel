@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -74,6 +74,21 @@ describe("role registry", () => {
     expect(requireRole(ENGINEER_ROLE)).toMatchObject({ builtIn: true, provider: "claude" });
   });
 
+  test("settings on a built-in never freeze its instructions", () => {
+    // Storing the shipped text in the settings file would make the next
+    // release's edit read back as a role of the user's own.
+    setRoleProvider(REVIEWER_ROLE, "codex");
+    setRoleModel(REVIEWER_ROLE, "claude", "opus");
+    const stored = JSON.parse(readFileSync(join(home, "roles", `${REVIEWER_ROLE}.json`), "utf8"));
+    expect(stored.instructions).toBeUndefined();
+    expect(requireRole(REVIEWER_ROLE)).toMatchObject({
+      builtIn: true,
+      provider: "codex",
+      instructions: requireRole(REVIEWER_ROLE).instructions,
+    });
+    expect(requireRole(REVIEWER_ROLE).models).toEqual({ claude: "opus", codex: "gpt-6-astra" });
+  });
+
   test("a provider pin can be repointed, cleared, and survives a model change", () => {
     setRoleProvider(ENGINEER_ROLE, "codex");
     expect(requireRole(ENGINEER_ROLE).provider).toBe("codex");
@@ -108,9 +123,12 @@ describe("role registry", () => {
     expect(reviewer.builtIn).toBe(true);
     expect(reviewer.provider).toBe("claude");
     expect(reviewer.models).toEqual({ claude: "fable", codex: "gpt-6-astra" });
-    // review-loop and shepherd-pr parse these tags out of its report.
-    expect(reviewer.instructions).toContain("[high]");
-    expect(reviewer.instructions).toContain("[medium]");
+    // review-loop and shepherd-pr scan its report for line-initial tags, so
+    // the template must show one and the prose must not compete with it.
+    const lines = reviewer.instructions.split("\n");
+    expect(lines.filter((line) => /^\[(high|medium|low)\]/.test(line))).toHaveLength(1);
+    expect(lines.filter((line) => /\[(high|medium|low)\]/.test(line))).toHaveLength(1);
+    expect(reviewer.instructions).toContain("final message IS the deliverable");
     expect(reviewer.instructions).toContain("you don't fix");
     expect(() => removeRole(REVIEWER_ROLE)).toThrow(/built in/);
   });
