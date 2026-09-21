@@ -1777,12 +1777,18 @@ export async function pick(
 
     // Selecting a role that pins a provider moves the strip with it — the form
     // then shows what the spawn would actually do (and its model/effort
-    // options follow that provider's catalog).
+    // options follow that provider's catalog). Moving off that role puts the
+    // strip back where the user had it, so a pin never leaks onto a role that
+    // doesn't have one.
+    let providerBeforePin: number | null = null;
     const applyRolePin = () => {
       const pinned = roleOptions[newRoleIdx]?.provider;
       const idx = pinned ? PROVIDER_OPTIONS.indexOf(pinned) : -1;
-      if (idx >= 0 && idx !== newProviderIdx) {
-        newProviderIdx = idx;
+      const next = idx >= 0 ? idx : providerBeforePin;
+      if (idx >= 0) providerBeforePin ??= newProviderIdx;
+      else providerBeforePin = null;
+      if (next !== null && next !== newProviderIdx) {
+        newProviderIdx = next;
         reconcileModelEffort();
       }
     };
@@ -2365,6 +2371,7 @@ export async function pick(
           const dir = key === "\x1b[C" ? 1 : -1;
           if (field === "provider") {
             newProviderIdx = cycleField(newProviderIdx, PROVIDER_OPTIONS.length, dir);
+            providerBeforePin = null; // an explicit choice outranks the role's pin
             reconcileModelEffort();
           } else if (field === "model") {
             const options = currentModelOptions();

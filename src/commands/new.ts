@@ -133,17 +133,19 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
   if (model || opts.effort) {
+    const catalog = providerCatalog(provider);
     const roleModel = !opts.model && model ? model : undefined;
-    const complaints = validateSelection(providerCatalog(provider), { model, effort: opts.effort });
+    let complaints = validateSelection(catalog, { model, effort: opts.effort });
+    // A role default naming a model this machine's provider doesn't offer (an
+    // older CLI, a different account) must not block the spawn — drop to the
+    // provider's own default instead, then re-check: the effort was validated
+    // against the unknown model's levels, and the default model's may differ.
+    if (roleModel && complaints.some((c) => c.fatal && c.message.includes(`model "${roleModel}"`))) {
+      if (!opts.quiet) console.error(`warning: unknown ${provider} model "${roleModel}" from role "${opts.role}" — using the ${provider} default`);
+      model = undefined;
+      complaints = validateSelection(catalog, { effort: opts.effort });
+    }
     for (const complaint of complaints) {
-      // A role default naming a model this machine's provider doesn't offer
-      // (an older CLI, a different account) must not block the spawn — drop
-      // to the provider's own default instead.
-      if (complaint.fatal && roleModel && complaint.message.includes(`model "${roleModel}"`)) {
-        if (!opts.quiet) console.error(`warning: ${complaint.message} — using the ${provider} default`);
-        model = undefined;
-        continue;
-      }
       if (complaint.fatal) throw new Error(`${complaint.message} (see \`am models\`)`);
       if (!opts.quiet) console.error(`warning: ${complaint.message}`);
     }

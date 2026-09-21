@@ -65,7 +65,7 @@ How to work:
 
 Committing and PRs — do this yourself, don't hand a dirty tree back:
 - Commit your work when it's verified: focused commits, a message in the repo's existing style, and follow any commit conventions the project's instructions set (attribution lines, ticket prefixes).
-- Never commit on the default branch (main/master) — branch first. Don't amend or force-push commits you didn't make, don't rebase shared branches, and never merge.
+- Commit on the branch you were started on. The exception is the repo's default branch (main/master): branch first, and say so in your report — you may be sharing that checkout with the agent that briefed you. Don't amend or force-push commits you didn't make, don't rebase shared branches, and never merge.
 - Open a PR when the task asks for one or the branch is self-contained and review-ready: push the branch, open it as a DRAFT unless told otherwise, and keep the description to a few lines of what and why. No testing checklists. If \`gh pr create\` fails (a sandboxed \`gh\` can't read files in some directories), fall back to \`gh api repos/<owner>/<repo>/pulls\` with the body expanded in the shell, and always pass the repo explicitly.
 - Leave the tree clean: no stray scratch files, no uncommitted leftovers you didn't mention.
 
@@ -132,16 +132,33 @@ function readCustomRole(name: string): AgentRole | null {
   };
 }
 
+// A role file under a built-in's name normally comes from our own setters,
+// which write the built-in instructions back verbatim. Different instructions
+// mean the user defined that role before it shipped as a built-in: theirs
+// wins and stays editable, rather than being silently replaced by ours.
+function shadowsBuiltIn(builtIn: AgentRole, custom: AgentRole | null): boolean {
+  return !!custom && custom.instructions !== builtIn.instructions;
+}
+
 export function getRole(name: string): AgentRole | null {
   if (!isValidRoleName(name) || RESERVED_ROLE_NAMES.has(name)) return null;
   const builtIn = builtInRole(name);
   const custom = readCustomRole(name);
-  // A stored file for a built-in holds only its configurable parts (provider,
-  // model defaults) — written whole by the setters, so it wins as a unit.
   if (!builtIn) return custom;
+  if (custom && shadowsBuiltIn(builtIn, custom)) return custom;
+  // Our own stored file holds only the built-in's configurable parts
+  // (provider, model defaults) — written whole by the setters, so it wins as
+  // a unit.
   return custom
     ? { ...builtIn, provider: custom.provider, models: custom.models ?? builtIn.models }
     : builtIn;
+}
+
+// Is this name a built-in the user hasn't shadowed with their own definition?
+// Those are the ones add/remove must refuse.
+function isProtected(name: string): boolean {
+  const builtIn = builtInRole(name);
+  return !!builtIn && !shadowsBuiltIn(builtIn, readCustomRole(name));
 }
 
 export function requireRole(name: string): AgentRole {
@@ -158,6 +175,8 @@ export function listRoles(): AgentRole[] {
       .map((file) => file.slice(0, -5))
       .filter(isValidRoleName)
       .filter((name) => !RESERVED_ROLE_NAMES.has(name))
+      // A shadowed built-in is listed through its built-in entry below,
+      // carrying the user's definition — listing it here too would duplicate it.
       .filter((name) => !builtInRole(name))
       .map(readCustomRole)
       .filter((role): role is AgentRole => role !== null)
@@ -169,7 +188,7 @@ export function listRoles(): AgentRole[] {
 export function addRole(input: { name: string; description?: string; instructions: string; force?: boolean }): AgentRole {
   const name = input.name.trim();
   validateRoleName(name);
-  if (builtInRole(name)) throw new Error(`role "${name}" is built in and cannot be replaced`);
+  if (isProtected(name)) throw new Error(`role "${name}" is built in and cannot be replaced`);
   if (existsSync(roleFile(name)) && !input.force) {
     throw new Error(`role "${name}" already exists — pass --force to replace it`);
   }
@@ -185,7 +204,7 @@ export function addRole(input: { name: string; description?: string; instruction
 
 export function removeRole(name: string): void {
   validateRoleName(name);
-  if (builtInRole(name)) throw new Error(`role "${name}" is built in and cannot be removed`);
+  if (isProtected(name)) throw new Error(`role "${name}" is built in and cannot be removed`);
   if (!existsSync(roleFile(name))) throw new Error(`unknown role "${name}"`);
   rmSync(roleFile(name), { force: true });
 }

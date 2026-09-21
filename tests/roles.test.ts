@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -44,7 +44,7 @@ describe("role registry", () => {
     expect(engineer.builtIn).toBe(true);
     // It lands the work end to end rather than handing back a dirty tree.
     expect(engineer.instructions).toContain("DRAFT");
-    expect(engineer.instructions).toContain("Never commit on the default branch");
+    expect(engineer.instructions).toContain("Commit on the branch you were started on");
     expect(engineer.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
     expect(engineer.provider).toBe("claude");
     expect(providerForRole(ENGINEER_ROLE, "codex")).toBe("claude");
@@ -52,6 +52,25 @@ describe("role registry", () => {
     expect(modelForRole(ENGINEER_ROLE, "claude")).toBe("opus");
     expect(modelForRole(ENGINEER_ROLE, "codex")).toBe("gpt-5.6-sol");
     expect(() => removeRole(ENGINEER_ROLE)).toThrow(/built in/);
+  });
+
+  test("a user's own role of the same name shadows a later built-in", () => {
+    // Written before `engineer` shipped as a built-in (a fresh `am role add`
+    // over a built-in name is still refused): theirs must survive the upgrade,
+    // stay listed once, and stay replaceable and removable.
+    mkdirSync(join(home, "roles"), { recursive: true });
+    writeFileSync(
+      join(home, "roles", `${ENGINEER_ROLE}.json`),
+      JSON.stringify({ description: "Mine", instructions: "My own engineer." }),
+    );
+    expect(requireRole(ENGINEER_ROLE)).toMatchObject({ description: "Mine", instructions: "My own engineer." });
+    expect(requireRole(ENGINEER_ROLE).builtIn).toBeUndefined();
+    expect(listRoles().filter((role) => role.name === ENGINEER_ROLE)).toHaveLength(1);
+    addRole({ name: ENGINEER_ROLE, instructions: "Still mine.", force: true });
+    expect(requireRole(ENGINEER_ROLE).instructions).toBe("Still mine.");
+    removeRole(ENGINEER_ROLE);
+    // Removing it uncovers the built-in again, pin and models intact.
+    expect(requireRole(ENGINEER_ROLE)).toMatchObject({ builtIn: true, provider: "claude" });
   });
 
   test("a provider pin can be repointed, cleared, and survives a model change", () => {

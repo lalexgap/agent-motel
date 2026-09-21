@@ -40,7 +40,9 @@ export function roleCommand(action: string | undefined, name: string | undefined
     return;
   }
   if (action === "provider") {
-    if (!opts.provider && !opts.clear) throw new Error("select a provider with --claude or --codex (or --clear to unpin)");
+    if (opts.clear ? !!opts.provider : !opts.provider) {
+      throw new Error("pass either --claude/--codex or --clear");
+    }
     const role = setRoleProvider(name, opts.clear ? undefined : opts.provider);
     console.log(role.provider ? `role "${name}" now launches on ${role.provider}` : `role "${name}" no longer pins a provider`);
     return;
@@ -71,5 +73,5 @@ export function roleCommand(action: string | undefined, name: string | undefined
     console.log(`removed role "${name}"`);
     return;
   }
-  throw new Error(`unknown role action "${action}" — use list, show, add, model, or rm`);
+  throw new Error(`unknown role action "${action}" — use list, show, add, model, provider, or rm`);
 }
