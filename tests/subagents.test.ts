@@ -741,10 +741,10 @@ describe("renderToolResult", () => {
       true,
     );
     expect(lines).toEqual([
-      "\x1b[2m  ⎿  Updated hook.ts with 2 additions and 1 removal\x1b[0m",
-      "\x1b[31m       - const x = 1;\x1b[0m",
-      "\x1b[32m       + const x = 2;\x1b[0m",
-      "\x1b[32m       + const y = 3;\x1b[0m",
+      "\x1b[2m  ⎿  Updated hook.ts with 2 additions and 1 removal\x1b[22m",
+      "\x1b[31m       - const x = 1;\x1b[39m",
+      "\x1b[32m       + const x = 2;\x1b[39m",
+      "\x1b[32m       + const y = 3;\x1b[39m",
     ]);
   });
 
