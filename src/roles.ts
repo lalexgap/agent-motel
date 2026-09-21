@@ -62,12 +62,12 @@ How to work:
 - Implement the whole task, including the tedious parts. If something in it is blocked or wrong, do everything else and say in your report exactly what you left and why.
 - Verify what you changed: run the project's typecheck/lint/tests, or the narrowest relevant subset, and report what you ran and what it said. Never call unverified work done; if something fails, quote the failure rather than describing it.
 - Stay in scope: no drive-by refactors, no new dependencies, no reformatting untouched code. Put concerns in your report instead of acting on them.
-- Decide rather than ask. When the task is ambiguous, take the reading a careful colleague would, state the assumption in your report, and keep going. Only stop and ask (\`am send <caller> "..."\`) when every path forward is unsafe or would waste the whole task.
+- Decide rather than ask. When the task is ambiguous, take the reading a careful colleague would, state the assumption in your report, and keep going. Only stop when every path forward is unsafe or would waste the whole task — and then say so as your report, since the caller is blocked waiting on that message and has no other way to hear from you.
 
 Committing and PRs — do this yourself, don't hand a dirty tree back:
 - Commit your work when it's verified: focused commits, a message in the repo's existing style, and follow any commit conventions the project's instructions set (attribution lines, ticket prefixes).
 - Commit on the branch you were started on. The exception is the repo's default branch (main/master): branch first, and say so in your report — you may be sharing that checkout with the agent that briefed you. Don't amend or force-push commits you didn't make, don't rebase shared branches, and never merge.
-- Open a PR when the task asks for one or the branch is self-contained and review-ready: push the branch, open it as a DRAFT unless told otherwise, and keep the description to a few lines of what and why. No testing checklists. If \`gh pr create\` fails (a sandboxed \`gh\` can't read files in some directories), fall back to \`gh api repos/<owner>/<repo>/pulls\` with the body expanded in the shell, and always pass the repo explicitly.
+- Open a PR only when the brief asks for one — pushing a branch and opening a PR in the caller's name is theirs to decide, not yours. When it does ask: push the branch, open it as a DRAFT unless told otherwise, and keep the description to a few lines of what and why. No testing checklists. If \`gh pr create\` fails (a sandboxed \`gh\` can't read files in some directories), fall back to \`gh api repos/<owner>/<repo>/pulls\` with the body expanded in the shell, and always pass the repo explicitly.
 - Leave the tree clean: no stray scratch files, no uncommitted leftovers you didn't mention.
 
 Reporting:
@@ -101,9 +101,9 @@ Failure: the inputs or state that trigger it, and the wrong behavior that result
 Fix: the direction to take, not a patch.
 
 - Severities: high = it breaks, loses data, or exposes something; medium = wrong in a narrower case, or it will bite the next person; low = worth knowing, not worth blocking.
-- End with a one-line verdict (approve / fix the highs first / needs a rethink) and a note of anything you deliberately didn't cover — a generated file you skipped, a suite you couldn't run.
+- End every report — findings or none — with a line that starts \`Verdict:\` and says where you land (approve / fix the highs first / needs a rethink), then note anything you deliberately didn't cover, like a generated file you skipped or a suite you couldn't run. That line is how a caller tells a real review from a run that died on a rate limit or a refusal, so never omit it and never write it before you've actually finished reviewing.
 - "No findings" is a good answer when it's true. Never pad the list with low-severity filler to look thorough, and never report the same issue twice under different severities. In the verdict and anywhere else, name severities in prose rather than in brackets.
-- Don't ask the caller questions and don't wait for anything: review what's in front of you, state the assumption you reviewed under, and finish. You review it yourself — never spawn another am agent (your built-in Task tool is fine for scoped searches).`;
+- Don't ask the caller questions and don't wait for anything: review what's in front of you, state the assumption you reviewed under, and finish. The caller is blocked on your report and hears nothing else from you. You review it yourself — never spawn another am agent (your built-in Task tool is fine for scoped searches).`;
 
 const BUILT_INS: Record<string, AgentRole> = {
   [CONCIERGE_ROLE]: {
@@ -137,6 +137,10 @@ function builtInRole(name: string): AgentRole | undefined {
 }
 
 interface StoredRole {
+  // Written by `am role add`: this file is the user's own role, whatever its
+  // name. Absent on files we wrote ourselves, and on anything predating the
+  // marker — see shadowsBuiltIn for how those are judged.
+  custom?: boolean;
   provider?: Provider;
   models?: Partial<Record<Provider, string>>;
   description?: string;
@@ -183,12 +187,19 @@ function readCustomRole(name: string): AgentRole | null {
   };
 }
 
-// A role file under a built-in's name normally comes from our own setters,
-// which write the built-in instructions back verbatim. Different instructions
-// mean the user defined that role before it shipped as a built-in: theirs
-// wins and stays editable, rather than being silently replaced by ours.
-function shadowsBuiltIn(builtIn: AgentRole, custom: AgentRole | null): boolean {
-  return !!custom && custom.instructions !== builtIn.instructions;
+// Whose role is a file that sits under a built-in's name? `am role add`
+// marks its own, so anything marked wins and stays editable. Files without
+// the marker predate it:
+//   - concierge has been built in and reserved from the start, so a file of
+//     that name can only be one an old `am role model` wrote — settings, not
+//     a definition, however stale its copy of the instructions.
+//   - the later built-ins could collide with a role the user had already
+//     written, and an old settings file for them still holds the exact text
+//     shipped at the time, so differing text means it's theirs.
+function shadowsBuiltIn(builtIn: AgentRole, custom: AgentRole, stored: StoredRole | null): boolean {
+  if (stored?.custom) return true;
+  if (builtIn.name === CONCIERGE_ROLE) return false;
+  return custom.instructions !== builtIn.instructions;
 }
 
 export function getRole(name: string): AgentRole | null {
@@ -196,11 +207,11 @@ export function getRole(name: string): AgentRole | null {
   const builtIn = builtInRole(name);
   const custom = readCustomRole(name);
   if (!builtIn) return custom;
-  if (custom && shadowsBuiltIn(builtIn, custom)) return custom;
+  const stored = readStoredRole(name);
+  if (custom && shadowsBuiltIn(builtIn, custom, stored)) return custom;
   // Otherwise the file is this built-in's settings, written whole by the
   // setters, so its provider and models win as a unit while the instructions
   // stay whatever we ship today.
-  const stored = readStoredRole(name);
   return stored
     ? { ...builtIn, provider: storedProvider(stored), models: stored.models ?? builtIn.models }
     : builtIn;
@@ -210,7 +221,9 @@ export function getRole(name: string): AgentRole | null {
 // Those are the ones add/remove must refuse.
 function isProtected(name: string): boolean {
   const builtIn = builtInRole(name);
-  return !!builtIn && !shadowsBuiltIn(builtIn, readCustomRole(name));
+  if (!builtIn) return false;
+  const custom = readCustomRole(name);
+  return !custom || !shadowsBuiltIn(builtIn, custom, readStoredRole(name));
 }
 
 export function requireRole(name: string): AgentRole {
@@ -250,7 +263,7 @@ export function addRole(input: { name: string; description?: string; instruction
   ensureDirs();
   const existing = readCustomRole(name);
   const { provider, models } = existing ?? {};
-  writeJsonAtomic(roleFile(name), { description, instructions, provider, models } satisfies StoredRole);
+  writeJsonAtomic(roleFile(name), { custom: true, description, instructions, provider, models } satisfies StoredRole);
   return { name, description, instructions, provider, models };
 }
 
@@ -270,7 +283,7 @@ export function roleForAgent(agent: { name: string; role?: string }): string | u
 // storing its instructions would freeze the user on today's copy (a later
 // edit would read back as a role of their own, via shadowsBuiltIn).
 function writeRoleSettings(role: AgentRole, settings: { provider?: Provider; models?: Partial<Record<Provider, string>> }): void {
-  const own = role.builtIn ? {} : { description: role.description, instructions: role.instructions };
+  const own = role.builtIn ? {} : { custom: true, description: role.description, instructions: role.instructions };
   writeJsonAtomic(roleFile(role.name), { ...own, ...settings } satisfies StoredRole);
 }
 

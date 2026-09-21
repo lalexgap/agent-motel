@@ -55,6 +55,28 @@ describe("role registry", () => {
     expect(() => removeRole(ENGINEER_ROLE)).toThrow(/built in/);
   });
 
+  test("an old concierge settings file is settings, not a role of the user's", () => {
+    // Pre-marker `am role model concierge` wrote the instructions of the day;
+    // a later edit to the shipped text must not turn that into their role.
+    mkdirSync(join(home, "roles"), { recursive: true });
+    writeFileSync(
+      join(home, "roles", `${CONCIERGE_ROLE}.json`),
+      JSON.stringify({ instructions: "concierge text from an older release", models: { codex: "gpt-5.6-luna" } }),
+    );
+    const concierge = requireRole(CONCIERGE_ROLE);
+    expect(concierge.builtIn).toBe(true);
+    expect(concierge.instructions).not.toContain("older release");
+    expect(concierge.models).toEqual({ codex: "gpt-5.6-luna" });
+    expect(() => removeRole(CONCIERGE_ROLE)).toThrow(/built in/);
+  });
+
+  test("the marker keeps a user's role theirs even when its text matches ours", () => {
+    const shipped = requireRole(ENGINEER_ROLE).instructions;
+    addRole({ name: "mine", instructions: shipped });
+    const stored = JSON.parse(readFileSync(join(home, "roles", "mine.json"), "utf8"));
+    expect(stored.custom).toBe(true);
+  });
+
   test("a user's own role of the same name shadows a later built-in", () => {
     // Written before `engineer` shipped as a built-in (a fresh `am role add`
     // over a built-in name is still refused): theirs must survive the upgrade,
@@ -129,6 +151,8 @@ describe("role registry", () => {
     expect(lines.filter((line) => /^\[(high|medium|low)\]/.test(line))).toHaveLength(1);
     expect(lines.filter((line) => /\[(high|medium|low)\]/.test(line))).toHaveLength(1);
     expect(reviewer.instructions).toContain("final message IS the deliverable");
+    // The sentinel that tells a real review from a run that died.
+    expect(reviewer.instructions).toContain("starts \`Verdict:\`");
     expect(reviewer.instructions).toContain("you don't fix");
     expect(() => removeRole(REVIEWER_ROLE)).toThrow(/built in/);
   });

@@ -130,7 +130,7 @@ am run motel-sort-impl --role engineer --in-place --timeout 900 -m "Add a --sort
 am run motel-64-review --role reviewer --in-place --timeout 900 -m "Review PR 64 against main; the risky part is the role-shadowing logic in src/roles.ts"
 ```
 
-Findings come back severity-tagged — `[high] src/roles.ts:83 — …` with a concrete failure scenario and a fix direction — which is the shape the `review-loop` and `shepherd-pr` skills parse. The calling agent decides what to act on; handing those findings to an `engineer` run is how they get fixed. Both roles think for a long time on a real diff — pass a `--timeout` well above `am run`'s 600s default, or you'll collect a truncated report and a non-zero exit.
+Findings come back severity-tagged — `[high] src/roles.ts:83 — …` with a concrete failure scenario and a fix direction — which is the shape the `review-loop` and `shepherd-pr` skills parse. The calling agent decides what to act on; handing those findings to an `engineer` run is how they get fixed. Both roles think for a long time on a real diff — pass a `--timeout` well above `am run`'s 600s default, or you'll collect a truncated report and a non-zero exit. Every reviewer report ends with a `Verdict:` line; a report without one is a run that died (a rate limit, a refusal) and exits 0 like any other, so callers should read a missing verdict as a failed pass, not as a clean diff.
 
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 
