@@ -30,6 +30,15 @@ describe("queue", () => {
     expect(queueDepth("a")).toBe(0);
   });
 
+  test("append returns the entry id, so a speculative queue can be taken back", () => {
+    queueAppend("a", "first");
+    const id = queueAppend("a", "speculative");
+    queueAppend("a", "third");
+
+    queuePopId("a", id);
+    expect(queueList("a").map((e) => e.message)).toEqual(["first", "third"]);
+  });
+
   test("messages with newlines and quotes survive the round-trip", () => {
     const tricky = `line one\nline "two" with 'quotes' and $vars`;
     queueAppend("a", tricky);

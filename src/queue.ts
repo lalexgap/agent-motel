@@ -75,11 +75,14 @@ function migrateLegacy(name: string): void {
 }
 
 // Atomic write via tmp+rename, so a reader never sees a half-written message.
-function writeEntry(name: string, entry: QueueEntry, atMs?: number): void {
+// Returns the entry's id, so a caller that queued speculatively can take it
+// back with queuePopId (and only its own entry).
+function writeEntry(name: string, entry: QueueEntry, atMs?: number): string {
   const dir = agentQueueDir(name);
   mkdirSync(dir, { recursive: true });
   const id = atMs === undefined ? newMsgId() : msgIdAt(atMs);
   writeJsonAtomic(join(dir, `${id}.json`), entry, { pretty: false });
+  return `${id}.json`;
 }
 
 // FIFO-ordered message files. The single chokepoint for reads: legacy
@@ -110,10 +113,10 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
-export function queueAppend(name: string, message: string): void {
+export function queueAppend(name: string, message: string): string {
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
-  writeEntry(name, { message, queuedAt: new Date().toISOString() });
+  return writeEntry(name, { message, queuedAt: new Date().toISOString() });
 }
 
 export function queueList(name: string): QueueEntry[] {
