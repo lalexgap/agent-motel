@@ -16,6 +16,7 @@ import {
   describeToolCall,
   isHarnessNoise,
   renderSubagentScreen,
+  renderToolResult,
   subagentActivity,
   summarizeToolOutput,
   subagentSummary,
@@ -578,7 +579,7 @@ describe("renderSubagentScreen", () => {
       "⏺ Looking now.",
       "",
       "⏺ Grep(hook)",
-      "  ⎿  src/hook.ts:12 (+1 lines)",
+      "  ⎿  Found 2 results",
       "⏺ Bash(sleep 5)",
       "  ⎿  (no output)",
       "",
@@ -613,7 +614,7 @@ describe("renderSubagentScreen", () => {
       "⏺ Bash(b)",
       "  ⎿  …",
       "⏺ Read(c)",
-      "  ⎿  fast",
+      "  ⎿  Read 1 line",
       "⏺ Bash(d)",
       "  ⎿  …",
     ]);
@@ -649,6 +650,61 @@ describe("renderSubagentScreen", () => {
     ]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith("❯ Base directory for this skill: /x");
+  });
+});
+
+describe("renderToolResult", () => {
+  test("an Edit is its diff, removed red and added green", () => {
+    const lines = renderToolResult(
+      "Edit",
+      JSON.stringify({ file_path: "/x/src/hook.ts", old_string: "const x = 1;", new_string: "const x = 2;\nconst y = 3;" }),
+      "The file has been updated successfully.",
+      true,
+    );
+    expect(lines).toEqual([
+      "\x1b[2m  ⎿  Updated hook.ts with 2 additions and 1 removal\x1b[0m",
+      "\x1b[31m       - const x = 1;\x1b[0m",
+      "\x1b[32m       + const x = 2;\x1b[0m",
+      "\x1b[32m       + const y = 3;\x1b[0m",
+    ]);
+  });
+
+  test("a long diff is capped per side", () => {
+    const old = Array.from({ length: 12 }, (_, i) => `old ${i}`).join("\n");
+    const lines = renderToolResult("Edit", JSON.stringify({ file_path: "a.ts", old_string: old, new_string: "" }), "ok", false);
+    expect(lines.filter((l) => l.includes("- old"))).toHaveLength(8);
+    expect(lines.at(-1)).toContain("… (+4 lines)");
+  });
+
+  test("a Write shows what it wrote; Read and searches say how much came back", () => {
+    expect(renderToolResult("Write", JSON.stringify({ file_path: "/x/notes.md", content: "a\nb\nc" }), "File created", false))
+      .toEqual(["  ⎿  Wrote 3 lines to notes.md", "       + a", "       + b", "       + c"]);
+    expect(renderToolResult("Read", "{}", "     1→import x\n     2→export y", false)).toEqual(["  ⎿  Read 2 lines"]);
+    expect(renderToolResult("Read", "{}", "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>", false))
+      .toEqual(["  ⎿  Read an empty file"]);
+    expect(renderToolResult("Grep", "{}", "src/a.ts:1:x\nsrc/b.ts:9:x", false)).toEqual(["  ⎿  Found 2 results"]);
+    expect(renderToolResult("Glob", "{}", "No files found", false)).toEqual(["  ⎿  Found nothing"]);
+  });
+
+  test("a command shows its first lines and folds the rest", () => {
+    const out = Array.from({ length: 8 }, (_, i) => `line ${i}`).join("\n");
+    const lines = renderToolResult("Bash", JSON.stringify({ command: "gh pr checks 1" }), out, false);
+    expect(lines).toEqual([
+      "  ⎿  line 0",
+      "  ⎿     line 1",
+      "  ⎿     line 2",
+      "  ⎿     line 3",
+      "  ⎿     line 4",
+      "  ⎿     … (+3 lines)",
+    ]);
+    expect(renderToolResult("Bash", "{}", "", false)).toEqual(["  ⎿  (no output)"]);
+    expect(renderToolResult("Bash", "{}", undefined, false)).toEqual(["  ⎿  …"]);
+  });
+
+  test("harness text inside a result is not the result", () => {
+    const out = "This agent is isolated in the worktree /x — do not cd elsewhere\nactual output\n<system-reminder>\nnoise\n</system-reminder>";
+    expect(renderToolResult("Bash", "{}", out, false)).toEqual(["  ⎿  actual output"]);
+    expect(summarizeToolOutput(out)).toBe("actual output");
   });
 });
 
