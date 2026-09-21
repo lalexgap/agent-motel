@@ -85,9 +85,6 @@ export interface NewOptions {
   jump?: boolean;
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
-  // Fan out with built-in subagents instead of am agents; undefined = the
-  // config default (config.preferSubagents).
-  preferSubagents?: boolean;
   // Run directly in the target dir instead of a fresh worktree.
   inPlace?: boolean;
   // Standing report relationship: the agent this one keeps posted. `report`
@@ -214,7 +211,6 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     role: role?.name,
     roleInstructions,
     reportTo,
-    preferSubagents: opts.preferSubagents,
     spawnedBy,
     createdAt: now,
     updatedAt: now,

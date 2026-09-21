@@ -64,7 +64,7 @@ usage:
   am -                        jump to previous agent
   am new <name> [-m msg | -m - | --file path] [--dir path] [--codex]
                 [--remote | --no-remote] [--model <m>] [--effort <level>]
-                [--role <name>] [--prefer-subagents]
+                [--role <name>]
                               spawn a new agent in tmux and jump into it
                               (-m - reads the task from stdin, --file <path> from
                                a file — both dodge shell quoting for long tasks;
@@ -73,12 +73,6 @@ usage:
                                config.defaultProvider (default: codex);
                                --model / --effort override the provider defaults)
                               --role applies a named behavior preset
-                              --prefer-subagents tells the agent to fan work
-                              out with its own built-in subagents instead of
-                              spawning am agents (cheap and fast, but they have
-                              no pane and can't be messaged or interrupted);
-                              --no-prefer-subagents overrides
-                              config.preferSubagents the other way
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
                               --worktree <branch> picks the branch
@@ -93,13 +87,8 @@ usage:
                               final message (for fan-out: the agent stays in
                               am ls unless --rm; exit 1 if blocked/timed out;
                               --in-place works in the caller's checkout:
-                              am run x --role engineer --in-place -m "...")
-  am resume <name> [-m msg] [--prefer-subagents | --no-prefer-subagents]
-                              restart an exited agent, resuming its conversation
-                              (--prefer-subagents changes how it fans work out
-                               from here on — stored, and applied to the
-                               resumed session: claude in its primer, codex as
-                               a queued message)
+                              am run x --in-place -m "...")
+  am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -432,7 +421,6 @@ async function pickerFlow(): Promise<void> {
         model: spec.model,
         effort: spec.effort,
         role: spec.role,
-        preferSubagents: spec.preferSubagents,
         jump: false,
         quiet: true,
       });
@@ -537,11 +525,6 @@ async function main(): Promise<void> {
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
-        preferSubagents: args.flags["prefer-subagents"]
-          ? true
-          : args.flags["no-prefer-subagents"]
-            ? false
-            : undefined,
         inPlace: !!args.flags["in-place"],
         reportTo: args.flags["report-to"] as string | undefined,
         report: !!args.flags.report,
@@ -560,11 +543,6 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
-        preferSubagents: args.flags["prefer-subagents"]
-          ? true
-          : args.flags["no-prefer-subagents"]
-            ? false
-            : undefined,
         timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
@@ -575,11 +553,6 @@ async function main(): Promise<void> {
       await resumeCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
-        preferSubagents: args.flags["prefer-subagents"]
-          ? true
-          : args.flags["no-prefer-subagents"]
-            ? false
-            : undefined,
       });
       break;
     case "ls":

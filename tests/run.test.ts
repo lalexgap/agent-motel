@@ -45,12 +45,10 @@ describe("finalAssistantText", () => {
   });
 });
 
-describe("agentSystemPrompt teaches am run", () => {
-  test("the spawn-wait-collect primitive is in the injected guidance", () => {
+describe("agentSystemPrompt and am run", () => {
+  test("agents are not taught to spawn agents — am run is the operator's primitive", () => {
     const prompt = agentSystemPrompt("worker-1");
-    expect(prompt).toContain("am run");
-    expect(prompt).toContain("spawn-wait-collect");
-    // The decision hinge: am run vs the built-in Task tool.
-    expect(prompt).toContain("replacement for the Task tool");
+    expect(prompt).not.toContain("am run");
+    expect(prompt).toContain("fan out with your own built-in subagents");
   });
 });

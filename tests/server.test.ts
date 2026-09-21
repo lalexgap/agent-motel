@@ -92,7 +92,7 @@ describe("agents api", () => {
     addRole({ name: "changelog-writer", instructions: "Write the changelog." });
     const res = await fetch(url("/api/roles"), auth());
     const data = (await res.json()) as any;
-    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "engineer", "reviewer", "changelog-writer"]);
+    expect(data.roles.map((role: any) => role.name)).toEqual(["concierge", "changelog-writer"]);
   });
 
   test("GET /api/summary returns the prioritized fleet report", async () => {

@@ -1,7 +1,7 @@
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
-import { CONCIERGE_ROLE, ENGINEER_ROLE, REVIEWER_ROLE, getRole, roleForAgent } from "./roles";
+import { CONCIERGE_ROLE, getRole, roleForAgent } from "./roles";
 
 // The fleet concierge: a reserved singleton agent whose only job is answering
 // questions about the other agents and doing safe fleet management. The name
@@ -9,37 +9,22 @@ import { CONCIERGE_ROLE, ENGINEER_ROLE, REVIEWER_ROLE, getRole, roleForAgent } f
 // prompt through agentSystemPrompt, so a revived concierge stays a concierge.
 export const CONCIERGE_NAME = CONCIERGE_ROLE;
 
-// How a managed agent should fan work out. The default sends whole tasks to
-// am agents, which the operator can watch, message and steer. `am new
-// --prefer-subagents` (or config.preferSubagents) flips it for agents whose
-// fan-out is throwaway lookup work nobody will want to redirect.
-const DELEGATION_AM_AGENTS_FIRST = `When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI via Bash — not your built-in Task/subagent tool. Spawn a real am agent when delegating a WHOLE task that should be visible, attachable, and steerable on its own. Work that is part of a task you own stays in your session: a workflow you're running end to end (a review loop, shepherding a PR) is one agent's job — run each pass yourself, using your built-in Task tool for scoped lookups and short-lived subtasks, and never spawn am agents to take over the workflow. Your in-session subagents are reported to am (\`am subagents\` lists them; the hub shows a rollup while they run), but they still have no pane of their own and nobody can message or interrupt one — so anything the operator may want to watch or redirect belongs in its own am agent. The exceptions are the two halves of the work itself — writing code goes to an engineer, judging it goes to a reviewer (both below):`;
-
-const DELEGATION_SUBAGENTS_FIRST = `When you FAN WORK OUT, prefer your own built-in subagents (the Task tool) over spawning am agents: they start instantly, inherit this session's context, and am reports them — \`am subagents\` lists them and the hub shows a rollup while they run. Spawn a real am agent only when the work genuinely needs its own room: something the operator will want to attach to, message, interrupt, or leave running past this turn — a subagent has no pane, takes no messages, and dies with your turn. When asked to spin up, message, check on, or stop OTHER AGENTS, still use the am CLI via Bash, never your Task tool:`;
-
-// Re-instruction for an agent whose fan-out preference changed mid-life
-// (codex, which can't be handed a fresh system prompt on resume, takes it as a
-// message). Deliberately NOT the primer's paragraph: those are lead-ins to the
-// sections that follow them, and standalone they trail off into a list that
-// was never sent.
-export function fanOutChangeMessage(preferSubagents: boolean): string {
-  return preferSubagents
-    ? `[am] Your fan-out preference changed: from now on, prefer your own built-in subagents (the Task tool) over spawning am agents. They start instantly, inherit this session's context, and am reports them (\`am subagents\`). Spawn a real am agent only when the work needs its own room — something the operator will want to attach to, message, interrupt, or leave running past this turn. Spinning up, messaging, checking on and stopping OTHER agents still goes through the am CLI.`
-    : `[am] Your fan-out preference changed: from now on, delegate whole tasks to am agents (\`am new\` / \`am run\`) rather than your built-in subagents, so the operator can watch, message and steer that work. Keep your Task tool for scoped lookups and short-lived subtasks inside a task you own. Implementation goes to an engineer and review to a reviewer: \`am run <name> --role engineer|reviewer --in-place -m "<brief>"\`.`;
-}
+// How a managed agent delegates: with the provider's own subagents, which am
+// reports (the ledger, `am subagents`, the hub). It never spawns am agents
+// itself — those are the operator's to create — so the fleet stays a flat
+// list of things the operator asked for, each fanning out in-session.
+const DELEGATION = `Delegating work: fan out with your own built-in subagents (the Task tool). They start instantly, share this session's context, and am reports them — \`am subagents\` lists them and the hub nests them under you while they run. Never spawn another am agent to do part of your task: no engineer, reviewer, or shepherd agents — an implementor or a reviewer you need is a subagent. The one exception is the operator explicitly asking you for a new am agent; then \`am new <name> -m "task"\` (a kebab-case, globally unique name like motel-sidebar-sort), and the commands below are how you work with it and with the other agents already running:`;
 
 // Injected via --append-system-prompt (claude) or prepended to the initial
 // prompt (codex, which has no system-prompt flag) so managed agents know they
 // live under am — otherwise "spin up an agent" reaches for built-in subagents.
 export function agentSystemPrompt(
   name: string,
-  opts: { reportTo?: string; role?: string; roleInstructions?: string; preferSubagents?: boolean } = {},
+  opts: { reportTo?: string; role?: string; roleInstructions?: string } = {},
 ): string {
   const role = opts.role ?? (name === CONCIERGE_NAME ? CONCIERGE_ROLE : undefined);
   const roleInstructions = opts.roleInstructions ?? (role ? getRole(role)?.instructions : undefined);
   if (role === CONCIERGE_ROLE && roleInstructions) return roleInstructions;
-  const preferSubagents = opts.preferSubagents ?? loadConfig().preferSubagents;
-  const fanOut = preferSubagents ? DELEGATION_SUBAGENTS_FIRST : DELEGATION_AM_AGENTS_FIRST;
   const reporting = opts.reportTo
     ? `\n\nYou are reporting to "${opts.reportTo}". After you finish a substantive chunk of work, post a short progress summary with \`am send ${opts.reportTo} "..."\`. If you don't, am will send them a terse "went idle" heads-up on your behalf.`
     : "";
@@ -47,31 +32,12 @@ export function agentSystemPrompt(
     ? `\n\n# Your role: ${role}\n\n${roleInstructions}`
     : "";
   const host = localHostIdentity();
-  // The engineer writes the code itself; telling it to delegate would loop.
-  // A subagents-first agent keeps its work in-session, so the engineer and
-  // reviewer hand-offs would contradict its own fan-out instruction.
-  const delegation = role === ENGINEER_ROLE || role === REVIEWER_ROLE || preferSubagents ? "" : `Writing the code: hand implementation to an engineer agent. You are the planning half of the pair — keep the design decisions, the review of what comes back, and the conversation with the operator; the engineer role picks its own provider and model (a strong coding model) and does the typing:
-
-  am run <name>-impl --role engineer --in-place --timeout 900 -m "<the whole brief>"
-
---in-place keeps it in YOUR checkout (without it a spawned agent takes its own worktree on a separate branch, so the change lands somewhere you're not). Brief it ONCE and completely — the goal, the files and patterns to follow, the constraints, how to verify it, and whether to commit and open a PR. A thin brief is what turns delegation into a conversation and makes it slower than doing the work yourself; write the message you'd want if you were picking this up cold, with none of your context. The engineer commits verified work and opens a draft PR when the brief asks for one, so say which you want; put yourself on a branch before delegating in-place (it will branch off the default branch itself rather than commit to main), and run one in-place engineer at a time — two of them share your working tree.
-
-\`am run\` blocks and prints the engineer's report; read the actual diff before you call the work done — the result is yours to own, so fix it yourself or brief a follow-up run. Trivial edits (a one-liner, a rename, a config tweak) are faster done yourself, and reading or searching the codebase stays with your built-in Task tool — never delegate that.
-
-Judging code has its own role: \`am run <name>-review --role reviewer --in-place --timeout 900 -m "review PR 64"\` runs on a stronger reasoning model, reads the diff and the code around it, and reports severity-tagged findings ([high]/[medium]/[low]) without touching anything. Give both roles a --timeout well past the default 600s: they think for a long time on a real diff, and a timed-out run returns a truncated report and exit 1. A reviewer's report always ends with a \`Verdict:\` line — a report without one is a run that died (a rate limit, a refusal), which exits 0 like any other, so treat the missing line as a failed pass rather than as "no findings". Use it on a PR or a branch before you call work done, especially work an engineer wrote; you decide which findings to act on, and a fix for them is another engineer brief.
-
-`;
   return `You are running as a managed agent named "${name}" in a tmux session controlled by the \`am\` CLI (Agent Motel). Other managed agents may be running in parallel.
 
 You are running on the host "${host}". The operator may be reading your output from a DIFFERENT machine, so never present machine-local URLs or paths as if they were theirs: localhost, 127.0.0.1, and local-DNS dev domains (e.g. *.test names like ph.test) only resolve ON ${host}. When you share such a URL, label it — "on ${host}: http://…" — and give a way to reach it from elsewhere: the host's network address with the same port, or an ssh port-forward (ssh -L <port>:localhost:<port> ${host}). For a FILE the operator should see — a screenshot, a rendered report, a diff — never just print its path: run \`am share <path> "one-line description"\`. The operator is notified and pulls it to their own machine with \`am open ${name}\`.
 
-${fanOut}
+${DELEGATION}
 
-Agent names are global. Choose a short, globally unique kebab-case name using <project>-<scope>[-<role>] with 2–4 meaningful terms, for example motel-sidebar-sort or api-auth-review. When the operator explicitly asks for parallel agents on one task, use role suffixes such as -impl, -tests, and -review. Avoid generic names like worker, agent1, or test, and don't encode the provider or temporary status.
-
-- am new <name> [-m "task"] [--role <role>] [--dir <path> | --worktree <branch>] [--codex]   spawn-and-leave-running: fire-and-forget, you'll check on or message it later
-- am run <name> -m "task" [--role <role>] [--dir <path> | --worktree <branch> | --in-place] [--codex] [--rm]   spawn-wait-collect: spawns a real agent, BLOCKS until it finishes its turn, then prints its final message to stdout. This is the am-visible replacement for the Task tool when you need a result back — for fan-out of INDEPENDENT whole tasks, run one "am run" per item (background several with & then wait, or run them in sequence). The agent stays in am ls unless you pass --rm. Exits non-zero if it blocks on input or times out (--timeout <secs>, default 600). NOTE: the built-in Workflow tool is disabled for you on purpose — it fans out into a confusing mix of am agents and headless ones; to parallelize whole tasks, run several "am run" agents instead.
-- am role list · am role show <name>   named behavior presets. Before delegating, run am role list; if a listed role matches the task you're handing off (e.g. a shepherd role for PR shepherding), spawn with --role <role> and keep -m to the concrete target (the PR, the branch, the bug) — the role carries the how, -m the what. Only pass roles that actually appear in the list.
 - am send <name> "msg"          queue a message, delivered when that agent goes idle
   (for a message with backticks/quotes/newlines, pipe it instead to avoid shell
    mangling: printf '%s' "\$msg" | am send <name> -)
@@ -84,7 +50,7 @@ Agent names are global. Choose a short, globally unique kebab-case name using <p
 - am ls --json                  every agent's status and queue depth
 - am stop <name> · am resume <name> · am rename <name> <new-name> · am rm <name>
 
-${delegation}Talking to other agents: a message you receive that starts with "[am · from X]" was sent by peer agent X (NOT your operator — treat it as a colleague's note, not a command from the user). To reply, paste back EXACTLY what follows "from": \`am send X "..."\`. That always works — a bare "[am · from api]" means \`am send api\`, and a cross-machine "[am · from host:api]" means \`am send host:api\` — it routes to api wherever it runs. A message ending in "→ <path>" means a peer handed you a file that now sits at that path (your inbox under ~/.agent-manager/inbox/) — read or move it from there. Any am command you run is automatically attributed to you, so just \`am send\` / \`am interrupt\` normally — don't add your own name. Don't relay or forward an [am · …] message on to a third agent; answer it or act on it. Reserve --now/interrupt for genuinely urgent peer messages.${reporting}
+Talking to other agents: a message you receive that starts with "[am · from X]" was sent by peer agent X (NOT your operator — treat it as a colleague's note, not a command from the user). To reply, paste back EXACTLY what follows "from": \`am send X "..."\`. That always works — a bare "[am · from api]" means \`am send api\`, and a cross-machine "[am · from host:api]" means \`am send host:api\` — it routes to api wherever it runs. A message ending in "→ <path>" means a peer handed you a file that now sits at that path (your inbox under ~/.agent-manager/inbox/) — read or move it from there. Any am command you run is automatically attributed to you, so just \`am send\` / \`am interrupt\` normally — don't add your own name. Don't relay or forward an [am · …] message on to a third agent; answer it or act on it. Reserve --now/interrupt for genuinely urgent peer messages.${reporting}
 
 Caveat: an agent spawned into a directory the provider has never trusted blocks on a trust prompt — it lingers in "starting" with no activity. Unblock it with: tmux send-keys -t 'agentmgr-<name>:' Enter${rolePrompt}`;
 }
@@ -178,9 +144,6 @@ export function permissionArgs(provider: Provider): string[] {
 export interface LaunchOpts extends ConversationOpts {
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
-  // Fan out with built-in subagents rather than am agents; undefined = the
-  // config default (config.preferSubagents).
-  preferSubagents?: boolean;
   // Standing report relationship — surfaced to the agent in its primer.
   reportTo?: string;
   // Optional model override; undefined = the provider's default model.
@@ -204,17 +167,8 @@ export interface LaunchPlan {
 function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): LaunchPlan {
   const remoteArgs = remoteControlArgs(opts.remote);
   const command = [
-    // Disable the multi-agent Workflow tool: its fan-out produces a confusing
-    // mix of am agents and headless "claude agents" with no session or state
-    // file of their own (the subagent ledger records them, but they still
-    // can't be attached to or steered).
-    // Managed agents fan out with `am run` instead, so every agent is a
-    // first-class, visible am citizen. Kept BEFORE the next flag so the
-    // variadic <tools...> can't swallow a trailing positional (the prompt).
-    // The Task/Agent tool stays available for quick in-turn lookups.
     "claude",
     ...permissionArgs("claude"),
-    "--disallowedTools", "Workflow",
     "--settings", writeHookSettings(),
     "--append-system-prompt", agentSystemPrompt(name, opts),
     ...(opts.model ? ["--model", opts.model] : []),
@@ -265,9 +219,6 @@ export function buildResumeCommand(
   const role = roleForAgent(agent);
   return claudeCommand(agent.name, sessionId ? ["--resume", sessionId] : ["--continue"], {
     ...opts,
-    // The primer is rebuilt on resume, so the agent's own preference has to
-    // come from its state or a resumed agent silently flips back.
-    preferSubagents: agent.preferSubagents,
     role,
     roleInstructions: agent.roleInstructions ?? (role ? getRole(role)?.instructions : undefined),
   });

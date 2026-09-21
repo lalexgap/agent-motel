@@ -60,7 +60,6 @@ export async function handoffAgent(
     provider: target,
     role: agent.role,
     roleInstructions: agent.roleInstructions,
-    preferSubagents: agent.preferSubagents,
     jump: opts.jump,
     quiet: opts.quiet,
   });
