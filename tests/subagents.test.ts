@@ -514,8 +514,7 @@ describe("subagentActivity", () => {
     recordSubagentStart("api", { id: "gone1", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
     recordSubagentStart("api", { id: "alive1", type: "general-purpose", at: "2026-09-21T10:01:00.000Z" });
     // The notification lands in the parent's JSONL as text with escaped newlines.
-    const note = JSON.stringify({ type: "queue-operation", content: "<task-notification>\n<task-id>gone1</task-id>\n<status>completed</status>\n<summary>Agent \"Shepherd PR 1\" finished</summary>\n</task-notification>" });
-    writeFileSync(agent.transcriptPath!, note + "\n", { flag: "a" });
+    writeFileSync(agent.transcriptPath!, notification("gone1", "2026-09-21T10:05:00.000Z", 'Agent "Shepherd PR 1" finished') + "\n", { flag: "a" });
 
     expect(reconcileOpenSubagents(agent)).toBe(1);
     const records = readSubagents("api");
@@ -523,6 +522,55 @@ describe("subagentActivity", () => {
     expect(records.find((r) => r.id === "alive1")!.endedAt).toBeUndefined();
     // Already scanned: nothing new to find.
     expect(reconcileOpenSubagents(agent)).toBe(0);
+  });
+
+  const notification = (id: string, timestamp: string, summary: string, status = "completed") =>
+    JSON.stringify({
+      type: "queue-operation",
+      timestamp,
+      content: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`,
+    });
+
+  test("a resumed subagent keeps its id: an earlier run's notification doesn't close the new run", () => {
+    const agent = agentWithSubagentFiles({});
+    // Run one stops (hook), its notification lands, then the resume re-fires start under the same id.
+    recordSubagentStart("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStop("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:09:46.431Z" });
+    writeFileSync(agent.transcriptPath!, notification("again", "2026-09-21T10:09:46.442Z", "finished") + "\n", { flag: "a" });
+    recordSubagentStart("api", { id: "again", type: "general-purpose", at: "2026-09-21T10:09:46.558Z" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+    expect(readSubagents("api").find((r) => r.id === "again")!.endedAt).toBeUndefined();
+    // The run's own notification, once it lands, does close it.
+    writeFileSync(agent.transcriptPath!, notification("again", "2026-09-21T10:20:00.000Z", "finished for real") + "\n", { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    expect(readSubagents("api").find((r) => r.id === "again")!.message).toBe("finished for real");
+  });
+
+  test("a notification still being written waits for the next look instead of being skipped", () => {
+    const agent = agentWithSubagentFiles({});
+    recordSubagentStart("api", { id: "torn", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    const line = notification("torn", "2026-09-21T10:05:00.000Z", "done");
+    const cut = line.indexOf("<status>");
+    writeFileSync(agent.transcriptPath!, line.slice(0, cut), { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(0);
+    writeFileSync(agent.transcriptPath!, line.slice(cut) + "\n", { flag: "a" });
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+  });
+
+  test("a subagent's subagent is reported in its parent subagent's transcript", () => {
+    const agent = agentWithSubagentFiles({ top: [notification("child", "2026-09-21T10:05:00.000Z", "review done")] });
+    writeFileSync(
+      join(home, "session", "subagents", "agent-child.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", parentAgentId: "top", spawnDepth: 2 }),
+    );
+    recordSubagentStart("api", { id: "top", type: "general-purpose", at: "2026-09-21T10:00:00.000Z" });
+    recordSubagentStart("api", { id: "child", type: "general-purpose", at: "2026-09-21T10:01:00.000Z" });
+
+    expect(reconcileOpenSubagents(agent)).toBe(1);
+    const byId = Object.fromEntries(readSubagents("api").map((r) => [r.id, r]));
+    expect(byId.child!.message).toBe("review done");
+    expect(byId.top!.endedAt).toBeUndefined();
   });
 
   test("a subagent silent for minutes after a tool result is dead; one mid-call is not", () => {

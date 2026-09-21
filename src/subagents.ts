@@ -546,39 +546,90 @@ export function subagentNoOutputNote(agent: AgentState): string {
 // killed with an interrupted turn, a session that died and was resumed — and
 // a spared background record then reads as running forever. Claude leaves a
 // second trail: when a background subagent ends, the parent's transcript
-// receives a task notification naming it. Scan what the transcript has added
+// receives a task notification naming it. Scan what each transcript has added
 // since the last look and close every open record it reports. Claude only;
 // returns how many records it closed.
 const NOTIFICATION_TAIL_BYTES = 1_000_000;
-const scanned = new Map<string, number>(); // transcript path → bytes already scanned
+const scanned = new Map<string, number>(); // transcript path → bytes already scanned, at a line boundary
 
 export function reconcileOpenSubagents(agent: AgentState): number {
   if (agentProvider(agent) !== "claude") return 0;
   const open = readSubagents(agent.name).filter((r) => !r.endedAt);
   if (open.length === 0) return 0;
-  let file: string;
-  try {
-    file = locateTranscript(agent);
-  } catch {
-    return 0;
-  }
-  let size: number;
-  try {
-    size = statSync(file).size;
-  } catch {
-    return 0;
-  }
-  const from = scanned.get(file) ?? Math.max(0, size - NOTIFICATION_TAIL_BYTES);
-  const text = size > from ? readRange(file, from, size) : "";
-  scanned.set(file, size);
+  const added = new Map<string, string[]>();
+  const linesOf = (file: string): string[] => {
+    let lines = added.get(file);
+    if (!lines) added.set(file, (lines = newLines(file)));
+    return lines;
+  };
   let closed = 0;
   for (const record of open) {
-    const ended = completionIn(text, record.id) ?? diedMidTurn(agent, record.id);
+    const file = notificationFile(agent, record.id);
+    const ended = (file && completionAfter(linesOf(file), record.id, record.startedAt)) || diedMidTurn(agent, record.id);
     if (!ended) continue;
     recordSubagentStop(agent.name, { id: record.id, type: record.type, message: ended.summary });
     closed++;
   }
   return closed;
+}
+
+// Where a subagent's notification lands: its parent's transcript — for a
+// subagent's own subagent, the parent subagent's file, not the agent's.
+function notificationFile(agent: AgentState, id: string): string | null {
+  const parentId = readSubagentMeta(agent, id)?.parentAgentId;
+  if (typeof parentId === "string" && parentId) return subagentTranscriptFile(agent, parentId);
+  try {
+    return locateTranscript(agent);
+  } catch {
+    return null;
+  }
+}
+
+// The complete lines a transcript gained since the last look (the last 1MB
+// on the first). A line still being written is left for the next look, so a
+// notification flushed in two parts is never skipped over.
+function newLines(file: string): string[] {
+  let size: number;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return [];
+  }
+  let from = scanned.get(file) ?? Math.max(0, size - NOTIFICATION_TAIL_BYTES);
+  if (from > size) from = Math.max(0, size - NOTIFICATION_TAIL_BYTES); // replaced or truncated
+  if (size <= from) return [];
+  const buf = readRange(file, from, size);
+  const end = buf.lastIndexOf(0x0a);
+  if (end === -1) return [];
+  scanned.set(file, from + end + 1);
+  return buf.subarray(0, end).toString("utf8").split("\n");
+}
+
+// Only a notification written after the record started counts: a background
+// subagent resumes under the same id, and every earlier run's notification
+// stays in the transcript. A line with no timestamp (cut by the window) is
+// ignored rather than trusted. Pure.
+export function completionAfter(lines: string[], id: string, startedAt: string): { status: string; summary?: string } | null {
+  const tag = `<task-id>${id}</task-id>`;
+  const since = Date.parse(startedAt);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.includes(tag)) continue;
+    const at = entryTimestamp(line);
+    if (at === null || at <= since) continue;
+    const ended = completionIn(line, id);
+    if (ended) return ended;
+  }
+  return null;
+}
+
+function entryTimestamp(line: string): number | null {
+  try {
+    const stamp = JSON.parse(line)?.timestamp;
+    return typeof stamp === "string" ? Date.parse(stamp) : null;
+  } catch {
+    return null;
+  }
 }
 
 // A subagent killed with its parent's turn (an interrupt, a restart) writes
@@ -600,8 +651,7 @@ function diedMidTurn(agent: AgentState, id: string, now = Date.now()): { status:
     return null;
   }
   if (now - mtime < DEAD_AFTER_MS) return null;
-  const tail = readRange(file, Math.max(0, size - 64_000), size);
-  const last = lastEntryType(tail);
+  const last = lastEntryType(readRange(file, Math.max(0, size - 64_000), size).toString("utf8"));
   if (last !== "user") return null;
   return { status: "stopped", summary: "stopped mid-turn — no reply to its last tool result" };
 }
@@ -620,12 +670,12 @@ export function lastEntryType(jsonlTail: string): string | null {
   return null;
 }
 
-function readRange(file: string, from: number, to: number): string {
+function readRange(file: string, from: number, to: number): Buffer {
   const fd = openSync(file, "r");
   try {
     const buf = Buffer.alloc(to - from);
     readSync(fd, buf, 0, buf.length, from);
-    return buf.toString("utf8");
+    return buf;
   } finally {
     closeSync(fd);
   }
