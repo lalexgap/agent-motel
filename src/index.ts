@@ -94,7 +94,11 @@ usage:
                               am ls unless --rm; exit 1 if blocked/timed out;
                               --in-place works in the caller's checkout:
                               am run x --role engineer --in-place -m "...")
-  am resume <name> [-m msg]   restart an exited agent, resuming its conversation
+  am resume <name> [-m msg] [--prefer-subagents | --no-prefer-subagents]
+                              restart an exited agent, resuming its conversation
+                              (--prefer-subagents changes how it fans work out
+                               from here on — stored, and applied to the
+                               resumed session on claude)
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -578,6 +582,11 @@ async function main(): Promise<void> {
       await resumeCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+        preferSubagents: args.flags["prefer-subagents"]
+          ? true
+          : args.flags["no-prefer-subagents"]
+            ? false
+            : undefined,
       });
       break;
     case "ls":
