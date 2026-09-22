@@ -443,8 +443,9 @@ function describeSidechainEntry(entry: Record<string, any>): string | null {
     if (block.type === "text" && block.text?.trim()) {
       described = clipMessage(block.text, ACTIVITY_CHARS);
     } else if (block.type === "tool_use") {
+      // Same shape as the transcript view: the tool and its salient argument.
       const input = typeof block.input === "string" ? block.input : JSON.stringify(block.input ?? "");
-      described = clipMessage(`${block.name ?? "tool"} ${input}`, ACTIVITY_CHARS);
+      described = clipMessage(describeToolCall(block.name ?? "tool", input), ACTIVITY_CHARS);
     }
   }
   return described;
@@ -790,10 +791,12 @@ function entryTimestamp(line: string): number | null {
 // A subagent killed with its parent's turn (an interrupt, a restart) writes
 // no notification and fires no hook. Its own transcript tells: the model
 // answers a tool result within seconds, so a transcript that ends on one and
-// hasn't been touched in minutes is a subagent nobody is running. A tool
+// has been silent for a quarter hour is a subagent nobody is running. A tool
 // call still in flight (a long sleep, a watch) ends on the assistant's turn
-// instead and stays open.
-const DEAD_AFTER_MS = 5 * 60 * 1000;
+// instead and stays open. Generous on purpose: a turn stuck in a rate-limit
+// backoff can go quiet for several minutes, and a stale row is cheaper than
+// hiding a live one.
+const DEAD_AFTER_MS = 15 * 60 * 1000;
 
 function diedMidTurn(agent: AgentState, id: string, now = Date.now()): { status: string; summary: string } | null {
   const file = subagentTranscriptFile(agent, id);
