@@ -24,6 +24,8 @@ export interface SubagentRole {
   description: string;
   instructions: string;
   models?: Partial<Record<Provider, string>>;
+  // Left off, the subagent inherits the effort of the session that spawned it.
+  efforts?: Partial<Record<Provider, string>>;
 }
 
 // The two halves of the work an agent used to hand to other am agents, plus
@@ -34,6 +36,7 @@ const ENGINEER: SubagentRole = {
   description:
     "Implements a settled piece of work end to end — code, verification, commit when asked — and reports once. Use when the thinking is done and the work is the typing.",
   models: { claude: "opus", codex: "gpt-5.6-sol" },
+  efforts: { claude: "medium", codex: "medium" },
   instructions: `You are an implementation engineer. The caller has done the thinking and handed you a concrete piece of work. Land it — code, verification, commit and PR when one is wanted — and report back in one message. Round trips are expensive: finish the job rather than checking in.
 
 How to work:
@@ -57,7 +60,8 @@ const REVIEWER: SubagentRole = {
   name: "reviewer",
   description:
     "Reviews a PR, branch, or working tree for real bugs and reports severity-tagged findings without changing anything. Use before calling work done, especially work another agent wrote.",
-  models: { claude: "fable", codex: "gpt-6-astra" },
+  models: { claude: "opus", codex: "gpt-5.6-sol" },
+  efforts: { claude: "high", codex: "high" },
   instructions: `You are a code reviewer. You were handed a PR, a branch, or a working tree. Read it, judge it, and report your findings in one message. You review — you don't fix: no edits, no commits, no pushes, no merges, and no changes to a PR's state unless the brief explicitly tells you to post comments.
 
 Establishing the target:
@@ -90,7 +94,8 @@ const SHEPHERD: SubagentRole = {
   name: "shepherd",
   description:
     "Takes one pull request to merge-ready with the shepherd-pr skill — conflicts, review findings, CI — and never merges. Use right after a draft PR is opened.",
-  models: { claude: "opus", codex: "gpt-5.6-sol" },
+  models: { claude: "sonnet", codex: "gpt-5.6-luna" },
+  efforts: { claude: "medium", codex: "medium" },
   instructions: `You are a PR shepherd. Your entire job is to take one pull request to merge-ready and keep it there, using the shepherd-pr skill (/shepherd-pr) — invoke it rather than reimplementing its steps by hand.
 
 Your task names the PR (number or URL). Shepherd that PR and only that PR.
@@ -128,15 +133,18 @@ export function exportableRoles(custom: AgentRole[] = listRoles()): SubagentRole
 export function renderClaudeAgent(role: SubagentRole): string {
   const lines = ["---", `name: ${role.name}`, `description: ${yamlString(role.description)}`];
   if (role.models?.claude) lines.push(`model: ${role.models.claude}`);
+  if (role.efforts?.claude) lines.push(`effort: ${role.efforts.claude}`);
   lines.push("---", "", role.instructions.trim(), "");
   return lines.join("\n");
 }
 
 // Codex: a TOML table. Any other config.toml key is allowed in the file too;
-// only the model rides along, the rest is the user's to add by hand.
+// only the model and its effort ride along, the rest is the user's to add by
+// hand.
 export function renderCodexAgent(role: SubagentRole): string {
   const lines = [`name = ${tomlString(role.name)}`, `description = ${tomlString(role.description)}`];
   if (role.models?.codex) lines.push(`model = ${tomlString(role.models.codex)}`);
+  if (role.efforts?.codex) lines.push(`model_reasoning_effort = ${tomlString(role.efforts.codex)}`);
   lines.push(`developer_instructions = ${tomlMultiline(role.instructions.trim())}`, "");
   return lines.join("\n");
 }
