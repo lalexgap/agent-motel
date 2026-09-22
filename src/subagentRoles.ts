@@ -124,7 +124,6 @@ export function exportableRoles(custom: AgentRole[] = listRoles()): SubagentRole
       description: role.description ?? `Custom role "${role.name}"`,
       instructions: role.instructions,
       models: role.models,
-      efforts: role.efforts,
     });
   }
   return [...byName.values()];
