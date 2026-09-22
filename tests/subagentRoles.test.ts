@@ -35,10 +35,18 @@ afterEach(() => {
 });
 
 describe("shipped subagent roles", () => {
-  test("engineer, reviewer and shepherd ship with strong-model defaults", () => {
+  test("each role ships with the model and effort its work needs", () => {
     expect(SHIPPED_SUBAGENT_ROLES.map((r) => r.name)).toEqual(["engineer", "reviewer", "shepherd"]);
-    const reviewer = SHIPPED_SUBAGENT_ROLES.find((r) => r.name === "reviewer")!;
-    expect(reviewer.models).toEqual({ claude: "fable", codex: "gpt-6-astra" });
+    const byName = new Map(SHIPPED_SUBAGENT_ROLES.map((r) => [r.name, r]));
+    // Reviewing is the judgement call, so it gets the effort; shepherding is
+    // process, so it gets the cheap model and the session's own effort.
+    expect(byName.get("engineer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
+    expect(byName.get("engineer")!.efforts).toEqual({ claude: "medium", codex: "medium" });
+    expect(byName.get("reviewer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
+    expect(byName.get("reviewer")!.efforts).toEqual({ claude: "high", codex: "high" });
+    expect(byName.get("shepherd")!.models).toEqual({ claude: "sonnet", codex: "gpt-5.6-luna" });
+    expect(byName.get("shepherd")!.efforts).toBeUndefined();
+    const reviewer = byName.get("reviewer")!;
     // review-loop scans for line-initial severity tags and the Verdict line.
     const lines = reviewer.instructions.split("\n");
     expect(lines.filter((line) => /^\[(high|medium|low)\]/.test(line))).toHaveLength(1);
@@ -75,11 +83,12 @@ describe("rendering", () => {
     description: 'Reviews "carefully"',
     instructions: "Line one.\nLine two with a 'quote'.",
     models: { claude: "fable", codex: "gpt-6-astra" },
+    efforts: { claude: "high", codex: "high" },
   };
 
-  test("claude: frontmatter with the model, prompt as the body", () => {
+  test("claude: frontmatter with the model and effort, prompt as the body", () => {
     const md = renderClaudeAgent(role);
-    expect(md.startsWith("---\nname: reviewer\ndescription: \"Reviews \\\"carefully\\\"\"\nmodel: fable\n---\n")).toBe(true);
+    expect(md.startsWith("---\nname: reviewer\ndescription: \"Reviews \\\"carefully\\\"\"\nmodel: fable\neffort: high\n---\n")).toBe(true);
     expect(md).toEndWith("Line one.\nLine two with a 'quote'.\n");
   });
 
@@ -87,6 +96,7 @@ describe("rendering", () => {
     const toml = renderCodexAgent(role);
     expect(toml).toContain('name = "reviewer"');
     expect(toml).toContain('model = "gpt-6-astra"');
+    expect(toml).toContain('model_reasoning_effort = "high"');
     expect(toml).toContain("developer_instructions = '''\nLine one.\nLine two with a 'quote'.\n'''");
   });
 
@@ -98,6 +108,11 @@ describe("rendering", () => {
   test("no model pin means no model line", () => {
     expect(renderClaudeAgent({ ...role, models: undefined })).not.toContain("model:");
     expect(renderCodexAgent({ ...role, models: undefined })).not.toContain("model =");
+  });
+
+  test("no effort pin means no effort line, so the subagent inherits the session's", () => {
+    expect(renderClaudeAgent({ ...role, efforts: undefined })).not.toContain("effort:");
+    expect(renderCodexAgent({ ...role, efforts: undefined })).not.toContain("model_reasoning_effort");
   });
 });
 

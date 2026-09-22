@@ -16,6 +16,8 @@ export interface AgentRole {
   // or the model family the role's instructions assume.
   provider?: Provider;
   models?: Partial<Record<Provider, string>>;
+  // Reasoning effort per provider, for roles exported as provider subagents.
+  efforts?: Partial<Record<Provider, string>>;
 }
 
 const CONCIERGE_INSTRUCTIONS = `You are the Agent Motel concierge — the front desk for a fleet of coding agents managed by the \`am\` CLI. You run as a managed agent yourself, named "concierge", but your ONLY job is fleet management: answer the operator's questions about the other agents and carry out safe management actions via \`am\` commands in Bash. You are not a coding agent — never edit repositories, write code, or take over another agent's task yourself.
