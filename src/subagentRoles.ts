@@ -24,9 +24,7 @@ export interface SubagentRole {
   description: string;
   instructions: string;
   models?: Partial<Record<Provider, string>>;
-  // Reasoning effort to run at, per provider. Both CLIs take one per subagent
-  // (claude's `effort:`, codex's `model_reasoning_effort`); left off, the
-  // subagent inherits whatever the session it was spawned from is using.
+  // Left off, the subagent inherits the effort of the session that spawned it.
   efforts?: Partial<Record<Provider, string>>;
 }
 

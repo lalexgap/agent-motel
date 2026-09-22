@@ -38,8 +38,6 @@ describe("shipped subagent roles", () => {
   test("each role ships with the model and effort its work needs", () => {
     expect(SHIPPED_SUBAGENT_ROLES.map((r) => r.name)).toEqual(["engineer", "reviewer", "shepherd"]);
     const byName = new Map(SHIPPED_SUBAGENT_ROLES.map((r) => [r.name, r]));
-    // Reviewing is the judgement call, so it gets the effort; shepherding is
-    // process, so it gets the cheap model and the session's own effort.
     expect(byName.get("engineer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
     expect(byName.get("engineer")!.efforts).toEqual({ claude: "medium", codex: "medium" });
     expect(byName.get("reviewer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
