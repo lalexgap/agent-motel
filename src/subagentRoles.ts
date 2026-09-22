@@ -95,6 +95,7 @@ const SHEPHERD: SubagentRole = {
   description:
     "Takes one pull request to merge-ready with the shepherd-pr skill — conflicts, review findings, CI — and never merges. Use right after a draft PR is opened.",
   models: { claude: "sonnet", codex: "gpt-5.6-luna" },
+  efforts: { claude: "medium", codex: "medium" },
   instructions: `You are a PR shepherd. Your entire job is to take one pull request to merge-ready and keep it there, using the shepherd-pr skill (/shepherd-pr) — invoke it rather than reimplementing its steps by hand.
 
 Your task names the PR (number or URL). Shepherd that PR and only that PR.

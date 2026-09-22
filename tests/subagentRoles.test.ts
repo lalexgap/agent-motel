@@ -43,7 +43,7 @@ describe("shipped subagent roles", () => {
     expect(byName.get("reviewer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
     expect(byName.get("reviewer")!.efforts).toEqual({ claude: "high", codex: "high" });
     expect(byName.get("shepherd")!.models).toEqual({ claude: "sonnet", codex: "gpt-5.6-luna" });
-    expect(byName.get("shepherd")!.efforts).toBeUndefined();
+    expect(byName.get("shepherd")!.efforts).toEqual({ claude: "medium", codex: "medium" });
     const reviewer = byName.get("reviewer")!;
     // review-loop scans for line-initial severity tags and the Verdict line.
     const lines = reviewer.instructions.split("\n");

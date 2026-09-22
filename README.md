@@ -128,7 +128,7 @@ Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to 
 
 #### Roles as the providers' own subagents
 
-Agents delegate to built-in subagents, and both providers let you define those by file — so am writes its roles there too. Three ship with am: `engineer` (implements a settled brief and reports once; opus / gpt-5.6-sol at medium effort), `reviewer` (severity-tagged findings and a `Verdict:` line, never edits; opus / gpt-5.6-sol at high effort), and `shepherd` (takes a PR to merge-ready with the shepherd-pr skill, never merges; sonnet / gpt-5.6-luna, inheriting the session's effort). Every custom role is exported alongside them, and a custom role with a shipped name replaces it.
+Agents delegate to built-in subagents, and both providers let you define those by file — so am writes its roles there too. Three ship with am: `engineer` (implements a settled brief and reports once; opus / gpt-5.6-sol at medium effort), `reviewer` (severity-tagged findings and a `Verdict:` line, never edits; opus / gpt-5.6-sol at high effort), and `shepherd` (takes a PR to merge-ready with the shepherd-pr skill, never merges; sonnet / gpt-5.6-luna at medium effort). Every custom role is exported alongside them, and a custom role with a shipped name replaces it.
 
 ```sh
 am role export             # ~/.claude/agents/<name>.md and ~/.codex/agents/<name>.toml
