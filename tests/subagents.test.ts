@@ -467,7 +467,7 @@ describe("subagentActivity", () => {
 
     const activity = subagentActivity(agent, [record("sub-a"), record("sub-b")]);
     expect(activity.get("sub-a")).toBe("Found it in hook.ts");
-    expect(activity.get("sub-b")).toContain("Read");
+    expect(activity.get("sub-b")).toBe("Read(/tmp/x)");
     // The parent's own turns are in a different file and never leak in.
     expect([...activity.values()].some((v) => v.includes("parent"))).toBe(false);
   });
@@ -584,7 +584,7 @@ describe("subagentActivity", () => {
       sleeping: [JSON.stringify({ type: "user", message: { content: "go" } }), JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "sleep 1700" } }] } })],
       fresh: [JSON.stringify({ type: "user", message: { content: "go" } })],
     });
-    const old = new Date(Date.now() - 10 * 60 * 1000);
+    const old = new Date(Date.now() - 20 * 60 * 1000);
     for (const id of ["dead", "sleeping"]) utimesSync(join(home, "session", "subagents", `agent-${id}.jsonl`), old, old);
     for (const id of ["dead", "sleeping", "fresh"]) recordSubagentStart("api", { id, type: "general-purpose" });
 
