@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { nestPickerItems } from "../src/picker";
 import {
   createEventPump,
   hostRenderState,
@@ -295,11 +296,43 @@ describe("subagent rows", () => {
     expect(splitSubagentKey("server:api")).toBeNull();
   });
 
-  test("an agent's own row no longer nests under whoever spawned it", () => {
+  test("AM agents nest under their spawner with a distinct badge and remain attachable", () => {
     const item = fleetPickerItem(row);
-    expect(item.parent).toBeUndefined();
-    // Still a fact on the card.
+    expect(item.parent).toBe("server:lead");
+    expect(item.badge).toBe("am · cld");
+    expect(item.attachable).not.toBe(false);
     expect(item.meta?.some((line) => line.startsWith("parent   lead"))).toBe(true);
+  });
+
+  test("AM and native children share a tree, including deeper AM descendants", () => {
+    const lead = { ...row, name: "lead", spawnedBy: undefined };
+    const child = { ...row, name: "child", spawnedBy: "api" };
+    const items = nestPickerItems([
+      fleetPickerItem(child), fleetPickerItem(row), fleetPickerItem(lead),
+      ...subagentPickerItems(lead), ...subagentPickerItems(row),
+    ]);
+    expect(items.map((item) => [item.name, item.depth ?? 0])).toEqual([
+      ["server:lead", 0], ["server:api", 1], ["server:child", 2],
+      [subagentKey("server:api", "aaaa1111bbbb"), 2],
+      [subagentKey("server:api", "cccc2222dddd"), 2],
+      [subagentKey("server:lead", "aaaa1111bbbb"), 1],
+      [subagentKey("server:lead", "cccc2222dddd"), 1],
+    ]);
+  });
+
+  test("local parents resolve locally, and missing or other-host parents leave rows visible", () => {
+    expect(fleetPickerItem({ ...row, host: undefined }).parent).toBe("lead");
+    const items = nestPickerItems([
+      fleetPickerItem({ ...row, name: "lead", host: undefined, spawnedBy: undefined }),
+      fleetPickerItem(row),
+    ]);
+    expect(items.every((item) => !item.depth)).toBe(true);
+  });
+
+  test("concierge-created agents remain top-level", () => {
+    const item = fleetPickerItem({ ...row, spawnedBy: "concierge" });
+    expect(item.parent).toBeUndefined();
+    expect(item.badge).toBe("cld");
   });
 
   test("a remote host that predates running records yields no rows", () => {
