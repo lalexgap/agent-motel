@@ -7,7 +7,7 @@ import { cliEntrypoint } from "../settings";
 import { cachedRemoteRow, fleetPickerItems, splitFleetKey, splitSubagentKey, subagentKey, startFleetEventWatch, subscribeFleetCache, toggleGroupMode, toggleSortMode } from "../fleet";
 import { sshAm, sshAmAsync, sshAmTtyCommand, sshRun } from "../remote";
 import { loadConfig, shortHost } from "../config";
-import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./fleetActions";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler, restartHandler } from "./fleetActions";
 import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -264,6 +264,7 @@ export function uiCommand(): void {
 export async function sidebarCommand(): Promise<void> {
   let shown: string | null = null;
   let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  const restarting = new Set<string>();
   await ensureDaemon();
 
   // Point the right pane at an agent (key = name, or host:name for remote).
@@ -292,6 +293,7 @@ export async function sidebarCommand(): Promise<void> {
   };
 
   const showAgent = (key: string, focus: boolean): Feedback | null => {
+    if (restarting.has(key)) return { text: `restarting ${key}…`, level: "info" };
     const sub = splitSubagentKey(key);
     if (sub) return showSubagent(sub.agentKey, sub.id, focus);
     const { host, name } = splitFleetKey(key);
@@ -408,6 +410,19 @@ export async function sidebarCommand(): Promise<void> {
     select: (key: string) => {
       clearTimeout(highlightTimer);
       return showAgent(key, true);
+    },
+    restart: async (key: string) => {
+      if (restarting.has(key)) return { text: `already restarting ${key}`, level: "info" };
+      restarting.add(key);
+      try {
+        return await restartHandler(key);
+      } finally {
+        restarting.delete(key);
+        if (shown === key) {
+          shown = null;
+          showAgent(key, false);
+        }
+      }
     },
     stop: (key: string) => {
       const { host, name } = splitFleetKey(key);

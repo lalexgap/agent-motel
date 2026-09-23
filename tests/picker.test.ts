@@ -276,6 +276,9 @@ describe("renamedPickerKey", () => {
 });
 
 describe("editMenuHelp", () => {
+  test("surfaces restart in the selected-agent actions", () => {
+    expect(editMenuHelp({ restart: () => "ok" })).toContain("b restart");
+  });
   test("surfaces rename in the selected-agent actions", () => {
     expect(editMenuHelp({ rename: () => "ok" })).toContain("n rename");
   });

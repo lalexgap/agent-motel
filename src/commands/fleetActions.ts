@@ -1,11 +1,35 @@
 import { loadConfig } from "../config";
-import { splitFleetKey } from "../fleet";
+import { refreshHost, splitFleetKey } from "../fleet";
 import { sshAm, sshAmAsync } from "../remote";
 import type { Feedback } from "../picker";
 import { renameCachedRemoteAgent } from "../fleet";
 import { cdAgent, defaultMoveTarget, moveAgent } from "./move";
 import { handoffAgent } from "./handoff";
 import { renameAgent } from "./rename";
+import { resolveAgent } from "../state";
+import { reviveAgent } from "./resume";
+
+const restarting = new Set<string>();
+
+export async function restartHandler(key: string): Promise<Feedback> {
+  if (restarting.has(key)) return { text: `already restarting ${key}`, level: "info" };
+  restarting.add(key);
+  try {
+    const { host, name } = splitFleetKey(key);
+    if (!name) return { text: "host unreachable", level: "error" };
+    if (host) {
+      const result = await sshAmAsync(host, ["restart", name], { timeoutMs: 120000 });
+      await refreshHost(host, { force: true });
+      return result.exitCode === 0
+        ? `restarted ${name} on ${host}`
+        : { text: `restart failed: ${(result.stderr || result.stdout).trim()}`, level: "error" };
+    }
+    await reviveAgent(resolveAgent(name), { restart: true });
+    return `restarted ${name}`;
+  } finally {
+    restarting.delete(key);
+  }
+}
 
 // The sidebar/picker `m` and `h` actions, shared by both UIs. These can take
 // seconds (ssh, scp, spawning agents); the picker paints "moving …" first

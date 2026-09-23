@@ -176,6 +176,7 @@ am search "rate limit"             # search agent conversations
 am handoff api --to codex          # continue with the other provider
 am stop api                        # stop but keep resumable state
 am resume api                      # restart the same conversation
+am restart api                     # stop and relaunch, keeping the conversation (sidebar: e b)
 am rename api api-v2               # rename live or stopped; old name stays an alias
 am rm api                          # remove an agent; state remains restorable
 am restore api                     # restore a removed agent
