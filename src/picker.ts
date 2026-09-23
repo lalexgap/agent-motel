@@ -144,6 +144,7 @@ export function asFeedback(f: Feedback | null | undefined): FeedbackResult | nul
 export interface PickerHandlers {
   // Each returns a feedback message shown as a banner under the header.
   stop?: (name: string) => Feedback;
+  restart?: (name: string) => Feedback | Promise<Feedback>;
   remove?: (name: string) => Feedback;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
@@ -751,6 +752,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.rename ? [{ key: "n", label: "rename" }] : []),
       ...(handlers.cd ? [{ key: "r", label: "cd" }] : []),
       ...(handlers.stop ? [{ key: "x", label: "stop" }] : []),
+      ...(handlers.restart ? [{ key: "b", label: "restart" }] : []),
       ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
       { key: "esc", label: "back" },
     ];
@@ -844,7 +846,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
 }
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
-  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.remove);
+  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.restart || handlers.remove);
 }
 
 // The edit menu's footer line, built from whichever actions are wired.
@@ -856,6 +858,7 @@ export function editMenuHelp(handlers: PickerHandlers): string {
     handlers.rename && "n rename",
     handlers.cd && "r cd",
     handlers.stop && "x stop",
+    handlers.restart && "b restart",
     handlers.remove && "d remove",
   ].filter(Boolean);
   return [...keys, "esc back"].join(" · ");
@@ -1121,6 +1124,7 @@ export async function pick(
       target && handlers.rename && { id: "rename", label: `Rename ${name}`, keywords: "name identity alias", shortcut: "e n" },
       target && handlers.cd && { id: "cd", label: `Change directory for ${name}`, keywords: "relocate path", shortcut: "e r" },
       target && handlers.stop && { id: "stop", label: `Stop ${name}`, keywords: "exit kill", shortcut: "e x" },
+      target && handlers.restart && { id: "restart", label: `Restart ${name}`, keywords: "reboot relaunch resume", shortcut: "e b" },
       target && handlers.remove && { id: "remove", label: `Remove ${name}…`, keywords: "delete destroy", shortcut: "e d" },
       { id: "help", label: "Show keyboard shortcuts", keywords: "help keys", shortcut: "?" },
       {
@@ -2063,6 +2067,10 @@ export async function pick(
           mode = "list";
           if (handlers.stop) runAction(handlers.stop);
           break;
+        case "restart":
+          mode = "list";
+          if (handlers.restart) runDeferred("restarting", handlers.restart);
+          break;
         case "remove":
           if (actionable(target) && handlers.remove) {
             mode = "edit";
@@ -2293,6 +2301,9 @@ export async function pick(
         } else if (key === "x" && handlers.stop) {
           mode = "list";
           runAction(handlers.stop);
+        } else if (key === "b" && handlers.restart) {
+          mode = "list";
+          runDeferred("restarting", handlers.restart);
         } else if (key === "d" && handlers.remove) {
           // twice on the same item to confirm
           if (pending === target.name) {

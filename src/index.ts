@@ -30,7 +30,7 @@ import { searchCommand } from "./commands/search";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
-import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./commands/fleetActions";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler, restartHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
 import { resolveTask } from "./task";
@@ -90,6 +90,7 @@ usage:
                               --in-place works in the caller's checkout:
                               am run x --in-place -m "...")
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
+  am restart <name>          stop and relaunch an agent, resuming its conversation
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -309,7 +310,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
-  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd", "rename",
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
   "report", "comms", "wait", "peek", "subagents",
 ]);
 
@@ -456,6 +457,7 @@ async function pickerFlow(): Promise<void> {
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
+    restart: restartHandler,
     rename: renameHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
     resort: () => {
@@ -569,7 +571,9 @@ async function main(): Promise<void> {
       break;
     }
     case "resume":
+    case "restart":
       await resumeCommand(requirePositional(args, 0, "agent name"), {
+        restart: command === "restart",
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
       });
