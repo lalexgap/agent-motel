@@ -265,7 +265,7 @@ describe("sortFleetRows", () => {
 });
 
 describe("fleetPickerItem spawned-by relationship", () => {
-  test("shows who spawned it on the card without nesting it under them", () => {
+  test("shows who spawned it on the card and nests it under them", () => {
     const base = {
       name: "child",
       spawnedBy: "parent",
@@ -276,9 +276,9 @@ describe("fleetPickerItem spawned-by relationship", () => {
       dir: "/tmp/app",
     } as const;
 
-    expect(fleetPickerItem(base as never).parent).toBeUndefined();
+    expect(fleetPickerItem(base as never).parent).toBe("parent");
     const remote = fleetPickerItem({ ...base, host: "server" } as never);
-    expect(remote.parent).toBeUndefined();
+    expect(remote.parent).toBe("server:parent");
     expect(remote.meta).toContain("parent   parent");
   });
 
