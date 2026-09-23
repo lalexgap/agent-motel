@@ -474,12 +474,11 @@ function diffDetail(row: FleetRow): string {
 export function fleetPickerItem(r: FleetRow): PickerItem {
   const concierge = conciergeRow(r);
   const since = relativeTime(r.statusChangedAt ?? r.updatedAt);
-  // Who created it is a fact for the card, not a tree: agents no longer
-  // spawn agents, and what nests under a row is its built-in subagents.
-  // The concierge creates workers for the operator, so it isn't shown at all.
+  // Concierge-created workers stay at the top level.
   const spawnedBy = r.spawnedBy === CONCIERGE_NAME ? undefined : r.spawnedBy;
   return {
     name: fleetKey(r),
+    parent: spawnedBy ? fleetKey({ host: r.host, name: spawnedBy }) : undefined,
     section: sectionFor(r, groupMode),
     secondary: r.status === "exited",
     icon: STATUS_ICONS[r.status],
@@ -489,7 +488,7 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
     label: concierge?.label ?? r.name,
     labelStyle: concierge?.labelStyle ?? (r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG),
     role: r.role,
-    badge: r.provider === "codex" ? "cdx" : "cld",
+    badge: `${spawnedBy ? "am · " : ""}${r.provider === "codex" ? "cdx" : "cld"}`,
     badgeStyle: r.provider === "codex" ? MUTED : PURPLE,
     badgeSelectedStyle: r.provider === "codex" ? BLUE : PURPLE,
     queueDepth: r.queued,
