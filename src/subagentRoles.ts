@@ -35,7 +35,7 @@ const ENGINEER: SubagentRole = {
   name: "engineer",
   description:
     "Implements a settled piece of work end to end — code, verification, commit when asked — and reports once. Use when the thinking is done and the work is the typing.",
-  models: { claude: "opus", codex: "gpt-5.6-sol" },
+  models: { claude: "claude-opus-5-5", codex: "gpt-5.6-sol" },
   efforts: { claude: "medium", codex: "medium" },
   instructions: `You are an implementation engineer. The caller has done the thinking and handed you a concrete piece of work. Land it — code, verification, commit and PR when one is wanted — and report back in one message. Round trips are expensive: finish the job rather than checking in.
 
@@ -60,7 +60,7 @@ const REVIEWER: SubagentRole = {
   name: "reviewer",
   description:
     "Reviews a PR, branch, or working tree for real bugs and reports severity-tagged findings without changing anything. Use before calling work done, especially work another agent wrote.",
-  models: { claude: "opus", codex: "gpt-5.6-sol" },
+  models: { claude: "claude-opus-5-5", codex: "gpt-5.6-sol" },
   efforts: { claude: "high", codex: "high" },
   instructions: `You are a code reviewer. You were handed a PR, a branch, or a working tree. Read it, judge it, and report your findings in one message. You review — you don't fix: no edits, no commits, no pushes, no merges, and no changes to a PR's state unless the brief explicitly tells you to post comments.
 
@@ -94,7 +94,7 @@ const SHEPHERD: SubagentRole = {
   name: "shepherd",
   description:
     "Takes one pull request to merge-ready with the shepherd-pr skill — conflicts, review findings, CI — and never merges. Use right after a draft PR is opened.",
-  models: { claude: "sonnet", codex: "gpt-5.6-luna" },
+  models: { claude: "claude-opus-5-5", codex: "gpt-5.6-luna" },
   efforts: { claude: "medium", codex: "medium" },
   instructions: `You are a PR shepherd. Your entire job is to take one pull request to merge-ready and keep it there, using the shepherd-pr skill (/shepherd-pr) — invoke it rather than reimplementing its steps by hand.
 
