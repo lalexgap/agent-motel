@@ -263,6 +263,7 @@ export function uiCommand(): void {
 // focus into it. Runs until ctrl-c, which tears down the whole hub.
 export async function sidebarCommand(): Promise<void> {
   let shown: string | null = null;
+  let displayed: string | null = null;
   let highlightTimer: ReturnType<typeof setTimeout> | undefined;
   const restarting = new Set<string>();
   await ensureDaemon();
@@ -288,6 +289,7 @@ export async function sidebarCommand(): Promise<void> {
       if (respawned.exitCode !== 0) return { text: `subagent view failed: ${respawned.stderr.trim()}`, level: "error" };
       shown = key;
     }
+    displayed = key;
     if (focus) tmux("select-pane", "-t", pane);
     return null;
   };
@@ -302,7 +304,9 @@ export async function sidebarCommand(): Promise<void> {
 
     if (host) {
       if (!name) {
+        shown = null;
         tmux("respawn-pane", "-k", "-t", pane, messageCommand(`${host} unreachable`));
+        displayed = key;
         return null;
       }
       // Remote agent: the pane runs ssh -t into a nested remote attach. Dead
@@ -314,13 +318,16 @@ export async function sidebarCommand(): Promise<void> {
         if (!focus) {
           tmux("respawn-pane", "-k", "-t", pane,
             messageCommand(`${name}@${shortHost(host)}: no live session (${row.status})`));
+          displayed = key;
           return null;
         }
         tmux("respawn-pane", "-k", "-t", pane, messageCommand(`reviving ${name} on ${host}…`));
+        displayed = key;
         const revived = sshAm(host, ["resume", name]);
         if (revived.exitCode !== 0) {
           tmux("respawn-pane", "-k", "-t", pane,
             messageCommand(`remote revive failed: ${revived.stderr.trim()}`));
+          displayed = key;
           return { text: `remote revive failed: ${revived.stderr.trim()}`, level: "error" };
         }
       }
@@ -353,6 +360,7 @@ export async function sidebarCommand(): Promise<void> {
         if (respawned.exitCode !== 0) return { text: `remote attach failed: ${respawned.stderr.trim()}`, level: "error" };
         shown = key;
       }
+      displayed = key;
       if (focus) tmux("select-pane", "-t", pane);
       return null;
     }
@@ -365,10 +373,12 @@ export async function sidebarCommand(): Promise<void> {
       if (!focus) {
         tmux("respawn-pane", "-k", "-t", pane,
           messageCommand(`${name}: no live session (${displayStatus(agent)})`));
+        displayed = key;
         return null;
       }
       // Enter on a dead agent revives it, then re-enters to attach the pane.
       tmux("respawn-pane", "-k", "-t", pane, messageCommand(`reviving ${name}…`));
+      displayed = key;
       reviveAgent(agent).then(
         () => showAgent(name, true),
         (error: Error) => {
@@ -376,6 +386,7 @@ export async function sidebarCommand(): Promise<void> {
           if (failPane) {
             tmux("respawn-pane", "-k", "-t", failPane,
               messageCommand(`revive failed: ${error.message}`));
+            displayed = key;
           }
         },
       );
@@ -392,6 +403,7 @@ export async function sidebarCommand(): Promise<void> {
       if (respawned.exitCode !== 0) return { text: `attach failed: ${respawned.stderr.trim()}`, level: "error" };
       shown = key;
     }
+    displayed = key;
     if (focus) {
       tmux("select-pane", "-t", pane);
       recordAttached(name);
@@ -418,7 +430,7 @@ export async function sidebarCommand(): Promise<void> {
         return await restartHandler(key);
       } finally {
         restarting.delete(key);
-        if (shown === key) {
+        if (displayed === key) {
           shown = null;
           showAgent(key, false);
         }

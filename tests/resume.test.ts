@@ -8,10 +8,12 @@ import { reviveAgent } from "../src/commands/resume";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueList } from "../src/queue";
 import { readSubagents, recordSubagentStart } from "../src/subagents";
+import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 
 let testDir: string;
 let agent: AgentState;
 let live: boolean;
+let providerInstalled: boolean;
 let launched: Parameters<typeof tmux.newSession>[0] | undefined;
 let restores: (() => void)[];
 
@@ -26,6 +28,7 @@ beforeEach(() => {
   };
   writeAgent(agent);
   live = true;
+  providerInstalled = true;
   launched = undefined;
   const hasSession = spyOn(tmux, "hasSession").mockImplementation(() => live);
   const killSession = spyOn(tmux, "killSession").mockImplementation(() => { live = false; });
@@ -35,7 +38,8 @@ beforeEach(() => {
     live = true;
   });
   const ensureDaemon = spyOn(daemon, "ensureDaemon").mockResolvedValue(true);
-  restores = [hasSession, killSession, newSession, ensureDaemon].map((mock) => () => mock.mockRestore());
+  const which = spyOn(Bun, "which").mockImplementation(() => providerInstalled ? "/usr/bin/claude" : null);
+  restores = [hasSession, killSession, newSession, ensureDaemon, which].map((mock) => () => mock.mockRestore());
 });
 
 afterEach(() => {
@@ -63,6 +67,30 @@ describe("restart", () => {
     await expect(reviveAgent(agent, { restart: true })).rejects.toThrow("directory no longer exists");
     expect(live).toBe(true);
     expect(launched).toBeUndefined();
+  });
+
+  test("checks the provider before stopping a running agent", async () => {
+    providerInstalled = false;
+    await expect(reviveAgent(agent, { restart: true })).rejects.toThrow("claude is not installed");
+    expect(live).toBe(true);
+    expect(launched).toBeUndefined();
+  });
+
+  test("leaves a running agent alone while queued work is being delivered", async () => {
+    expect(acquireDeliverLock(agent.name)).toBe(true);
+    try {
+      await expect(reviveAgent(agent, { restart: true })).rejects.toThrow("retry restart shortly");
+      expect(live).toBe(true);
+      expect(launched).toBeUndefined();
+    } finally {
+      releaseDeliverLock(agent.name);
+    }
+  });
+
+  test("releases the delivery lock after replacing the session", async () => {
+    await reviveAgent(agent, { restart: true });
+    expect(acquireDeliverLock(agent.name)).toBe(true);
+    releaseDeliverLock(agent.name);
   });
 
   test("also relaunches stopped agents", async () => {
