@@ -18,7 +18,7 @@ export interface ResumeOpts {
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
 export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Promise<void> {
-  if (!opts.restart && hasSession(agent.tmuxSession)) return; // already live
+  if (!opts.restart && hasSession(agent.tmuxSession)) return;
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   const provider = agentProvider(agent);
