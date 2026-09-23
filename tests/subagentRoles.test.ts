@@ -38,11 +38,11 @@ describe("shipped subagent roles", () => {
   test("each role ships with the model and effort its work needs", () => {
     expect(SHIPPED_SUBAGENT_ROLES.map((r) => r.name)).toEqual(["engineer", "reviewer", "shepherd"]);
     const byName = new Map(SHIPPED_SUBAGENT_ROLES.map((r) => [r.name, r]));
-    expect(byName.get("engineer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
+    expect(byName.get("engineer")!.models).toEqual({ claude: "claude-opus-5-5", codex: "gpt-5.6-sol" });
     expect(byName.get("engineer")!.efforts).toEqual({ claude: "medium", codex: "medium" });
-    expect(byName.get("reviewer")!.models).toEqual({ claude: "opus", codex: "gpt-5.6-sol" });
+    expect(byName.get("reviewer")!.models).toEqual({ claude: "claude-opus-5-5", codex: "gpt-5.6-sol" });
     expect(byName.get("reviewer")!.efforts).toEqual({ claude: "high", codex: "high" });
-    expect(byName.get("shepherd")!.models).toEqual({ claude: "sonnet", codex: "gpt-5.6-luna" });
+    expect(byName.get("shepherd")!.models).toEqual({ claude: "claude-opus-5-5", codex: "gpt-5.6-luna" });
     expect(byName.get("shepherd")!.efforts).toEqual({ claude: "medium", codex: "medium" });
     const reviewer = byName.get("reviewer")!;
     // review-loop scans for line-initial severity tags and the Verdict line.
