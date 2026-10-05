@@ -5,6 +5,7 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { tryAcquireFileLock, withFileLock } from "./filelock";
 
 const heldLocks = new Map<string, () => void>();
+const heldProducerLocks = new Map<string, () => void>();
 export const HANDOFF_LEASE_MS = 180_000;
 
 interface HandoffLease { token: string; expiresAt: number }
@@ -55,6 +56,23 @@ export function withMailboxWrite<T>(name: string, fn: () => T): T {
   };
   try { return check(); }
   finally { release(); }
+}
+
+export function acquireProducerLock(name: string): boolean {
+  const path = producerLockPath(name);
+  if (heldProducerLocks.has(path)) return false;
+  const release = tryAcquireFileLock(path);
+  if (!release) return false;
+  heldProducerLocks.set(path, release);
+  return true;
+}
+
+export function releaseProducerLock(name: string): void {
+  const path = producerLockPath(name);
+  const release = heldProducerLocks.get(path);
+  if (!release) return;
+  heldProducerLocks.delete(path);
+  release();
 }
 
 export function mailboxHandoffActive(name: string): boolean {

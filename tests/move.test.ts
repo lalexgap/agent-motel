@@ -10,6 +10,7 @@ import {
   mapHomeDir,
   parseMoveSpec,
   targetTranscriptPath,
+  resolveSourceRemovalFailure,
 } from "../src/commands/move";
 import { fleetKey, fleetPickerItem, sidebarStatus, sortFleetRows, splitFleetKey } from "../src/fleet";
 import { shortHost } from "../src/config";
@@ -246,6 +247,42 @@ describe("importPayload", () => {
     expect(queueHasId("migrated", entry.msgId)).toBe(false);
     exportCommand("migrated", "release", "local-commit");
     expect(await injectCollected(entry, "remote")).toBe(true);
+  });
+
+  test("ambiguous source removal retains the imported destination", () => {
+    const raw = payload(home);
+    const original = (JSON.parse(raw) as { state: AgentState }).state;
+    importPayload(raw);
+    const imported = readAgent("migrated")!;
+    const importedQueue = queueList("migrated");
+
+    const unreachable = resolveSourceRemovalFailure(
+      "migrated", imported, importedQueue, original,
+      { exitCode: 255, stdout: "", stderr: "connection lost" },
+    );
+    expect(unreachable).toEqual({ source: "uncertain", rolledBack: false });
+    expect(readAgent("migrated")).not.toBeNull();
+
+    const committedButErrored = resolveSourceRemovalFailure(
+      "migrated", imported, importedQueue, original,
+      { exitCode: 0, stdout: "[]", stderr: "" },
+    );
+    expect(committedButErrored).toEqual({ source: "gone", rolledBack: false });
+    expect(readAgent("migrated")).not.toBeNull();
+  });
+
+  test("failed source removal rolls back only when the original is confirmed present", () => {
+    const raw = payload(home);
+    const original = (JSON.parse(raw) as { state: AgentState }).state;
+    importPayload(raw);
+    const imported = readAgent("migrated")!;
+    const recovery = resolveSourceRemovalFailure(
+      "migrated", imported, queueList("migrated"), original,
+      { exitCode: 0, stdout: JSON.stringify([original]), stderr: "" },
+    );
+    expect(recovery).toEqual({ source: "present", rolledBack: true });
+    expect(readAgent("migrated")).toBeNull();
+    expect(queueStorageExists("migrated")).toBe(false);
   });
 
   test("remote ingestion stays unacknowledged when the source disappears during handoff", async () => {

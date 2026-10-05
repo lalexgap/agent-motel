@@ -54,6 +54,37 @@ function rollbackImportedAgent(name: string, imported: AgentState, queue: Return
   return true;
 }
 
+interface SourceProbe {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export function sourcePresence(probe: SourceProbe, original: AgentState): "present" | "gone" | "uncertain" {
+  if (probe.exitCode !== 0) return "uncertain";
+  try {
+    const rows = JSON.parse(probe.stdout) as AgentState[];
+    const current = rows.find((row) => row.name === original.name);
+    if (!current) return "gone";
+    return current.createdAt === original.createdAt && current.tmuxSession === original.tmuxSession
+      ? "present"
+      : "gone";
+  } catch {
+    return "uncertain";
+  }
+}
+
+export function resolveSourceRemovalFailure(
+  name: string,
+  imported: AgentState,
+  importedQueue: ReturnType<typeof queueList>,
+  original: AgentState,
+  probe: SourceProbe,
+): { source: "present" | "gone" | "uncertain"; rolledBack: boolean } {
+  const source = sourcePresence(probe, original);
+  return { source, rolledBack: source === "present" && rollbackImportedAgent(name, imported, importedQueue) };
+}
+
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
 // (then --dir is required).
 export function mapHomeDir(path: string, fromHome: string, toHome: string): string | null {
@@ -438,6 +469,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
 
   const handoff = newMsgId();
   let handoffName = name;
+  let failed = false;
   try {
     const exported = await sshAmAsync(host, ["__export", name, "handoff", handoff], { timeoutMs: 20000 });
     if (exported.exitCode !== 0) {
@@ -570,9 +602,15 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       if (!opts.copy && !opts.clone) {
         const removed = await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
         if (removed.exitCode !== 0) {
-          const rolledBack = rollbackImportedAgent(name, imported, importedQueue);
+          const probe = await sshAmAsync(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
+          const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe);
           const detail = (removed.stderr + removed.stdout).trim();
-          throw new Error(`could not remove source agent on ${host}${detail ? `: ${detail}` : ""}${rolledBack ? " (local import rolled back)" : " (local import retained because it changed)"}`);
+          const outcome = recovery.rolledBack
+            ? "source is still present; local import rolled back"
+            : recovery.source === "gone"
+              ? "source is gone or replaced; local import retained"
+              : "source status is uncertain; local import retained";
+          throw new Error(`source removal on ${host} returned an error${detail ? `: ${detail}` : ""} (${outcome})`);
         }
       }
     } finally {
@@ -588,9 +626,16 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       message += " — running";
     }
     return message;
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     const released = await sshAmAsync(host, ["__export", handoffName, "release", handoff], { timeoutMs: 20000 });
-    if (released.exitCode !== 0) throw new Error(`could not release delivery handoff on ${host}: ${(released.stderr + released.stdout).trim()}`);
+    if (released.exitCode !== 0) {
+      const message = `could not release delivery handoff on ${host}: ${(released.stderr + released.stdout).trim()}`;
+      if (!failed) throw new Error(message);
+      console.error(`warning: ${message} (lease will expire automatically)`);
+    }
   }
 }
 
