@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { matchAgent, resolveAgent } from "../state";
 import { queueAppend, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
-import { deliverNext, enterDelayMs } from "../deliver";
+import { acquireDeliverLock, deliverNext, enterDelayMs, releaseDeliverLock } from "../deliver";
 import { attribute, bareName, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
@@ -59,8 +59,10 @@ export async function sendCommand(
   const body = att.body;
 
   if (opts.now) {
+    if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
     // Inject immediately; the TUI's native mid-turn steering handles the rest.
-    sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent) });
+    try { sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent) }); }
+    finally { releaseDeliverLock(agent.name); }
     console.log(`sent to "${agent.name}" (steering current turn)`);
     return;
   }
@@ -89,8 +91,11 @@ export async function interruptCommand(
   const att = attribute(from, agent.name, message, "interrupt");
   if (!att.allowed) return rateLimited(from!, agent.name);
 
-  sendEscape(agent.tmuxSession);
-  await Bun.sleep(400);
-  sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent) });
+  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
+  try {
+    sendEscape(agent.tmuxSession);
+    await Bun.sleep(400);
+    sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent) });
+  } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}" with new message`);
 }

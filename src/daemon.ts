@@ -1,7 +1,7 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
 import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus } from "./state";
-import { queueAppend, queueAppendOnce, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
+import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock } from "./deliver";
@@ -13,6 +13,7 @@ import { attribute, formatEnvelope, recordComms, seenRecently } from "./comms";
 import { collectedSender, type OutboxEntry } from "./outbox";
 import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
+import { mailboxHandoffActive } from "./mailbox";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -51,7 +52,7 @@ export async function injectCollected(entry: OutboxEntry, host: string): Promise
   // the state is merely damaged (quarantined), not gone — defer (no ack)
   // rather than eat mail addressed to a running agent; the remote's TTL
   // bounces it observably if the state never comes back.
-  if (!target) return !hasSession(sessionName(entry.to));
+  if (!target) return !mailboxHandoffActive(entry.to) && !hasSession(sessionName(entry.to));
   const sender = collectedSender(entry.from, entry.fromHost, host);
   if (!acquireDeliverLock(target.name)) return false;
   try {
@@ -69,10 +70,10 @@ export async function injectCollected(entry: OutboxEntry, host: string): Promise
       return false;
     }
     if (entry.msgId) {
-      queueAppendOnce(target.name, att.body, entry.msgId);
+      queueAppendOnceLocked(target.name, att.body, entry.msgId);
       queueRecordReceipt(target.name, entry.msgId);
     } else {
-      queueAppend(target.name, att.body);
+      queueAppendLocked(target.name, att.body);
     }
     if (!entry.msgId || !seenRecently(entry.msgId)) {
       recordComms({ at: new Date().toISOString(), from: sender, to: target.name, body: entry.body, kind: "send", msgId: entry.msgId });

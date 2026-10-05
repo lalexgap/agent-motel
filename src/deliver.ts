@@ -1,65 +1,37 @@
-import { closeSync, existsSync, rmSync } from "node:fs";
+import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
+import { agentProvider, readAgent, type AgentState, type Provider } from "./state";
 import { queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
-import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir, baseDir } from "./paths";
+import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { tryAcquireFileLock, withFileLock } from "./filelock";
+import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
 // new inode while the current holder is still delivering. The kernel releases
 // flock automatically if a holder crashes.
-const deliveryLocks = new Map<string, () => void>();
-
-function lockPath(name: string): string {
-  return join(baseDir(), "locks", `delivery.${name}.lock`);
-}
-
 export function acquireDeliverLock(name: string): boolean {
-  const path = lockPath(name);
-  if (deliveryLocks.has(path)) return false;
-  const release = tryAcquireFileLock(path);
-  if (!release) return false;
-  if (existsSync(handoffPath(name))) {
-    release();
-    return false;
-  }
-  deliveryLocks.set(path, release);
-  return true;
+  return acquireMailboxLock(name);
 }
 
 export function releaseDeliverLock(name: string): void {
-  const path = lockPath(name);
-  const release = deliveryLocks.get(path);
-  if (!release) return;
-  deliveryLocks.delete(path);
-  release();
-}
-
-function handoffPath(name: string): string {
-  return `${lockPath(name)}.handoff`;
+  releaseMailboxLock(name);
 }
 
 // The exporter exits before a pull finishes, so its ingestion barrier must
 // outlive that process. Only the matching handoff can release it.
 export function beginDeliveryHandoff(name: string, token: string): void {
-  if (!deliveryLocks.has(lockPath(name))) throw new Error("handoff requires delivery lock");
-  writeJsonAtomic(handoffPath(name), { token });
+  beginHandoff(name, token);
 }
 
 export function endDeliveryHandoff(name: string, token: string): boolean {
-  return withFileLock(lockPath(name), () => {
-    if (readJsonOrNull<{ token: string }>(handoffPath(name))?.token === token) {
-      rmSync(handoffPath(name), { force: true });
-      return true;
-    }
-    return false;
-  });
+  return endHandoff(name, token);
 }
 
-export { lockPath as __lockPath };
+export function renewDeliveryHandoff(name: string, token: string): boolean { return renewHandoff(name, token); }
+
+export { mailboxLockPath as __lockPath };
 
 export function enterDelayMs(agent: AgentState, message?: string): number | undefined {
   // Codex always drops an Enter that lands in the same key batch as the
@@ -133,7 +105,7 @@ interface PendingDelivery {
 function sessionIncarnation(agent: AgentState): string | null {
   const result = tmux("display-message", "-p", "-t", `=${agent.tmuxSession}`, "#{pid}:#{session_id}:#{session_created}:#{pane_id}:#{pane_pid}");
   if (result.exitCode !== 0 || !result.stdout.trim()) return null;
-  return JSON.stringify([agentProvider(agent), agentSessionId(agent), result.stdout.trim()]);
+  return JSON.stringify([agentProvider(agent), result.stdout.trim()]);
 }
 
 export function pendingDeliveryId(name: string): string | null {

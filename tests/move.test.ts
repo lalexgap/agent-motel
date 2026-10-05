@@ -16,7 +16,8 @@ import { readAgent, type AgentState } from "../src/state";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 import { injectCollected } from "../src/daemon";
 import { removeAgent } from "../src/state";
-import { queueAppendOnce, queueHasId, queueList, queueReceived, queueRecordReceipt } from "../src/queue";
+import { queueAppend, queueAppendOnce, queueHasId, queueList, queueReceived, queueRecordReceipt } from "../src/queue";
+import { handoffPath } from "../src/mailbox";
 
 describe("mapHomeDir", () => {
   test("swaps the home prefix", () => {
@@ -184,6 +185,39 @@ describe("importPayload", () => {
     exportCommand("migrated", "release", "transfer");
     expect(await injectCollected(entry, "remote")).toBe(true);
     expect(queueHasId("migrated", entry.msgId)).toBe(true);
+  });
+
+  test("handoff fences local enqueue after the exported snapshot", () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally { console.log = log; }
+    expect(() => queueAppend("migrated", "late local message")).toThrow(/being moved/);
+    expect(queueList("migrated").map(entry => entry.message)).not.toContain("late local message");
+    exportCommand("migrated", "release", "transfer");
+  });
+
+  test("an expired abandoned handoff can be retried", () => {
+    importPayload(payload(home));
+    writeFileSync(handoffPath("migrated"), JSON.stringify({ token: "dead", expiresAt: Date.now() - 1 }));
+    expect(() => queueAppend("migrated", "after crash")).not.toThrow();
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    releaseDeliverLock("migrated");
+  });
+
+  test("remote ingestion stays unacknowledged when the source disappears during handoff", async () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally { console.log = log; }
+    removeAgent("migrated");
+    const entry = { msgId: "IN_FLIGHT", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "transfer");
   });
 
   test("handoff release works after source removal", () => {

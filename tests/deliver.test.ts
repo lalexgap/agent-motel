@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, __lockPath } from "../src/deliver";
 import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
-import { writeAgent } from "../src/state";
+import { readAgent, writeAgent } from "../src/state";
 import { sendCommand } from "../src/commands/send";
 
 let home: string;
@@ -58,9 +58,10 @@ case "$1" in
       printf '%s' "$6" >> "$AGENTMGR_HOME/input"
       echo text >> "$AGENTMGR_HOME/sends"
       [ "$(cat "$AGENTMGR_HOME/mode")" = capture-loss ] && echo unavailable > "$AGENTMGR_HOME/mode"
+      [ "$(cat "$AGENTMGR_HOME/mode")" = enrich-submit ] && touch "$AGENTMGR_HOME/enriched"
     else
       echo enter >> "$AGENTMGR_HOME/sends"
-      [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
+      { [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] || [ "$(cat "$AGENTMGR_HOME/mode")" = enrich-submit ]; } && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
 esac
@@ -71,7 +72,12 @@ exit 0
   const spawn = Bun.spawnSync.bind(Bun);
   spawnSpy = spyOn(Bun, "spawnSync").mockImplementation((cmd: any, opts?: any) => {
     if (Array.isArray(cmd) && cmd[0] === "tmux") {
-      return spawn([join(home, "tmux"), ...cmd.slice(1)], { ...opts, env: { ...process.env } });
+      const result = spawn([join(home, "tmux"), ...cmd.slice(1)], { ...opts, env: { ...process.env } });
+      if (existsSync(join(home, "enriched"))) {
+        rmSync(join(home, "enriched"));
+        writeAgent({ ...readAgent("api")!, sessionId: "known" });
+      }
+      return result;
     }
     return spawn(cmd, opts);
   });
@@ -113,6 +119,13 @@ describe("delivery lock", () => {
 });
 
 describe("delivery verification", () => {
+  test("SessionStart metadata enrichment does not change a live pane's identity", async () => {
+    fakeSession("enrich-submit", "codex");
+    const id = queueAppend("api", "message");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(readFileSync(join(home, "sends"), "utf8").split("\n").filter(line => line === "text")).toHaveLength(1);
+  });
+
   test("failed submit retains even short messages and retry does not retype", async () => {
     fakeSession();
     const id = queueAppend("api", "hi");
@@ -174,17 +187,16 @@ describe("delivery verification", () => {
     expect(queueDepth("api")).toBe(1);
   });
 
-  test("send reports queued when another delivery holds the lock", async () => {
+  test("send rejects clearly when another mailbox operation holds the lock", async () => {
     fakeSession();
     expect(acquireDeliverLock("api")).toBe(true);
     const messages: string[] = [];
     const log = console.log;
     console.log = text => messages.push(text);
-    try { await sendCommand("api", "hello", { now: false }); }
+    try { await expect(sendCommand("api", "hello", { now: false })).rejects.toThrow(/mailbox is busy/); }
     finally { console.log = log; }
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toStartWith('queued for "api"');
-    expect(queueDepth("api")).toBe(1);
+    expect(messages).toHaveLength(0);
+    expect(queueDepth("api")).toBe(0);
   });
 
   test("send does not claim a newly queued message was delivered when it drained an older one", async () => {

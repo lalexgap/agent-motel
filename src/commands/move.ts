@@ -12,12 +12,12 @@ import {
   writeAgent,
   type AgentState,
 } from "../state";
-import { queueAppend, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
+import { queueAppend, queueAppendLocked, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
 import { claudeProjectSlug, locateTranscript } from "../transcript";
 import { codexHome } from "../codexHooks";
 import { stopAgent, destroyAgent } from "./rm";
 import { sendText } from "../tmux";
-import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, enterDelayMs, releaseDeliverLock } from "../deliver";
+import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, enterDelayMs, releaseDeliverLock, renewDeliveryHandoff } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
 import { expandHome, worktreesDir } from "../paths";
@@ -161,7 +161,7 @@ export function importPayload(raw: string): string {
     updateAgentStatus(imported, "exited", "moved from another host");
     writeAgent(imported);
     for (const [index, message] of (payload.queue ?? []).entries()) {
-      queueAppend(state.name, message, payload.queueIds?.[index] ?? undefined);
+      queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined);
     }
     for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
     return state.name;
@@ -371,7 +371,9 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   };
   updateAgentStatus(movedState, "exited", "moved to another host");
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the move`);
+  const handoff = newMsgId();
   try {
+    beginDeliveryHandoff(agent.name, handoff);
     const backlog = queueList(agent.name);
     const payload: MovePayload = {
       state: movedState,
@@ -410,6 +412,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     return message;
   } finally {
     releaseDeliverLock(agent.name);
+    endDeliveryHandoff(agent.name, handoff);
   }
 }
 
@@ -435,6 +438,10 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
 
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
+    const renew = async () => {
+      const result = await sshAmAsync(host, ["__export", handoffName, "renew", handoff], { timeoutMs: 20000 });
+      if (result.exitCode !== 0) throw new Error(`delivery handoff on ${host} expired — retry the move`);
+    };
 
     let storedDir: string;
     let transcriptDir: string;
@@ -496,13 +503,16 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     // Stop it remotely before copying the conversation so the file is final
     // (clones leave the original running and accept a snapshot).
     if (!opts.clone) {
+      await renew();
       await settleBeforeMoveRemote(host, name, remote.state.status); // let it wrap up
+      await renew();
       await sshAmAsync(host, ["stop", name], { timeoutMs: 15000 });
     }
 
     const sessionId = agentSessionId(remote.state);
     let localTranscriptPath: string | undefined;
     if (remote.transcript && sessionId) {
+      await renew();
       const provider = agentProvider(remote.state);
       const target = targetTranscriptPath(provider, homedir(), transcriptDir, sessionId, remote.transcript.codexRelative);
       Bun.spawnSync(["mkdir", "-p", dirname(target)]);
@@ -538,6 +548,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       }),
     );
 
+    await renew();
     if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
     let message = opts.clone
       ? `cloned "${name}" ← ${host} (original still on ${host})`
@@ -596,12 +607,19 @@ export function defaultMoveTarget(
 
 // `am __export <name>`: everything the other side needs, on stdout.
 export function exportCommand(name: string, mode?: string, token?: string): void {
-  if (mode && mode !== "handoff" && mode !== "release") throw new Error("invalid export mode");
+  if (mode && mode !== "handoff" && mode !== "renew" && mode !== "release") throw new Error("invalid export mode");
   if (mode && !token) throw new Error("missing handoff token");
   if (mode === "release") {
     if (!endDeliveryHandoff(name, token!)) {
       const agent = matchAgent(name);
       if (agent && agent.name !== name) endDeliveryHandoff(agent.name, token!);
+    }
+    return;
+  }
+  if (mode === "renew") {
+    if (!renewDeliveryHandoff(name, token!)) {
+      const agent = matchAgent(name);
+      if (!agent || !renewDeliveryHandoff(agent.name, token!)) throw new Error("handoff missing or expired");
     }
     return;
   }

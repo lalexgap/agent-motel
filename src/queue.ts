@@ -4,6 +4,7 @@ import { baseDir, ensureDirs, queueDir } from "./paths";
 import { msgIdAt, newMsgId } from "./msgid";
 import { parseJsonl } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { withMailboxWrite } from "./mailbox";
 
 // One directory per agent, one file per message (maildir-style). Appends and
 // pops touch different files, so a send can never race a pop into losing a
@@ -131,11 +132,15 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
-export function queueAppend(name: string, message: string, msgId?: string): string {
+export function queueAppendLocked(name: string, message: string, msgId?: string): string {
   if (msgId !== undefined) messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
   return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) });
+}
+
+export function queueAppend(name: string, message: string, msgId?: string): string {
+  return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId));
 }
 
 function messageFile(name: string, msgId: string): string {
@@ -145,7 +150,7 @@ function messageFile(name: string, msgId: string): string {
 
 // Callers hold the delivery lock until the receipt is persisted, preventing
 // consumers from removing the queue entry during crash recovery.
-export function queueAppendOnce(name: string, message: string, msgId: string): string {
+export function queueAppendOnceLocked(name: string, message: string, msgId: string): string {
   const file = messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name);
@@ -159,6 +164,10 @@ export function queueAppendOnce(name: string, message: string, msgId: string): s
     if (readJsonOrNull<QueueEntry>(candidate)?.msgId === msgId) persistEntry(candidate, name);
   }
   return `${msgId}.json`;
+}
+
+export function queueAppendOnce(name: string, message: string, msgId: string): string {
+  return withMailboxWrite(name, () => queueAppendOnceLocked(name, message, msgId));
 }
 
 export function queueHasId(name: string, msgId: string): boolean {
