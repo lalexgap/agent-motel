@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultMoveTarget,
   exportCommand,
+  importAfterRenew,
   importPayload,
   mapHomeDir,
   parseMoveSpec,
@@ -16,7 +17,7 @@ import { readAgent, type AgentState } from "../src/state";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 import { injectCollected } from "../src/daemon";
 import { removeAgent } from "../src/state";
-import { queueAppend, queueAppendOnce, queueHasId, queueList, queueReceived, queueRecordReceipt } from "../src/queue";
+import { queueAppend, queueAppendOnce, queueClear, queueHasId, queueList, queueReceived, queueRecordReceipt, queueStorageExists } from "../src/queue";
 import { handoffPath } from "../src/mailbox";
 
 describe("mapHomeDir", () => {
@@ -205,6 +206,46 @@ describe("importPayload", () => {
     expect(() => queueAppend("migrated", "after crash")).not.toThrow();
     expect(acquireDeliverLock("migrated")).toBe(true);
     releaseDeliverLock("migrated");
+  });
+
+  test("a producer resolved before source deletion cannot recreate its mailbox", async () => {
+    importPayload(payload(home));
+    const queueModule = JSON.stringify(join(import.meta.dir, "../src/queue.ts"));
+    const stateModule = JSON.stringify(join(import.meta.dir, "../src/state.ts"));
+    const child = Bun.spawn([process.execPath, "-e", `
+      import { queueAppendForAgent } from ${queueModule};
+      import { readAgent } from ${stateModule};
+      import { existsSync, writeFileSync } from "node:fs";
+      if (!readAgent("migrated")) process.exit(2);
+      writeFileSync(process.env.AGENTMGR_HOME + "/resolved", "");
+      while (!existsSync(process.env.AGENTMGR_HOME + "/continue")) await Bun.sleep(1);
+      try { queueAppendForAgent("migrated", "late"); process.exit(3); }
+      catch { process.exit(0); }
+    `], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+    while (!existsSync(join(home, "resolved"))) await Bun.sleep(1);
+    queueClear("migrated");
+    removeAgent("migrated");
+    writeFileSync(join(home, "continue"), "");
+    expect(await child.exited).toBe(0);
+    expect(queueStorageExists("migrated")).toBe(false);
+  });
+
+  test("a failed pre-import renewal leaves no destination and can retry", async () => {
+    const raw = payload(home);
+    await expect(importAfterRenew(raw, async () => { throw new Error("renew failed"); })).rejects.toThrow("renew failed");
+    expect(readAgent("migrated")).toBeNull();
+    expect(queueStorageExists("migrated")).toBe(false);
+    await importAfterRenew(raw, async () => {});
+    expect(readAgent("migrated")).not.toBeNull();
+  });
+
+  test("an imported destination stays fenced until source commit", async () => {
+    await importAfterRenew(payload(home), async () => {}, "local-commit");
+    const entry = { msgId: "DURING_COMMIT", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    expect(queueHasId("migrated", entry.msgId)).toBe(false);
+    exportCommand("migrated", "release", "local-commit");
+    expect(await injectCollected(entry, "remote")).toBe(true);
   });
 
   test("remote ingestion stays unacknowledged when the source disappears during handoff", async () => {

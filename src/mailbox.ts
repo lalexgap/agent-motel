@@ -17,6 +17,10 @@ export function handoffPath(name: string): string {
   return `${mailboxLockPath(name)}.handoff`;
 }
 
+function producerLockPath(name: string): string {
+  return join(baseDir(), "locks", `producer.${name}.lock`);
+}
+
 function activeHandoff(name: string): HandoffLease | null {
   const lease = readJsonOrNull<HandoffLease>(handoffPath(name));
   if (!lease) return null;
@@ -43,12 +47,14 @@ export function releaseMailboxLock(name: string): void {
 }
 
 export function withMailboxWrite<T>(name: string, fn: () => T): T {
+  const release = tryAcquireFileLock(producerLockPath(name));
+  if (!release) throw new Error(`agent "${name}" mailbox is busy — retry the message`);
   const check = () => {
     if (activeHandoff(name)) throw new Error(`agent "${name}" is being moved — retry the message`);
     return fn();
   };
-  if (heldLocks.has(mailboxLockPath(name))) throw new Error(`agent "${name}" mailbox is busy — retry the message`);
-  return withFileLock(mailboxLockPath(name), check);
+  try { return check(); }
+  finally { release(); }
 }
 
 export function mailboxHandoffActive(name: string): boolean {
@@ -57,9 +63,11 @@ export function mailboxHandoffActive(name: string): boolean {
 
 export function beginHandoff(name: string, token: string): void {
   if (!heldLocks.has(mailboxLockPath(name))) throw new Error("handoff requires delivery lock");
-  const current = activeHandoff(name);
-  if (current && current.token !== token) throw new Error(`agent "${name}" already has an active handoff`);
-  writeJsonAtomic(handoffPath(name), { token, expiresAt: Date.now() + HANDOFF_LEASE_MS });
+  withFileLock(producerLockPath(name), () => {
+    const current = activeHandoff(name);
+    if (current && current.token !== token) throw new Error(`agent "${name}" already has an active handoff`);
+    writeJsonAtomic(handoffPath(name), { token, expiresAt: Date.now() + HANDOFF_LEASE_MS });
+  });
 }
 
 export function renewHandoff(name: string, token: string): boolean {

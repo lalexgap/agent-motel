@@ -5,7 +5,7 @@ import { agentNameOwner, matchAgent, readAgent, recordAttached, removeAgent, wri
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
-import { queueAppend, queueClear } from "../queue";
+import { queueAppendForAgent, queueClear } from "../queue";
 import {
   agentSystemPrompt,
   buildLaunchCommand,
@@ -224,7 +224,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // a queue without a registered owner as garbage.
   writeAgent(state);
   // Queue before the session starts so the SessionStart hook finds it.
-  if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
+  if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
 
   try {
     newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(plan.command) });

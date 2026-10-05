@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock, __lockPath } from "../src/deliver";
+import { acquireDeliverLock, beginDeliveryHandoff, deliverNext, endDeliveryHandoff, releaseDeliverLock, __lockPath } from "../src/deliver";
 import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readAgent, writeAgent } from "../src/state";
 import { sendCommand } from "../src/commands/send";
+import { sendsInWindow } from "../src/comms";
 
 let home: string;
 let oldPath: string | undefined;
@@ -187,16 +188,30 @@ describe("delivery verification", () => {
     expect(queueDepth("api")).toBe(1);
   });
 
-  test("send rejects clearly when another mailbox operation holds the lock", async () => {
+  test("send can queue while an ordinary delivery holds the lock", async () => {
     fakeSession();
     expect(acquireDeliverLock("api")).toBe(true);
     const messages: string[] = [];
     const log = console.log;
     console.log = text => messages.push(text);
-    try { await expect(sendCommand("api", "hello", { now: false })).rejects.toThrow(/mailbox is busy/); }
+    try { await sendCommand("api", "hello", { now: false }); }
     finally { console.log = log; }
-    expect(messages).toHaveLength(0);
-    expect(queueDepth("api")).toBe(0);
+    expect(messages[0]).toStartWith('queued for "api"');
+    expect(queueDepth("api")).toBe(1);
+  });
+
+  test("handoff rejections do not consume attribution rate limit", async () => {
+    fakeSession();
+    expect(acquireDeliverLock("api")).toBe(true);
+    beginDeliveryHandoff("api", "move");
+    releaseDeliverLock("api");
+    for (let i = 0; i < 5; i++) {
+      await expect(sendCommand("api", `attempt ${i}`, { now: false, from: "lead" })).rejects.toThrow(/being moved/);
+    }
+    expect(sendsInWindow("lead", "api", 60_000)).toBe(0);
+    endDeliveryHandoff("api", "move");
+    await sendCommand("api", "accepted", { now: false, from: "lead" });
+    expect(sendsInWindow("lead", "api", 60_000)).toBe(1);
   });
 
   test("send does not claim a newly queued message was delivered when it drained an older one", async () => {

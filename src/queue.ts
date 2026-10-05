@@ -5,6 +5,7 @@ import { msgIdAt, newMsgId } from "./msgid";
 import { parseJsonl } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withMailboxWrite } from "./mailbox";
+import { readAgent } from "./state";
 
 // One directory per agent, one file per message (maildir-style). Appends and
 // pops touch different files, so a send can never race a pop into losing a
@@ -141,6 +142,13 @@ export function queueAppendLocked(name: string, message: string, msgId?: string)
 
 export function queueAppend(name: string, message: string, msgId?: string): string {
   return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId));
+}
+
+export function queueAppendForAgent(name: string, message: string, msgId?: string): string {
+  return withMailboxWrite(name, () => {
+    if (!readAgent(name)) throw new Error(`agent "${name}" no longer exists — retry the message`);
+    return queueAppendLocked(name, message, msgId);
+  });
 }
 
 function messageFile(name: string, msgId: string): string {

@@ -1,9 +1,9 @@
 import { hostname } from "node:os";
-import { matchAgent, resolveAgent } from "../state";
-import { queueAppend, queueDepth } from "../queue";
+import { matchAgent, readAgent, resolveAgent } from "../state";
+import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
 import { acquireDeliverLock, deliverNext, enterDelayMs, releaseDeliverLock } from "../deliver";
-import { attribute, bareName, resolveSender } from "../comms";
+import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
 
@@ -54,20 +54,26 @@ export async function sendCommand(
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
   }
   const from = resolveSender(opts.from);
-  const att = attribute(from, agent.name, message, opts.now ? "now" : "send");
+  const kind = opts.now ? "now" : "send";
+  const att = attribute(from, agent.name, message, kind, undefined, { record: false });
   if (!att.allowed) return rateLimited(from!, agent.name);
   const body = att.body;
 
   if (opts.now) {
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
     // Inject immediately; the TUI's native mid-turn steering handles the rest.
-    try { sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent) }); }
+    try {
+      if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
+      sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent) });
+      if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
+    }
     finally { releaseDeliverLock(agent.name); }
     console.log(`sent to "${agent.name}" (steering current turn)`);
     return;
   }
 
-  const queuedId = queueAppend(agent.name, body);
+  const queuedId = queueAppendForAgent(agent.name, body);
+  if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
   if (agent.status === "idle" || agent.status === "starting") {
     // Agent isn't working, so no Stop hook is coming — deliver right away.
     const result = await deliverNext(agent.name);
@@ -88,7 +94,7 @@ export async function interruptCommand(
 ): Promise<void> {
   const agent = requireLiveSession(prefix);
   const from = resolveSender(opts.from);
-  const att = attribute(from, agent.name, message, "interrupt");
+  const att = attribute(from, agent.name, message, "interrupt", undefined, { record: false });
   if (!att.allowed) return rateLimited(from!, agent.name);
 
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
@@ -96,6 +102,7 @@ export async function interruptCommand(
     sendEscape(agent.tmuxSession);
     await Bun.sleep(400);
     sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent) });
+    if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });
   } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}" with new message`);
 }

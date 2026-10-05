@@ -7,12 +7,13 @@ import {
   listAgents,
   matchAgent,
   readAgent,
+  removeAgent,
   resolveAgent,
   updateAgentStatus,
   writeAgent,
   type AgentState,
 } from "../state";
-import { queueAppend, queueAppendLocked, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
+import { queueAppendForAgent, queueAppendLocked, queueClear, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
 import { claudeProjectSlug, locateTranscript } from "../transcript";
 import { codexHome } from "../codexHooks";
 import { stopAgent, destroyAgent } from "./rm";
@@ -36,6 +37,21 @@ export interface MovePayload {
   queue: string[];
   queueIds?: (string | null | undefined)[];
   receivedMsgIds?: string[];
+}
+
+export async function importAfterRenew(raw: string, renew: () => Promise<void>, handoffToken?: string): Promise<string> {
+  await renew();
+  return importPayload(raw, handoffToken);
+}
+
+function rollbackImportedAgent(name: string, imported: AgentState, queue: ReturnType<typeof queueList>): boolean {
+  const current = readAgent(name);
+  if (!current || current.updatedAt !== imported.updatedAt || hasSession(current.tmuxSession)) return false;
+  const currentQueue = queueList(name);
+  if (JSON.stringify(currentQueue) !== JSON.stringify(queue)) return false;
+  queueClear(name);
+  removeAgent(name);
+  return true;
 }
 
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
@@ -149,7 +165,7 @@ export function sourceTranscript(agent: AgentState): { path: string; codexRelati
   }
 }
 
-export function importPayload(raw: string): string {
+export function importPayload(raw: string, handoffToken?: string): string {
   const payload = JSON.parse(raw) as MovePayload;
   const state = payload.state;
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
@@ -164,6 +180,7 @@ export function importPayload(raw: string): string {
       queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined);
     }
     for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
+    if (handoffToken) beginDeliveryHandoff(state.name, handoffToken);
     return state.name;
   } finally {
     releaseDeliverLock(state.name);
@@ -521,8 +538,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       if (provider === "codex") localTranscriptPath = target;
     }
 
-    importPayload(
-      JSON.stringify({
+    const importRaw = JSON.stringify({
         state: {
           ...remote.state,
           dir: storedDir,
@@ -545,11 +561,23 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
         ],
         queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
         receivedMsgIds: remote.receivedMsgIds,
-      }),
-    );
+      });
 
-    await renew();
-    if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
+    await importAfterRenew(importRaw, renew, handoff);
+    const imported = readAgent(name)!;
+    const importedQueue = queueList(name);
+    try {
+      if (!opts.copy && !opts.clone) {
+        const removed = await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
+        if (removed.exitCode !== 0) {
+          const rolledBack = rollbackImportedAgent(name, imported, importedQueue);
+          const detail = (removed.stderr + removed.stdout).trim();
+          throw new Error(`could not remove source agent on ${host}${detail ? `: ${detail}` : ""}${rolledBack ? " (local import rolled back)" : " (local import retained because it changed)"}`);
+        }
+      }
+    } finally {
+      endDeliveryHandoff(name, handoff);
+    }
     let message = opts.clone
       ? `cloned "${name}" ← ${host} (original still on ${host})`
       : `moved "${name}" ← ${host} (now in ${storedDir})${opts.copy ? " (remote copy kept)" : ""}`;
@@ -711,7 +739,7 @@ export async function cdAgent(
   updateAgentStatus(agent, "exited", "directory changed; not running");
   agent.workingSince = undefined;
   writeAgent(agent);
-  queueAppend(agent.name, dirChangeBrief(oldDir, dir));
+  queueAppendForAgent(agent.name, dirChangeBrief(oldDir, dir));
 
   let message = `moved "${agent.name}" to ${dir}`;
   if (oldWorktree) message += ` (old worktree left at ${oldWorktree})`;
