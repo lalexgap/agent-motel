@@ -1,5 +1,5 @@
 import { agentNameOwner, resolveAgent, writeAgent } from "../state";
-import { queueAppend } from "../queue";
+import { queueAppendForAgent } from "../queue";
 import { deliverNext } from "../deliver";
 import { hasSession } from "../tmux";
 
@@ -7,7 +7,7 @@ import { hasSession } from "../tmux";
 // launch, so a state change alone wouldn't reach it. Best-effort: queued,
 // delivered when idle (or now if it already is).
 function briefAgent(name: string, message: string): void {
-  queueAppend(name, message);
+  queueAppendForAgent(name, message);
   const agent = resolveAgent(name);
   if (agent.status === "idle" || agent.status === "starting") void deliverNext(name);
 }

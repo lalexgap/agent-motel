@@ -1,60 +1,37 @@
-import { closeSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, readAgent, type AgentState } from "./state";
+import { agentProvider, readAgent, type AgentState, type Provider } from "./state";
 import { queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendText, stripSgr } from "./tmux";
+import { capturePane, hasSession, sendEnter, sendText, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
-import { openLogFd } from "./fsutil";
+import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
 
-// Per-agent delivery lock. deliverNext can be invoked concurrently from three
-// places — the Stop hook's detached process, the daemon's /event handler, and
-// the reconcile loop — so an in-process flag isn't enough; without this two
-// callers can peek the same queue head and type it into the pane twice.
-//
-// We write a unique token and read it back to confirm ownership. The exclusive
-// create (flag "wx") is the fast path; a STALE lock (holder crashed) is stolen
-// by overwriting then verifying the read-back is still our token. The read-back
-// resolves the steal race — if two stealers race, last-writer-wins and only one
-// sees its own token — so a fresh lock is never clobbered into a double-hold.
-// [hardened per review M2: replaces the rm-then-recreate TOCTOU]
-const LOCK_STALE_MS = 30_000;
-
-function lockPath(name: string): string {
-  return join(queueDir(), `${name}.deliver.lock`);
-}
-
+// Keep the lock inode in place: unlinking it would let another process lock a
+// new inode while the current holder is still delivering. The kernel releases
+// flock automatically if a holder crashes.
 export function acquireDeliverLock(name: string): boolean {
-  const path = lockPath(name);
-  const token = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  try {
-    writeFileSync(path, token, { flag: "wx" }); // exclusive create
-  } catch {
-    // exists — only steal if stale
-    let mtimeMs: number;
-    try {
-      mtimeMs = statSync(path).mtimeMs;
-    } catch {
-      return false; // vanished under us — let another caller take it next time
-    }
-    if (Date.now() - mtimeMs <= LOCK_STALE_MS) return false;
-    writeFileSync(path, token); // overwrite the stale lock (last writer wins)
-  }
-  // Confirm we actually own it — a racing stealer may have overwritten us.
-  try {
-    return readFileSync(path, "utf8") === token;
-  } catch {
-    return false;
-  }
+  return acquireMailboxLock(name);
 }
 
 export function releaseDeliverLock(name: string): void {
-  rmSync(lockPath(name), { force: true });
+  releaseMailboxLock(name);
 }
 
-// Exposed for tests.
-export const __lockStaleMs = LOCK_STALE_MS;
-export { lockPath as __lockPath };
+// The exporter exits before a pull finishes, so its ingestion barrier must
+// outlive that process. Only the matching handoff can release it.
+export function beginDeliveryHandoff(name: string, token: string): void {
+  beginHandoff(name, token);
+}
+
+export function endDeliveryHandoff(name: string, token: string): boolean {
+  return endHandoff(name, token);
+}
+
+export function renewDeliveryHandoff(name: string, token: string): boolean { return renewHandoff(name, token); }
+
+export { mailboxLockPath as __lockPath };
 
 export function enterDelayMs(agent: AgentState, message?: string): number | undefined {
   // Codex always drops an Enter that lands in the same key batch as the
@@ -65,16 +42,29 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
   return undefined;
 }
 
-// Claude/codex render the input box between the last two horizontal
-// separators. Fresh sessions show a dim `Try "..."` placeholder, which is
-// not human text.
+// Claude displays a dim `Try "..."` placeholder inside its bordered composer.
 const PLACEHOLDER_RE = /^Try "/;
 
-export function inputBoxText(pane: string[]): string {
+export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
   const plain = pane.map(stripSgr);
+  if (provider === "codex") {
+    // Codex has an unbordered composer above its model/status footer. Require
+    // both the footer and the prompt so transcript text is never an empty box.
+    let shortcut = -1;
+    for (let i = 0; i < plain.length; i++) if (/^\s*\? for shortcuts\b/.test(plain[i]!)) shortcut = i;
+    if (shortcut < 0) return null;
+    let footer = shortcut - 1;
+    while (footer >= 0 && !plain[footer]!.trim()) footer--;
+    if (footer < 0 || !/^\s+\S.*[·•]/.test(plain[footer]!)) return null;
+    let prompt = -1;
+    for (let i = 0; i < footer; i++) if (/^\s*›(?:\s|$)/.test(plain[i]!)) prompt = i;
+    if (prompt < 0) return null;
+    const text = plain.slice(prompt, footer).join(" ").replace(/^\s*›\s*/, "").replace(/\s+/g, " ").trim();
+    return text === "Ask Codex to do anything" ? "" : text;
+  }
   const seps: number[] = [];
   for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
-  if (seps.length < 2) return "";
+  if (seps.length < 2) return null;
   const text = plain
     .slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!)
     .join(" ")
@@ -84,50 +74,98 @@ export function inputBoxText(pane: string[]): string {
   return PLACEHOLDER_RE.test(text) ? "" : text;
 }
 
+export function inputBoxText(pane: string[], provider: Provider = "claude"): string {
+  return parsedInputBoxText(pane, provider) ?? "";
+}
+
 // If the head of our message is still sitting in the input box after the
 // Enter, the submit got eaten.
-export function looksUnsubmitted(pane: string[], message: string): boolean {
+export function looksUnsubmitted(pane: string[], message: string, provider: Provider = "claude"): boolean {
   const head = message.split("\n")[0]!.replace(/\s+/g, " ").trim().slice(0, 24);
-  if (head.length < 4) return false;
-  return inputBoxText(pane).includes(head);
+  if (!head) return false;
+  return inputBoxText(pane, provider).includes(head);
 }
 
 const SUBMIT_RETRIES = 2;
 const SUBMIT_CHECK_MS = 600;
 
-// Type the queue head into the agent's session. Peek → send → pop, so a
-// failed send leaves the message queued for the next attempt instead of
-// dropping it. After sending, verify the prompt actually left the input box
-// and re-press Enter if the submit was swallowed (it sometimes is, right
-// after SessionStart — Alex was hitting Enter by hand on migration briefs).
-export async function deliverNext(name: string): Promise<boolean> {
+export type DeliveryResult =
+  | { status: "submitted"; id: string }
+  | { status: "queued"; reason: "unavailable" | "locked" | "empty" | "composing" | "unverified" };
+
+// The marker records which queued message we typed. If Enter is swallowed,
+// later attempts press Enter again instead of appending the text a second time.
+interface PendingDelivery {
+  id: string;
+  message: string;
+  typed?: boolean;
+  incarnation?: string;
+}
+
+function sessionIncarnation(agent: AgentState): string | null {
+  const result = tmux("display-message", "-p", "-t", `=${agent.tmuxSession}`, "#{pid}:#{session_id}:#{session_created}:#{pane_id}:#{pane_pid}");
+  if (result.exitCode !== 0 || !result.stdout.trim()) return null;
+  return JSON.stringify([agentProvider(agent), result.stdout.trim()]);
+}
+
+export function pendingDeliveryId(name: string): string | null {
+  const pending = readJsonOrNull<PendingDelivery>(join(queueDir(), name, ".delivery.pending"));
   const agent = readAgent(name);
-  if (!agent || !hasSession(agent.tmuxSession)) return false;
-  // Serialize delivery for this agent across processes — held through the verify
-  // loop so a concurrent caller can't grab the same (or the next) queue head.
-  if (!acquireDeliverLock(name)) return false;
+  if (!pending) return null;
+  const incarnation = agent ? sessionIncarnation(agent) : null;
+  // Older markers and an unreadable session remain deferred until delivery can retry.
+  return !pending.incarnation || !incarnation || pending.incarnation === incarnation ? pending.id : null;
+}
+
+export async function deliverNext(name: string): Promise<DeliveryResult> {
+  if (!acquireDeliverLock(name)) return { status: "queued", reason: "locked" };
   try {
+    const agent = readAgent(name);
+    if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
+    const incarnation = sessionIncarnation(agent);
+    if (!incarnation) return { status: "queued", reason: "unavailable" };
     const head = queueHead(name);
-    if (head === null) return false;
-
-    // Someone (usually the human) is mid-composition in the input box: typing
-    // our message now would splice into theirs. Leave it queued — the daemon's
-    // reconcile loop and the next Stop drain retry until the box clears.
+    if (head === null) return { status: "queued", reason: "empty" };
+    const pendingPath = join(queueDir(), name, ".delivery.pending");
+    const marker = readJsonOrNull<PendingDelivery>(pendingPath);
+    const pending = marker?.incarnation === incarnation ? marker : null;
+    const provider = agentProvider(agent);
     const before = capturePane(agent.tmuxSession);
-    if (before && inputBoxText(before)) return false;
+    if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
+    if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
+    if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
+      queuePopId(name, head.id);
+      rmSync(pendingPath, { force: true });
+      return { status: "submitted", id: head.id };
+    }
+    if (inputBoxText(before, provider)) {
+      if (pending?.id !== head.id || pending.message !== head.message || !looksUnsubmitted(before, head.message, provider)) {
+        return { status: "queued", reason: "composing" };
+      }
+      sendEnter(agent.tmuxSession);
+    } else {
+      // Persist before typing so a process crash with the text in the input box
+      // is recoverable. A crash after submission can still cause redelivery;
+      // the receiving TUI has no transactional acknowledgement protocol.
+      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation });
+      sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
+      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation, typed: true });
+    }
 
-    sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
-    // Remove exactly what was typed — popping "the current head" instead
-    // could delete a different message reclaimed between peek and pop.
-    queuePopId(name, head.id);
-
-    for (let attempt = 0; attempt < SUBMIT_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
       await Bun.sleep(SUBMIT_CHECK_MS);
       const pane = capturePane(agent.tmuxSession);
-      if (!pane || !looksUnsubmitted(pane, head.message)) break;
-      sendEnter(agent.tmuxSession);
+      const current = readAgent(name);
+      if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
+      if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
+      if (!looksUnsubmitted(pane, head.message, provider)) {
+        queuePopId(name, head.id);
+        rmSync(pendingPath, { force: true });
+        return { status: "submitted", id: head.id };
+      }
+      if (attempt < SUBMIT_RETRIES) sendEnter(agent.tmuxSession);
     }
-    return true;
+    return { status: "queued", reason: "unverified" };
   } finally {
     releaseDeliverLock(name);
   }

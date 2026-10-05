@@ -12,7 +12,8 @@ import {
 } from "../state";
 import { inboxDir, sharedDir } from "../paths";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
-import { queueAppend, queueStorageExists, renameQueue } from "../queue";
+import { acquireProducerLock, releaseProducerLock } from "../mailbox";
+import { queueAppendForAgent, queueStorageExists, renameQueue } from "../queue";
 import { renameSnapshot, snapshotExists } from "../snapshots";
 import { renameSubagents, subagentsExist } from "../subagents";
 import { hasSession, renameSession, sessionName } from "../tmux";
@@ -60,7 +61,11 @@ function nextState(agent: AgentState, newName: string): AgentState {
 // process keeps the AGENTMGR_AGENT value it inherited at launch, so the old
 // name remains an alias and hooks canonicalize it through state. tmux renames
 // the session in place; attached clients and active turns are uninterrupted.
-export async function renameAgent(prefix: string, newName: string): Promise<RenameResult> {
+export async function renameAgent(
+  prefix: string,
+  newName: string,
+  hooks: { afterQueueRenamed?: () => Promise<void> } = {},
+): Promise<RenameResult> {
   validateName(newName);
   const agent = resolveAgent(prefix);
   const oldName = agent.name;
@@ -106,6 +111,15 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   if (!acquireDeliverLock(oldName)) {
     throw new Error(`agent "${oldName}" is receiving a queued message — retry the rename in a moment`);
   }
+  if (!acquireProducerLock(oldName)) {
+    releaseDeliverLock(oldName);
+    throw new Error(`agent "${oldName}" is receiving a message — retry the rename in a moment`);
+  }
+  if (!acquireProducerLock(newName)) {
+    releaseProducerLock(oldName);
+    releaseDeliverLock(oldName);
+    throw new Error(`agent "${newName}" is receiving a message — retry the rename in a moment`);
+  }
 
   const hadQueue = queueStorageExists(oldName);
   const hadSnapshot = snapshotExists(oldName);
@@ -116,6 +130,7 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   let sessionRenamed = false;
   try {
     renameQueue(oldName, newName);
+    await hooks.afterQueueRenamed?.();
     renameSnapshot(oldName, newName);
     renameSubagents(oldName, newName);
     if (hadInbox) renameSync(inboxDir(oldName), inboxDir(newName));
@@ -158,6 +173,8 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
     }
     throw error;
   } finally {
+    releaseProducerLock(newName);
+    releaseProducerLock(oldName);
     releaseDeliverLock(oldName);
   }
 
@@ -168,7 +185,7 @@ export async function renameAgent(prefix: string, newName: string): Promise<Rena
   // fresh system prompt (Claude can).
   if (live || agentProvider(agent) === "codex") {
     const notice = `[am] Your managed agent identity was renamed from "${oldName}" to "${newName}". Use the new name for am commands and peer messages. Your worktree and branch are unchanged.`;
-    queueAppend(newName, notice);
+    queueAppendForAgent(newName, notice);
   }
 
   return { oldName, newName, live, worktreeBranch: agent.worktreeBranch };

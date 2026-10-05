@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inboxDir, sharedDir } from "../src/paths";
-import { queueAppend, queueList } from "../src/queue";
+import { queueAppend, queueAppendForAgent, queueList } from "../src/queue";
 import { readSnapshot, writeSnapshot } from "../src/snapshots";
 import { readAgent, readLastAttached, recordAttached, resolveAgent, writeAgent, type AgentState } from "../src/state";
 import { renameAgent } from "../src/commands/rename";
@@ -36,6 +36,24 @@ function agent(name: string, extra: Partial<AgentState> = {}): AgentState {
 }
 
 describe("renameAgent", () => {
+  test("rejects an old-name enqueue while structural rename is paused", async () => {
+    writeAgent(agent("alpha"));
+    queueAppend("alpha", "before");
+    let reached!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { reached = resolve; });
+    const continueRename = new Promise<void>((resolve) => { resume = resolve; });
+    const renaming = renameAgent("alpha", "omega", {
+      afterQueueRenamed: async () => { reached(); await continueRename; },
+    });
+    await paused;
+    expect(() => queueAppendForAgent("alpha", "racing message")).toThrow(/mailbox is busy/);
+    resume();
+    await renaming;
+    expect(queueList("alpha")).toEqual([]);
+    expect(queueList("omega").map((entry) => entry.message)).toEqual(["before"]);
+  });
+
   test("migrates durable identity and keeps the old name as a routing alias", async () => {
     writeAgent(agent("alpha", {
       aliases: ["first-alpha"],

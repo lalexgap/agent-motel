@@ -1,18 +1,25 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultMoveTarget,
+  exportCommand,
+  importAfterRenew,
   importPayload,
   mapHomeDir,
   parseMoveSpec,
   targetTranscriptPath,
+  resolveSourceRemovalFailure,
 } from "../src/commands/move";
 import { fleetKey, fleetPickerItem, sidebarStatus, sortFleetRows, splitFleetKey } from "../src/fleet";
 import { shortHost } from "../src/config";
 import { readAgent, type AgentState } from "../src/state";
-import { queueList } from "../src/queue";
+import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
+import { injectCollected } from "../src/daemon";
+import { removeAgent } from "../src/state";
+import { queueAppend, queueAppendOnce, queueClear, queueHasId, queueList, queueReceived, queueRecordReceipt, queueStorageExists } from "../src/queue";
+import { handoffPath } from "../src/mailbox";
 
 describe("mapHomeDir", () => {
   test("swaps the home prefix", () => {
@@ -155,6 +162,191 @@ describe("importPayload", () => {
     importPayload(payload(dir));
     expect(() => importPayload(payload(dir))).toThrow(/already exists/);
     expect(() => importPayload(payload(join(home, "nope"), "other"))).toThrow(/does not exist/);
+  });
+
+  test("export cannot snapshot ingestion while the source delivery lock is held", () => {
+    importPayload(payload(home));
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    try {
+      expect(() => exportCommand("migrated")).toThrow("retry the export");
+    } finally {
+      releaseDeliverLock("migrated");
+    }
+  });
+
+  test("handoff keeps source ingestion deferred across exporter processes until completion", async () => {
+    importPayload(payload(home));
+    const cli = join(import.meta.dir, "../src/index.ts");
+    const exported = Bun.spawnSync([process.execPath, cli, "__export", "migrated", "handoff", "transfer"], { env: { ...process.env } });
+    expect(exported.exitCode).toBe(0);
+    expect(JSON.parse(exported.stdout.toString()).handoffToken).toBe("transfer");
+    const entry = { msgId: "HANDOFF_MESSAGE", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "wrong-transfer");
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "transfer");
+    expect(await injectCollected(entry, "remote")).toBe(true);
+    expect(queueHasId("migrated", entry.msgId)).toBe(true);
+  });
+
+  test("handoff fences local enqueue after the exported snapshot", () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally { console.log = log; }
+    expect(() => queueAppend("migrated", "late local message")).toThrow(/being moved/);
+    expect(queueList("migrated").map(entry => entry.message)).not.toContain("late local message");
+    exportCommand("migrated", "release", "transfer");
+  });
+
+  test("an expired abandoned handoff can be retried", () => {
+    importPayload(payload(home));
+    writeFileSync(handoffPath("migrated"), JSON.stringify({ token: "dead", expiresAt: Date.now() - 1 }));
+    expect(() => queueAppend("migrated", "after crash")).not.toThrow();
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    releaseDeliverLock("migrated");
+  });
+
+  test("a producer resolved before source deletion cannot recreate its mailbox", async () => {
+    importPayload(payload(home));
+    const queueModule = JSON.stringify(join(import.meta.dir, "../src/queue.ts"));
+    const stateModule = JSON.stringify(join(import.meta.dir, "../src/state.ts"));
+    const child = Bun.spawn([process.execPath, "-e", `
+      import { queueAppendForAgent } from ${queueModule};
+      import { readAgent } from ${stateModule};
+      import { existsSync, writeFileSync } from "node:fs";
+      if (!readAgent("migrated")) process.exit(2);
+      writeFileSync(process.env.AGENTMGR_HOME + "/resolved", "");
+      while (!existsSync(process.env.AGENTMGR_HOME + "/continue")) await Bun.sleep(1);
+      try { queueAppendForAgent("migrated", "late"); process.exit(3); }
+      catch { process.exit(0); }
+    `], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+    while (!existsSync(join(home, "resolved"))) await Bun.sleep(1);
+    queueClear("migrated");
+    removeAgent("migrated");
+    writeFileSync(join(home, "continue"), "");
+    expect(await child.exited).toBe(0);
+    expect(queueStorageExists("migrated")).toBe(false);
+  });
+
+  test("a failed pre-import renewal leaves no destination and can retry", async () => {
+    const raw = payload(home);
+    await expect(importAfterRenew(raw, async () => { throw new Error("renew failed"); })).rejects.toThrow("renew failed");
+    expect(readAgent("migrated")).toBeNull();
+    expect(queueStorageExists("migrated")).toBe(false);
+    await importAfterRenew(raw, async () => {});
+    expect(readAgent("migrated")).not.toBeNull();
+  });
+
+  test("an imported destination stays fenced until source commit", async () => {
+    await importAfterRenew(payload(home), async () => {}, "local-commit");
+    const entry = { msgId: "DURING_COMMIT", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    expect(queueHasId("migrated", entry.msgId)).toBe(false);
+    exportCommand("migrated", "release", "local-commit");
+    expect(await injectCollected(entry, "remote")).toBe(true);
+  });
+
+  test("ambiguous source removal retains the imported destination", () => {
+    const raw = payload(home);
+    const original = (JSON.parse(raw) as { state: AgentState }).state;
+    importPayload(raw);
+    const imported = readAgent("migrated")!;
+    const importedQueue = queueList("migrated");
+
+    const unreachable = resolveSourceRemovalFailure(
+      "migrated", imported, importedQueue, original,
+      { exitCode: 255, stdout: "", stderr: "connection lost" },
+    );
+    expect(unreachable).toEqual({ source: "uncertain", rolledBack: false });
+    expect(readAgent("migrated")).not.toBeNull();
+
+    const committedButErrored = resolveSourceRemovalFailure(
+      "migrated", imported, importedQueue, original,
+      { exitCode: 0, stdout: "[]", stderr: "" },
+    );
+    expect(committedButErrored).toEqual({ source: "gone", rolledBack: false });
+    expect(readAgent("migrated")).not.toBeNull();
+  });
+
+  test("failed source removal rolls back only when the original is confirmed present", () => {
+    const raw = payload(home);
+    const original = (JSON.parse(raw) as { state: AgentState }).state;
+    importPayload(raw);
+    const imported = readAgent("migrated")!;
+    const recovery = resolveSourceRemovalFailure(
+      "migrated", imported, queueList("migrated"), original,
+      { exitCode: 0, stdout: JSON.stringify([original]), stderr: "" },
+    );
+    expect(recovery).toEqual({ source: "present", rolledBack: true });
+    expect(readAgent("migrated")).toBeNull();
+    expect(queueStorageExists("migrated")).toBe(false);
+  });
+
+  test("remote ingestion stays unacknowledged when the source disappears during handoff", async () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally { console.log = log; }
+    removeAgent("migrated");
+    const entry = { msgId: "IN_FLIGHT", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "transfer");
+  });
+
+  test("handoff release works after source removal", () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally {
+      console.log = log;
+    }
+    removeAgent("migrated");
+    exportCommand("migrated", "release", "transfer");
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    releaseDeliverLock("migrated");
+  });
+
+  test("exports and imports message identities and consumed receipts without changing FIFO", () => {
+    const dir = join(home, "workdir");
+    mkdirSync(dir, { recursive: true });
+    const original = JSON.parse(payload(dir));
+    original.queue = ["migration brief", "remote message", "local message"];
+    original.queueIds = [null, "0000000000REMOTE", null];
+    original.receivedMsgIds = ["0000000000CONSUMED"];
+    importPayload(JSON.stringify(original));
+
+    let exported = "";
+    const log = console.log;
+    try {
+      console.log = (raw: string) => { exported = raw; };
+      exportCommand("migrated");
+    } finally {
+      console.log = log;
+    }
+    const moved = JSON.parse(exported);
+    expect(moved.queue).toEqual(original.queue);
+    expect(moved.queueIds).toEqual(original.queueIds);
+    expect(moved.receivedMsgIds).toEqual(original.receivedMsgIds);
+    moved.state.name = "destination";
+    moved.state.tmuxSession = "agentmgr-destination";
+    importPayload(JSON.stringify(moved));
+
+    expect(queueList("destination").map((entry) => entry.message)).toEqual(original.queue);
+    expect(queueHasId("destination", "0000000000REMOTE")).toBe(true);
+    expect(queueReceived("destination", "0000000000CONSUMED")).toBe(true);
+    queueAppendOnce("destination", "duplicate remote message", "0000000000REMOTE");
+    if (!queueReceived("destination", "0000000000CONSUMED")) {
+      queueAppendOnce("destination", "duplicate consumed message", "0000000000CONSUMED");
+      queueRecordReceipt("destination", "0000000000CONSUMED");
+    }
+    expect(queueList("destination").map((entry) => entry.message)).toEqual(original.queue);
   });
 });
 

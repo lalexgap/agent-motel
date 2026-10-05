@@ -1,13 +1,13 @@
 import { matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
-import { queueAppend, queueDepth, queuePop } from "../queue";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
+import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
+import { acquireDeliverLock, deliverNext, pendingDeliveryId, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
-import { attribute, hasMessagedSince, shouldReport } from "../comms";
+import { attribute, hasMessagedSince, recordComms, shouldReport } from "../comms";
 import {
   closeOpenSubagents,
   isBackgroundSubagent,
@@ -84,12 +84,13 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
 async function deliverReport(from: string, target: string, body: string): Promise<void> {
   const t = matchAgent(target);
   if (!t || !hasSession(t.tmuxSession)) return;
-  const att = attribute(from, t.name, body, "report");
+  const att = attribute(from, t.name, body, "report", undefined, { record: false });
   if (!att.allowed) {
     console.error(`am: report from ${from} to ${t.name} rate-limited (dropped)`);
     return; // a loop guard tripped
   }
-  queueAppend(t.name, att.body);
+  queueAppendForAgent(t.name, att.body);
+  if (att.attributed) recordComms({ at: new Date().toISOString(), from, to: t.name, body, kind: "report" });
   // Await so the verify-and-retry in deliverNext finishes before the hook exits.
   if (t.status === "idle" || t.status === "starting") await deliverNext(t.name);
 }
@@ -157,8 +158,12 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
   if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
   try {
     const pending: string[] = [];
-    let m: string | null;
-    while ((m = queuePop(name)) !== null) pending.push(m);
+    let head;
+    while ((head = queueHead(name)) !== null) {
+      if (head.id === pendingDeliveryId(name)) break;
+      queuePopId(name, head.id);
+      pending.push(head.message);
+    }
     const out = buildInboxOutput(pending, hookEventName);
     if (out) process.stdout.write(out);
   } finally {
@@ -172,8 +177,12 @@ function stopGate(name: string): string | null {
   if (!acquireDeliverLock(name)) return null;
   try {
     const pending: string[] = [];
-    let m: string | null;
-    while ((m = queuePop(name)) !== null) pending.push(m);
+    let head;
+    while ((head = queueHead(name)) !== null) {
+      if (head.id === pendingDeliveryId(name)) break;
+      queuePopId(name, head.id);
+      pending.push(head.message);
+    }
     return buildStopGate(pending);
   } finally {
     releaseDeliverLock(name);

@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { ensureDirs, queueDir } from "./paths";
+import { baseDir, ensureDirs, queueDir } from "./paths";
 import { msgIdAt, newMsgId } from "./msgid";
 import { parseJsonl } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { withMailboxWrite } from "./mailbox";
+import { readAgent } from "./state";
 
 // One directory per agent, one file per message (maildir-style). Appends and
 // pops touch different files, so a send can never race a pop into losing a
@@ -19,6 +21,7 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 interface QueueEntry {
   message: string;
   queuedAt: string;
+  msgId?: string;
 }
 
 function agentQueueDir(name: string): string {
@@ -74,6 +77,22 @@ function migrateLegacy(name: string): void {
   adoptLegacy(name, claimed);
 }
 
+function syncPath(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function persistEntry(file: string, name: string): void {
+  syncPath(file);
+  syncPath(agentQueueDir(name));
+  syncPath(queueDir());
+  syncPath(baseDir());
+}
+
 // Atomic write via tmp+rename, so a reader never sees a half-written message.
 // Returns the entry's id, so a caller that queued speculatively can take it
 // back with queuePopId (and only its own entry).
@@ -82,6 +101,7 @@ function writeEntry(name: string, entry: QueueEntry, atMs?: number): string {
   mkdirSync(dir, { recursive: true });
   const id = atMs === undefined ? newMsgId() : msgIdAt(atMs);
   writeJsonAtomic(join(dir, `${id}.json`), entry, { pretty: false });
+  persistEntry(join(dir, `${id}.json`), name);
   return `${id}.json`;
 }
 
@@ -113,10 +133,84 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
-export function queueAppend(name: string, message: string): string {
+export function queueAppendLocked(name: string, message: string, msgId?: string): string {
+  if (msgId !== undefined) messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
-  return writeEntry(name, { message, queuedAt: new Date().toISOString() });
+  return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) });
+}
+
+export function queueAppend(name: string, message: string, msgId?: string): string {
+  return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId));
+}
+
+export function queueAppendForAgent(name: string, message: string, msgId?: string): string {
+  return withMailboxWrite(name, () => {
+    if (!readAgent(name)) throw new Error(`agent "${name}" no longer exists — retry the message`);
+    return queueAppendLocked(name, message, msgId);
+  });
+}
+
+function messageFile(name: string, msgId: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(msgId)) throw new Error("invalid message id");
+  return join(agentQueueDir(name), `${msgId}.json`);
+}
+
+// Callers hold the delivery lock until the receipt is persisted, preventing
+// consumers from removing the queue entry during crash recovery.
+export function queueAppendOnceLocked(name: string, message: string, msgId: string): string {
+  const file = messageFile(name, msgId);
+  ensureDirs();
+  migrateLegacy(name);
+  mkdirSync(agentQueueDir(name), { recursive: true });
+  if (!queueHasId(name, msgId)) {
+    writeJsonAtomic(file, { message, queuedAt: new Date().toISOString(), msgId }, { pretty: false });
+  }
+  // Also flush a pre-existing entry recovered after an interrupted ingestion.
+  for (const id of entryFiles(name)) {
+    const candidate = join(agentQueueDir(name), id);
+    if (readJsonOrNull<QueueEntry>(candidate)?.msgId === msgId) persistEntry(candidate, name);
+  }
+  return `${msgId}.json`;
+}
+
+export function queueAppendOnce(name: string, message: string, msgId: string): string {
+  return withMailboxWrite(name, () => queueAppendOnceLocked(name, message, msgId));
+}
+
+export function queueHasId(name: string, msgId: string): boolean {
+  if (readJsonOrNull<QueueEntry>(messageFile(name, msgId))) return true;
+  return queueList(name).some((entry) => entry.msgId === msgId);
+}
+
+function receiptFile(name: string, msgId: string): string {
+  messageFile(name, msgId);
+  return join(agentQueueDir(name), ".received", msgId);
+}
+
+export function queueReceived(name: string, msgId: string): boolean {
+  return readJsonOrNull(receiptFile(name, msgId)) !== null;
+}
+
+export function queueRecordReceipt(name: string, msgId: string): void {
+  const file = receiptFile(name, msgId);
+  mkdirSync(join(agentQueueDir(name), ".received"), { recursive: true });
+  if (!queueReceived(name, msgId)) {
+    writeJsonAtomic(file, { receivedAt: new Date().toISOString() }, { pretty: false });
+  }
+  syncPath(file);
+  syncPath(join(agentQueueDir(name), ".received"));
+  syncPath(agentQueueDir(name));
+  syncPath(queueDir());
+  syncPath(baseDir());
+}
+
+export function queueReceiptIds(name: string): string[] {
+  const dir = join(agentQueueDir(name), ".received");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((id) => /^[a-zA-Z0-9_-]+$/.test(id) && queueReceived(name, id))
+    .sort();
 }
 
 export function queueList(name: string): QueueEntry[] {
@@ -156,9 +250,13 @@ export function queueHead(name: string): QueueHead | null {
 
 // Remove one specific entry (by the id queueHead returned). Missing file =
 // someone else already took it — fine either way, it must not be delivered
-// again by this caller.
+// again by this caller. Delivery and hooks hold the delivery lock; persist
+// ingestion recovery evidence before they remove a message.
 export function queuePopId(name: string, id: string): void {
-  rmSync(join(agentQueueDir(name), id), { force: true });
+  const file = join(agentQueueDir(name), id);
+  const entry = readJsonOrNull<QueueEntry>(file);
+  if (entry?.msgId) queueRecordReceipt(name, entry.msgId);
+  rmSync(file, { force: true });
 }
 
 export function queuePop(name: string): string | null {
@@ -172,6 +270,7 @@ export function queuePop(name: string): string | null {
       continue;
     }
     const entry = readJsonOrNull<QueueEntry>(claimed);
+    if (entry?.msgId) queueRecordReceipt(name, entry.msgId);
     rmSync(claimed, { force: true });
     if (entry) return entry.message;
     // corrupt entry — dropped; try the next one

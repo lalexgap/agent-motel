@@ -151,6 +151,7 @@ export function attribute(
   body: string,
   kind: CommsKind,
   msgId?: string,
+  opts: { record?: boolean } = {},
 ): Attribution {
   if (!from || isSelfSend(from, target)) {
     return { body, allowed: true, attributed: false };
@@ -160,7 +161,7 @@ export function attribute(
   if (sendsInWindow(from, target, windowMs) >= cfg.commsMaxPerWindow) {
     return { body, allowed: false, attributed: true };
   }
-  recordComms({ at: new Date().toISOString(), from, to: target, kind, body, msgId });
+  if (opts.record !== false) recordComms({ at: new Date().toISOString(), from, to: target, kind, body, msgId });
   return { body: formatEnvelope(from, body), allowed: true, attributed: true };
 }
 

@@ -1,18 +1,19 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { agentNamesAndAliases, listAgents, matchAgent, setStatus } from "./state";
-import { queueAppend, queueDepth } from "./queue";
+import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus } from "./state";
+import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
-import { deliverNext } from "./deliver";
+import { acquireDeliverLock, deliverNext, releaseDeliverLock } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
 import { sshAmAsync } from "./remote";
-import { attribute, seenRecently } from "./comms";
+import { attribute, formatEnvelope, recordComms, seenRecently } from "./comms";
 import { collectedSender, type OutboxEntry } from "./outbox";
 import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
+import { mailboxHandoffActive } from "./mailbox";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -45,22 +46,41 @@ export function nextPollMs(current: number, hotMs: number, maxMs: number, collec
 // reclaimed and retried on a later sweep once the per-pair window clears —
 // rather than being dropped *and* acked (= lost). msgId dedup keeps the retry
 // from double-delivering the entries that did get through. [fixes review M1]
-async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
+export async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
   const target = matchAgent(entry.to);
   // No readable state for this name. If a live managed session still exists,
   // the state is merely damaged (quarantined), not gone — defer (no ack)
   // rather than eat mail addressed to a running agent; the remote's TTL
   // bounces it observably if the state never comes back.
-  if (!target) return !hasSession(sessionName(entry.to));
-  if (entry.msgId && seenRecently(entry.msgId)) return true; // already delivered — dedup
+  if (!target) return !mailboxHandoffActive(entry.to) && !hasSession(sessionName(entry.to));
   const sender = collectedSender(entry.from, entry.fromHost, host);
-  const att = attribute(sender, target.name, entry.body, "send", entry.msgId);
-  if (!att.allowed) {
-    // loop guard tripped — defer (don't ack) so it's retried, not lost
-    log(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
-    return false;
+  if (!acquireDeliverLock(target.name)) return false;
+  try {
+    if (!readAgent(target.name)) return false;
+    if (entry.msgId && queueReceived(target.name, entry.msgId)) {
+      queueRecordReceipt(target.name, entry.msgId);
+      return true;
+    }
+    const recovering = !!entry.msgId && queueHasId(target.name, entry.msgId);
+    const att = recovering
+      ? { body: formatEnvelope(sender, entry.body), allowed: true }
+      : attribute(sender, target.name, entry.body, "send", entry.msgId, { record: false });
+    if (!att.allowed) {
+      log(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
+      return false;
+    }
+    if (entry.msgId) {
+      queueAppendOnceLocked(target.name, att.body, entry.msgId);
+      queueRecordReceipt(target.name, entry.msgId);
+    } else {
+      queueAppendLocked(target.name, att.body);
+    }
+    if (!entry.msgId || !seenRecently(entry.msgId)) {
+      recordComms({ at: new Date().toISOString(), from: sender, to: target.name, body: entry.body, kind: "send", msgId: entry.msgId });
+    }
+  } finally {
+    releaseDeliverLock(target.name);
   }
-  queueAppend(target.name, att.body);
   if (target.status === "idle" || target.status === "starting") {
     try {
       await deliverNext(target.name);
