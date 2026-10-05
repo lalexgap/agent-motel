@@ -56,7 +56,10 @@ export async function injectCollected(entry: OutboxEntry, host: string): Promise
   if (!acquireDeliverLock(target.name)) return false;
   try {
     if (!readAgent(target.name)) return false;
-    if (entry.msgId && queueReceived(target.name, entry.msgId)) return true;
+    if (entry.msgId && queueReceived(target.name, entry.msgId)) {
+      queueRecordReceipt(target.name, entry.msgId);
+      return true;
+    }
     const recovering = !!entry.msgId && queueHasId(target.name, entry.msgId);
     const att = recovering
       ? { body: formatEnvelope(sender, entry.body), allowed: true }

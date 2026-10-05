@@ -13,6 +13,9 @@ import {
 import { fleetKey, fleetPickerItem, sidebarStatus, sortFleetRows, splitFleetKey } from "../src/fleet";
 import { shortHost } from "../src/config";
 import { readAgent, type AgentState } from "../src/state";
+import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
+import { injectCollected } from "../src/daemon";
+import { removeAgent } from "../src/state";
 import { queueAppendOnce, queueHasId, queueList, queueReceived, queueRecordReceipt } from "../src/queue";
 
 describe("mapHomeDir", () => {
@@ -156,6 +159,46 @@ describe("importPayload", () => {
     importPayload(payload(dir));
     expect(() => importPayload(payload(dir))).toThrow(/already exists/);
     expect(() => importPayload(payload(join(home, "nope"), "other"))).toThrow(/does not exist/);
+  });
+
+  test("export cannot snapshot ingestion while the source delivery lock is held", () => {
+    importPayload(payload(home));
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    try {
+      expect(() => exportCommand("migrated")).toThrow("retry the export");
+    } finally {
+      releaseDeliverLock("migrated");
+    }
+  });
+
+  test("handoff keeps source ingestion deferred across exporter processes until completion", async () => {
+    importPayload(payload(home));
+    const cli = join(import.meta.dir, "../src/index.ts");
+    const exported = Bun.spawnSync([process.execPath, cli, "__export", "migrated", "handoff", "transfer"], { env: { ...process.env } });
+    expect(exported.exitCode).toBe(0);
+    expect(JSON.parse(exported.stdout.toString()).handoffToken).toBe("transfer");
+    const entry = { msgId: "HANDOFF_MESSAGE", to: "migrated", from: "lead", fromHost: "remote", body: "new message", queuedAt: new Date().toISOString(), ttlMs: 10000 };
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "wrong-transfer");
+    expect(await injectCollected(entry, "remote")).toBe(false);
+    exportCommand("migrated", "release", "transfer");
+    expect(await injectCollected(entry, "remote")).toBe(true);
+    expect(queueHasId("migrated", entry.msgId)).toBe(true);
+  });
+
+  test("handoff release works after source removal", () => {
+    importPayload(payload(home));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      exportCommand("migrated", "handoff", "transfer");
+    } finally {
+      console.log = log;
+    }
+    removeAgent("migrated");
+    exportCommand("migrated", "release", "transfer");
+    expect(acquireDeliverLock("migrated")).toBe(true);
+    releaseDeliverLock("migrated");
   });
 
   test("exports and imports message identities and consumed receipts without changing FIFO", () => {

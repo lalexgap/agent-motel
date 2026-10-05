@@ -32,11 +32,13 @@ afterEach(() => {
 function fakeSession(mode = "swallow", provider: "claude" | "codex" = "claude") {
   writeAgent({ name: "api", provider, status: "idle", tmuxSession: "agentmgr-api", dir: home, createdAt: "now", updatedAt: "now" });
   writeFileSync(join(home, "mode"), mode);
+  writeFileSync(join(home, "incarnation"), "server:session:pane:1");
   writeFileSync(join(home, "provider"), provider);
   writeFileSync(join(home, "input"), "");
   writeFileSync(join(home, "tmux"), `#!/bin/sh
 case "$1" in
   has-session) exit 0 ;;
+  display-message) cat "$AGENTMGR_HOME/incarnation" ;;
   capture-pane)
     [ "$(cat "$AGENTMGR_HOME/mode")" = unavailable ] && exit 1
     [ "$(cat "$AGENTMGR_HOME/mode")" = unknown ] && { echo 'unrecognized screen'; exit 0; }
@@ -142,6 +144,17 @@ describe("delivery verification", () => {
     writeFileSync(join(home, "input"), "");
     expect(await deliverNext("api")).toEqual({ status: "submitted", id });
     expect(readFileSync(join(home, "sends"), "utf8").split("\n").filter(line => line === "text")).toHaveLength(1);
+  });
+
+  test("a replacement session retries a pending message instead of confirming the old submission", async () => {
+    fakeSession("capture-loss");
+    const id = queueAppend("api", "message");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unverified" });
+    writeFileSync(join(home, "incarnation"), "server:session:pane:2");
+    writeFileSync(join(home, "input"), "");
+    writeFileSync(join(home, "mode"), "submit");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(readFileSync(join(home, "sends"), "utf8").split("\n").filter(line => line === "text")).toHaveLength(2);
   });
 
   test("an unrecognized input layout is not confirmation of submission", async () => {

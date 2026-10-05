@@ -1,11 +1,12 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { injectCollected } from "../src/daemon";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 import { attribute, seenRecently } from "../src/comms";
-import { queueAppendOnce, queueDepth, queueList, queuePop, queueReceived } from "../src/queue";
+import { queueAppendOnce, queueDepth, queueHead, queueList, queuePop, queuePopId, queueReceived } from "../src/queue";
 import { writeAgent } from "../src/state";
 import type { OutboxEntry } from "../src/outbox";
 
@@ -96,4 +97,97 @@ test("native hooks do not surface a pending typed message a second time", () => 
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).not.toContain("pending typed message");
   expect(queueDepth("worker")).toBe(1);
+});
+
+
+test("consumption repairs a missing receipt before a collected message can be retried", async () => {
+  const id = queueAppendOnce("worker", "do work", entry.msgId);
+  expect(queueReceived("worker", entry.msgId)).toBe(false);
+  expect(acquireDeliverLock("worker")).toBe(true);
+  try {
+    queuePopId("worker", id);
+  } finally {
+    releaseDeliverLock("worker");
+  }
+  expect(queueReceived("worker", entry.msgId)).toBe(true);
+  expect(await injectCollected(entry, "remote")).toBe(true);
+  expect(queueDepth("worker")).toBe(0);
+});
+
+test("failed receipt persistence prevents consumption of crash recovery evidence", () => {
+  const id = queueAppendOnce("worker", "do work", entry.msgId);
+  writeFileSync(join(home, "queue", "worker", ".received"), "blocks receipts");
+  expect(acquireDeliverLock("worker")).toBe(true);
+  try {
+    expect(() => queuePopId("worker", id)).toThrow();
+  } finally {
+    releaseDeliverLock("worker");
+  }
+  expect(queueHead("worker")?.id).toBe(id);
+});
+
+test("ingestion flushes the message and directories before the receipt and acknowledgement", async () => {
+  const opened = new Map<number, string>();
+  const flushed: string[] = [];
+  const open = fs.openSync;
+  const sync = fs.fsyncSync;
+  const openSpy = spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+    const fd = open(...args);
+    opened.set(fd, String(args[0]));
+    return fd;
+  });
+  const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(fd => {
+    flushed.push(opened.get(fd)!);
+    sync(fd);
+  });
+  try {
+    expect(await injectCollected(entry, "remote")).toBe(true);
+    const dir = join(home, "queue", "worker");
+    expect(flushed).toEqual([
+      join(dir, `${entry.msgId}.json`), dir, join(home, "queue"), home,
+      join(dir, ".received", entry.msgId), join(dir, ".received"), dir, join(home, "queue"), home,
+    ]);
+  } finally {
+    openSpy.mockRestore();
+    syncSpy.mockRestore();
+  }
+});
+
+test("fsync failure withholds acknowledgement and retry durably repairs the receipt", async () => {
+  const sync = fs.fsyncSync;
+  let calls = 0;
+  const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(fd => {
+    if (++calls === 6) throw new Error("receipt directory fsync failed");
+    sync(fd);
+  });
+  try {
+    await expect(injectCollected(entry, "remote")).rejects.toThrow("receipt directory fsync failed");
+    expect(queueDepth("worker")).toBe(1);
+    expect(seenRecently(entry.msgId)).toBe(false);
+    expect(await injectCollected(entry, "remote")).toBe(true);
+    expect(calls).toBe(11);
+    expect(queueDepth("worker")).toBe(1);
+  } finally {
+    syncSpy.mockRestore();
+  }
+});
+
+
+test("queue fsync failure withholds acknowledgement and retry flushes the recovered entry", async () => {
+  const sync = fs.fsyncSync;
+  let calls = 0;
+  const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(fd => {
+    if (++calls === 1) throw new Error("queue fsync failed");
+    sync(fd);
+  });
+  try {
+    await expect(injectCollected(entry, "remote")).rejects.toThrow("queue fsync failed");
+    expect(queueReceived("worker", entry.msgId)).toBe(false);
+    expect(seenRecently(entry.msgId)).toBe(false);
+    expect(await injectCollected(entry, "remote")).toBe(true);
+    expect(calls).toBe(10);
+    expect(queueDepth("worker")).toBe(1);
+  } finally {
+    syncSpy.mockRestore();
+  }
 });

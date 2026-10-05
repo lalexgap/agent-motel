@@ -1,12 +1,12 @@
-import { closeSync, rmSync } from "node:fs";
+import { closeSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, readAgent, type AgentState, type Provider } from "./state";
+import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
 import { queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendText, stripSgr } from "./tmux";
+import { capturePane, hasSession, sendEnter, sendText, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir, baseDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { tryAcquireFileLock } from "./filelock";
+import { tryAcquireFileLock, withFileLock } from "./filelock";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
 // new inode while the current holder is still delivering. The kernel releases
@@ -22,6 +22,10 @@ export function acquireDeliverLock(name: string): boolean {
   if (deliveryLocks.has(path)) return false;
   const release = tryAcquireFileLock(path);
   if (!release) return false;
+  if (existsSync(handoffPath(name))) {
+    release();
+    return false;
+  }
   deliveryLocks.set(path, release);
   return true;
 }
@@ -32,6 +36,27 @@ export function releaseDeliverLock(name: string): void {
   if (!release) return;
   deliveryLocks.delete(path);
   release();
+}
+
+function handoffPath(name: string): string {
+  return `${lockPath(name)}.handoff`;
+}
+
+// The exporter exits before a pull finishes, so its ingestion barrier must
+// outlive that process. Only the matching handoff can release it.
+export function beginDeliveryHandoff(name: string, token: string): void {
+  if (!deliveryLocks.has(lockPath(name))) throw new Error("handoff requires delivery lock");
+  writeJsonAtomic(handoffPath(name), { token });
+}
+
+export function endDeliveryHandoff(name: string, token: string): boolean {
+  return withFileLock(lockPath(name), () => {
+    if (readJsonOrNull<{ token: string }>(handoffPath(name))?.token === token) {
+      rmSync(handoffPath(name), { force: true });
+      return true;
+    }
+    return false;
+  });
 }
 
 export { lockPath as __lockPath };
@@ -102,23 +127,39 @@ interface PendingDelivery {
   id: string;
   message: string;
   typed?: boolean;
+  incarnation?: string;
+}
+
+function sessionIncarnation(agent: AgentState): string | null {
+  const result = tmux("display-message", "-p", "-t", `=${agent.tmuxSession}`, "#{pid}:#{session_id}:#{session_created}:#{pane_id}:#{pane_pid}");
+  if (result.exitCode !== 0 || !result.stdout.trim()) return null;
+  return JSON.stringify([agentProvider(agent), agentSessionId(agent), result.stdout.trim()]);
 }
 
 export function pendingDeliveryId(name: string): string | null {
-  return readJsonOrNull<PendingDelivery>(join(queueDir(), name, ".delivery.pending"))?.id ?? null;
+  const pending = readJsonOrNull<PendingDelivery>(join(queueDir(), name, ".delivery.pending"));
+  const agent = readAgent(name);
+  if (!pending) return null;
+  const incarnation = agent ? sessionIncarnation(agent) : null;
+  // Older markers and an unreadable session remain deferred until delivery can retry.
+  return !pending.incarnation || !incarnation || pending.incarnation === incarnation ? pending.id : null;
 }
 
 export async function deliverNext(name: string): Promise<DeliveryResult> {
-  const agent = readAgent(name);
-  if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
   if (!acquireDeliverLock(name)) return { status: "queued", reason: "locked" };
   try {
+    const agent = readAgent(name);
+    if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
+    const incarnation = sessionIncarnation(agent);
+    if (!incarnation) return { status: "queued", reason: "unavailable" };
     const head = queueHead(name);
     if (head === null) return { status: "queued", reason: "empty" };
     const pendingPath = join(queueDir(), name, ".delivery.pending");
-    const pending = readJsonOrNull<PendingDelivery>(pendingPath);
+    const marker = readJsonOrNull<PendingDelivery>(pendingPath);
+    const pending = marker?.incarnation === incarnation ? marker : null;
     const provider = agentProvider(agent);
     const before = capturePane(agent.tmuxSession);
+    if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
     if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
       queuePopId(name, head.id);
@@ -134,14 +175,16 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       // Persist before typing so a process crash with the text in the input box
       // is recoverable. A crash after submission can still cause redelivery;
       // the receiving TUI has no transactional acknowledgement protocol.
-      writeJsonAtomic(pendingPath, { id: head.id, message: head.message });
+      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation });
       sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
-      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, typed: true });
+      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation, typed: true });
     }
 
     for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
       await Bun.sleep(SUBMIT_CHECK_MS);
       const pane = capturePane(agent.tmuxSession);
+      const current = readAgent(name);
+      if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
       if (!looksUnsubmitted(pane, head.message, provider)) {
         queuePopId(name, head.id);

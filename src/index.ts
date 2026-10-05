@@ -749,7 +749,7 @@ async function main(): Promise<void> {
       });
       break;
     case "__export":
-      exportCommand(requirePositional(args, 0, "agent name"));
+      exportCommand(requirePositional(args, 0, "agent name"), args.positional[1], args.positional[2]);
       break;
     case "__import":
       await importCommand();

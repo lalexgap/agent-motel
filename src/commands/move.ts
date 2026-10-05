@@ -5,6 +5,7 @@ import {
   agentProvider,
   agentSessionId,
   listAgents,
+  matchAgent,
   readAgent,
   resolveAgent,
   updateAgentStatus,
@@ -16,13 +17,14 @@ import { claudeProjectSlug, locateTranscript } from "../transcript";
 import { codexHome } from "../codexHooks";
 import { stopAgent, destroyAgent } from "./rm";
 import { sendText } from "../tmux";
-import { acquireDeliverLock, enterDelayMs, releaseDeliverLock } from "../deliver";
+import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, enterDelayMs, releaseDeliverLock } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
 import { expandHome, worktreesDir } from "../paths";
 import { hasSession } from "../tmux";
 import { loadConfig } from "../config";
 import { createWorktree, isGitRepo } from "./new";
+import { newMsgId } from "../msgid";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -368,173 +370,189 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     repoRoot: targetWorktree?.repoRoot,
   };
   updateAgentStatus(movedState, "exited", "moved to another host");
-  const backlog = queueList(agent.name);
-  const payload: MovePayload = {
-    state: movedState,
-    queue: [
-      migrationBrief({
-        from: hostname(),
-        to: host,
-        oldDir: agent.dir,
-        newDir: storedDir,
-        clone: !!opts.clone,
-        branchNote,
-        task: agent.task,
-      }),
-      ...backlog.map((m) => m.message),
-    ],
-    queueIds: [undefined, ...backlog.map((m) => m.msgId)],
-    receivedMsgIds: queueReceiptIds(agent.name),
-  };
-  const imported = await sshAmAsync(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
-  if (imported.exitCode !== 0) {
-    throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
-  }
+  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the move`);
+  try {
+    const backlog = queueList(agent.name);
+    const payload: MovePayload = {
+      state: movedState,
+      queue: [
+        migrationBrief({
+          from: hostname(),
+          to: host,
+          oldDir: agent.dir,
+          newDir: storedDir,
+          clone: !!opts.clone,
+          branchNote,
+          task: agent.task,
+        }),
+        ...backlog.map((m) => m.message),
+      ],
+      queueIds: [undefined, ...backlog.map((m) => m.msgId)],
+      receivedMsgIds: queueReceiptIds(agent.name),
+    };
+    const imported = await sshAmAsync(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
+    if (imported.exitCode !== 0) {
+      throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
+    }
 
-  if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
-  let message = opts.clone
-    ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
-    : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
+    if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
+    let message = opts.clone
+      ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
+      : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
 
-  if (opts.start) {
-    const resumed = await sshAmAsync(host, ["resume", agent.name], { timeoutMs: 30000 });
-    message +=
-      resumed.exitCode !== 0
-        ? ` — remote resume failed: ${resumed.stderr.trim()}`
-        : ` — running`;
+    if (opts.start) {
+      const resumed = await sshAmAsync(host, ["resume", agent.name], { timeoutMs: 30000 });
+      message +=
+        resumed.exitCode !== 0
+          ? ` — remote resume failed: ${resumed.stderr.trim()}`
+          : ` — running`;
+    }
+    return message;
+  } finally {
+    releaseDeliverLock(agent.name);
   }
-  return message;
 }
 
 async function pullAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
   if (readAgent(name)) throw new Error(`agent "${name}" already exists locally`);
 
-  const exported = await sshAmAsync(host, ["__export", name], { timeoutMs: 20000 });
-  if (exported.exitCode !== 0) {
-    throw new Error(`export on ${host} failed: ${(exported.stderr + exported.stdout).trim()}`);
-  }
-  const remote = JSON.parse(exported.stdout) as {
-    state: AgentState;
-    queue: string[];
-    queueIds?: (string | null)[];
-    receivedMsgIds?: string[];
-    home: string;
-    transcript: { path: string; codexRelative: string | null } | null;
-  };
-
-  let storedDir: string;
-  let transcriptDir: string;
-  let branchNote: string | undefined;
-  let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
-
-  if (remote.state.worktreePath && remote.state.repoRoot && !opts.dir) {
-    // Worktree agent on the far side: recreate its worktree against the
-    // local clone of the same repo.
-    const localRepo = mapHomeDir(remote.state.repoRoot, remote.home, homedir());
-    if (!localRepo) {
-      throw new Error(`${remote.state.repoRoot} is not under the remote $HOME — pass --dir <local dir>`);
+  const handoff = newMsgId();
+  let handoffName = name;
+  try {
+    const exported = await sshAmAsync(host, ["__export", name, "handoff", handoff], { timeoutMs: 20000 });
+    if (exported.exitCode !== 0) {
+      throw new Error(`export on ${host} failed: ${(exported.stderr + exported.stdout).trim()}`);
     }
-    if (!existsSync(localRepo)) {
-      throw new Error(`repo missing locally: ${localRepo} — clone it first, or pass --dir`);
+    const remote = JSON.parse(exported.stdout) as {
+      state: AgentState;
+      queue: string[];
+      queueIds?: (string | null)[];
+      receivedMsgIds?: string[];
+      handoffToken?: string;
+      home: string;
+      transcript: { path: string; codexRelative: string | null } | null;
+    };
+
+    if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
+    handoffName = remote.state.name;
+
+    let storedDir: string;
+    let transcriptDir: string;
+    let branchNote: string | undefined;
+    let targetWorktree: { path: string; branch: string; repoRoot: string } | undefined;
+
+    if (remote.state.worktreePath && remote.state.repoRoot && !opts.dir) {
+      // Worktree agent on the far side: recreate its worktree against the
+      // local clone of the same repo.
+      const localRepo = mapHomeDir(remote.state.repoRoot, remote.home, homedir());
+      if (!localRepo) {
+        throw new Error(`${remote.state.repoRoot} is not under the remote $HOME — pass --dir <local dir>`);
+      }
+      if (!existsSync(localRepo)) {
+        throw new Error(`repo missing locally: ${localRepo} — clone it first, or pass --dir`);
+      }
+      const branch = remote.state.worktreeBranch ?? `am/${name}`;
+      const pushed =
+        (
+          await sshRunAsync(host, `git -C ${shq(remote.state.worktreePath)} push origin ${shq(branch)}`, {
+            timeoutMs: 60000,
+          })
+        ).exitCode === 0;
+      branchNote = pushed
+        ? `your branch ${branch} was pushed to origin and is checked out here`
+        : `your branch could not be pushed to origin — unpushed commits did NOT travel (branch recreated here)`;
+
+      const canonicalRepo = realpathSync(localRepo);
+      const wtPath = join(worktreesDir(), basename(canonicalRepo), name);
+      Bun.spawnSync(["mkdir", "-p", dirname(wtPath)]);
+      await runAsync(["git", "-C", canonicalRepo, "fetch", "origin", branch], { timeoutMs: 30000 });
+      const haveLocal =
+        (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0;
+      const haveOrigin =
+        (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`])).exitCode === 0;
+      const addArgs = haveLocal
+        ? ["worktree", "add", wtPath, branch]
+        : haveOrigin
+          ? ["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`]
+          : ["worktree", "add", "-b", branch, wtPath];
+      const added = await runAsync(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
+      if (added.exitCode !== 0) throw new Error(`could not create local worktree: ${added.stderr.trim()}`);
+      storedDir = transcriptDir = realpathSync(wtPath);
+      targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
+    } else {
+      const targetDir = opts.dir ?? mapHomeDir(remote.state.dir, remote.home, homedir());
+      if (!targetDir) {
+        throw new Error(`${remote.state.dir} is not under the remote $HOME — pass --dir <local dir>`);
+      }
+      if (!existsSync(targetDir)) {
+        throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
+      }
+      // Store the LOGICAL dir (portable); resolve only for the transcript path,
+      // since claude keys transcripts by the realpath of the cwd.
+      storedDir = targetDir;
+      transcriptDir = realpathSync(targetDir);
     }
-    const branch = remote.state.worktreeBranch ?? `am/${name}`;
-    const pushed =
-      (
-        await sshRunAsync(host, `git -C ${shq(remote.state.worktreePath)} push origin ${shq(branch)}`, {
-          timeoutMs: 60000,
-        })
-      ).exitCode === 0;
-    branchNote = pushed
-      ? `your branch ${branch} was pushed to origin and is checked out here`
-      : `your branch could not be pushed to origin — unpushed commits did NOT travel (branch recreated here)`;
 
-    const canonicalRepo = realpathSync(localRepo);
-    const wtPath = join(worktreesDir(), basename(canonicalRepo), name);
-    Bun.spawnSync(["mkdir", "-p", dirname(wtPath)]);
-    await runAsync(["git", "-C", canonicalRepo, "fetch", "origin", branch], { timeoutMs: 30000 });
-    const haveLocal =
-      (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0;
-    const haveOrigin =
-      (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`])).exitCode === 0;
-    const addArgs = haveLocal
-      ? ["worktree", "add", wtPath, branch]
-      : haveOrigin
-        ? ["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`]
-        : ["worktree", "add", "-b", branch, wtPath];
-    const added = await runAsync(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
-    if (added.exitCode !== 0) throw new Error(`could not create local worktree: ${added.stderr.trim()}`);
-    storedDir = transcriptDir = realpathSync(wtPath);
-    targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
-  } else {
-    const targetDir = opts.dir ?? mapHomeDir(remote.state.dir, remote.home, homedir());
-    if (!targetDir) {
-      throw new Error(`${remote.state.dir} is not under the remote $HOME — pass --dir <local dir>`);
+    // Stop it remotely before copying the conversation so the file is final
+    // (clones leave the original running and accept a snapshot).
+    if (!opts.clone) {
+      await settleBeforeMoveRemote(host, name, remote.state.status); // let it wrap up
+      await sshAmAsync(host, ["stop", name], { timeoutMs: 15000 });
     }
-    if (!existsSync(targetDir)) {
-      throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
+
+    const sessionId = agentSessionId(remote.state);
+    let localTranscriptPath: string | undefined;
+    if (remote.transcript && sessionId) {
+      const provider = agentProvider(remote.state);
+      const target = targetTranscriptPath(provider, homedir(), transcriptDir, sessionId, remote.transcript.codexRelative);
+      Bun.spawnSync(["mkdir", "-p", dirname(target)]);
+      const scp = await runAsync(["scp", "-q", `${host}:${remote.transcript.path}`, target], { timeoutMs: 120000 });
+      if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
+      if (provider === "codex") localTranscriptPath = target;
     }
-    // Store the LOGICAL dir (portable); resolve only for the transcript path,
-    // since claude keys transcripts by the realpath of the cwd.
-    storedDir = targetDir;
-    transcriptDir = realpathSync(targetDir);
+
+    importPayload(
+      JSON.stringify({
+        state: {
+          ...remote.state,
+          dir: storedDir,
+          transcriptPath: localTranscriptPath,
+          worktreePath: targetWorktree?.path,
+          worktreeBranch: targetWorktree?.branch,
+          repoRoot: targetWorktree?.repoRoot,
+        },
+        queue: [
+          migrationBrief({
+            from: host,
+            to: hostname(),
+            oldDir: remote.state.dir,
+            newDir: storedDir,
+            clone: !!opts.clone,
+            branchNote,
+            task: remote.state.task,
+          }),
+          ...remote.queue,
+        ],
+        queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
+        receivedMsgIds: remote.receivedMsgIds,
+      }),
+    );
+
+    if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
+    let message = opts.clone
+      ? `cloned "${name}" ← ${host} (original still on ${host})`
+      : `moved "${name}" ← ${host} (now in ${storedDir})${opts.copy ? " (remote copy kept)" : ""}`;
+
+    if (opts.start) {
+      const { reviveAgent } = await import("./resume");
+      await reviveAgent(readAgent(name)!);
+      message += " — running";
+    }
+    return message;
+  } finally {
+    const released = await sshAmAsync(host, ["__export", handoffName, "release", handoff], { timeoutMs: 20000 });
+    if (released.exitCode !== 0) throw new Error(`could not release delivery handoff on ${host}: ${(released.stderr + released.stdout).trim()}`);
   }
-
-  // Stop it remotely before copying the conversation so the file is final
-  // (clones leave the original running and accept a snapshot).
-  if (!opts.clone) {
-    await settleBeforeMoveRemote(host, name, remote.state.status); // let it wrap up
-    await sshAmAsync(host, ["stop", name], { timeoutMs: 15000 });
-  }
-
-  const sessionId = agentSessionId(remote.state);
-  let localTranscriptPath: string | undefined;
-  if (remote.transcript && sessionId) {
-    const provider = agentProvider(remote.state);
-    const target = targetTranscriptPath(provider, homedir(), transcriptDir, sessionId, remote.transcript.codexRelative);
-    Bun.spawnSync(["mkdir", "-p", dirname(target)]);
-    const scp = await runAsync(["scp", "-q", `${host}:${remote.transcript.path}`, target], { timeoutMs: 120000 });
-    if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
-    if (provider === "codex") localTranscriptPath = target;
-  }
-
-  importPayload(
-    JSON.stringify({
-      state: {
-        ...remote.state,
-        dir: storedDir,
-        transcriptPath: localTranscriptPath,
-        worktreePath: targetWorktree?.path,
-        worktreeBranch: targetWorktree?.branch,
-        repoRoot: targetWorktree?.repoRoot,
-      },
-      queue: [
-        migrationBrief({
-          from: host,
-          to: hostname(),
-          oldDir: remote.state.dir,
-          newDir: storedDir,
-          clone: !!opts.clone,
-          branchNote,
-          task: remote.state.task,
-        }),
-        ...remote.queue,
-      ],
-      queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
-      receivedMsgIds: remote.receivedMsgIds,
-    }),
-  );
-
-  if (!opts.copy && !opts.clone) await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
-  let message = opts.clone
-    ? `cloned "${name}" ← ${host} (original still on ${host})`
-    : `moved "${name}" ← ${host} (now in ${storedDir})${opts.copy ? " (remote copy kept)" : ""}`;
-
-  if (opts.start) {
-    const { reviveAgent } = await import("./resume");
-    await reviveAgent(readAgent(name)!);
-    message += " — running";
-  }
-  return message;
 }
 
 function shq(arg: string): string {
@@ -577,21 +595,37 @@ export function defaultMoveTarget(
 }
 
 // `am __export <name>`: everything the other side needs, on stdout.
-export function exportCommand(name: string): void {
+export function exportCommand(name: string, mode?: string, token?: string): void {
+  if (mode && mode !== "handoff" && mode !== "release") throw new Error("invalid export mode");
+  if (mode && !token) throw new Error("missing handoff token");
+  if (mode === "release") {
+    if (!endDeliveryHandoff(name, token!)) {
+      const agent = matchAgent(name);
+      if (agent && agent.name !== name) endDeliveryHandoff(agent.name, token!);
+    }
+    return;
+  }
   // Enrich on the source side (where the worktree is live) so a pull recreates
   // it even when the agent never recorded its worktree metadata.
   const agent = withWorktreeMeta(resolveAgent(name));
-  const backlog = queueList(agent.name);
-  console.log(
-    JSON.stringify({
-      state: agent,
-      queue: backlog.map((m) => m.message),
-      queueIds: backlog.map((m) => m.msgId),
-      receivedMsgIds: queueReceiptIds(agent.name),
-      home: homedir(),
-      transcript: sourceTranscript(agent),
-    }),
-  );
+  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the export`);
+  try {
+    if (mode === "handoff") beginDeliveryHandoff(agent.name, token!);
+    const backlog = queueList(agent.name);
+    console.log(
+      JSON.stringify({
+        state: agent,
+        queue: backlog.map((m) => m.message),
+        queueIds: backlog.map((m) => m.msgId),
+        receivedMsgIds: queueReceiptIds(agent.name),
+        home: homedir(),
+        transcript: sourceTranscript(agent),
+        ...(mode === "handoff" ? { handoffToken: token } : {}),
+      }),
+    );
+  } finally {
+    releaseDeliverLock(agent.name);
+  }
 }
 
 // `am __import`: reads a MovePayload on stdin.
