@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentsDir, ensureDirs, lastAttachedFile } from "./paths";
+import { agentsDir, baseDir, ensureDirs, lastAttachedFile } from "./paths";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { withFileLock } from "./filelock";
 
 export type AgentStatus =
   | "starting"
@@ -73,6 +74,13 @@ function stateFile(name: string): string {
   return join(agentsDir(), `${name}.json`);
 }
 
+const readSnapshots = new WeakMap<AgentState, AgentState>();
+const statusUpdates = new WeakMap<AgentState, { status: AgentStatus; reason?: string; now: string }>();
+
+function stateLock(name: string): string {
+  return join(baseDir(), "locks", `state-${name}.lock`);
+}
+
 // Tolerant read: a torn/corrupt state file must not brick every am command
 // (and every hook). But silence would make the agent invisibly unmanageable
 // (unlisted, un-rm-able), so the damage is quarantined loudly: the file moves
@@ -88,6 +96,7 @@ function readStateFile(file: string): AgentState | null {
       // raced another quarantiner (or the file vanished) — already handled
     }
   }
+  if (state) readSnapshots.set(state, structuredClone(state));
   return state;
 }
 
@@ -97,10 +106,41 @@ export function readAgent(name: string): AgentState | null {
 
 export function writeAgent(state: AgentState): void {
   ensureDirs();
-  state.updatedAt = new Date().toISOString();
-  // Atomic: state files are written by several processes at once (hooks, the
-  // CLI, the daemon) and read constantly.
-  writeJsonAtomic(stateFile(state.name), state);
+  withFileLock(stateLock(state.name), () => {
+    const snapshot = readSnapshots.get(state);
+    let next = state;
+    if (snapshot && snapshot.name === state.name) {
+      const current = readAgent(state.name);
+      // A stale hook must not resurrect a removed or renamed agent.
+      if (!current) return;
+      next = current;
+      const keys = new Set([...Object.keys(snapshot), ...Object.keys(state)]) as Set<keyof AgentState>;
+      for (const key of keys) {
+        if (key === "updatedAt") continue;
+        const explicitClear = Object.hasOwn(state, key) && state[key] === undefined && !Object.hasOwn(snapshot, key);
+        if (explicitClear || JSON.stringify(state[key]) !== JSON.stringify(snapshot[key])) {
+          if (state[key] === undefined) delete next[key];
+          else Object.assign(next, { [key]: state[key] });
+        }
+      }
+      const transition = statusUpdates.get(state);
+      if (transition) {
+        // Compare the transition against the latest persisted status, not
+        // the caller's old snapshot, to preserve its actual change time.
+        next.status = readSnapshots.get(current)!.status;
+        next.statusReason = readSnapshots.get(current)!.statusReason;
+        next.statusChangedAt = readSnapshots.get(current)!.statusChangedAt;
+        updateAgentStatus(next, transition.status, transition.reason, transition.now);
+      }
+    }
+    next.updatedAt = new Date().toISOString();
+    writeJsonAtomic(stateFile(state.name), next);
+    const saved = structuredClone(next);
+    for (const key of Object.keys(state) as (keyof AgentState)[]) delete state[key];
+    Object.assign(state, saved);
+    readSnapshots.set(state, structuredClone(state));
+    statusUpdates.delete(state);
+  });
 }
 
 export function updateAgentStatus(
@@ -109,6 +149,7 @@ export function updateAgentStatus(
   reason?: string,
   now: string = new Date().toISOString(),
 ): void {
+  statusUpdates.set(state, { status, reason, now });
   const statusReason = reason?.trim() || undefined;
   if (state.status !== status || state.statusReason !== statusReason) {
     state.statusChangedAt = now;
@@ -129,7 +170,7 @@ export function setStatus(name: string, status: AgentStatus, reason?: string): v
 }
 
 export function removeAgent(name: string): void {
-  rmSync(stateFile(name), { force: true });
+  withFileLock(stateLock(name), () => rmSync(stateFile(name), { force: true }));
 }
 
 export function listAgents(): AgentState[] {

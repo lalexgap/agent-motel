@@ -65,11 +65,15 @@ export async function sendCommand(
     return;
   }
 
-  queueAppend(agent.name, body);
+  const queuedId = queueAppend(agent.name, body);
   if (agent.status === "idle" || agent.status === "starting") {
     // Agent isn't working, so no Stop hook is coming — deliver right away.
-    await deliverNext(agent.name);
-    console.log(`delivered to "${agent.name}" (was idle)`);
+    const result = await deliverNext(agent.name);
+    if (result.status === "submitted" && result.id === queuedId) {
+      console.log(`delivered to "${agent.name}" (was idle)`);
+    } else {
+      console.log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — awaiting delivery`);
+    }
   } else {
     console.log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — delivered when it goes idle`);
   }

@@ -11,12 +11,12 @@ import {
   writeAgent,
   type AgentState,
 } from "../state";
-import { queueAppend, queueList } from "../queue";
+import { queueAppend, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
 import { claudeProjectSlug, locateTranscript } from "../transcript";
 import { codexHome } from "../codexHooks";
 import { stopAgent, destroyAgent } from "./rm";
 import { sendText } from "../tmux";
-import { enterDelayMs } from "../deliver";
+import { acquireDeliverLock, enterDelayMs, releaseDeliverLock } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
 import { expandHome, worktreesDir } from "../paths";
@@ -32,6 +32,8 @@ import { createWorktree, isGitRepo } from "./new";
 export interface MovePayload {
   state: AgentState;
   queue: string[];
+  queueIds?: (string | null | undefined)[];
+  receivedMsgIds?: string[];
 }
 
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
@@ -149,13 +151,21 @@ export function importPayload(raw: string): string {
   const payload = JSON.parse(raw) as MovePayload;
   const state = payload.state;
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
-  if (readAgent(state.name)) throw new Error(`agent "${state.name}" already exists here`);
   if (!existsSync(state.dir)) throw new Error(`target dir does not exist: ${state.dir}`);
-  const imported = { ...state, workingSince: undefined };
-  updateAgentStatus(imported, "exited", "moved from another host");
-  writeAgent(imported);
-  for (const message of payload.queue ?? []) queueAppend(state.name, message);
-  return state.name;
+  if (!acquireDeliverLock(state.name)) throw new Error(`agent "${state.name}" is receiving a message — retry the import`);
+  try {
+    if (readAgent(state.name)) throw new Error(`agent "${state.name}" already exists here`);
+    const imported = { ...state, workingSince: undefined };
+    updateAgentStatus(imported, "exited", "moved from another host");
+    writeAgent(imported);
+    for (const [index, message] of (payload.queue ?? []).entries()) {
+      queueAppend(state.name, message, payload.queueIds?.[index] ?? undefined);
+    }
+    for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
+    return state.name;
+  } finally {
+    releaseDeliverLock(state.name);
+  }
 }
 
 export interface MoveOptions {
@@ -358,6 +368,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     repoRoot: targetWorktree?.repoRoot,
   };
   updateAgentStatus(movedState, "exited", "moved to another host");
+  const backlog = queueList(agent.name);
   const payload: MovePayload = {
     state: movedState,
     queue: [
@@ -370,8 +381,10 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         branchNote,
         task: agent.task,
       }),
-      ...queueList(agent.name).map((m) => m.message),
+      ...backlog.map((m) => m.message),
     ],
+    queueIds: [undefined, ...backlog.map((m) => m.msgId)],
+    receivedMsgIds: queueReceiptIds(agent.name),
   };
   const imported = await sshAmAsync(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
   if (imported.exitCode !== 0) {
@@ -403,6 +416,8 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   const remote = JSON.parse(exported.stdout) as {
     state: AgentState;
     queue: string[];
+    queueIds?: (string | null)[];
+    receivedMsgIds?: string[];
     home: string;
     transcript: { path: string; codexRelative: string | null } | null;
   };
@@ -504,6 +519,8 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
         }),
         ...remote.queue,
       ],
+      queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
+      receivedMsgIds: remote.receivedMsgIds,
     }),
   );
 
@@ -564,10 +581,13 @@ export function exportCommand(name: string): void {
   // Enrich on the source side (where the worktree is live) so a pull recreates
   // it even when the agent never recorded its worktree metadata.
   const agent = withWorktreeMeta(resolveAgent(name));
+  const backlog = queueList(agent.name);
   console.log(
     JSON.stringify({
       state: agent,
-      queue: queueList(agent.name).map((m) => m.message),
+      queue: backlog.map((m) => m.message),
+      queueIds: backlog.map((m) => m.msgId),
+      receivedMsgIds: queueReceiptIds(agent.name),
       home: homedir(),
       transcript: sourceTranscript(agent),
     }),

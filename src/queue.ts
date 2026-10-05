@@ -19,6 +19,7 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 interface QueueEntry {
   message: string;
   queuedAt: string;
+  msgId?: string;
 }
 
 function agentQueueDir(name: string): string {
@@ -113,10 +114,57 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
-export function queueAppend(name: string, message: string): string {
+export function queueAppend(name: string, message: string, msgId?: string): string {
+  if (msgId !== undefined) messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
-  return writeEntry(name, { message, queuedAt: new Date().toISOString() });
+  return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) });
+}
+
+function messageFile(name: string, msgId: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(msgId)) throw new Error("invalid message id");
+  return join(agentQueueDir(name), `${msgId}.json`);
+}
+
+// Callers hold the delivery lock until the receipt is persisted, preventing
+// consumers from removing the queue entry during crash recovery.
+export function queueAppendOnce(name: string, message: string, msgId: string): string {
+  const file = messageFile(name, msgId);
+  ensureDirs();
+  migrateLegacy(name);
+  mkdirSync(agentQueueDir(name), { recursive: true });
+  if (!queueHasId(name, msgId)) {
+    writeJsonAtomic(file, { message, queuedAt: new Date().toISOString(), msgId }, { pretty: false });
+  }
+  return `${msgId}.json`;
+}
+
+export function queueHasId(name: string, msgId: string): boolean {
+  if (readJsonOrNull<QueueEntry>(messageFile(name, msgId))) return true;
+  return queueList(name).some((entry) => entry.msgId === msgId);
+}
+
+function receiptFile(name: string, msgId: string): string {
+  messageFile(name, msgId);
+  return join(agentQueueDir(name), ".received", msgId);
+}
+
+export function queueReceived(name: string, msgId: string): boolean {
+  return readJsonOrNull(receiptFile(name, msgId)) !== null;
+}
+
+export function queueRecordReceipt(name: string, msgId: string): void {
+  const file = receiptFile(name, msgId);
+  mkdirSync(join(agentQueueDir(name), ".received"), { recursive: true });
+  writeJsonAtomic(file, { receivedAt: new Date().toISOString() }, { pretty: false });
+}
+
+export function queueReceiptIds(name: string): string[] {
+  const dir = join(agentQueueDir(name), ".received");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((id) => /^[a-zA-Z0-9_-]+$/.test(id) && queueReceived(name, id))
+    .sort();
 }
 
 export function queueList(name: string): QueueEntry[] {

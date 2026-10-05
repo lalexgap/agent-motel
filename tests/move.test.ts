@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultMoveTarget,
+  exportCommand,
   importPayload,
   mapHomeDir,
   parseMoveSpec,
@@ -12,7 +13,7 @@ import {
 import { fleetKey, fleetPickerItem, sidebarStatus, sortFleetRows, splitFleetKey } from "../src/fleet";
 import { shortHost } from "../src/config";
 import { readAgent, type AgentState } from "../src/state";
-import { queueList } from "../src/queue";
+import { queueAppendOnce, queueHasId, queueList, queueReceived, queueRecordReceipt } from "../src/queue";
 
 describe("mapHomeDir", () => {
   test("swaps the home prefix", () => {
@@ -155,6 +156,42 @@ describe("importPayload", () => {
     importPayload(payload(dir));
     expect(() => importPayload(payload(dir))).toThrow(/already exists/);
     expect(() => importPayload(payload(join(home, "nope"), "other"))).toThrow(/does not exist/);
+  });
+
+  test("exports and imports message identities and consumed receipts without changing FIFO", () => {
+    const dir = join(home, "workdir");
+    mkdirSync(dir, { recursive: true });
+    const original = JSON.parse(payload(dir));
+    original.queue = ["migration brief", "remote message", "local message"];
+    original.queueIds = [null, "0000000000REMOTE", null];
+    original.receivedMsgIds = ["0000000000CONSUMED"];
+    importPayload(JSON.stringify(original));
+
+    let exported = "";
+    const log = console.log;
+    try {
+      console.log = (raw: string) => { exported = raw; };
+      exportCommand("migrated");
+    } finally {
+      console.log = log;
+    }
+    const moved = JSON.parse(exported);
+    expect(moved.queue).toEqual(original.queue);
+    expect(moved.queueIds).toEqual(original.queueIds);
+    expect(moved.receivedMsgIds).toEqual(original.receivedMsgIds);
+    moved.state.name = "destination";
+    moved.state.tmuxSession = "agentmgr-destination";
+    importPayload(JSON.stringify(moved));
+
+    expect(queueList("destination").map((entry) => entry.message)).toEqual(original.queue);
+    expect(queueHasId("destination", "0000000000REMOTE")).toBe(true);
+    expect(queueReceived("destination", "0000000000CONSUMED")).toBe(true);
+    queueAppendOnce("destination", "duplicate remote message", "0000000000REMOTE");
+    if (!queueReceived("destination", "0000000000CONSUMED")) {
+      queueAppendOnce("destination", "duplicate consumed message", "0000000000CONSUMED");
+      queueRecordReceipt("destination", "0000000000CONSUMED");
+    }
+    expect(queueList("destination").map((entry) => entry.message)).toEqual(original.queue);
   });
 });
 

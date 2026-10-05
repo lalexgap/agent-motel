@@ -1,6 +1,6 @@
 import { matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
-import { queueAppend, queueDepth, queuePop } from "../queue";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
+import { queueAppend, queueDepth, queueHead, queuePopId } from "../queue";
+import { acquireDeliverLock, deliverNext, pendingDeliveryId, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
@@ -157,8 +157,12 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
   if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
   try {
     const pending: string[] = [];
-    let m: string | null;
-    while ((m = queuePop(name)) !== null) pending.push(m);
+    let head;
+    while ((head = queueHead(name)) !== null) {
+      if (head.id === pendingDeliveryId(name)) break;
+      queuePopId(name, head.id);
+      pending.push(head.message);
+    }
     const out = buildInboxOutput(pending, hookEventName);
     if (out) process.stdout.write(out);
   } finally {
@@ -172,8 +176,12 @@ function stopGate(name: string): string | null {
   if (!acquireDeliverLock(name)) return null;
   try {
     const pending: string[] = [];
-    let m: string | null;
-    while ((m = queuePop(name)) !== null) pending.push(m);
+    let head;
+    while ((head = queueHead(name)) !== null) {
+      if (head.id === pendingDeliveryId(name)) break;
+      queuePopId(name, head.id);
+      pending.push(head.message);
+    }
     return buildStopGate(pending);
   } finally {
     releaseDeliverLock(name);
