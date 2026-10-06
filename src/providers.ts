@@ -205,6 +205,7 @@ export function buildResumeCommand(
   const role = roleForAgent(agent);
   return claudeCommand(agent.name, sessionId ? ["--resume", sessionId] : ["--continue"], {
     ...opts,
+    reportTo: agent.reportTo,
     role,
     roleInstructions: agent.roleInstructions ?? (role ? getRole(role)?.instructions : undefined),
   });

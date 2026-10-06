@@ -175,12 +175,15 @@ am transcript api                  # render the conversation as Markdown
 am search "rate limit"             # search agent conversations
 am handoff api --to codex          # continue with the other provider
 am stop api                        # stop but keep resumable state
-am resume api                      # restart the same conversation
+am resume api                      # resume an exited agent
+am restart api                     # reload Claude/Codex and resume the same conversation
 am rename api api-v2               # rename live or stopped; old name stays an alias
 am rm api                          # remove an agent; state remains restorable
 am restore api                     # restore a removed agent
 am gc                              # preview cleanup (--apply to run it)
 ```
+
+Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or choosing **Restart** in the command palette. Restart interrupts its current turn and loads the installed provider binary; update Claude/Codex first to pick up a newer version. The conversation, working directory, and queued messages are preserved.
 
 ### Quota headroom
 
