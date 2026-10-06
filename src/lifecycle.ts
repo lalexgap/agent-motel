@@ -26,6 +26,10 @@ export function releaseLifecycleLock(name: string): void {
   release();
 }
 
+export function lifecycleLockHeld(name: string): boolean {
+  return heldLocks.has(lifecycleLockPath(name));
+}
+
 export function currentLifecycleAgent(expected: AgentState): AgentState {
   const current = readAgent(expected.name);
   if (

@@ -8,18 +8,110 @@ import {
   importAfterRenew,
   importPayload,
   mapHomeDir,
+  moveAgent,
   parseMoveSpec,
   targetTranscriptPath,
   resolveSourceRemovalFailure,
 } from "../src/commands/move";
 import { fleetKey, fleetPickerItem, sidebarStatus, sortFleetRows, splitFleetKey } from "../src/fleet";
 import { shortHost } from "../src/config";
-import { readAgent, type AgentState } from "../src/state";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 import { injectCollected } from "../src/daemon";
 import { removeAgent } from "../src/state";
 import { queueAppend, queueAppendOnce, queueClear, queueHasId, queueList, queueReceived, queueRecordReceipt, queueStorageExists } from "../src/queue";
 import { handoffPath } from "../src/mailbox";
+
+describe("move lifecycle failures", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "am-move-lifecycle-"));
+    process.env.AGENTMGR_HOME = home;
+  });
+
+  afterEach(() => {
+    delete process.env.AGENTMGR_HOME;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a failed remote stop aborts pull before import or source removal", async () => {
+    const now = new Date().toISOString();
+    const exported = {
+      state: {
+        name: "migrated",
+        status: "exited",
+        dir: "/remote/work",
+        tmuxSession: "agentmgr-migrated",
+        createdAt: now,
+        updatedAt: now,
+      },
+      queue: [],
+      home: "/remote",
+      transcript: null,
+    };
+    const calls: string[][] = [];
+    const sshAm = async (_host: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "__export" && args[2] === "handoff") {
+        return { exitCode: 0, stdout: JSON.stringify({ ...exported, handoffToken: args[3] }), stderr: "" };
+      }
+      if (args[0] === "stop") return { exitCode: 1, stdout: "", stderr: "lifecycle busy" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    await expect(moveAgent("remote:migrated", undefined, {
+      dir: home, copy: false, start: false, clone: false,
+    }, { sshAmAsync: sshAm })).rejects.toThrow(/could not stop source.*lifecycle busy.*retry the move/);
+
+    expect(calls.some((args) => args[0] === "__import")).toBe(false);
+    expect(calls.some((args) => args[0] === "rm")).toBe(false);
+    expect(readAgent("migrated")).toBeNull();
+  });
+
+  test("a busy local lifecycle aborts push before remote import", async () => {
+    const now = new Date().toISOString();
+    writeAgent({
+      name: "local",
+      status: "exited",
+      dir: home,
+      tmuxSession: "agentmgr-local",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const calls: string[][] = [];
+    const sshAm = async (_host: string, args: string[]) => {
+      calls.push(args);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const sshRun = async (_host: string, command: string) => ({
+      exitCode: 0,
+      stdout: command === "echo $HOME" ? "/remote\n" : "",
+      stderr: "",
+    });
+    const lifecycleModule = JSON.stringify(new URL("../src/lifecycle.ts", import.meta.url).href);
+    const holder = Bun.spawn([process.execPath, "-e", `
+      import { acquireLifecycleLock } from ${lifecycleModule};
+      import { existsSync, writeFileSync } from "node:fs";
+      if (!acquireLifecycleLock("local")) process.exit(2);
+      writeFileSync(process.env.AGENTMGR_HOME + "/lifecycle-held", "");
+      while (!existsSync(process.env.AGENTMGR_HOME + "/release-lifecycle")) await Bun.sleep(1);
+    `], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+    for (let i = 0; i < 200 && !existsSync(join(home, "lifecycle-held")); i++) await Bun.sleep(10);
+    expect(existsSync(join(home, "lifecycle-held"))).toBe(true);
+
+    try {
+      await expect(moveAgent("local", "remote", {
+        dir: home, copy: false, start: false, clone: false,
+      }, { sshAmAsync: sshAm, sshRunAsync: sshRun })).rejects.toThrow(/being stopped, removed, renamed, or restarted/);
+      expect(calls.some((args) => args[0] === "__import")).toBe(false);
+      expect(readAgent("local")).not.toBeNull();
+    } finally {
+      writeFileSync(join(home, "release-lifecycle"), "");
+      expect(await holder.exited).toBe(0);
+    }
+  });
+});
 
 describe("mapHomeDir", () => {
   test("swaps the home prefix", () => {
