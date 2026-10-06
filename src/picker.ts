@@ -144,6 +144,7 @@ export function asFeedback(f: Feedback | null | undefined): FeedbackResult | nul
 export interface PickerHandlers {
   // Each returns a feedback message shown as a banner under the header.
   stop?: (name: string) => Feedback;
+  restart?: (name: string) => Feedback | Promise<Feedback>;
   remove?: (name: string) => Feedback;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
@@ -750,6 +751,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.handoff ? [{ key: "h", label: "handoff" }] : []),
       ...(handlers.rename ? [{ key: "n", label: "rename" }] : []),
       ...(handlers.cd ? [{ key: "r", label: "cd" }] : []),
+      ...(handlers.restart ? [{ key: "s", label: "restart" }] : []),
       ...(handlers.stop ? [{ key: "x", label: "stop" }] : []),
       ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
       { key: "esc", label: "back" },
@@ -844,7 +846,7 @@ export function tmuxKeyBar(mode: Mode, handlers: PickerHandlers, active = true):
 }
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
-  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.stop || handlers.remove);
+  return !!(handlers.move || handlers.clone || handlers.handoff || handlers.rename || handlers.cd || handlers.restart || handlers.stop || handlers.remove);
 }
 
 // The edit menu's footer line, built from whichever actions are wired.
@@ -855,6 +857,7 @@ export function editMenuHelp(handlers: PickerHandlers): string {
     handlers.handoff && "h handoff",
     handlers.rename && "n rename",
     handlers.cd && "r cd",
+    handlers.restart && "s restart",
     handlers.stop && "x stop",
     handlers.remove && "d remove",
   ].filter(Boolean);
@@ -1120,6 +1123,7 @@ export async function pick(
       target && handlers.handoff && { id: "handoff", label: `Handoff ${name}`, keywords: "provider transcript", shortcut: "e h" },
       target && handlers.rename && { id: "rename", label: `Rename ${name}`, keywords: "name identity alias", shortcut: "e n" },
       target && handlers.cd && { id: "cd", label: `Change directory for ${name}`, keywords: "relocate path", shortcut: "e r" },
+      target && handlers.restart && { id: "restart", label: `Restart ${name}`, keywords: "reload update resume", shortcut: "e s" },
       target && handlers.stop && { id: "stop", label: `Stop ${name}`, keywords: "exit kill", shortcut: "e x" },
       target && handlers.remove && { id: "remove", label: `Remove ${name}…`, keywords: "delete destroy", shortcut: "e d" },
       { id: "help", label: "Show keyboard shortcuts", keywords: "help keys", shortcut: "?" },
@@ -2059,6 +2063,10 @@ export async function pick(
             cdDir = handlers.cdPrefill?.(target.name) ?? "";
           } else mode = "list";
           break;
+        case "restart":
+          mode = "list";
+          if (handlers.restart) runDeferred("restarting", handlers.restart);
+          break;
         case "stop":
           mode = "list";
           if (handlers.stop) runAction(handlers.stop);
@@ -2290,6 +2298,9 @@ export async function pick(
           mode = "cd-dir";
           cdTarget = target.name;
           cdDir = handlers.cdPrefill?.(target.name) ?? "";
+        } else if (key === "s" && handlers.restart) {
+          mode = "list";
+          runDeferred("restarting", handlers.restart);
         } else if (key === "x" && handlers.stop) {
           mode = "list";
           runAction(handlers.stop);

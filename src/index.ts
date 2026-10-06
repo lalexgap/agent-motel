@@ -23,6 +23,7 @@ import { peekCommand } from "./commands/peek";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
+import { restartAgent, restartCommand } from "./commands/restart";
 import { conciergeCommand, ensureConcierge } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
@@ -31,7 +32,7 @@ import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./commands/fleetActions";
-import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
+import { isForwardable, remoteExec, sshAm, sshAmAsync, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
 import { resolveTask } from "./task";
 import { cachedRemotePreview, cachedRemoteRow, cachedRemoteSubagentPreview, fleetPickerItems, fleetRows, splitFleetKey, splitSubagentKey, toggleGroupMode, toggleSortMode } from "./fleet";
@@ -90,6 +91,7 @@ usage:
                               --in-place works in the caller's checkout:
                               am run x --in-place -m "...")
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
+  am restart <name> [-m msg]  reload the provider and resume the same conversation
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -309,7 +311,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
-  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd", "rename",
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
   "report", "comms", "wait", "peek", "subagents",
 ]);
 
@@ -385,6 +387,16 @@ async function pickerFlow(): Promise<void> {
   const load = fleetPickerItems;
   const config = loadConfig();
   const handlers: PickerHandlers = {
+    restart: async (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = await sshAmAsync(host, ["restart", name]);
+        if (result.exitCode !== 0) return { text: `restart failed: ${result.stderr.trim()}`, level: "error" as const };
+        return `restarted ${name} on ${host}`;
+      }
+      await restartAgent(name);
+      return `restarted ${name}`;
+    },
     stop: (key: string) => {
       const { host, name } = splitFleetKey(key);
       if (host) {
@@ -568,6 +580,12 @@ async function main(): Promise<void> {
       });
       break;
     }
+    case "restart":
+      await restartCommand(requirePositional(args, 0, "agent name"), {
+        message: (args.flags.m ?? args.flags.message) as string | undefined,
+        remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+      });
+      break;
     case "resume":
       await resumeCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,

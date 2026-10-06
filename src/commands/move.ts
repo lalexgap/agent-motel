@@ -26,6 +26,7 @@ import { hasSession } from "../tmux";
 import { loadConfig } from "../config";
 import { createWorktree, isGitRepo } from "./new";
 import { newMsgId } from "../msgid";
+import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -37,6 +38,12 @@ export interface MovePayload {
   queue: string[];
   queueIds?: (string | null | undefined)[];
   receivedMsgIds?: string[];
+}
+
+interface MoveHooks {
+  sshAmAsync?: typeof sshAmAsync;
+  sshRunAsync?: typeof sshRunAsync;
+  runAsync?: typeof runAsync;
 }
 
 export async function importAfterRenew(raw: string, renew: () => Promise<void>, handoffToken?: string): Promise<string> {
@@ -289,13 +296,18 @@ async function settleBeforeMove(agentName: string, target: string): Promise<void
 }
 
 // Same for an agent on the far side of a pull.
-async function settleBeforeMoveRemote(host: string, name: string, status: string): Promise<void> {
+async function settleBeforeMoveRemote(
+  host: string,
+  name: string,
+  status: string,
+  sshAm: typeof sshAmAsync = sshAmAsync,
+): Promise<void> {
   if (status !== "working") return;
-  await sshAmAsync(host, ["send", name, "--now", premoveNotice(hostname())], { timeoutMs: 15000 });
+  await sshAm(host, ["send", name, "--now", premoveNotice(hostname())], { timeoutMs: 15000 });
   const start = Date.now();
   while (Date.now() - start < PREMOVE_WAIT_MS) {
     await Bun.sleep(3000);
-    const ls = await sshAmAsync(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
+    const ls = await sshAm(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
     if (ls.exitCode !== 0) return;
     try {
       const rows = JSON.parse(ls.stdout) as { name: string; status: string }[];
@@ -307,8 +319,8 @@ async function settleBeforeMoveRemote(host: string, name: string, status: string
   }
 }
 
-export async function remoteHome(host: string): Promise<string> {
-  const result = await sshRunAsync(host, "echo $HOME", { timeoutMs: 8000 });
+export async function remoteHome(host: string, sshRun: typeof sshRunAsync = sshRunAsync): Promise<string> {
+  const result = await sshRun(host, "echo $HOME", { timeoutMs: 8000 });
   const home = result.stdout.trim();
   if (result.exitCode !== 0 || !home.startsWith("/")) {
     throw new Error(`cannot reach ${host} (${result.stderr.trim() || "no $HOME"})`);
@@ -316,12 +328,15 @@ export async function remoteHome(host: string): Promise<string> {
   return home;
 }
 
-async function pushAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
+async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
+  const sshAm = hooks.sshAmAsync ?? sshAmAsync;
+  const sshRun = hooks.sshRunAsync ?? sshRunAsync;
+  const run = hooks.runAsync ?? runAsync;
   // Backfill worktree metadata from git so an agent whose dir is a worktree
   // but never recorded it still gets its worktree recreated on the target.
-  const agent = withWorktreeMeta(resolveAgent(name));
+  let agent = withWorktreeMeta(resolveAgent(name));
 
-  const targetHomeDir = await remoteHome(host);
+  const targetHomeDir = await remoteHome(host, sshRun);
   // storedDir is the LOGICAL dir saved in state (portable across machines);
   // transcriptDir is its symlink-resolved form, used only to place the claude
   // transcript where claude (which realpaths the cwd) will look for it.
@@ -338,19 +353,19 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     if (!repoTarget) {
       throw new Error(`${agent.repoRoot} is not under $HOME — pass --dir <target dir on ${host}>`);
     }
-    if ((await sshRunAsync(host, `test -d ${shq(repoTarget)}`, { timeoutMs: 8000 })).exitCode !== 0) {
+    if ((await sshRun(host, `test -d ${shq(repoTarget)}`, { timeoutMs: 8000 })).exitCode !== 0) {
       throw new Error(`repo missing on ${host}: ${repoTarget} — clone it first, or pass --dir`);
     }
     const branch = agent.worktreeBranch ?? `am/${agent.name}`;
     const pushed =
-      (await runAsync(["git", "-C", agent.worktreePath, "push", "origin", branch], { timeoutMs: 60000 }))
+      (await run(["git", "-C", agent.worktreePath, "push", "origin", branch], { timeoutMs: 60000 }))
         .exitCode === 0;
     branchNote = pushed
       ? `your branch ${branch} was pushed to origin and is checked out here`
       : `your branch could not be pushed to origin — unpushed commits did NOT travel (branch recreated on the target)`;
 
     const canonicalRepo =
-      (await sshRunAsync(host, `realpath ${shq(repoTarget)}`, { timeoutMs: 8000 })).stdout.trim() || repoTarget;
+      (await sshRun(host, `realpath ${shq(repoTarget)}`, { timeoutMs: 8000 })).stdout.trim() || repoTarget;
     const wtPath = `${targetHomeDir}/.agent-manager/worktrees/${basename(canonicalRepo)}/${agent.name}`;
     const addScript = [
       `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
@@ -361,21 +376,21 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} origin/${branch}; ` +
         `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
     ].join(" && ");
-    const added = await sshRunAsync(host, addScript, { timeoutMs: 30000 });
+    const added = await sshRun(host, addScript, { timeoutMs: 30000 });
     if (added.exitCode !== 0) {
       throw new Error(`could not create worktree on ${host}: ${added.stderr.trim()}`);
     }
     // Worktrees live under ~/.agent-manager (never symlinked), so logical and
     // resolved coincide.
     storedDir = transcriptDir =
-      (await sshRunAsync(host, `realpath ${shq(wtPath)}`, { timeoutMs: 8000 })).stdout.trim() || wtPath;
+      (await sshRun(host, `realpath ${shq(wtPath)}`, { timeoutMs: 8000 })).stdout.trim() || wtPath;
     targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
   } else {
     const targetDir = opts.dir ?? mapHomeDir(agent.dir, homedir(), targetHomeDir);
     if (!targetDir) {
       throw new Error(`${agent.dir} is not under $HOME — pass --dir <target dir on ${host}>`);
     }
-    if ((await sshRunAsync(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 })).exitCode !== 0) {
+    if ((await sshRun(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 })).exitCode !== 0) {
       throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
     }
     // Store the LOGICAL dir so the record stays portable; claude keys
@@ -384,94 +399,103 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     // a machine-specific /mnt/... path that couldn't be remapped on pull-home.
     storedDir = targetDir;
     transcriptDir =
-      (await sshRunAsync(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
+      (await sshRun(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 })).stdout.trim() || targetDir;
   }
 
-  if (!opts.clone) {
-    await settleBeforeMove(agent.name, host); // let a working agent wrap up first
-    stopAgent(agent); // a move never leaves two live copies
+  if (!acquireLifecycleLock(agent.name)) {
+    throw new Error(`agent "${agent.name}" is being stopped, removed, renamed, or restarted — retry the move`);
   }
-
-  // Ship the conversation file (if the agent ever ran a turn).
-  const transcript = sourceTranscript(agent);
-  const sessionId = agentSessionId(agent);
-  let remoteTranscriptPath: string | undefined;
-  if (transcript && sessionId) {
-    const target = targetTranscriptPath(
-      agentProvider(agent), targetHomeDir, transcriptDir, sessionId, transcript.codexRelative,
-    );
-    if ((await sshRunAsync(host, `mkdir -p ${shq(dirname(target))}`, { timeoutMs: 8000 })).exitCode !== 0) {
-      throw new Error(`could not create transcript dir on ${host}`);
-    }
-    const scp = await runAsync(["scp", "-q", transcript.path, `${host}:${target}`], { timeoutMs: 120000 });
-    if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
-    if (agentProvider(agent) === "codex") remoteTranscriptPath = target;
-  }
-
-  const movedState: AgentState = {
-    ...agent,
-    dir: storedDir,
-    workingSince: undefined,
-    transcriptPath: remoteTranscriptPath,
-    worktreePath: targetWorktree?.path,
-    worktreeBranch: targetWorktree?.branch,
-    repoRoot: targetWorktree?.repoRoot,
-  };
-  updateAgentStatus(movedState, "exited", "moved to another host");
-  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the move`);
-  const handoff = newMsgId();
   try {
-    beginDeliveryHandoff(agent.name, handoff);
-    const backlog = queueList(agent.name);
-    const payload: MovePayload = {
-      state: movedState,
-      queue: [
-        migrationBrief({
-          from: hostname(),
-          to: host,
-          oldDir: agent.dir,
-          newDir: storedDir,
-          clone: !!opts.clone,
-          branchNote,
-          task: agent.task,
-        }),
-        ...backlog.map((m) => m.message),
-      ],
-      queueIds: [undefined, ...backlog.map((m) => m.msgId)],
-      receivedMsgIds: queueReceiptIds(agent.name),
-    };
-    const imported = await sshAmAsync(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
-    if (imported.exitCode !== 0) {
-      throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
-    }
+    agent = withWorktreeMeta(currentLifecycleAgent(agent));
+    if (!opts.clone) await settleBeforeMove(agent.name, host); // let a working agent wrap up first
+    if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the move`);
+    const handoff = newMsgId();
+    try {
+      if (!opts.clone) stopAgent(agent, { lifecycleLocked: true }); // a move never leaves two live copies
 
-    if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
-    let message = opts.clone
-      ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
-      : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
+      // Ship the conversation file (if the agent ever ran a turn).
+      const transcript = sourceTranscript(agent);
+      const sessionId = agentSessionId(agent);
+      let remoteTranscriptPath: string | undefined;
+      if (transcript && sessionId) {
+        const target = targetTranscriptPath(
+          agentProvider(agent), targetHomeDir, transcriptDir, sessionId, transcript.codexRelative,
+        );
+        if ((await sshRun(host, `mkdir -p ${shq(dirname(target))}`, { timeoutMs: 8000 })).exitCode !== 0) {
+          throw new Error(`could not create transcript dir on ${host}`);
+        }
+        const scp = await run(["scp", "-q", transcript.path, `${host}:${target}`], { timeoutMs: 120000 });
+        if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
+        if (agentProvider(agent) === "codex") remoteTranscriptPath = target;
+      }
 
-    if (opts.start) {
-      const resumed = await sshAmAsync(host, ["resume", agent.name], { timeoutMs: 30000 });
-      message +=
-        resumed.exitCode !== 0
-          ? ` — remote resume failed: ${resumed.stderr.trim()}`
-          : ` — running`;
+      const movedState: AgentState = {
+        ...agent,
+        dir: storedDir,
+        workingSince: undefined,
+        transcriptPath: remoteTranscriptPath,
+        worktreePath: targetWorktree?.path,
+        worktreeBranch: targetWorktree?.branch,
+        repoRoot: targetWorktree?.repoRoot,
+      };
+      updateAgentStatus(movedState, "exited", "moved to another host");
+      beginDeliveryHandoff(agent.name, handoff);
+      const backlog = queueList(agent.name);
+      const payload: MovePayload = {
+        state: movedState,
+        queue: [
+          migrationBrief({
+            from: hostname(),
+            to: host,
+            oldDir: agent.dir,
+            newDir: storedDir,
+            clone: !!opts.clone,
+            branchNote,
+            task: agent.task,
+          }),
+          ...backlog.map((m) => m.message),
+        ],
+        queueIds: [undefined, ...backlog.map((m) => m.msgId)],
+        receivedMsgIds: queueReceiptIds(agent.name),
+      };
+      const imported = await sshAm(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
+      if (imported.exitCode !== 0) {
+        throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
+      }
+
+      if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false, lifecycleLocked: true });
+      let message = opts.clone
+        ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
+        : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
+
+      if (opts.start) {
+        const resumed = await sshAm(host, ["resume", agent.name], { timeoutMs: 30000 });
+        message +=
+          resumed.exitCode !== 0
+            ? ` — remote resume failed: ${resumed.stderr.trim()}`
+            : ` — running`;
+      }
+      return message;
+    } finally {
+      releaseDeliverLock(agent.name);
+      endDeliveryHandoff(agent.name, handoff);
     }
-    return message;
   } finally {
-    releaseDeliverLock(agent.name);
-    endDeliveryHandoff(agent.name, handoff);
+    releaseLifecycleLock(agent.name);
   }
 }
 
-async function pullAgent(name: string, host: string, opts: MoveOptions): Promise<string> {
+async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
+  const sshAm = hooks.sshAmAsync ?? sshAmAsync;
+  const sshRun = hooks.sshRunAsync ?? sshRunAsync;
+  const run = hooks.runAsync ?? runAsync;
   if (readAgent(name)) throw new Error(`agent "${name}" already exists locally`);
 
   const handoff = newMsgId();
   let handoffName = name;
   let failed = false;
   try {
-    const exported = await sshAmAsync(host, ["__export", name, "handoff", handoff], { timeoutMs: 20000 });
+    const exported = await sshAm(host, ["__export", name, "handoff", handoff], { timeoutMs: 20000 });
     if (exported.exitCode !== 0) {
       throw new Error(`export on ${host} failed: ${(exported.stderr + exported.stdout).trim()}`);
     }
@@ -488,7 +512,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
     const renew = async () => {
-      const result = await sshAmAsync(host, ["__export", handoffName, "renew", handoff], { timeoutMs: 20000 });
+      const result = await sshAm(host, ["__export", handoffName, "renew", handoff], { timeoutMs: 20000 });
       if (result.exitCode !== 0) throw new Error(`delivery handoff on ${host} expired — retry the move`);
     };
 
@@ -510,7 +534,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       const branch = remote.state.worktreeBranch ?? `am/${name}`;
       const pushed =
         (
-          await sshRunAsync(host, `git -C ${shq(remote.state.worktreePath)} push origin ${shq(branch)}`, {
+          await sshRun(host, `git -C ${shq(remote.state.worktreePath)} push origin ${shq(branch)}`, {
             timeoutMs: 60000,
           })
         ).exitCode === 0;
@@ -521,17 +545,17 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       const canonicalRepo = realpathSync(localRepo);
       const wtPath = join(worktreesDir(), basename(canonicalRepo), name);
       Bun.spawnSync(["mkdir", "-p", dirname(wtPath)]);
-      await runAsync(["git", "-C", canonicalRepo, "fetch", "origin", branch], { timeoutMs: 30000 });
+      await run(["git", "-C", canonicalRepo, "fetch", "origin", branch], { timeoutMs: 30000 });
       const haveLocal =
-        (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0;
+        (await run(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0;
       const haveOrigin =
-        (await runAsync(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`])).exitCode === 0;
+        (await run(["git", "-C", canonicalRepo, "show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`])).exitCode === 0;
       const addArgs = haveLocal
         ? ["worktree", "add", wtPath, branch]
         : haveOrigin
           ? ["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`]
           : ["worktree", "add", "-b", branch, wtPath];
-      const added = await runAsync(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
+      const added = await run(["git", "-C", canonicalRepo, ...addArgs], { timeoutMs: 30000 });
       if (added.exitCode !== 0) throw new Error(`could not create local worktree: ${added.stderr.trim()}`);
       storedDir = transcriptDir = realpathSync(wtPath);
       targetWorktree = { path: storedDir, branch, repoRoot: canonicalRepo };
@@ -553,9 +577,13 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     // (clones leave the original running and accept a snapshot).
     if (!opts.clone) {
       await renew();
-      await settleBeforeMoveRemote(host, name, remote.state.status); // let it wrap up
+      await settleBeforeMoveRemote(host, name, remote.state.status, sshAm); // let it wrap up
       await renew();
-      await sshAmAsync(host, ["stop", name], { timeoutMs: 15000 });
+      const stopped = await sshAm(host, ["stop", name], { timeoutMs: 15000 });
+      if (stopped.exitCode !== 0) {
+        const detail = (stopped.stderr + stopped.stdout).trim();
+        throw new Error(`could not stop source on ${host}${detail ? `: ${detail}` : ""} — retry the move`);
+      }
     }
 
     const sessionId = agentSessionId(remote.state);
@@ -565,7 +593,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
       const provider = agentProvider(remote.state);
       const target = targetTranscriptPath(provider, homedir(), transcriptDir, sessionId, remote.transcript.codexRelative);
       Bun.spawnSync(["mkdir", "-p", dirname(target)]);
-      const scp = await runAsync(["scp", "-q", `${host}:${remote.transcript.path}`, target], { timeoutMs: 120000 });
+      const scp = await run(["scp", "-q", `${host}:${remote.transcript.path}`, target], { timeoutMs: 120000 });
       if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.trim()}`);
       if (provider === "codex") localTranscriptPath = target;
     }
@@ -600,9 +628,9 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     const importedQueue = queueList(name);
     try {
       if (!opts.copy && !opts.clone) {
-        const removed = await sshAmAsync(host, ["rm", name], { timeoutMs: 15000 });
+        const removed = await sshAm(host, ["rm", name], { timeoutMs: 15000 });
         if (removed.exitCode !== 0) {
-          const probe = await sshAmAsync(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
+          const probe = await sshAm(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
           const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe);
           const detail = (removed.stderr + removed.stdout).trim();
           const outcome = recovery.rolledBack
@@ -630,7 +658,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     failed = true;
     throw error;
   } finally {
-    const released = await sshAmAsync(host, ["__export", handoffName, "release", handoff], { timeoutMs: 20000 });
+    const released = await sshAm(host, ["__export", handoffName, "release", handoff], { timeoutMs: 20000 });
     if (released.exitCode !== 0) {
       const message = `could not release delivery handoff on ${host}: ${(released.stderr + released.stdout).trim()}`;
       if (!failed) throw new Error(message);
@@ -649,11 +677,12 @@ export async function moveAgent(
   first: string,
   second: string | undefined,
   opts: MoveOptions,
+  hooks: MoveHooks = {},
 ): Promise<string> {
   const spec = parseMoveSpec(first, second);
   return spec.direction === "push"
-    ? pushAgent(spec.name, spec.host, opts)
-    : pullAgent(spec.name, spec.host, opts);
+    ? pushAgent(spec.name, spec.host, opts, hooks)
+    : pullAgent(spec.name, spec.host, opts, hooks);
 }
 
 export async function moveCommand(

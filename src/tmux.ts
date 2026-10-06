@@ -45,6 +45,19 @@ export function killSession(session: string): void {
   tmux("kill-session", "-t", `=${session}`);
 }
 
+export function restartSession(opts: {
+  session: string;
+  dir: string;
+  env: Record<string, string>;
+  command: string[];
+}): void {
+  const envFlags = Object.entries(opts.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  const command = opts.command.map(shQuote).join(" ");
+  const result = tmux("respawn-pane", "-k", "-t", `=${opts.session}:`, "-c", opts.dir, ...envFlags, command);
+  if (result.exitCode !== 0) throw new Error(`tmux restart failed: ${result.stderr.trim()}`);
+  configureAgentSession(opts.session);
+}
+
 // tmux can rename a session while clients and the foreground process remain
 // attached. This is the key to changing a managed agent's visible identity
 // without interrupting its current turn.

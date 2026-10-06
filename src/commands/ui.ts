@@ -15,6 +15,7 @@ import { newCommand } from "./new";
 import { ensureConcierge } from "./concierge";
 import { destroyAgent, stopAgent } from "./rm";
 import { reviveAgent } from "./resume";
+import { restartAgent } from "./restart";
 import { readLastAttached } from "../state";
 import { ensureDaemon, watchDaemonEvents } from "../daemon";
 import { CONCIERGE_ROLE, listRoles } from "../roles";
@@ -408,6 +409,16 @@ export async function sidebarCommand(): Promise<void> {
     select: (key: string) => {
       clearTimeout(highlightTimer);
       return showAgent(key, true);
+    },
+    restart: async (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = await sshAmAsync(host, ["restart", name]);
+        if (result.exitCode !== 0) return { text: `restart failed: ${result.stderr.trim()}`, level: "error" as const };
+        return `restarted ${name} on ${host}`;
+      }
+      await restartAgent(name);
+      return `restarted ${name}`;
     },
     stop: (key: string) => {
       const { host, name } = splitFleetKey(key);

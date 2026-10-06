@@ -4,6 +4,7 @@ import {
   clipAnsi,
   cycleField,
   editMenuHelp,
+  hasEditActions,
   EFFORT_OPTIONS,
   effortOptionsFor,
   effortStripOptions,
@@ -276,6 +277,12 @@ describe("renamedPickerKey", () => {
 });
 
 describe("editMenuHelp", () => {
+  test("makes restart available in the edit menu and footer", () => {
+    const handlers = { restart: async () => "restarted" };
+    expect(hasEditActions(handlers)).toBe(true);
+    expect(editMenuHelp(handlers)).toContain("s restart");
+    expect(tmuxKeyBar("edit", handlers, true)).toContain("restart");
+  });
   test("surfaces rename in the selected-agent actions", () => {
     expect(editMenuHelp({ rename: () => "ok" })).toContain("n rename");
   });
