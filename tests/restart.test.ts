@@ -7,6 +7,7 @@ import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, releaseDeliverLock } from "../src/deliver";
 import { queueAppend, queueList } from "../src/queue";
 import { readAgent, writeAgent } from "../src/state";
+import { destroyAgent, stopAgent } from "../src/commands/rm";
 
 let home: string;
 let oldPath: string | undefined;
@@ -144,5 +145,32 @@ describe("restartAgent", () => {
     await expect(restartAgent("api", { remote: false })).rejects.toThrow(/tmux restart failed/);
     expect(readAgent("api")!.status).toBe("working");
     expect(acquireDeliverLock("api")).toBe(true);
+  });
+
+  test("separate stop and remove operations cannot race a restart", async () => {
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  respawn-pane)
+    touch "$AGENTMGR_HOME/restarting"
+    while test ! -f "$AGENTMGR_HOME/continue"; do sleep 0.01; done
+    ;;
+  *) exit 0 ;;
+esac
+`);
+    const child = Bun.spawn([
+      process.execPath,
+      "-e",
+      `import { restartAgent } from ${JSON.stringify(new URL("../src/commands/restart.ts", import.meta.url).href)}; await restartAgent("api");`,
+    ], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+
+    for (let i = 0; i < 200 && !existsSync(join(home, "restarting")); i++) await Bun.sleep(10);
+    expect(existsSync(join(home, "restarting"))).toBe(true);
+    expect(() => stopAgent(readAgent("api")!)).toThrow(/being stopped, removed, renamed, or restarted/);
+    expect(() => destroyAgent(readAgent("api")!, { clean: false })).toThrow(/being stopped, removed, renamed, or restarted/);
+    expect(readAgent("api")).not.toBeNull();
+    writeFileSync(join(home, "continue"), "");
+    expect(await child.exited).toBe(0);
+    expect(readAgent("api")?.status).toBe("starting");
   });
 });

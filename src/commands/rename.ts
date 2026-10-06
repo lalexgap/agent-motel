@@ -17,6 +17,7 @@ import { queueAppendForAgent, queueStorageExists, renameQueue } from "../queue";
 import { renameSnapshot, snapshotExists } from "../snapshots";
 import { renameSubagents, subagentsExist } from "../subagents";
 import { hasSession, renameSession, sessionName } from "../tmux";
+import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 import { CONCIERGE_NAME } from "../providers";
 
 export interface RenameResult {
@@ -70,6 +71,22 @@ export async function renameAgent(
   const agent = resolveAgent(prefix);
   const oldName = agent.name;
   if (newName === oldName) return { oldName, newName, live: hasSession(agent.tmuxSession), worktreeBranch: agent.worktreeBranch };
+  if (!acquireLifecycleLock(oldName)) {
+    throw new Error(`agent "${oldName}" is being stopped, removed, renamed, or restarted — retry the rename`);
+  }
+  try {
+    return await renameAgentLocked(currentLifecycleAgent(agent), newName, hooks);
+  } finally {
+    releaseLifecycleLock(oldName);
+  }
+}
+
+async function renameAgentLocked(
+  agent: AgentState,
+  newName: string,
+  hooks: { afterQueueRenamed?: () => Promise<void> },
+): Promise<RenameResult> {
+  const oldName = agent.name;
   // The concierge is a reserved singleton keyed by its name: renaming another
   // agent onto it would squat the identity, and renaming it away would strand
   // `am concierge` behind the retained alias.
