@@ -98,7 +98,7 @@ describe("restartAgent", () => {
     const launch = readFileSync(join(home, "launch"), "utf8");
     expect(launch).toContain("respawn-pane\n-k\n-t\n=agentmgr-api:\n");
     expect(launch).toContain("PATH=");
-    expect(launch).toContain("'claude'");
+    expect(launch).toContain(`'${join(home, "claude")}'`);
     expect(launch).toContain("'--resume' 'conversation-123'");
     expect(launch).toContain('You are reporting to "lead"');
     expect(readAgent("api")).toMatchObject({ status: "starting", statusReason: "restarting", sessionId: "conversation-123", task: "keep this task", reportTo: "lead" });

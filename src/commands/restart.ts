@@ -16,10 +16,12 @@ export async function restartAgent(prefix: string, opts: ResumeOpts = {}): Promi
   try {
     if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
     const provider = agentProvider(agent);
-    if (!Bun.which(provider)) throw new Error(`${provider} executable not found in PATH`);
+    const executable = Bun.which(provider, { PATH: process.env.PATH });
+    if (!executable) throw new Error(`${provider} executable not found in PATH`);
     if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
     if (provider === "codex") ensureCodexHooks();
     const plan = buildResumeCommand(provider, agent, opts);
+    plan.command[0] = executable;
     if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
     const launch = {
       session: agent.tmuxSession,
