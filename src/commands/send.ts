@@ -64,7 +64,7 @@ export async function sendCommand(
     // Inject immediately; the TUI's native mid-turn steering handles the rest.
     try {
       if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
-      sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent) });
+      sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
       if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
     }
     finally { releaseDeliverLock(agent.name); }
@@ -101,7 +101,7 @@ export async function interruptCommand(
   try {
     sendEscape(agent.tmuxSession);
     await Bun.sleep(400);
-    sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent) });
+    sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });
   } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}" with new message`);

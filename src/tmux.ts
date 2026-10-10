@@ -151,11 +151,12 @@ export function sendText(session: string, text: string, opts: { enterDelayMs?: n
   // The codex TUI drops an Enter that lands in the same key batch as the
   // text (bracketed-paste detection); a short beat makes it a keypress.
   if (opts.enterDelayMs) Bun.sleepSync(opts.enterDelayMs);
-  tmux("send-keys", "-t", paneTarget(session), "Enter");
+  sendEnter(session);
 }
 
 export function sendEnter(session: string): void {
-  tmux("send-keys", "-t", paneTarget(session), "Enter");
+  const sent = tmux("send-keys", "-t", paneTarget(session), "Enter");
+  if (sent.exitCode !== 0) throw new Error(`tmux send-keys Enter failed: ${sent.stderr.trim()}`);
 }
 
 export function sendEscape(session: string): void {

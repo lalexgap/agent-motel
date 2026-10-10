@@ -283,7 +283,8 @@ async function settleBeforeMove(agentName: string, target: string): Promise<void
   const current = readAgent(agentName);
   if (!current || current.status !== "working") return;
   try {
-    sendText(current.tmuxSession, premoveNotice(target), { enterDelayMs: enterDelayMs(current) });
+    const notice = premoveNotice(target);
+    sendText(current.tmuxSession, notice, { enterDelayMs: enterDelayMs(current, notice) });
   } catch {
     return; // no live session to warn
   }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { inputBoxText, looksUnsubmitted, parsedInputBoxText } from "../src/deliver";
+import { enterDelayMs, inputBoxText, looksUnsubmitted, parsedInputBoxText } from "../src/deliver";
+import type { AgentState } from "../src/state";
 
 // Composer/footer lines captured from running Codex and Claude sessions.
 const codex = (input: string) => [
@@ -37,6 +38,42 @@ describe("provider composer captures", () => {
   test("Codex submitted transcript text is outside the composer", () => {
     const pane = ["› check the changes", "• Working", ...codex("Ask Codex to do anything")];
     expect(looksUnsubmitted(pane, "check the changes", "codex")).toBe(false);
+  });
+
+  test("Codex scrolled composer is recognized without the shortcuts row", () => {
+    const pane = [
+      "› earlier transcript message",
+      "",
+      "› - Test item 8: abcdefghij abcdefghij        ↑",
+      "  abcdefghij",
+      "",
+      "  - Test item 9: remaining test data",
+      "",
+      "  GPT-6.1-Sol medium · /tmp/project",
+      "                          ⚠ 4 warnings · f2 to view",
+    ];
+    const message = "Delivery header\n\n- Test item 8: abcdefghij abcdefghij abcdefghij\n\n- Test item 9: remaining test data";
+    expect(parsedInputBoxText(pane, "codex")).toBe("- Test item 8: abcdefghij abcdefghij abcdefghij - Test item 9: remaining test data");
+    expect(looksUnsubmitted(pane, message, "codex")).toBe(true);
+    expect(looksUnsubmitted(pane, "different message", "codex")).toBe(false);
+  });
+
+  test("Codex preserves literal arrows while removing scroll indicators", () => {
+    const pane = [
+      "› include ↑ and ↓ in the message",
+      "  GPT-6.1-Sol medium · /tmp/project",
+    ];
+    expect(parsedInputBoxText(pane, "codex")).toBe("include ↑ and ↓ in the message");
+  });
+
+  test("Codex delay scales with message size and line count, with a cap", () => {
+    const agent = { provider: "codex" } as AgentState;
+    expect(enterDelayMs(agent, "short")).toBeGreaterThan(150);
+    expect(enterDelayMs(agent, "x".repeat(1500))).toBeGreaterThan(enterDelayMs(agent, "short")!);
+    expect(enterDelayMs(agent, "a\n\nb")).toBeGreaterThan(enterDelayMs(agent, "a  b")!);
+    expect(enterDelayMs(agent, "x\n".repeat(10000))).toBe(2000);
+    expect(enterDelayMs({ provider: "claude" } as AgentState, "short")).toBeUndefined();
+    expect(enterDelayMs({ provider: "claude" } as AgentState, "a\nb")).toBe(200);
   });
 
   test("Claude empty, placeholder, draft and submitted states", () => {
