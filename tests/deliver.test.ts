@@ -44,10 +44,15 @@ case "$1" in
     [ "$(cat "$AGENTMGR_HOME/mode")" = unavailable ] && exit 1
     [ "$(cat "$AGENTMGR_HOME/mode")" = unknown ] && { echo 'unrecognized screen'; exit 0; }
     if [ "$(cat "$AGENTMGR_HOME/provider")" = codex ]; then
-      printf '› '; cat "$AGENTMGR_HOME/input"; echo
+      printf '› '
+      if [ "$(cat "$AGENTMGR_HOME/mode")" = retry-scrolled ] && [ -s "$AGENTMGR_HOME/input" ]; then
+        tail -n 3 "$AGENTMGR_HOME/input"; echo '        ↑'
+      else
+        cat "$AGENTMGR_HOME/input"; echo
+      fi
       echo
       echo '  GPT-6.1-Sol medium · ~/project'
-      echo '  ? for shortcuts'
+      [ "$(cat "$AGENTMGR_HOME/mode")" != retry-scrolled ] && echo '  ? for shortcuts'
       exit 0
     fi
     echo '────────────────────'
@@ -62,6 +67,10 @@ case "$1" in
       [ "$(cat "$AGENTMGR_HOME/mode")" = enrich-submit ] && touch "$AGENTMGR_HOME/enriched"
     else
       echo enter >> "$AGENTMGR_HOME/sends"
+      if [ "$(cat "$AGENTMGR_HOME/mode")" = retry-scrolled ]; then
+        [ "$(grep -c '^enter$' "$AGENTMGR_HOME/sends")" -ge 3 ] && printf '' > "$AGENTMGR_HOME/input"
+      fi
+      [ "$(cat "$AGENTMGR_HOME/mode")" = changed-draft ] && printf 'new human draft' > "$AGENTMGR_HOME/input"
       { [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] || [ "$(cat "$AGENTMGR_HOME/mode")" = enrich-submit ]; } && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
@@ -120,6 +129,29 @@ describe("delivery lock", () => {
 });
 
 describe("delivery verification", () => {
+  test("scrolled Codex messages retry Enter with backoff, clear once, and never retype", async () => {
+    fakeSession("retry-scrolled", "codex");
+    const message = "Delivery header\n\n" + Array.from({ length: 12 }, (_, i) => `- Test item ${i}: ${"abcdefghij ".repeat(8)}`).join("\n\n");
+    const id = queueAppend("api", message);
+    const sleep = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+    try {
+      expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+      expect(sleep.mock.calls.map(call => call[0])).toEqual([600, 1200, 2400]);
+      expect(queueDepth("api")).toBe(0);
+      expect(existsSync(join(home, "queue/api/.delivery.pending"))).toBe(false);
+      expect(await deliverNext("api")).toEqual({ status: "queued", reason: "empty" });
+      expect(readFileSync(join(home, "sends"), "utf8").trim().split("\n")).toEqual(["text", "enter", "enter", "enter"]);
+    } finally { sleep.mockRestore(); }
+  });
+
+  test("a different nonempty draft does not acknowledge delivery or trigger Enter retries", async () => {
+    fakeSession("changed-draft", "codex");
+    queueAppend("api", "message");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unverified" });
+    expect(queueDepth("api")).toBe(1);
+    expect(readFileSync(join(home, "sends"), "utf8").trim().split("\n")).toEqual(["text", "enter"]);
+  });
+
   test("SessionStart metadata enrichment does not change a live pane's identity", async () => {
     fakeSession("enrich-submit", "codex");
     const id = queueAppend("api", "message");
@@ -136,7 +168,7 @@ describe("delivery verification", () => {
     expect(await deliverNext("api")).toEqual({ status: "submitted", id });
     expect(queueDepth("api")).toBe(0);
     expect(readFileSync(join(home, "sends"), "utf8").split("\n").filter(line => line === "text")).toHaveLength(1);
-  });
+  }, 10000);
 
 
   test("Codex draft blocks delivery and a submitted Codex message leaves the queue", async () => {

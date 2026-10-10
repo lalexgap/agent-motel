@@ -37,7 +37,11 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
   // Codex always drops an Enter that lands in the same key batch as the
   // text; Claude Code does the same intermittently for MULTI-LINE sends
   // (bracketed-paste detection) — the migration briefs are exactly that.
-  if (agentProvider(agent) === "codex") return 150;
+  if (agentProvider(agent) === "codex") {
+    const length = message?.length ?? 0;
+    const lines = message?.split("\n").length ?? 1;
+    return Math.min(2000, 300 + Math.ceil(length / 100) * 20 + (lines - 1) * 20);
+  }
   if (message?.includes("\n")) return 200;
   return undefined;
 }
@@ -48,18 +52,16 @@ const PLACEHOLDER_RE = /^Try "/;
 export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
   const plain = pane.map(stripSgr);
   if (provider === "codex") {
-    // Codex has an unbordered composer above its model/status footer. Require
-    // both the footer and the prompt so transcript text is never an empty box.
-    let shortcut = -1;
-    for (let i = 0; i < plain.length; i++) if (/^\s*\? for shortcuts\b/.test(plain[i]!)) shortcut = i;
-    if (shortcut < 0) return null;
-    let footer = shortcut - 1;
-    while (footer >= 0 && !plain[footer]!.trim()) footer--;
-    if (footer < 0 || !/^\s+\S.*[·•]/.test(plain[footer]!)) return null;
+    // Long composers hide the shortcuts row and scroll the message's head away.
+    let footer = -1;
+    for (let i = 0; i < plain.length; i++) {
+      if (/^\s+\S.*[·•]\s+(?:~?\/|[A-Za-z]:\\)/.test(plain[i]!)) footer = i;
+    }
+    if (footer < 0) return null;
     let prompt = -1;
     for (let i = 0; i < footer; i++) if (/^\s*›(?:\s|$)/.test(plain[i]!)) prompt = i;
     if (prompt < 0) return null;
-    const text = plain.slice(prompt, footer).join(" ").replace(/^\s*›\s*/, "").replace(/\s+/g, " ").trim();
+    const text = plain.slice(prompt, footer).join(" ").replace(/^\s*›\s*/, "").replace(/[↑↓]/g, "").replace(/\s+/g, " ").trim();
     return text === "Ask Codex to do anything" ? "" : text;
   }
   const seps: number[] = [];
@@ -78,12 +80,13 @@ export function inputBoxText(pane: string[], provider: Provider = "claude"): str
   return parsedInputBoxText(pane, provider) ?? "";
 }
 
-// If the head of our message is still sitting in the input box after the
-// Enter, the submit got eaten.
 export function looksUnsubmitted(pane: string[], message: string, provider: Provider = "claude"): boolean {
-  const head = message.split("\n")[0]!.replace(/\s+/g, " ").trim().slice(0, 24);
-  if (!head) return false;
-  return inputBoxText(pane, provider).includes(head);
+  const input = inputBoxText(pane, provider);
+  if (!input) return false;
+  const normalized = message.replace(/\s+/g, " ").trim();
+  return provider === "codex"
+    ? normalized.includes(input.slice(0, 24))
+    : input.includes(normalized.slice(0, 24));
 }
 
 const SUBMIT_RETRIES = 2;
@@ -153,16 +156,17 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     }
 
     for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
-      await Bun.sleep(SUBMIT_CHECK_MS);
+      await Bun.sleep(SUBMIT_CHECK_MS * 2 ** attempt);
       const pane = capturePane(agent.tmuxSession);
       const current = readAgent(name);
       if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
-      if (!looksUnsubmitted(pane, head.message, provider)) {
+      if (parsedInputBoxText(pane, provider) === "") {
         queuePopId(name, head.id);
         rmSync(pendingPath, { force: true });
         return { status: "submitted", id: head.id };
       }
+      if (!looksUnsubmitted(pane, head.message, provider)) return { status: "queued", reason: "unverified" };
       if (attempt < SUBMIT_RETRIES) sendEnter(agent.tmuxSession);
     }
     return { status: "queued", reason: "unverified" };
