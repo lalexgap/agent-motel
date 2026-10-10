@@ -58,6 +58,14 @@ describe("provider composer captures", () => {
     expect(looksUnsubmitted(pane, "different message", "codex")).toBe(false);
   });
 
+  test("Codex preserves literal arrows while removing scroll indicators", () => {
+    const pane = [
+      "› include ↑ and ↓ in the message",
+      "  GPT-6.1-Sol medium · /tmp/project",
+    ];
+    expect(parsedInputBoxText(pane, "codex")).toBe("include ↑ and ↓ in the message");
+  });
+
   test("Codex delay scales with message size and line count, with a cap", () => {
     const agent = { provider: "codex" } as AgentState;
     expect(enterDelayMs(agent, "short")).toBeGreaterThan(150);

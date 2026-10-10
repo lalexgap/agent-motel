@@ -61,7 +61,12 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
     let prompt = -1;
     for (let i = 0; i < footer; i++) if (/^\s*›(?:\s|$)/.test(plain[i]!)) prompt = i;
     if (prompt < 0) return null;
-    const text = plain.slice(prompt, footer).join(" ").replace(/^\s*›\s*/, "").replace(/[↑↓]/g, "").replace(/\s+/g, " ").trim();
+    const text = plain.slice(prompt, footer)
+      .map(line => line.replace(/\s{2,}[↑↓]\s*$/, ""))
+      .join(" ")
+      .replace(/^\s*›\s*/, "")
+      .replace(/\s+/g, " ")
+      .trim();
     return text === "Ask Codex to do anything" ? "" : text;
   }
   const seps: number[] = [];
