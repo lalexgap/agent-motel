@@ -13,9 +13,8 @@ export interface ResumeOpts {
   remote?: boolean;
 }
 
-// Codex agents relaunch in the mode they were created with; an explicit
-// --remote/--no-remote switches it for good. Old agents predate the daemon
-// and stay in-process. Mutates agent.codexDaemon — the caller writes it.
+// An explicit --remote/--no-remote switches the saved mode for good.
+// Mutates agent.codexDaemon; the caller writes it.
 export function codexResumeDaemon(agent: AgentState, opts: ResumeOpts): boolean {
   if (agentProvider(agent) !== "codex") return false;
   if (opts.remote !== undefined) agent.codexDaemon = opts.remote;

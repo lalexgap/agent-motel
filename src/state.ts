@@ -31,8 +31,7 @@ export interface AgentState {
   tmuxSession: string;
   // Absent in state files written before multi-provider support → claude.
   provider?: Provider;
-  // Codex only: attach the TUI to the shared app-server daemon (remote
-  // control). Kept so resume/restart/move relaunch the same way.
+  // Codex only: attached to the app-server daemon; reused on resume/restart/move.
   codexDaemon?: boolean;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;

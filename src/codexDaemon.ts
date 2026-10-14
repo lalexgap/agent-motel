@@ -4,11 +4,8 @@ import { codexHome } from "./codexHooks";
 import { loadConfig } from "./config";
 import { agentProvider, agentSessionId, type AgentState } from "./state";
 
-// Codex agents with remote control on attach their TUI to the machine's
-// shared app-server daemon (`codex --remote unix://`) instead of running the
-// agent in-process, which makes them reachable from Codex remote control.
-// The daemon then owns the turn: its tool commands, its hooks, and its
-// lifetime, which outlives the tmux pane.
+// Remote-control codex agents attach their TUI to the shared app-server
+// daemon. The daemon owns the turn, which outlives the tmux pane.
 
 // The default control socket; `--remote unix://` connects to the same one.
 export const CODEX_DAEMON_ENDPOINT = "unix://";
@@ -17,8 +14,7 @@ export function codexDaemonSocket(): string {
   return join(codexHome(), "app-server-control", "app-server-control.sock");
 }
 
-// With --remote the TUI ignores the pane's cwd (the session would start in
-// ~), so the agent's dir has to ride along explicitly.
+// With --remote the TUI ignores the pane's cwd, so pass the dir explicitly.
 export function codexDaemonArgs(dir: string): string[] {
   return ["--remote", CODEX_DAEMON_ENDPOINT, "-C", dir];
 }
@@ -37,7 +33,6 @@ function codexDaemonRunning(): boolean {
   }
 }
 
-// Make sure the daemon is up before a TUI tries to attach to it.
 export function ensureCodexDaemon(): boolean {
   if (codexDaemonRunning()) return true;
   const started = Bun.spawnSync(["codex", "app-server", "daemon", "start"], {
@@ -48,19 +43,15 @@ export function ensureCodexDaemon(): boolean {
   return started.exitCode === 0 && codexDaemonRunning();
 }
 
-// Whether to launch daemon-attached, given the agent's requested mode. A
-// daemon that won't come up must not cost the operator their agent: fall
-// back to the in-process launch, and say so.
+// Falls back to an in-process launch when the daemon can't be used.
 export function codexDaemonLaunch(requested: boolean, dir: string): boolean {
   if (!requested) return false;
   if (!ensureCodexDaemon()) {
     console.error("warning: codex app-server daemon unavailable — launching codex in-process (no remote control)");
     return false;
   }
-  // A daemon-attached TUI asks to trust its exact dir, even one an in-process
-  // codex would trust through its repo root — and nobody is there to answer
-  // for a fresh worktree. Permissionless agents get it pre-trusted, which is
-  // what answering that prompt writes.
+  // A daemon-attached TUI prompts to trust its exact dir (not its repo root),
+  // and nobody is there to answer for a fresh worktree.
   if (loadConfig().skipPermissions && !runDetached("trust-dir", dir)) {
     console.error(`warning: could not mark ${dir} trusted for codex — launching codex in-process (no remote control)`);
     return false;
@@ -70,8 +61,7 @@ export function codexDaemonLaunch(requested: boolean, dir: string): boolean {
 
 type Call = (method: string, params: unknown) => Promise<any>;
 
-// One JSON-RPC session over the daemon's control socket, which speaks
-// websocket. Everything is bounded by timeoutMs; a wedged daemon rejects.
+// JSON-RPC over the daemon's websocket control socket, bounded by timeoutMs.
 export async function withCodexAppServer<T>(
   socket: string,
   timeoutMs: number,
@@ -134,8 +124,6 @@ export async function withCodexAppServer<T>(
   }
 }
 
-// Interrupt the thread's in-flight turn and kill its background terminals —
-// what killing an in-process codex used to do implicitly.
 export async function stopCodexThread(
   threadId: string,
   opts: { socket?: string; timeoutMs?: number } = {},
@@ -163,8 +151,7 @@ export async function stopCodexThread(
   });
 }
 
-// Record the dir as trusted through the daemon (it owns config.toml, and the
-// TUI asks it), upserting only this project's entry.
+// Written through the daemon, which owns config.toml.
 export async function trustCodexDir(dir: string, opts: { socket?: string; timeoutMs?: number } = {}): Promise<void> {
   await withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, (call) =>
     call("config/value/write", {
@@ -175,8 +162,7 @@ export async function trustCodexDir(dir: string, opts: { socket?: string; timeou
   );
 }
 
-// Runs one of the commands at the bottom of this file in a child process, so
-// the sync callers stay sync and a wedged daemon costs a few seconds at most.
+// Child process so sync callers stay sync and a wedged daemon stays bounded.
 function runDetached(command: "stop-thread" | "trust-dir", arg: string): boolean {
   const result = Bun.spawnSync([process.execPath, import.meta.path, command, arg, codexDaemonSocket()], {
     stdout: "ignore",
@@ -186,9 +172,7 @@ function runDetached(command: "stop-thread" | "trust-dir", arg: string): boolean
   return result.exitCode === 0;
 }
 
-// Synchronous, best-effort teardown for the kill paths (rm, stop, restart,
-// move): killing the tmux pane only kills the TUI, and the daemon would keep
-// working on the turn invisibly.
+// Killing the tmux pane only kills the TUI; the daemon keeps running the turn.
 export function stopCodexDaemonWork(agent: AgentState): void {
   if (agentProvider(agent) !== "codex" || !agent.codexDaemon) return;
   const threadId = agentSessionId(agent);

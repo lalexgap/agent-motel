@@ -192,8 +192,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     console.error("warning: --report but no spawning agent — set a target with --report-to <name>");
   }
 
-  // Codex's remote control is the app-server daemon; the requested mode is
-  // persisted even when this launch has to fall back to in-process.
+  // Persisted even when this launch falls back to in-process.
   const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
   const plan = buildLaunchCommand(provider, name, {
     ...opts,

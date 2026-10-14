@@ -128,9 +128,7 @@ export function permissionArgs(provider: Provider): string[] {
     : ["--dangerously-skip-permissions"];
 }
 
-// Resuming through the daemon rejects permission overrides outright ("not
-// supported when resuming a remote task"); the thread keeps the permissions
-// it was started with instead.
+// The daemon rejects permission overrides on resume; the thread keeps its own.
 function codexPermissionArgs(daemonResume: boolean): string[] {
   return daemonResume ? [] : permissionArgs("codex");
 }
@@ -147,8 +145,7 @@ export interface LaunchOpts extends ConversationOpts {
   effort?: string;
   role?: string;
   roleInstructions?: string;
-  // Codex only: set to attach the TUI to the app-server daemon, running in
-  // this dir (the daemon ignores the pane's cwd).
+  // Codex only: attach to the app-server daemon, running in this dir.
   codexDaemonDir?: string;
 }
 

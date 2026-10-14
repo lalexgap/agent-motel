@@ -262,12 +262,9 @@ export function isTurnBoundary(
   return effects?.status === "idle";
 }
 
-// Codex agents attached to the app-server daemon run their hooks inside the
-// daemon, whose env carries no AGENTMGR_AGENT — so find the agent from the
-// payload instead: its recorded session first, else a daemon agent that
-// hasn't reported a session yet, launched in the same dir (the newest launch
-// wins). Every codex session on the machine runs this, am-managed or not, so
-// anything that matches nothing has to come back null. Pure, for testing.
+// Daemon-attached codex hooks run without AGENTMGR_AGENT: match by recorded
+// session id, else the newest session-less daemon agent in the same dir.
+// Every codex session on the machine runs this, so non-matches return null.
 export function resolveDaemonHookAgent(
   payload: Record<string, unknown>,
   agents: AgentState[],

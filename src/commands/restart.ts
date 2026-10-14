@@ -25,8 +25,7 @@ export async function restartAgent(prefix: string, opts: ResumeOpts = {}): Promi
       if (!executable) throw new Error(`${provider} executable not found in PATH`);
       if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
       if (provider === "codex") ensureCodexHooks();
-      // The old turn lives in the daemon, past the pane respawn — stop it
-      // like killing an in-process codex would.
+      // The old turn survives the pane respawn in the daemon.
       stopCodexDaemonWork(agent);
       const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
       plan.command[0] = executable;
