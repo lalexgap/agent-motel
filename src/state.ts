@@ -33,6 +33,8 @@ export interface AgentState {
   provider?: Provider;
   // Codex only: attached to the app-server daemon; reused on resume/restart/move.
   codexDaemon?: boolean;
+  // Whether the current launch actually attached (codexDaemon may have fallen back to in-process).
+  codexDaemonAttached?: boolean;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;
   worktreeBranch?: string;

@@ -263,33 +263,36 @@ export function isTurnBoundary(
 }
 
 // Daemon-attached codex hooks run without AGENTMGR_AGENT: match by recorded
-// session id, else the newest session-less daemon agent in the same dir.
-// Every codex session on the machine runs this, so non-matches return null.
+// session id, else (session-start only) the newest launching, daemon-attached,
+// session-less agent in the same dir whose pane is alive. Every codex session
+// on the machine runs this, so non-matches return null.
 export function resolveDaemonHookAgent(
+  event: string,
   payload: Record<string, unknown>,
   agents: AgentState[],
+  isAlive: (tmuxSession: string) => boolean,
 ): AgentState | null {
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : undefined;
   if (!sessionId) return null;
   const codex = agents.filter((a) => agentProvider(a) === "codex");
   const bySession = codex.find((a) => agentSessionId(a) === sessionId);
   if (bySession) return bySession;
-  if (typeof payload.cwd !== "string") return null;
+  if (event !== "session-start" || typeof payload.cwd !== "string") return null;
   const cwd = resolve(payload.cwd);
   const launchedAt = (a: AgentState) => Date.parse(a.statusChangedAt ?? a.createdAt) || 0;
-  const candidates = codex
-    .filter((a) => a.codexDaemon && !agentSessionId(a) && resolve(a.dir) === cwd)
-    .sort((a, b) =>
-      Number(b.status === "starting") - Number(a.status === "starting") || launchedAt(b) - launchedAt(a),
-    );
-  return candidates[0] ?? null;
+  return (
+    codex
+      .filter((a) => a.status === "starting" && a.codexDaemonAttached && !agentSessionId(a) && resolve(a.dir) === cwd)
+      .sort((a, b) => launchedAt(b) - launchedAt(a))
+      .find((a) => isAlive(a.tmuxSession)) ?? null
+  );
 }
 
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
   if (!inheritedName) {
-    inheritedName = resolveDaemonHookAgent(payload, listAgents())?.name;
+    inheritedName = resolveDaemonHookAgent(event, payload, listAgents(), hasSession)?.name;
     if (!inheritedName) return; // not a managed session
   }
   // A tool call made INSIDE a subagent fires the parent's hooks, with the

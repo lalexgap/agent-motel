@@ -14,11 +14,12 @@ export interface ResumeOpts {
 }
 
 // An explicit --remote/--no-remote switches the saved mode for good.
-// Mutates agent.codexDaemon; the caller writes it.
+// Mutates agent.codexDaemon/codexDaemonAttached; the caller writes it.
 export function codexResumeDaemon(agent: AgentState, opts: ResumeOpts): boolean {
   if (agentProvider(agent) !== "codex") return false;
   if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
-  return codexDaemonLaunch(agent.codexDaemon ?? false, agent.dir);
+  agent.codexDaemonAttached = codexDaemonLaunch(agent.codexDaemon ?? false, agent.dir);
+  return agent.codexDaemonAttached;
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet

@@ -57,14 +57,18 @@ const NESTED_SESSION_VARS = [
   "CLAUDE_CODE_SSE_PORT",
 ];
 
-export function scrubNestedSessionEnv(command: string[]): string[] {
+export function nestedSessionVars(env: Record<string, string | undefined> = process.env): string[] {
   const vars = new Set(NESTED_SESSION_VARS);
-  for (const key of Object.keys(process.env)) {
+  for (const key of Object.keys(env)) {
     if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || key === "CLAUDE_EFFORT") {
       vars.add(key);
     }
   }
-  return ["env", ...[...vars].sort().flatMap((v) => ["-u", v]), ...command];
+  return [...vars].sort();
+}
+
+export function scrubNestedSessionEnv(command: string[]): string[] {
+  return ["env", ...nestedSessionVars().flatMap((v) => ["-u", v]), ...command];
 }
 
 export interface ConversationOpts {

@@ -142,43 +142,72 @@ describe("resolveDaemonHookAgent (hooks run by the codex daemon, no AGENTMGR_AGE
     tmuxSession: `agentmgr-${o.name}`,
     provider: "codex",
     codexDaemon: true,
+    codexDaemonAttached: true,
     ...base,
     ...o,
   });
+  const alive = () => true;
+  const resolveDaemon = (
+    payload: Record<string, unknown>,
+    agents: AgentState[],
+    event = "session-start",
+    isAlive: (s: string) => boolean = alive,
+  ) => resolveDaemonHookAgent(event, payload, agents, isAlive);
 
-  test("matches the agent whose recorded session id the payload carries", () => {
+  test("matches the agent whose recorded session id the payload carries, for any event", () => {
     const agents = [a({ name: "one", sessionId: "s-1" }), a({ name: "two", sessionId: "s-2", dir: "/elsewhere" })];
-    expect(resolveDaemonHookAgent({ session_id: "s-2", cwd: "/work/x" }, agents)?.name).toBe("two");
+    expect(resolveDaemon({ session_id: "s-2", cwd: "/work/x" }, agents, "stop", () => false)?.name).toBe("two");
   });
 
   test("also matches the legacy claudeSessionId field and in-process codex agents", () => {
-    const agents = [a({ name: "old", claudeSessionId: "s-9", codexDaemon: undefined })];
-    expect(resolveDaemonHookAgent({ session_id: "s-9" }, agents)?.name).toBe("old");
+    const agents = [a({ name: "old", claudeSessionId: "s-9", codexDaemon: undefined, codexDaemonAttached: undefined })];
+    expect(resolveDaemon({ session_id: "s-9" }, agents, "pre-tool-use")?.name).toBe("old");
   });
 
-  test("falls back to a session-less daemon agent in the same dir, starting and newest first", () => {
+  test("on session-start, falls back to the newest launching session-less daemon agent in the same dir", () => {
     const agents = [
       a({ name: "older", status: "starting", statusChangedAt: "2026-01-01T00:00:00Z" }),
       a({ name: "newer", status: "starting", statusChangedAt: "2026-01-02T00:00:00Z" }),
       a({ name: "idle-newest", statusChangedAt: "2026-01-03T00:00:00Z" }),
       a({ name: "has-session", status: "starting", sessionId: "s-other", statusChangedAt: "2026-01-04T00:00:00Z" }),
     ];
-    expect(resolveDaemonHookAgent({ session_id: "s-new", cwd: "/work/x/" }, agents)?.name).toBe("newer");
+    expect(resolveDaemon({ session_id: "s-new", cwd: "/work/x/" }, agents)?.name).toBe("newer");
   });
 
-  test("ignores in-process codex agents, claude agents, and other dirs in the fallback", () => {
+  test("the dir fallback only applies to session-start", () => {
+    const agents = [a({ name: "launching", status: "starting" })];
+    for (const event of ["stop", "user-prompt-submit", "pre-tool-use", "session-end"]) {
+      expect(resolveDaemon({ session_id: "s-new", cwd: "/work/x" }, agents, event)).toBeNull();
+    }
+  });
+
+  test("the dir fallback skips agents that aren't starting or whose pane is dead", () => {
     const agents = [
-      a({ name: "in-process", codexDaemon: false, status: "starting" }),
+      a({ name: "exited", status: "exited", statusChangedAt: "2026-01-05T00:00:00Z" }),
+      a({ name: "idle", status: "idle", statusChangedAt: "2026-01-04T00:00:00Z" }),
+      a({ name: "dead-pane", status: "starting", statusChangedAt: "2026-01-03T00:00:00Z" }),
+      a({ name: "live", status: "starting", statusChangedAt: "2026-01-02T00:00:00Z" }),
+    ];
+    const isAlive = (s: string) => s !== "agentmgr-dead-pane";
+    expect(resolveDaemon({ session_id: "s-new", cwd: "/work/x" }, agents, "session-start", isAlive)?.name).toBe("live");
+    expect(resolveDaemon({ session_id: "s-new", cwd: "/work/x" }, agents, "session-start", () => false)).toBeNull();
+  });
+
+  test("ignores in-process launches, claude agents, and other dirs in the fallback", () => {
+    const agents = [
+      a({ name: "in-process", codexDaemon: false, codexDaemonAttached: false, status: "starting" }),
+      a({ name: "fell-back", codexDaemon: true, codexDaemonAttached: false, status: "starting" }),
+      a({ name: "legacy", codexDaemon: true, codexDaemonAttached: undefined, status: "starting" }),
       a({ name: "claude", provider: "claude", status: "starting" }),
       a({ name: "elsewhere", dir: "/work/y", status: "starting" }),
     ];
-    expect(resolveDaemonHookAgent({ session_id: "s-new", cwd: "/work/x" }, agents)).toBeNull();
+    expect(resolveDaemon({ session_id: "s-new", cwd: "/work/x" }, agents)).toBeNull();
   });
 
   test("a plain codex session matching nothing resolves to null", () => {
     const agents = [a({ name: "one", sessionId: "s-1" })];
-    expect(resolveDaemonHookAgent({ session_id: "s-unrelated", cwd: "/home/me/proj" }, agents)).toBeNull();
-    expect(resolveDaemonHookAgent({}, agents)).toBeNull();
-    expect(resolveDaemonHookAgent({ session_id: "s-unrelated" }, agents)).toBeNull();
+    expect(resolveDaemon({ session_id: "s-unrelated", cwd: "/home/me/proj" }, agents)).toBeNull();
+    expect(resolveDaemon({}, agents)).toBeNull();
+    expect(resolveDaemon({ session_id: "s-unrelated" }, agents)).toBeNull();
   });
 });

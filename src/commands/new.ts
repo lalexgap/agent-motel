@@ -194,13 +194,14 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Persisted even when this launch falls back to in-process.
   const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
+  const codexDaemonAttached = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     model,
     reportTo,
     role: role?.name,
     roleInstructions,
-    codexDaemonDir: codexDaemon && codexDaemonLaunch(true, dir) ? dir : undefined,
+    codexDaemonDir: codexDaemonAttached ? dir : undefined,
   });
 
   const now = new Date().toISOString();
@@ -213,6 +214,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     tmuxSession: session,
     provider,
     codexDaemon,
+    codexDaemonAttached,
     worktreePath,
     worktreeBranch,
     repoRoot,

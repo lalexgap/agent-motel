@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { stopCodexThread, trustCodexDir } from "../src/codexDaemon";
+import { codexDaemonEnv, stopCodexThread, trustCodexDir } from "../src/codexDaemon";
 
 let dir: string | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -85,5 +85,21 @@ describe("trustCodexDir", () => {
       "config/value/write",
       { keyPath: "projects", value: { "/work/wt": { trust_level: "trusted" } }, mergeStrategy: "upsert" },
     ]);
+  });
+});
+
+describe("codexDaemonEnv", () => {
+  test("drops am identity and nested-session vars, keeps the rest", () => {
+    const env = codexDaemonEnv({
+      PATH: "/bin",
+      HOME: "/home/me",
+      AGENTMGR_AGENT: "spawner",
+      AGENTMGR_HOME: "/x",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_CODE_SOMETHING_NEW: "1",
+      CLAUDE_EFFORT: "high",
+    });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/home/me" });
   });
 });

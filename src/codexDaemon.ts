@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { codexHome } from "./codexHooks";
 import { loadConfig } from "./config";
+import { nestedSessionVars } from "./providers";
 import { agentProvider, agentSessionId, type AgentState } from "./state";
 
 // Remote-control codex agents attach their TUI to the shared app-server
@@ -33,9 +34,19 @@ function codexDaemonRunning(): boolean {
   }
 }
 
+// The daemon outlives this process and runs every session's hooks: it must
+// not inherit a spawning agent's identity or nested-session vars.
+export function codexDaemonEnv(env: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
+  const scrubbed = { ...env };
+  for (const key of nestedSessionVars(env)) delete scrubbed[key];
+  for (const key of Object.keys(scrubbed)) if (key.startsWith("AGENTMGR_")) delete scrubbed[key];
+  return scrubbed;
+}
+
 export function ensureCodexDaemon(): boolean {
   if (codexDaemonRunning()) return true;
   const started = Bun.spawnSync(["codex", "app-server", "daemon", "start"], {
+    env: codexDaemonEnv(),
     stdout: "ignore",
     stderr: "ignore",
     timeout: 20000,
