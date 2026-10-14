@@ -1,6 +1,7 @@
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
+import { codexDaemonArgs } from "./codexDaemon";
 import { CONCIERGE_ROLE, getRole, roleForAgent } from "./roles";
 
 // The fleet concierge: a reserved singleton agent whose only job is answering
@@ -109,8 +110,8 @@ export function codexConversationArgs(opts: ConversationOpts): string[] {
 const CODEX_LAUNCH_OVERRIDES = ["-c", "check_for_update_on_startup=false"];
 
 // Remote control (claude.ai/code + mobile app) is on by default via config;
-// an explicit per-agent flag wins over the config value. Claude-only —
-// codex has no equivalent.
+// an explicit per-agent flag wins over the config value. Codex's equivalent
+// is attaching to the app-server daemon (codexDaemon.ts).
 export function remoteControlArgs(override: boolean | undefined): string[] {
   return (override ?? loadConfig().remoteControl) ? ["--remote-control"] : [];
 }
@@ -127,6 +128,13 @@ export function permissionArgs(provider: Provider): string[] {
     : ["--dangerously-skip-permissions"];
 }
 
+// Resuming through the daemon rejects permission overrides outright ("not
+// supported when resuming a remote task"); the thread keeps the permissions
+// it was started with instead.
+function codexPermissionArgs(daemonResume: boolean): string[] {
+  return daemonResume ? [] : permissionArgs("codex");
+}
+
 export interface LaunchOpts extends ConversationOpts {
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
@@ -139,6 +147,9 @@ export interface LaunchOpts extends ConversationOpts {
   effort?: string;
   role?: string;
   roleInstructions?: string;
+  // Codex only: set to attach the TUI to the app-server daemon, running in
+  // this dir (the daemon ignores the pane's cwd).
+  codexDaemonDir?: string;
 }
 
 export interface LaunchPlan {
@@ -171,11 +182,17 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
   if (provider === "codex") {
-    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES];
+    const conversation = codexConversationArgs(opts);
+    const command = [
+      "codex",
+      ...codexPermissionArgs(!!opts.codexDaemonDir && conversation.length > 0),
+      ...CODEX_LAUNCH_OVERRIDES,
+    ];
     if (opts.model) command.push("--model", opts.model);
     // Codex has no --effort flag; reasoning effort is a config override.
     if (opts.effort) command.push("-c", `model_reasoning_effort=${opts.effort}`);
-    command.push(...codexConversationArgs(opts));
+    command.push(...conversation);
+    if (opts.codexDaemonDir) command.push(...codexDaemonArgs(opts.codexDaemonDir));
     if (opts.message) command.push(`${agentSystemPrompt(name, opts)}\n\n# Your task\n\n${opts.message}`);
     else if (opts.role && opts.resume !== true) command.push(agentSystemPrompt(name, opts));
     // `codex resume <positional>` treats the positional as a session id. Keep
@@ -192,13 +209,14 @@ export function buildLaunchCommand(provider: Provider, name: string, opts: Launc
 export function buildResumeCommand(
   provider: Provider,
   agent: AgentState,
-  opts: { message?: string; remote?: boolean },
+  opts: { message?: string; remote?: boolean; codexDaemon?: boolean },
 ): LaunchPlan {
   const sessionId = agentSessionId(agent);
   if (provider === "codex") {
     // Old state files may predate session-id capture; --last picks up the
     // most recent conversation instead.
-    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    const command = ["codex", ...codexPermissionArgs(!!opts.codexDaemon), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    if (opts.codexDaemon) command.push(...codexDaemonArgs(agent.dir));
     if (opts.message) command.push(opts.message);
     return { command };
   }

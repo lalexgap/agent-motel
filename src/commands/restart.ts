@@ -7,7 +7,8 @@ import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
 import { queueAppendForAgent } from "../queue";
 import { agentEnv } from "./new";
-import type { ResumeOpts } from "./resume";
+import { codexResumeDaemon, type ResumeOpts } from "./resume";
+import { stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 
 export async function restartAgent(prefix: string, opts: ResumeOpts = {}): Promise<void> {
@@ -24,7 +25,10 @@ export async function restartAgent(prefix: string, opts: ResumeOpts = {}): Promi
       if (!executable) throw new Error(`${provider} executable not found in PATH`);
       if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
       if (provider === "codex") ensureCodexHooks();
-      const plan = buildResumeCommand(provider, agent, opts);
+      // The old turn lives in the daemon, past the pane respawn — stop it
+      // like killing an in-process codex would.
+      stopCodexDaemonWork(agent);
+      const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
       plan.command[0] = executable;
       if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
       const launch = {

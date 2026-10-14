@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { buildInboxOutput, buildStopGate, formatInbox, hookEffects, isTurnBoundary, shortTask } from "../src/commands/hook";
+import {
+  buildInboxOutput,
+  buildStopGate,
+  formatInbox,
+  hookEffects,
+  isTurnBoundary,
+  resolveDaemonHookAgent,
+  shortTask,
+} from "../src/commands/hook";
+import type { AgentState } from "../src/state";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
@@ -122,5 +131,54 @@ describe("shortTask (backstop terseness)", () => {
     const long = "x".repeat(200);
     expect(shortTask(long).length).toBe(72);
     expect(shortTask(long).endsWith("…")).toBe(true);
+  });
+});
+
+describe("resolveDaemonHookAgent (hooks run by the codex daemon, no AGENTMGR_AGENT)", () => {
+  const base = { createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+  const a = (o: Partial<AgentState> & { name: string }): AgentState => ({
+    status: "idle",
+    dir: "/work/x",
+    tmuxSession: `agentmgr-${o.name}`,
+    provider: "codex",
+    codexDaemon: true,
+    ...base,
+    ...o,
+  });
+
+  test("matches the agent whose recorded session id the payload carries", () => {
+    const agents = [a({ name: "one", sessionId: "s-1" }), a({ name: "two", sessionId: "s-2", dir: "/elsewhere" })];
+    expect(resolveDaemonHookAgent({ session_id: "s-2", cwd: "/work/x" }, agents)?.name).toBe("two");
+  });
+
+  test("also matches the legacy claudeSessionId field and in-process codex agents", () => {
+    const agents = [a({ name: "old", claudeSessionId: "s-9", codexDaemon: undefined })];
+    expect(resolveDaemonHookAgent({ session_id: "s-9" }, agents)?.name).toBe("old");
+  });
+
+  test("falls back to a session-less daemon agent in the same dir, starting and newest first", () => {
+    const agents = [
+      a({ name: "older", status: "starting", statusChangedAt: "2026-01-01T00:00:00Z" }),
+      a({ name: "newer", status: "starting", statusChangedAt: "2026-01-02T00:00:00Z" }),
+      a({ name: "idle-newest", statusChangedAt: "2026-01-03T00:00:00Z" }),
+      a({ name: "has-session", status: "starting", sessionId: "s-other", statusChangedAt: "2026-01-04T00:00:00Z" }),
+    ];
+    expect(resolveDaemonHookAgent({ session_id: "s-new", cwd: "/work/x/" }, agents)?.name).toBe("newer");
+  });
+
+  test("ignores in-process codex agents, claude agents, and other dirs in the fallback", () => {
+    const agents = [
+      a({ name: "in-process", codexDaemon: false, status: "starting" }),
+      a({ name: "claude", provider: "claude", status: "starting" }),
+      a({ name: "elsewhere", dir: "/work/y", status: "starting" }),
+    ];
+    expect(resolveDaemonHookAgent({ session_id: "s-new", cwd: "/work/x" }, agents)).toBeNull();
+  });
+
+  test("a plain codex session matching nothing resolves to null", () => {
+    const agents = [a({ name: "one", sessionId: "s-1" })];
+    expect(resolveDaemonHookAgent({ session_id: "s-unrelated", cwd: "/home/me/proj" }, agents)).toBeNull();
+    expect(resolveDaemonHookAgent({}, agents)).toBeNull();
+    expect(resolveDaemonHookAgent({ session_id: "s-unrelated" }, agents)).toBeNull();
   });
 });

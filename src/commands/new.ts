@@ -15,6 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { codexDaemonLaunch } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -191,12 +192,16 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     console.error("warning: --report but no spawning agent — set a target with --report-to <name>");
   }
 
+  // Codex's remote control is the app-server daemon; the requested mode is
+  // persisted even when this launch has to fall back to in-process.
+  const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     model,
     reportTo,
     role: role?.name,
     roleInstructions,
+    codexDaemonDir: codexDaemon && codexDaemonLaunch(true, dir) ? dir : undefined,
   });
 
   const now = new Date().toISOString();
@@ -208,6 +213,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     dir,
     tmuxSession: session,
     provider,
+    codexDaemon,
     worktreePath,
     worktreeBranch,
     repoRoot,

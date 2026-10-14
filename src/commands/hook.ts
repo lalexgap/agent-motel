@@ -1,4 +1,5 @@
-import { matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
+import { resolve } from "node:path";
+import { agentProvider, agentSessionId, listAgents, matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
 import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
 import { acquireDeliverLock, deliverNext, pendingDeliveryId, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -261,10 +262,39 @@ export function isTurnBoundary(
   return effects?.status === "idle";
 }
 
+// Codex agents attached to the app-server daemon run their hooks inside the
+// daemon, whose env carries no AGENTMGR_AGENT — so find the agent from the
+// payload instead: its recorded session first, else a daemon agent that
+// hasn't reported a session yet, launched in the same dir (the newest launch
+// wins). Every codex session on the machine runs this, am-managed or not, so
+// anything that matches nothing has to come back null. Pure, for testing.
+export function resolveDaemonHookAgent(
+  payload: Record<string, unknown>,
+  agents: AgentState[],
+): AgentState | null {
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : undefined;
+  if (!sessionId) return null;
+  const codex = agents.filter((a) => agentProvider(a) === "codex");
+  const bySession = codex.find((a) => agentSessionId(a) === sessionId);
+  if (bySession) return bySession;
+  if (typeof payload.cwd !== "string") return null;
+  const cwd = resolve(payload.cwd);
+  const launchedAt = (a: AgentState) => Date.parse(a.statusChangedAt ?? a.createdAt) || 0;
+  const candidates = codex
+    .filter((a) => a.codexDaemon && !agentSessionId(a) && resolve(a.dir) === cwd)
+    .sort((a, b) =>
+      Number(b.status === "starting") - Number(a.status === "starting") || launchedAt(b) - launchedAt(a),
+    );
+  return candidates[0] ?? null;
+}
+
 export async function hookCommand(event: string): Promise<void> {
-  const inheritedName = process.env.AGENTMGR_AGENT;
-  if (!inheritedName) return; // not a managed session
   const payload = await readStdinPayload();
+  let inheritedName = process.env.AGENTMGR_AGENT;
+  if (!inheritedName) {
+    inheritedName = resolveDaemonHookAgent(payload, listAgents())?.name;
+    if (!inheritedName) return; // not a managed session
+  }
   // A tool call made INSIDE a subagent fires the parent's hooks, with the
   // parent's AGENTMGR_AGENT — the provider distinguishes the two by agent_id
   // ("present only when the hook fires from within a subagent"). Status still

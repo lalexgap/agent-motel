@@ -241,7 +241,7 @@ The token-protected API can list, message, create, stop, and resume agents, with
 - **Providers:** Claude hooks use generated per-launch settings. Agent Motel installs guarded hooks in `~/.codex/config.toml` for Codex; approve **Trust all and continue** on the first managed launch.
 - **Subagents:** `SubagentStart`/`SubagentStop` hooks append to a per-agent ledger in `~/.agent-manager/subagents/`; a turn boundary closes anything an interrupted turn left open. Claude Code gives each subagent its own transcript next to the parent's (`<session-id>/subagents/agent-<id>.jsonl`), which is where live activity and `--subagent` renders come from; codex reports a subagent's transcript only once it stops.
 
-Claude Code Remote Control is enabled by default for claude agents; codex has no equivalent, so codex agents (the default) get none. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`.
+Remote control is enabled by default. Claude agents launch with Claude Code Remote Control; codex agents attach to the machine's Codex app-server daemon (`codex --remote unix://`, started if needed), which makes them reachable through Codex remote control. A daemon-attached codex agent's turn runs in the daemon, so `am stop`/`rm`/`restart`/`move` also interrupt it there. Disable it with `--no-remote` for one agent or `"remoteControl": false` in `~/.agent-manager/config.json`; codex agents keep the mode they were created with across resumes.
 
 ## Development
 
