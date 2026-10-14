@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { codexHome } from "./codexHooks";
 import { loadConfig } from "./config";
-import { nestedSessionVars } from "./providers";
+import { nestedSessionVars } from "./nestedSession";
 import { agentProvider, agentSessionId, type AgentState } from "./state";
 
 // Remote-control codex agents attach their TUI to the shared app-server

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { agentNameOwner, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
+import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
@@ -185,7 +185,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Who created this agent? Any `am` call inside a managed session carries
   // AGENTMGR_AGENT — lets `--report` default to "whoever made me".
-  const inheritedSpawner = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const inheritedSpawner = callingAgentName();
   const spawnedBy = inheritedSpawner ? (matchAgent(inheritedSpawner)?.name ?? inheritedSpawner) : undefined;
   const reportTo = opts.reportTo ?? (opts.report ? spawnedBy : undefined);
   if (opts.report && !reportTo && !opts.quiet) {

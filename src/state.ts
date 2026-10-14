@@ -186,6 +186,17 @@ export function listAgents(): AgentState[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// The agent this `am` invocation runs inside. Daemon-attached codex agents run
+// tools in the app-server daemon without AGENTMGR_AGENT; codex sets
+// CODEX_THREAD_ID there, which matches the agent's recorded session id.
+export function callingAgentName(env: Record<string, string | undefined> = process.env): string | undefined {
+  const inherited = env.AGENTMGR_AGENT?.trim();
+  if (inherited) return inherited;
+  const threadId = env.CODEX_THREAD_ID?.trim();
+  if (!threadId) return undefined;
+  return listAgents().find((a) => agentProvider(a) === "codex" && agentSessionId(a) === threadId)?.name;
+}
+
 export function agentNamesAndAliases(state: AgentState): string[] {
   return [state.name, ...(state.aliases ?? [])];
 }
