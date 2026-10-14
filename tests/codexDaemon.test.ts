@@ -95,6 +95,7 @@ describe("codexDaemonEnv", () => {
       HOME: "/home/me",
       AGENTMGR_AGENT: "spawner",
       AGENTMGR_HOME: "/x",
+      CODEX_THREAD_ID: "thread-of-spawner",
       CLAUDECODE: "1",
       CLAUDE_CODE_ENTRYPOINT: "cli",
       CLAUDE_CODE_SOMETHING_NEW: "1",
