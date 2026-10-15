@@ -36,6 +36,27 @@ export function isGitRepo(dir: string): boolean {
   return git(dir, "rev-parse", "--git-dir").exitCode === 0;
 }
 
+// New branches fork from the freshly fetched default branch (origin/HEAD,
+// else origin/main or origin/master) rather than whatever the main checkout
+// happens to have checked out. Undefined — fall back to HEAD — when there's
+// no origin, no known default branch, or the fetch fails (offline).
+export function freshBase(repoRoot: string): string | undefined {
+  const head = git(repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD");
+  const candidates = head.exitCode === 0 && head.stdout ? [head.stdout] : ["origin/main", "origin/master"];
+  const base = candidates.find(
+    (ref) => git(repoRoot, "rev-parse", "--verify", "--quiet", `refs/remotes/${ref}`).exitCode === 0,
+  );
+  if (!base) return undefined;
+  // Bounded and non-interactive: a hung remote or credential prompt must not
+  // wedge `am new`.
+  const fetch = Bun.spawnSync(["git", "-C", repoRoot, "fetch", "--quiet", "origin", base.slice("origin/".length)], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    timeout: 30_000,
+  });
+  if (fetch.exitCode !== 0) return undefined;
+  return base;
+}
+
 export function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
   // --git-common-dir resolves through nested worktrees to the main repo, so
   // spawning "from" another agent's worktree still files the new one under
@@ -50,7 +71,12 @@ export function createWorktree(name: string, branch: string, baseDir: string): {
   mkdirSync(dirname(path), { recursive: true });
 
   const branchExists = git(repoRoot, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0;
-  const args = branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path];
+  const base = branchExists ? undefined : freshBase(repoRoot);
+  const args = branchExists
+    ? ["worktree", "add", path, branch]
+    : base
+      ? ["worktree", "add", "--no-track", "-b", branch, path, base]
+      : ["worktree", "add", "-b", branch, path];
   const result = git(repoRoot, ...args);
   if (result.exitCode !== 0) throw new Error(`git worktree add failed: ${result.stderr}`);
   return { path, repoRoot };
