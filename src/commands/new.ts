@@ -41,7 +41,7 @@ export function isGitRepo(dir: string): boolean {
 // checkout happens to have checked out. A failed fetch (offline, or racing a
 // concurrent fetch) still forks from the local ref — stale but the right
 // branch. Undefined — fall back to HEAD — only when no such ref exists.
-export function freshBase(repoRoot: string, warn?: (msg: string) => void): string | undefined {
+export async function freshBase(repoRoot: string, warn?: (msg: string) => void): Promise<string | undefined> {
   const head = git(repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD");
   const candidates = [...new Set([...(head.exitCode === 0 && head.stdout ? [head.stdout] : []), "origin/main", "origin/master"])];
   const base = candidates.find(
@@ -55,17 +55,24 @@ export function freshBase(repoRoot: string, warn?: (msg: string) => void): strin
     env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
   }
   const branch = base.slice("origin/".length);
-  const fetch = Bun.spawnSync(["git", "-C", repoRoot, "fetch", "--quiet", "origin", branch], { env, timeout: 15_000 });
-  if (fetch.exitCode !== 0) warn?.(`warning: couldn't fetch origin/${branch}; branching from the local ${base}`);
+  // Async so the sidebar's create flow keeps rendering while it runs.
+  const fetch = Bun.spawn(["git", "-C", repoRoot, "fetch", "--quiet", "origin", branch], {
+    env,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    timeout: 15_000,
+  });
+  if ((await fetch.exited) !== 0) warn?.(`warning: couldn't fetch origin/${branch}; branching from the local ${base}`);
   return base;
 }
 
-export function createWorktree(
+export async function createWorktree(
   name: string,
   branch: string,
   baseDir: string,
   opts: { base?: string; warn?: (msg: string) => void } = {},
-): { path: string; repoRoot: string } {
+): Promise<{ path: string; repoRoot: string }> {
   // --git-common-dir resolves through nested worktrees to the main repo, so
   // spawning "from" another agent's worktree still files the new one under
   // the real repo's name.
@@ -88,7 +95,7 @@ export function createWorktree(
     if (resolved.exitCode !== 0) throw new Error(`--base: unknown ref "${opts.base}"`);
     base = resolved.stdout;
   } else if (!branchExists) {
-    base = freshBase(repoRoot, opts.warn);
+    base = await freshBase(repoRoot, opts.warn);
   }
   const args = branchExists
     ? ["worktree", "add", path, branch]
@@ -223,7 +230,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     worktreeBranch = `am/${name}`;
   }
   if (worktreeBranch) {
-    const wt = createWorktree(name, worktreeBranch, dir, {
+    const wt = await createWorktree(name, worktreeBranch, dir, {
       base: opts.base,
       warn: opts.quiet ? undefined : (msg) => console.error(msg),
     });

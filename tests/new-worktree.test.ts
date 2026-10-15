@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe("createWorktree", () => {
-  test("branches from freshly fetched origin default branch, not the checkout's HEAD", () => {
+  test("branches from freshly fetched origin default branch, not the checkout's HEAD", async () => {
     const origin = join(root, "origin.git");
     Bun.spawnSync(["git", "clone", "-q", "--bare", repo, origin]);
     git(repo, "remote", "add", "origin", origin);
@@ -53,68 +53,68 @@ describe("createWorktree", () => {
     git(repo, "checkout", "-q", "-b", "feature/x");
     git(repo, "commit", "-q", "--allow-empty", "-m", "wip");
 
-    const wt = createWorktree("a", "am/a", repo);
+    const wt = await createWorktree("a", "am/a", repo);
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(upstream);
     // No upstream tracking to origin/main — a bare `git push` must not target main.
     expect(Bun.spawnSync(["git", "-C", wt.path, "rev-parse", "--abbrev-ref", "@{u}"]).exitCode).not.toBe(0);
   });
 
-  test("falls back to HEAD when there's no origin", () => {
+  test("falls back to HEAD when there's no origin", async () => {
     const head = git(repo, "rev-parse", "HEAD");
-    const wt = createWorktree("a", "am/a", repo);
+    const wt = await createWorktree("a", "am/a", repo);
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(head);
   });
 
-  test("uses the local origin ref when the fetch fails", () => {
+  test("uses the local origin ref when the fetch fails", async () => {
     git(repo, "remote", "add", "origin", join(root, "missing.git"));
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
     const originMain = git(repo, "rev-parse", "HEAD");
     git(repo, "checkout", "-q", "-b", "feature/x");
     git(repo, "commit", "-q", "--allow-empty", "-m", "wip");
     const warnings: string[] = [];
-    const wt = createWorktree("a", "am/a", repo, { warn: (m) => warnings.push(m) });
+    const wt = await createWorktree("a", "am/a", repo, { warn: (m) => warnings.push(m) });
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(originMain);
     expect(warnings.length).toBe(1);
   });
 
-  test("falls through a dangling origin/HEAD to origin/main", () => {
+  test("falls through a dangling origin/HEAD to origin/main", async () => {
     git(repo, "remote", "add", "origin", join(root, "missing.git"));
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
     git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master");
     const originMain = git(repo, "rev-parse", "HEAD");
     git(repo, "commit", "-q", "--allow-empty", "-m", "local");
-    const wt = createWorktree("a", "am/a", repo, { warn: () => {} });
+    const wt = await createWorktree("a", "am/a", repo, { warn: () => {} });
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(originMain);
   });
 
-  test("--base overrides the default start point", () => {
+  test("--base overrides the default start point", async () => {
     git(repo, "remote", "add", "origin", join(root, "missing.git"));
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
     git(repo, "commit", "-q", "--allow-empty", "-m", "local");
     const head = git(repo, "rev-parse", "HEAD");
-    const wt = createWorktree("a", "am/a", repo, { base: "HEAD" });
+    const wt = await createWorktree("a", "am/a", repo, { base: "HEAD" });
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(head);
   });
 
-  test("--base HEAD resolves in the caller's worktree", () => {
+  test("--base HEAD resolves in the caller's worktree", async () => {
     const callerWt = join(root, "caller");
     git(repo, "worktree", "add", "-q", "-b", "feature/y", callerWt);
     git(callerWt, "commit", "-q", "--allow-empty", "-m", "caller wip");
     const callerHead = git(callerWt, "rev-parse", "HEAD");
-    const wt = createWorktree("a", "am/a", callerWt, { base: "HEAD" });
+    const wt = await createWorktree("a", "am/a", callerWt, { base: "HEAD" });
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(callerHead);
   });
 
-  test("--base on an existing branch is an error", () => {
+  test("--base on an existing branch is an error", async () => {
     git(repo, "branch", "am/a");
-    expect(() => createWorktree("a", "am/a", repo, { base: "HEAD" })).toThrow(/already exists/);
+    await expect(createWorktree("a", "am/a", repo, { base: "HEAD" })).rejects.toThrow(/already exists/);
   });
 
-  test("checks out an existing branch as-is", () => {
+  test("checks out an existing branch as-is", async () => {
     git(repo, "branch", "am/a");
     const tip = git(repo, "rev-parse", "am/a");
     git(repo, "commit", "-q", "--allow-empty", "-m", "later");
-    const wt = createWorktree("a", "am/a", repo);
+    const wt = await createWorktree("a", "am/a", repo);
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(tip);
   });
 });
