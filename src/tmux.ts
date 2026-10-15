@@ -189,8 +189,11 @@ export function stripFaint(text: string): string {
       if (!faint) out += part;
       continue;
     }
-    for (const code of (sgr[1] || "0").split(";")) {
-      if (code === "2") faint = true;
+    const codes = (sgr[1] || "0").split(";");
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === "38" || code === "48" || code === "58") i += codes[i + 1] === "2" ? 4 : 2;
+      else if (code === "2") faint = true;
       else if (code === "" || code === "0" || code === "22") faint = false;
     }
   }

@@ -92,6 +92,9 @@ describe("provider composer captures", () => {
       line.startsWith("❯") ? "\x1b[39m❯ human \x1b[2mghost\x1b[22m draft\x1b[0m" : line);
     expect(parsedInputBoxText(draft, "claude")).toBe("human draft");
     expect(parsedInputBoxText(codex("\x1b[2mAsk Codex to do anything\x1b[0m"), "codex")).toBe("");
+    const truecolor = claude("").map(line =>
+      line.startsWith("❯") ? "\x1b[38;2;255;255;255m❯ human\x1b[38;5;2m draft\x1b[0m" : line);
+    expect(parsedInputBoxText(truecolor, "claude")).toBe("human draft");
   });
 
   test("unknown and incomplete layouts remain unverified", () => {
