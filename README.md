@@ -48,7 +48,7 @@ am j api                   # jump by name prefix
 am -                       # return to the previous agent
 ```
 
-Agents created in a git repository get a worktree on `am/<name>`. Pass `--in-place` to use the current checkout or `--worktree <branch>` to choose a branch.
+Agents created in a git repository get a worktree on `am/<name>`. New branches start from a freshly fetched `origin/main` (origin's default branch), not the current checkout; pass `--base <ref>` (e.g. `--base HEAD`) to start elsewhere. Pass `--in-place` to use the current checkout or `--worktree <branch>` to choose a branch.
 
 ## Common commands
 

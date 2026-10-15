@@ -65,13 +65,49 @@ describe("createWorktree", () => {
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(head);
   });
 
-  test("falls back to HEAD when the fetch fails", () => {
+  test("uses the local origin ref when the fetch fails", () => {
+    git(repo, "remote", "add", "origin", join(root, "missing.git"));
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const originMain = git(repo, "rev-parse", "HEAD");
+    git(repo, "checkout", "-q", "-b", "feature/x");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "wip");
+    const warnings: string[] = [];
+    const wt = createWorktree("a", "am/a", repo, { warn: (m) => warnings.push(m) });
+    expect(git(wt.path, "rev-parse", "HEAD")).toBe(originMain);
+    expect(warnings.length).toBe(1);
+  });
+
+  test("falls through a dangling origin/HEAD to origin/main", () => {
+    git(repo, "remote", "add", "origin", join(root, "missing.git"));
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master");
+    const originMain = git(repo, "rev-parse", "HEAD");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "local");
+    const wt = createWorktree("a", "am/a", repo, { warn: () => {} });
+    expect(git(wt.path, "rev-parse", "HEAD")).toBe(originMain);
+  });
+
+  test("--base overrides the default start point", () => {
     git(repo, "remote", "add", "origin", join(root, "missing.git"));
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
     git(repo, "commit", "-q", "--allow-empty", "-m", "local");
     const head = git(repo, "rev-parse", "HEAD");
-    const wt = createWorktree("a", "am/a", repo);
+    const wt = createWorktree("a", "am/a", repo, { base: "HEAD" });
     expect(git(wt.path, "rev-parse", "HEAD")).toBe(head);
+  });
+
+  test("--base HEAD resolves in the caller's worktree", () => {
+    const callerWt = join(root, "caller");
+    git(repo, "worktree", "add", "-q", "-b", "feature/y", callerWt);
+    git(callerWt, "commit", "-q", "--allow-empty", "-m", "caller wip");
+    const callerHead = git(callerWt, "rev-parse", "HEAD");
+    const wt = createWorktree("a", "am/a", callerWt, { base: "HEAD" });
+    expect(git(wt.path, "rev-parse", "HEAD")).toBe(callerHead);
+  });
+
+  test("--base on an existing branch is an error", () => {
+    git(repo, "branch", "am/a");
+    expect(() => createWorktree("a", "am/a", repo, { base: "HEAD" })).toThrow(/already exists/);
   });
 
   test("checks out an existing branch as-is", () => {
