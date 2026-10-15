@@ -456,7 +456,7 @@ export async function sidebarCommand(): Promise<void> {
           effort: spec.effort,
           role: spec.role,
         });
-        const res = sshAm(spec.host, args);
+        const res = await sshAmAsync(spec.host, args);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${spec.host} failed`);
         return `${spec.host}:${spec.name}`;
       }

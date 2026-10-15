@@ -784,7 +784,7 @@ export async function cdAgent(
   let worktree: { path: string; branch: string; repoRoot: string } | undefined;
   if (!opts.inPlace && loadConfig().worktreeByDefault && isGitRepo(canonicalTarget)) {
     const branch = agent.worktreeBranch ?? `am/${agent.name}`;
-    const wt = createWorktree(agent.name, branch, canonicalTarget);
+    const wt = await createWorktree(agent.name, branch, canonicalTarget);
     dir = realpathSync(wt.path);
     worktree = { path: dir, branch, repoRoot: wt.repoRoot };
   }
