@@ -36,7 +36,36 @@ export function isGitRepo(dir: string): boolean {
   return git(dir, "rev-parse", "--git-dir").exitCode === 0;
 }
 
-export function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
+// New branches fork from origin's default branch (origin/HEAD, else
+// origin/main or origin/master), fetched first, rather than whatever the main
+// checkout happens to have checked out. A failed fetch (offline, or racing a
+// concurrent fetch) still forks from the local ref — stale but the right
+// branch. Undefined — fall back to HEAD — only when no such ref exists.
+export function freshBase(repoRoot: string, warn?: (msg: string) => void): string | undefined {
+  const head = git(repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD");
+  const candidates = [...new Set([...(head.exitCode === 0 && head.stdout ? [head.stdout] : []), "origin/main", "origin/master"])];
+  const base = candidates.find(
+    (ref) => git(repoRoot, "rev-parse", "--verify", "--quiet", `refs/remotes/${ref}`).exitCode === 0,
+  );
+  if (!base) return undefined;
+  // Bounded and non-interactive: a hung remote, credential prompt, or ssh
+  // passphrase/host-key prompt must not wedge `am new`.
+  const env: Record<string, string | undefined> = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (!env.GIT_SSH_COMMAND && git(repoRoot, "config", "core.sshCommand").exitCode !== 0) {
+    env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  }
+  const branch = base.slice("origin/".length);
+  const fetch = Bun.spawnSync(["git", "-C", repoRoot, "fetch", "--quiet", "origin", branch], { env, timeout: 15_000 });
+  if (fetch.exitCode !== 0) warn?.(`warning: couldn't fetch origin/${branch}; branching from the local ${base}`);
+  return base;
+}
+
+export function createWorktree(
+  name: string,
+  branch: string,
+  baseDir: string,
+  opts: { base?: string; warn?: (msg: string) => void } = {},
+): { path: string; repoRoot: string } {
   // --git-common-dir resolves through nested worktrees to the main repo, so
   // spawning "from" another agent's worktree still files the new one under
   // the real repo's name.
@@ -50,7 +79,22 @@ export function createWorktree(name: string, branch: string, baseDir: string): {
   mkdirSync(dirname(path), { recursive: true });
 
   const branchExists = git(repoRoot, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).exitCode === 0;
-  const args = branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path];
+  if (branchExists && opts.base) throw new Error(`branch ${branch} already exists — --base only applies to a new branch`);
+  let base: string | undefined;
+  if (opts.base) {
+    // Resolve in the caller's dir: `--base HEAD` from inside an agent's
+    // worktree means that worktree's HEAD, not the main checkout's.
+    const resolved = git(baseDir, "rev-parse", "--verify", "--quiet", `${opts.base}^{commit}`);
+    if (resolved.exitCode !== 0) throw new Error(`--base: unknown ref "${opts.base}"`);
+    base = resolved.stdout;
+  } else if (!branchExists) {
+    base = freshBase(repoRoot, opts.warn);
+  }
+  const args = branchExists
+    ? ["worktree", "add", path, branch]
+    : base
+      ? ["worktree", "add", "--no-track", "-b", branch, path, base]
+      : ["worktree", "add", "-b", branch, path];
   const result = git(repoRoot, ...args);
   if (result.exitCode !== 0) throw new Error(`git worktree add failed: ${result.stderr}`);
   return { path, repoRoot };
@@ -68,6 +112,9 @@ export interface NewOptions {
   message?: string;
   dir?: string;
   worktree?: string;
+  // Start point for a new worktree branch; default is origin's freshly
+  // fetched default branch (see freshBase).
+  base?: string;
   provider?: Provider;
   // Optional model override; undefined = the provider's default model.
   model?: string;
@@ -176,7 +223,10 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     worktreeBranch = `am/${name}`;
   }
   if (worktreeBranch) {
-    const wt = createWorktree(name, worktreeBranch, dir);
+    const wt = createWorktree(name, worktreeBranch, dir, {
+      base: opts.base,
+      warn: opts.quiet ? undefined : (msg) => console.error(msg),
+    });
     dir = wt.path;
     worktreePath = wt.path;
     repoRoot = wt.repoRoot;
