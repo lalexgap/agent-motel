@@ -179,6 +179,25 @@ export function stripSgr(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+// Drop text rendered faint (SGR 2): TUIs draw placeholders and suggested
+// prompts that way, so it is never something a person typed.
+export function stripFaint(text: string): string {
+  let faint = false;
+  let out = "";
+  for (const part of text.split(/(\x1b\[[0-9;]*m)/)) {
+    const sgr = /^\x1b\[([0-9;]*)m$/.exec(part);
+    if (!sgr) {
+      if (!faint) out += part;
+      continue;
+    }
+    for (const code of (sgr[1] || "0").split(";")) {
+      if (code === "2") faint = true;
+      else if (code === "" || code === "0" || code === "22") faint = false;
+    }
+  }
+  return out;
+}
+
 export function insideTmux(): boolean {
   return !!process.env.TMUX;
 }
