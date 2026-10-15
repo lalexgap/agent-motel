@@ -179,8 +179,7 @@ export function stripSgr(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-// Drop text rendered faint (SGR 2): TUIs draw placeholders and suggested
-// prompts that way, so it is never something a person typed.
+// TUIs render placeholders and suggested prompts faint (SGR 2).
 export function stripFaint(text: string): string {
   let faint = false;
   let out = "";

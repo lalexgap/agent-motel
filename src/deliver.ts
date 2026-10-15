@@ -49,8 +49,7 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
 // Claude displays a dim `Try "..."` placeholder inside its bordered composer.
 const PLACEHOLDER_RE = /^Try "/;
 
-// Panes captured with colors let faint suggestion text be told apart from a
-// real draft; an idle Claude composer usually shows one.
+// Needs a colored capture so faint suggestions aren't read as drafts.
 export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
   const plain = pane.map(stripSgr);
   const typed = pane.map(line => stripSgr(stripFaint(line)));
