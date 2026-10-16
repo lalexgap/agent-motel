@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { agentNameOwner, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
+import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
@@ -15,6 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { codexDaemonLaunch } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -241,19 +242,23 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Who created this agent? Any `am` call inside a managed session carries
   // AGENTMGR_AGENT — lets `--report` default to "whoever made me".
-  const inheritedSpawner = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const inheritedSpawner = callingAgentName();
   const spawnedBy = inheritedSpawner ? (matchAgent(inheritedSpawner)?.name ?? inheritedSpawner) : undefined;
   const reportTo = opts.reportTo ?? (opts.report ? spawnedBy : undefined);
   if (opts.report && !reportTo && !opts.quiet) {
     console.error("warning: --report but no spawning agent — set a target with --report-to <name>");
   }
 
+  // Persisted even when this launch falls back to in-process.
+  const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
+  const codexDaemonAttached = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     model,
     reportTo,
     role: role?.name,
     roleInstructions,
+    codexDaemonDir: codexDaemonAttached ? dir : undefined,
   });
 
   const now = new Date().toISOString();
@@ -265,6 +270,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     dir,
     tmuxSession: session,
     provider,
+    codexDaemon,
+    codexDaemonAttached,
     worktreePath,
     worktreeBranch,
     repoRoot,

@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { commsLogFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
-import { matchAgent } from "./state";
+import { callingAgentName, matchAgent } from "./state";
 
 // Inter-agent communication: attribution, the envelope recipients see, and a
 // file-backed ledger that powers loop protection + the `am comms` audit view.
@@ -20,11 +20,12 @@ export interface CommsEntry {
 }
 
 // The sender of a message originating inside a managed session: any `am`
-// invocation there runs with AGENTMGR_AGENT set. An explicit --from wins (the
+// invocation there runs with AGENTMGR_AGENT set (or CODEX_THREAD_ID, for
+// daemon-attached codex agents). An explicit --from wins (the
 // daemon, the HTTP API, and ssh-forwarded sends set it because the env doesn't
 // survive those hops).
 export function resolveSender(explicit?: string): string | undefined {
-  const from = explicit ?? process.env.AGENTMGR_AGENT;
+  const from = explicit ?? callingAgentName();
   if (!from?.trim()) return undefined;
   const trimmed = from.trim();
   // Explicit senders may be host-qualified and describe another machine.

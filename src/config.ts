@@ -23,8 +23,8 @@ export interface Config {
   // Minimum length of the work stint, in seconds, before idle is
   // notification-worthy — filters out quick conversational replies.
   idleNotifyMinSeconds: number;
-  // Launch agents with Claude Code Remote Control, making them drivable from
-  // claude.ai/code and the Claude mobile app. Per-agent override via
+  // Launch agents with remote control: Claude Code Remote Control, or for
+  // codex, attached to the app-server daemon. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
   // macOS bundle id notifications are posted as (icon + click target), e.g.

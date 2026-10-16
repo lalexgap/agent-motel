@@ -31,6 +31,10 @@ export interface AgentState {
   tmuxSession: string;
   // Absent in state files written before multi-provider support → claude.
   provider?: Provider;
+  // Codex only: attached to the app-server daemon; reused on resume/restart/move.
+  codexDaemon?: boolean;
+  // Whether the current launch actually attached (codexDaemon may have fallen back to in-process).
+  codexDaemonAttached?: boolean;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;
   worktreeBranch?: string;
@@ -180,6 +184,17 @@ export function listAgents(): AgentState[] {
     .map((f) => readStateFile(join(agentsDir(), f)))
     .filter((s): s is AgentState => s !== null)
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The agent this `am` invocation runs inside. Daemon-attached codex agents run
+// tools in the app-server daemon without AGENTMGR_AGENT; codex sets
+// CODEX_THREAD_ID there, which matches the agent's recorded session id.
+export function callingAgentName(env: Record<string, string | undefined> = process.env): string | undefined {
+  const inherited = env.AGENTMGR_AGENT?.trim();
+  if (inherited) return inherited;
+  const threadId = env.CODEX_THREAD_ID?.trim();
+  if (!threadId) return undefined;
+  return listAgents().find((a) => agentProvider(a) === "codex" && agentSessionId(a) === threadId)?.name;
 }
 
 export function agentNamesAndAliases(state: AgentState): string[] {

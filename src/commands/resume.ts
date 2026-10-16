@@ -5,11 +5,21 @@ import { ensureDaemon } from "../daemon";
 import { queueAppendForAgent } from "../queue";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { codexDaemonLaunch } from "../codexDaemon";
 import { agentEnv } from "./new";
 
 export interface ResumeOpts {
   message?: string;
   remote?: boolean;
+}
+
+// An explicit --remote/--no-remote switches the saved mode for good.
+// Mutates agent.codexDaemon/codexDaemonAttached; the caller writes it.
+export function codexResumeDaemon(agent: AgentState, opts: ResumeOpts): boolean {
+  if (agentProvider(agent) !== "codex") return false;
+  if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
+  agent.codexDaemonAttached = codexDaemonLaunch(agent.codexDaemon ?? false, agent.dir);
+  return agent.codexDaemonAttached;
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
@@ -22,7 +32,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
 
-  const plan = buildResumeCommand(provider, agent, opts);
+  const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
 
