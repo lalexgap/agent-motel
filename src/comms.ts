@@ -61,6 +61,10 @@ export function formatEnvelope(from: string, body: string): string {
   return `[am · from ${from}] ${body}`;
 }
 
+export function isAttributedBody(body: string): boolean {
+  return body.startsWith("[am · from ");
+}
+
 // Parse JSONL skipping torn/garbage lines, so one bad write can't brick the
 // whole read path (rate limiter, backstop, `am comms`, outbox).
 export function parseJsonl<T>(text: string): T[] {

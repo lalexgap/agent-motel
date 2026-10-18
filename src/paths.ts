@@ -37,6 +37,13 @@ export function claudeProjectsDir(): string {
   return join(process.env.HOME ?? homedir(), ".claude", "projects");
 }
 
+// Claude Code's live-session registry (one <pid>.json per interactive
+// session), read to find a session's cross-session inbox socket.
+export function claudeSessionsDir(): string {
+  const config = process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME ?? homedir(), ".claude");
+  return join(config, "sessions");
+}
+
 // Removed agents' state files are snapshotted here so an accidental `am rm`
 // is undoable with `am restore`.
 export function trashDir(): string {

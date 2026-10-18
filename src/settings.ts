@@ -32,6 +32,9 @@ export function buildHookSettings(): object {
     `"${process.execPath}" "${cliEntrypoint()}" hook ${event}`;
 
   return {
+    // Peer messages arrive on the session's inbox socket; bypass-mode sessions
+    // would otherwise hold each one behind a Deliver/Deny dialog.
+    crossSessionInbound: "accept",
     hooks: Object.fromEntries(
       Object.entries(HOOK_EVENTS).map(([claudeEvent, arg]) => [
         claudeEvent,
