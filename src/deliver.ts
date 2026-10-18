@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, readAgent, type AgentState, type Provider } from "./state";
+import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
 import { queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { isAttributedBody } from "./comms";
+import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
+import { clientMessageId, queueCodexMessage } from "./codexQueue";
 import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
@@ -105,11 +109,59 @@ export type DeliveryResult =
 
 // The marker records which queued message we typed. If Enter is swallowed,
 // later attempts press Enter again instead of appending the text a second time.
+// An inbox marker records a frame sent to Claude's session socket, awaiting
+// the UserPromptSubmit hook's confirmation.
 interface PendingDelivery {
   id: string;
   message: string;
   typed?: boolean;
   incarnation?: string;
+  via?: "inbox";
+  sentAt?: number;
+  inboxFailed?: boolean;
+}
+
+const INBOX_CONFIRM_MS = 5000;
+const INBOX_RETRY_MS = 30_000;
+
+function pendingPath(name: string): string {
+  return join(queueDir(), name, ".delivery.pending");
+}
+
+function confirmedPath(name: string): string {
+  return join(queueDir(), name, ".delivery.confirmed");
+}
+
+function normalized(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// UserPromptSubmit: the prompt carrying the in-flight inbox message is the
+// acknowledgement that the turn really started. Lock-free, because the
+// deliverer holds the lock while it waits for exactly this.
+export function confirmInboxDelivery(name: string, prompt: string): void {
+  const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
+  if (pending?.via !== "inbox" || !normalized(prompt).includes(normalized(pending.message))) return;
+  writeJsonAtomic(confirmedPath(name), { id: pending.id });
+}
+
+function deliveryConfirmed(name: string, id: string): boolean {
+  return readJsonOrNull<{ id?: string }>(confirmedPath(name))?.id === id;
+}
+
+function finishDelivery(name: string, id: string): void {
+  queuePopId(name, id);
+  rmSync(pendingPath(name), { force: true });
+  rmSync(confirmedPath(name), { force: true });
+}
+
+// For drains that hold the delivery lock: retire a pending message the agent
+// already received through its inbox, so it is neither surfaced again nor left
+// blocking the queue.
+export function finishConfirmedDelivery(name: string, id: string): boolean {
+  if (!deliveryConfirmed(name, id)) return false;
+  finishDelivery(name, id);
+  return true;
 }
 
 function sessionIncarnation(agent: AgentState): string | null {
@@ -119,7 +171,7 @@ function sessionIncarnation(agent: AgentState): string | null {
 }
 
 export function pendingDeliveryId(name: string): string | null {
-  const pending = readJsonOrNull<PendingDelivery>(join(queueDir(), name, ".delivery.pending"));
+  const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
   const agent = readAgent(name);
   if (!pending) return null;
   const incarnation = agent ? sessionIncarnation(agent) : null;
@@ -136,16 +188,33 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     if (!incarnation) return { status: "queued", reason: "unavailable" };
     const head = queueHead(name);
     if (head === null) return { status: "queued", reason: "empty" };
-    const pendingPath = join(queueDir(), name, ".delivery.pending");
-    const marker = readJsonOrNull<PendingDelivery>(pendingPath);
-    const pending = marker?.incarnation === incarnation ? marker : null;
+    const markerPath = pendingPath(name);
+    const marker = readJsonOrNull<PendingDelivery>(markerPath);
+    let pending = marker?.incarnation === incarnation ? marker : null;
     const provider = agentProvider(agent);
+
+    if (pending?.id === head.id && pending.via === "inbox") {
+      if (deliveryConfirmed(name, head.id)) {
+        finishDelivery(name, head.id);
+        return { status: "submitted", id: head.id };
+      }
+      if (Date.now() - (pending.sentAt ?? 0) < INBOX_RETRY_MS) return { status: "queued", reason: "unverified" };
+      // Never confirmed: type it instead, and don't loop back to the inbox.
+      pending = { id: head.id, message: head.message, incarnation, inboxFailed: true };
+      writeJsonAtomic(markerPath, pending);
+    }
+    const inbox = pending?.id === head.id ? null : inboxSender(agent, head);
+    if (inbox) {
+      const sent = await deliverToInbox(name, head, incarnation, inbox);
+      if (sent) return sent;
+    }
+
     const before = capturePane(agent.tmuxSession, { colors: true });
     if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
     if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
       queuePopId(name, head.id);
-      rmSync(pendingPath, { force: true });
+      rmSync(markerPath, { force: true });
       return { status: "submitted", id: head.id };
     }
     if (inputBoxText(before, provider)) {
@@ -157,9 +226,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       // Persist before typing so a process crash with the text in the input box
       // is recoverable. A crash after submission can still cause redelivery;
       // the receiving TUI has no transactional acknowledgement protocol.
-      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation });
+      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation });
       sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
-      writeJsonAtomic(pendingPath, { id: head.id, message: head.message, incarnation, typed: true });
+      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, typed: true });
     }
 
     for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
@@ -170,7 +239,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
       if (parsedInputBoxText(pane, provider) === "") {
         queuePopId(name, head.id);
-        rmSync(pendingPath, { force: true });
+        rmSync(markerPath, { force: true });
         return { status: "submitted", id: head.id };
       }
       if (!looksUnsubmitted(pane, head.message, provider)) return { status: "queued", reason: "unverified" };
@@ -180,6 +249,65 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
   } finally {
     releaseDeliverLock(name);
   }
+}
+
+// How to hand this message to the agent's native inbox, or null to type it.
+// Codex's thread queue is durable and drained by whichever process owns the
+// thread (a busy agent runs it next, a dead one on resume), so a successful
+// add is delivery. Claude's socket says nothing back, so its sends wait for
+// the hook's confirmation. Claude also frames inbox content as "from another
+// session, not typed by your user": right for a colleague's note, but it
+// would demote an operator's own message, so only peer messages go that way.
+interface InboxSender {
+  send: () => Promise<void>;
+  confirm: boolean;
+}
+
+function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
+  if (agentProvider(agent) === "codex") {
+    const threadId = agentSessionId(agent);
+    return threadId
+      ? { send: () => queueCodexMessage(threadId, head.message, clientMessageId(head.id)), confirm: false }
+      : null;
+  }
+  if (!isAttributedBody(head.message) || !peerSendable(head.message)) return null;
+  const target = peerTarget(agent);
+  return target ? { send: () => sendPeerMessage(target, head.message, randomUUID()), confirm: true } : null;
+}
+
+// Null means the inbox was unusable, so the caller types the message instead.
+async function deliverToInbox(
+  name: string,
+  head: { id: string; message: string },
+  incarnation: string,
+  inbox: InboxSender,
+): Promise<DeliveryResult | null> {
+  const markerPath = pendingPath(name);
+  if (!inbox.confirm) {
+    try {
+      await inbox.send();
+    } catch {
+      return null;
+    }
+    queuePopId(name, head.id);
+    return { status: "submitted", id: head.id };
+  }
+  rmSync(confirmedPath(name), { force: true });
+  writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, via: "inbox", sentAt: Date.now() });
+  try {
+    await inbox.send();
+  } catch {
+    rmSync(markerPath, { force: true });
+    return null;
+  }
+  for (const deadline = Date.now() + INBOX_CONFIRM_MS; Date.now() < deadline;) {
+    await Bun.sleep(200);
+    if (deliveryConfirmed(name, head.id)) {
+      finishDelivery(name, head.id);
+      return { status: "submitted", id: head.id };
+    }
+  }
+  return { status: "queued", reason: "unverified" };
 }
 
 // Fire-and-forget delivery from inside a hook. The hook must exit promptly

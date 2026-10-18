@@ -40,6 +40,9 @@ export interface AgentState {
   sessionId?: string;
   // Legacy name for sessionId; still read as a fallback.
   claudeSessionId?: string;
+  // Claude session that am launched with crossSessionInbound=accept, so peer
+  // messages can go to its inbox socket instead of being typed into the pane.
+  peerInboxSession?: string;
   // Codex reports the rollout file location in hook payloads; saved so
   // `am transcript` doesn't have to search ~/.codex/sessions for it.
   transcriptPath?: string;

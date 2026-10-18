@@ -110,6 +110,8 @@ export async function createWorktree(
 export function agentEnv(name: string): Record<string, string> {
   return {
     AGENTMGR_AGENT: name,
+    // Tells SessionStart this process loaded the inbound-accepting settings.
+    AGENTMGR_PEER_INBOX: "1",
     ...(process.env.AGENTMGR_HOME ? { AGENTMGR_HOME: process.env.AGENTMGR_HOME } : {}),
   };
 }
