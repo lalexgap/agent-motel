@@ -2,7 +2,7 @@ import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, readAgent, type AgentState, type Provider } from "./state";
 import { queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendText, stripSgr, tmux } from "./tmux";
+import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
@@ -49,8 +49,10 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
 // Claude displays a dim `Try "..."` placeholder inside its bordered composer.
 const PLACEHOLDER_RE = /^Try "/;
 
+// Needs a colored capture so faint suggestions aren't read as drafts.
 export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
   const plain = pane.map(stripSgr);
+  const typed = pane.map(line => stripSgr(stripFaint(line)));
   if (provider === "codex") {
     // Long composers hide the shortcuts row and scroll the message's head away.
     let footer = -1;
@@ -61,7 +63,7 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
     let prompt = -1;
     for (let i = 0; i < footer; i++) if (/^\s*›(?:\s|$)/.test(plain[i]!)) prompt = i;
     if (prompt < 0) return null;
-    const text = plain.slice(prompt, footer)
+    const text = typed.slice(prompt, footer)
       .map(line => line.replace(/\s{2,}[↑↓]\s*$/, ""))
       .join(" ")
       .replace(/^\s*›\s*/, "")
@@ -72,7 +74,7 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
   const seps: number[] = [];
   for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
   if (seps.length < 2) return null;
-  const text = plain
+  const text = typed
     .slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!)
     .join(" ")
     .replace(/❯/g, " ")
@@ -138,7 +140,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     const marker = readJsonOrNull<PendingDelivery>(pendingPath);
     const pending = marker?.incarnation === incarnation ? marker : null;
     const provider = agentProvider(agent);
-    const before = capturePane(agent.tmuxSession);
+    const before = capturePane(agent.tmuxSession, { colors: true });
     if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
     if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
@@ -162,7 +164,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
 
     for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
       await Bun.sleep(SUBMIT_CHECK_MS * 2 ** attempt);
-      const pane = capturePane(agent.tmuxSession);
+      const pane = capturePane(agent.tmuxSession, { colors: true });
       const current = readAgent(name);
       if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };

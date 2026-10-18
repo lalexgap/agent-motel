@@ -84,6 +84,19 @@ describe("provider composer captures", () => {
     expect(looksUnsubmitted(["❯ message", ...claude("")], "message", "claude")).toBe(false);
   });
 
+  test("faint prompt suggestions are not drafts", () => {
+    const suggestion = claude("").map(line =>
+      line.startsWith("❯") ? "\x1b[39m❯ \x1b[2mrevive the three that failed\x1b[0m" : line);
+    expect(parsedInputBoxText(suggestion, "claude")).toBe("");
+    const draft = claude("").map(line =>
+      line.startsWith("❯") ? "\x1b[39m❯ human \x1b[2mghost\x1b[22m draft\x1b[0m" : line);
+    expect(parsedInputBoxText(draft, "claude")).toBe("human draft");
+    expect(parsedInputBoxText(codex("\x1b[2mAsk Codex to do anything\x1b[0m"), "codex")).toBe("");
+    const truecolor = claude("").map(line =>
+      line.startsWith("❯") ? "\x1b[38;2;255;255;255m❯ human\x1b[38;5;2m draft\x1b[0m" : line);
+    expect(parsedInputBoxText(truecolor, "claude")).toBe("human draft");
+  });
+
   test("unknown and incomplete layouts remain unverified", () => {
     expect(parsedInputBoxText(["› draft", "no footer"], "codex")).toBeNull();
     expect(parsedInputBoxText(["  GPT-6.1-Sol medium · ~/project", "  ? for shortcuts"], "codex")).toBeNull();
