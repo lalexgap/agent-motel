@@ -28,7 +28,7 @@ function registry(file: string, entry: Record<string, unknown>) {
 
 function liveEntry(over: Record<string, unknown> = {}) {
   registry(`${process.pid}.json`, {
-    pid: process.pid, sessionId: "sess-1", kind: "interactive",
+    pid: process.pid, sessionId: "sess-1", kind: "interactive", status: "idle",
     tmux: "agentmgr-api:@7.%7", messagingSocketPath: socketPath(), ...over,
   });
 }
@@ -105,6 +105,11 @@ describe("peerTarget", () => {
     liveEntry();
     expect(peerTarget(agent({ peerInboxSession: undefined }))).toBeNull();
     expect(peerTarget(agent({ peerInboxSession: "sess-2" }))).toBeNull();
+  });
+
+  test("skips a session that is mid-turn", () => {
+    liveEntry({ status: "busy" });
+    expect(peerTarget(agent())).toBeNull();
   });
 });
 

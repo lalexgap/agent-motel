@@ -15,6 +15,7 @@ interface RegistryEntry {
   pid?: number;
   sessionId?: string;
   kind?: string;
+  status?: string;
   tmux?: string;
   messagingSocketPath?: string;
 }
@@ -59,6 +60,9 @@ export function peerTarget(agent: AgentState): PeerTarget | null {
   for (const file of files) {
     const entry = readJsonOrNull<RegistryEntry>(join(claudeSessionsDir(), file));
     if (!entry?.pid || !entry.messagingSocketPath || entry.kind !== "interactive") continue;
+    // A busy session would fold the frame into its running turn, where no
+    // UserPromptSubmit confirms it and the fallback would type it again.
+    if (entry.status !== "idle") continue;
     if (entry.sessionId !== agent.peerInboxSession) continue;
     // Pane ids are unique per tmux server and survive `am rename`, which the
     // registry's session-name prefix does not.
