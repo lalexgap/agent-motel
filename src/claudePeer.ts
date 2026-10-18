@@ -6,11 +6,10 @@ import { readJsonOrNull } from "./fsutil";
 import { tmux } from "./tmux";
 import type { AgentState } from "./state";
 
-// Claude Code's cross-session inbox: every interactive session lists itself in
-// ~/.claude/sessions/<pid>.json and accepts NDJSON user frames on a private
-// Unix socket. A frame wakes an idle session into a turn without touching the
-// composer, so it replaces typing into the pane for peer messages. Internal
-// and unversioned upstream — anything unexpected falls back to send-keys.
+// Claude Code's cross-session inbox: each interactive session registers in
+// ~/.claude/sessions/<pid>.json and takes NDJSON user frames on a Unix socket,
+// starting a turn without touching the composer. Internal and unversioned
+// upstream, so anything unexpected falls back to typing.
 
 interface RegistryEntry {
   pid?: number;
@@ -44,10 +43,9 @@ function paneId(session: string): string | null {
   return result.exitCode === 0 && id ? id : null;
 }
 
-// Only sessions launched with crossSessionInbound=accept qualify (SessionStart
-// records them); any other bypass-mode session would hold the message behind
-// an approval dialog. The registry entry must sit in this agent's pane, so a
-// recycled pid or a stray session never receives it.
+// Only sessions launched with crossSessionInbound=accept qualify; others would
+// hold the message behind an approval dialog. Requiring the entry to sit in
+// this agent's pane keeps a recycled pid or stray session from receiving it.
 export function peerTarget(agent: AgentState): PeerTarget | null {
   if (!agent.peerInboxSession) return null;
   const pane = paneId(agent.tmuxSession);

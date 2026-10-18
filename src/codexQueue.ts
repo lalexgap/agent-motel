@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
 
-// Codex keeps a durable per-thread input queue ($CODEX_HOME/queue_1.sqlite)
-// that whichever process owns the thread drains — including the embedded app
-// server inside an agent's TUI. An idle agent starts the queued message as a
-// turn within a fraction of a second; a busy one runs it next; a dead one on
-// resume. A one-shot stdio app-server writes to it without touching the
-// shared Codex daemon. Experimental upstream API: any error means "type it".
+// Codex's durable per-thread input queue is drained by whichever process owns
+// the thread (including the TUI's embedded app server). A one-shot stdio
+// app-server writes to it without touching the shared Codex daemon.
+// Experimental upstream API: any error means "type it".
 
 const TIMEOUT_MS = 10_000;
 

@@ -155,9 +155,8 @@ function finishDelivery(name: string, id: string): void {
   rmSync(confirmedPath(name), { force: true });
 }
 
-// For drains that hold the delivery lock: retire a pending message the agent
-// already received through its inbox, so it is neither surfaced again nor left
-// blocking the queue.
+// For drains holding the delivery lock: retire an inbox message the agent
+// already received, so it is neither surfaced again nor left blocking the queue.
 export function finishConfirmedDelivery(name: string, id: string): boolean {
   if (!deliveryConfirmed(name, id)) return false;
   finishDelivery(name, id);
@@ -251,13 +250,10 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
   }
 }
 
-// How to hand this message to the agent's native inbox, or null to type it.
-// Codex's thread queue is durable and drained by whichever process owns the
-// thread (a busy agent runs it next, a dead one on resume), so a successful
-// add is delivery. Claude's socket says nothing back, so its sends wait for
-// the hook's confirmation. Claude also frames inbox content as "from another
-// session, not typed by your user": right for a colleague's note, but it
-// would demote an operator's own message, so only peer messages go that way.
+// Codex's queue is durable, so a successful add is delivery. Claude's socket
+// never replies, so its sends wait for the hook's confirmation. Claude frames
+// inbox content as "not typed by your user", which would demote an operator's
+// message, so only peer messages go that way.
 interface InboxSender {
   send: () => Promise<void>;
   confirm: boolean;
