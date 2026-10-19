@@ -7,6 +7,7 @@ import { baseDir } from "./paths";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withFileLock } from "./filelock";
 import { agentProvider, agentSessionId, listAgents, type AgentState } from "./state";
+import { activeSubagents } from "./subagents";
 
 // Remote-control codex agents attach their TUI to the shared app-server
 // daemon. The daemon owns the turn, which outlives the tmux pane.
@@ -140,30 +141,46 @@ export async function withCodexAppServer<T>(
   }
 }
 
+type StopResult = { interrupted: boolean; cleaned: boolean };
+
+async function stopThread(call: Call, threadId: string): Promise<StopResult> {
+  let interrupted = false;
+  let cleaned = false;
+  try {
+    const turns = await call("thread/turns/list", { threadId, limit: 1, sortDirection: "desc" });
+    const active = (turns?.data ?? []).find((t: { status?: string }) => t.status === "inProgress");
+    if (active) {
+      await call("turn/interrupt", { threadId, turnId: active.id });
+      interrupted = true;
+    }
+  } catch {
+    // not loaded in the daemon, or nothing running — nothing to interrupt
+  }
+  try {
+    await call("thread/backgroundTerminals/clean", { threadId });
+    cleaned = true;
+  } catch {
+    // unsupported by this codex, or the thread isn't loaded
+  }
+  return { interrupted, cleaned };
+}
+
 export async function stopCodexThread(
   threadId: string,
   opts: { socket?: string; timeoutMs?: number } = {},
-): Promise<{ interrupted: boolean; cleaned: boolean }> {
+): Promise<StopResult> {
+  return withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, (call) => stopThread(call, threadId));
+}
+
+// One connection for all of them, in order.
+export async function stopCodexThreads(
+  threadIds: string[],
+  opts: { socket?: string; timeoutMs?: number } = {},
+): Promise<StopResult[]> {
   return withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, async (call) => {
-    let interrupted = false;
-    let cleaned = false;
-    try {
-      const turns = await call("thread/turns/list", { threadId, limit: 1, sortDirection: "desc" });
-      const active = (turns?.data ?? []).find((t: { status?: string }) => t.status === "inProgress");
-      if (active) {
-        await call("turn/interrupt", { threadId, turnId: active.id });
-        interrupted = true;
-      }
-    } catch {
-      // not loaded in the daemon, or nothing running — nothing to interrupt
-    }
-    try {
-      await call("thread/backgroundTerminals/clean", { threadId });
-      cleaned = true;
-    } catch {
-      // unsupported by this codex, or the thread isn't loaded
-    }
-    return { interrupted, cleaned };
+    const results: StopResult[] = [];
+    for (const id of threadIds) results.push(await stopThread(call, id));
+    return results;
   });
 }
 
@@ -213,6 +230,28 @@ export async function startCodexThread(
   });
 }
 
+// A thread reloaded after a daemon restart takes config's permissions, not
+// the ones it started with; a TUI resume of a loaded thread keeps these.
+export async function resumeCodexThread(
+  threadId: string,
+  opts: { bypass: boolean },
+  conn: { socket?: string; timeoutMs?: number } = {},
+): Promise<void> {
+  await withCodexAppServer(conn.socket ?? codexDaemonSocket(), conn.timeoutMs ?? 4000, (call) =>
+    call("thread/resume", {
+      threadId,
+      ...(opts.bypass ? { approvalPolicy: "never", sandbox: "danger-full-access" } : {}),
+    }),
+  );
+}
+
+// Resume can't pass the bypass flag, so the thread is loaded with it first.
+export function codexPreload(threadId: string | undefined, load = (id: string) => runDetached("load-thread", [id])): boolean {
+  if (!threadId || !loadConfig().skipPermissions || load(threadId)) return true;
+  console.error("warning: could not load the codex thread into the daemon — launching codex in-process (no remote control)");
+  return false;
+}
+
 // Trust entries am wrote to config.toml (dir -> when), so cleanup never
 // removes one the user made.
 export function codexTrustLedgerFile(): string {
@@ -251,9 +290,12 @@ function isAmTrustEntry(entry: Record<string, unknown>): boolean {
   return keys.length === 1 && entry.trust_level === "trusted";
 }
 
-export function pretrustCodexDir(dir: string, write = (d: string) => runDetached("trust-dir", d)): boolean {
+// An explicit trust level other than trusted is the user's choice: never
+// overridden.
+export function pretrustCodexDir(dir: string, write = (d: string) => runDetached("trust-dir", [d])): boolean {
   const entry = codexProjectEntry(dir);
   if (entry?.trust_level === "trusted") return true;
+  if (entry && "trust_level" in entry) return false;
   if (!write(dir)) return false;
   if (entry === null) updateCodexTrustLedger((ledger) => void (ledger[dir] = new Date().toISOString()));
   return true;
@@ -268,7 +310,7 @@ export function amTrustedCodexDir(dir: string): string | undefined {
 // retry. An entry the user has since edited is theirs: forgotten, kept.
 export function forgetCodexTrust(
   dir: string,
-  remove = (d: string) => existsSync(codexDaemonSocket()) && runDetached("untrust-dir", d),
+  remove = (d: string) => existsSync(codexDaemonSocket()) && runDetached("untrust-dir", [d]),
 ): boolean {
   if (!readCodexTrustLedger()[dir]) return true;
   const entry = codexProjectEntry(dir);
@@ -286,8 +328,8 @@ export function releaseCodexTrust(dir: string, owner: string, remove?: (dir: str
 }
 
 // Child process so sync callers stay sync and a wedged daemon stays bounded.
-function runDetached(command: "stop-thread" | "trust-dir" | "untrust-dir", arg: string): boolean {
-  const result = Bun.spawnSync([process.execPath, import.meta.path, command, arg, codexDaemonSocket()], {
+function runDetached(command: "stop-thread" | "load-thread" | "trust-dir" | "untrust-dir", args: string[]): boolean {
+  const result = Bun.spawnSync([process.execPath, import.meta.path, command, codexDaemonSocket(), ...args], {
     stdout: "ignore",
     stderr: "ignore",
     timeout: 6000,
@@ -295,18 +337,22 @@ function runDetached(command: "stop-thread" | "trust-dir" | "untrust-dir", arg: 
   return result.exitCode === 0;
 }
 
-// Killing the tmux pane only kills the TUI; the daemon keeps running the turn.
-export function stopCodexDaemonWork(agent: AgentState): void {
+// Killing the tmux pane only kills the TUI; the daemon keeps running the turn,
+// and each codex subagent's turn on its own thread.
+export function stopCodexDaemonWork(agent: AgentState, stop = (ids: string[]) => runDetached("stop-thread", ids)): void {
   if (agentProvider(agent) !== "codex" || !agent.codexDaemon) return;
   const threadId = agentSessionId(agent);
   if (!threadId || !existsSync(codexDaemonSocket())) return;
-  runDetached("stop-thread", threadId);
+  const subagents = activeSubagents(agent.name).map((r) => r.id).filter((id) => id !== threadId);
+  stop([threadId, ...new Set(subagents)]);
 }
 
 if (import.meta.main) {
-  const [command, arg, socket] = process.argv.slice(2);
+  const [command, socket, ...args] = process.argv.slice(2);
+  const arg = args[0];
   try {
-    if (command === "stop-thread" && arg) await stopCodexThread(arg, { socket });
+    if (command === "stop-thread" && arg) await stopCodexThreads(args, { socket, timeoutMs: 5000 });
+    else if (command === "load-thread" && arg) await resumeCodexThread(arg, { bypass: true }, { socket });
     else if (command === "trust-dir" && arg) await trustCodexDir(arg, { socket });
     else if (command === "untrust-dir" && arg) await untrustCodexDir(arg, { socket });
     else process.exit(2);

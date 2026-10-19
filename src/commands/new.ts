@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { amTrustedCodexDir, codexDaemonLaunch, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
+import { amTrustedCodexDir, codexDaemonLaunch, codexPreload, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -263,7 +263,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Persisted even when this launch falls back to in-process.
   const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
-  const codexDaemonAttached = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
+  const codexDaemonLaunched = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
+  const codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume) : codexDaemonLaunched;
   const codexThreadId = codexDaemonAttached && !opts.resume && !opts.continue
     ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, opts.quiet)
     : undefined;
@@ -290,7 +291,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     provider,
     codexDaemon,
     codexDaemonAttached,
-    codexTrustedDir: codexDaemonAttached ? amTrustedCodexDir(dir) : undefined,
+    codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,
     sessionId: codexThreadId,
     worktreePath,
     worktreeBranch,
