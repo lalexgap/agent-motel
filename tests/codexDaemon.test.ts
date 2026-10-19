@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { codexDaemonEnv, stopCodexThread, trustCodexDir } from "../src/codexDaemon";
+import { codexDaemonEnv, startCodexThread, stopCodexThread, trustCodexDir } from "../src/codexDaemon";
 
 let dir: string | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -103,5 +103,32 @@ describe("codexDaemonEnv", () => {
       CLAUDE_EFFORT: "high",
     });
     expect(env).toEqual({ PATH: "/bin", HOME: "/home/me" });
+  });
+});
+
+describe("startCodexThread", () => {
+  test("starts the thread with the launch settings, then names it", async () => {
+    const { socket, calls } = fakeAppServer((method) => (method === "thread/start" ? { thread: { id: "thread-9" } } : {}));
+    const id = await startCodexThread({ cwd: "/work/wt", name: "worker", model: "gpt-x", effort: "high", bypass: true }, { socket });
+    expect(id).toBe("thread-9");
+    expect(calls.slice(2)).toEqual([
+      [
+        "thread/start",
+        {
+          cwd: "/work/wt",
+          model: "gpt-x",
+          config: { model_reasoning_effort: "high" },
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        },
+      ],
+      ["thread/name/set", { threadId: "thread-9", name: "worker" }],
+    ]);
+  });
+
+  test("leaves permissions to config without bypass, and fails without a thread id", async () => {
+    const { socket, calls } = fakeAppServer(() => ({}));
+    await expect(startCodexThread({ cwd: "/work/wt", name: "worker", bypass: false }, { socket })).rejects.toThrow(/thread id/);
+    expect(calls[2]).toEqual(["thread/start", { cwd: "/work/wt" }]);
   });
 });

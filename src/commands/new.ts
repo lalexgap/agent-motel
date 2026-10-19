@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { codexDaemonLaunch } from "../codexDaemon";
+import { codexDaemonLaunch, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -155,6 +155,16 @@ export interface NewOptions {
   concierge?: boolean;
 }
 
+// Without a thread up front, hooks fall back to matching the launch by dir.
+async function createCodexThread(opts: CodexThreadOpts, quiet?: boolean): Promise<string | undefined> {
+  try {
+    return await startCodexThread(opts);
+  } catch (error) {
+    if (!quiet) console.error(`warning: could not create the codex thread up front (${(error as Error).message}) — starting it from the TUI`);
+    return undefined;
+  }
+}
+
 export async function newCommand(opts: NewOptions): Promise<void> {
   const { name } = opts;
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
@@ -254,9 +264,15 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // Persisted even when this launch falls back to in-process.
   const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
   const codexDaemonAttached = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
+  const codexThreadId = codexDaemonAttached && !opts.resume && !opts.continue
+    ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, opts.quiet)
+    : undefined;
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
-    model,
+    resume: codexThreadId ?? opts.resume,
+    // The thread already carries these; a loaded thread ignores them on resume.
+    model: codexThreadId ? undefined : model,
+    effort: codexThreadId ? undefined : opts.effort,
     reportTo,
     role: role?.name,
     roleInstructions,
@@ -274,6 +290,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     provider,
     codexDaemon,
     codexDaemonAttached,
+    sessionId: codexThreadId,
     worktreePath,
     worktreeBranch,
     repoRoot,

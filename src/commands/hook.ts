@@ -277,9 +277,11 @@ export function isTurnBoundary(
 }
 
 // Daemon-attached codex hooks run without AGENTMGR_AGENT: match by recorded
-// session id, else (session-start only) the newest launching, daemon-attached,
-// session-less agent in the same dir whose pane is alive. Every codex session
-// on the machine runs this, so non-matches return null.
+// session id (set at launch, the thread being created first), else — on
+// session-start only, for a launch whose thread couldn't be created up front —
+// the newest launching, daemon-attached, session-less agent in the same dir
+// whose pane is alive. Every codex session on the machine runs this, so
+// non-matches return null.
 export function resolveDaemonHookAgent(
   event: string,
   payload: Record<string, unknown>,

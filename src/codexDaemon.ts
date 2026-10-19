@@ -175,6 +175,35 @@ export async function trustCodexDir(dir: string, opts: { socket?: string; timeou
   );
 }
 
+export interface CodexThreadOpts {
+  cwd: string;
+  name: string;
+  model?: string;
+  effort?: string;
+  // Resume rejects the bypass flag, so the thread gets its permissions here.
+  bypass: boolean;
+}
+
+// Created before the TUI so the agent's session id is known from the start.
+// Naming it writes the rollout, without which `codex resume` can't find it.
+export async function startCodexThread(
+  opts: CodexThreadOpts,
+  conn: { socket?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  return withCodexAppServer(conn.socket ?? codexDaemonSocket(), conn.timeoutMs ?? 10000, async (call) => {
+    const started = await call("thread/start", {
+      cwd: opts.cwd,
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { config: { model_reasoning_effort: opts.effort } } : {}),
+      ...(opts.bypass ? { approvalPolicy: "never", sandbox: "danger-full-access" } : {}),
+    });
+    const threadId = started?.thread?.id;
+    if (typeof threadId !== "string" || !threadId) throw new Error("app-server returned no thread id");
+    await call("thread/name/set", { threadId, name: opts.name });
+    return threadId;
+  });
+}
+
 // Child process so sync callers stay sync and a wedged daemon stays bounded.
 function runDetached(command: "stop-thread" | "trust-dir", arg: string): boolean {
   const result = Bun.spawnSync([process.execPath, import.meta.path, command, arg, codexDaemonSocket()], {

@@ -282,6 +282,15 @@ describe("codex daemon attach", () => {
     ]);
   });
 
+  test("a thread created up front is resumed with the task prompt last", () => {
+    const plan = buildLaunchCommand("codex", "worker", { resume: "thread-1", message: "do the thing", codexDaemonDir: "/work/wt" });
+    expect(plan.command.slice(0, 9)).toEqual([
+      "codex", "-c", "check_for_update_on_startup=false", "resume", "thread-1", "--remote", "unix://", "-C", "/work/wt",
+    ]);
+    expect(plan.command).toHaveLength(10);
+    expect(plan.command.at(-1)).toContain("do the thing");
+  });
+
   test("without a daemon dir the launch stays in-process", () => {
     const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", remote: true });
     expect(plan.command).not.toContain("--remote");
