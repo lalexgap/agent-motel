@@ -5,7 +5,7 @@ import { ensureDaemon } from "../daemon";
 import { queueAppendForAgent } from "../queue";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { codexDaemonLaunch } from "../codexDaemon";
+import { amTrustedCodexDir, codexDaemonLaunch, releaseCodexTrust } from "../codexDaemon";
 import { agentEnv } from "./new";
 
 export interface ResumeOpts {
@@ -14,11 +14,17 @@ export interface ResumeOpts {
 }
 
 // An explicit --remote/--no-remote switches the saved mode for good.
-// Mutates agent.codexDaemon/codexDaemonAttached; the caller writes it.
+// Mutates agent.codexDaemon/codexDaemonAttached/codexTrustedDir; the caller
+// writes it.
 export function codexResumeDaemon(agent: AgentState, opts: ResumeOpts): boolean {
   if (agentProvider(agent) !== "codex") return false;
   if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
   agent.codexDaemonAttached = codexDaemonLaunch(agent.codexDaemon ?? false, agent.dir);
+  // After `am cd`, the old dir's entry is released once the new one is in use.
+  const previous = agent.codexTrustedDir;
+  const trusted = agent.codexDaemonAttached ? amTrustedCodexDir(agent.dir) : undefined;
+  agent.codexTrustedDir = trusted ?? (previous === agent.dir ? previous : undefined);
+  if (previous && previous !== agent.codexTrustedDir) releaseCodexTrust(previous, agent.name);
   return agent.codexDaemonAttached;
 }
 

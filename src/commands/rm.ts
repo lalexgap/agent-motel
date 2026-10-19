@@ -4,7 +4,7 @@ import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
 import { hasSession, killSession } from "../tmux";
-import { stopCodexDaemonWork } from "../codexDaemon";
+import { releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 
 // Stop = kill the tmux session but keep state, so `am resume` still works.
@@ -60,6 +60,7 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   // including records left open by a kill that fired no Stop hook.
   removeSubagents(current.name);
   removeAgent(current.name);
+  if (current.codexTrustedDir) releaseCodexTrust(current.codexTrustedDir, current.name);
 }
 
 export function destroyAgent(agent: AgentState, opts: { clean: boolean; lifecycleLocked?: boolean }): void {

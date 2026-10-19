@@ -15,7 +15,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { codexDaemonLaunch, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
+import { amTrustedCodexDir, codexDaemonLaunch, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -290,6 +290,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     provider,
     codexDaemon,
     codexDaemonAttached,
+    codexTrustedDir: codexDaemonAttached ? amTrustedCodexDir(dir) : undefined,
     sessionId: codexThreadId,
     worktreePath,
     worktreeBranch,

@@ -7,6 +7,7 @@ import { queueEntryOwner } from "../src/queue";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { readTrashedState, trashState } from "../src/trash";
 import { queueAppend, queueDepth } from "../src/queue";
+import { codexTrustLedgerFile, readCodexTrustLedger } from "../src/codexDaemon";
 
 let home: string;
 
@@ -296,5 +297,21 @@ describe("planGc worktrees", () => {
     expect(plan.worktrees).toEqual([]);
     expect(plan.keptWorktrees.map((w) => w.path)).toEqual([cloneDir]);
     expect(plan.keptWorktrees[0]!.reason).toContain("not a linked git worktree");
+  });
+});
+
+describe("planGc codex trust", () => {
+  test("prunes am-written trust entries whose dir is gone", () => {
+    process.env.CODEX_HOME = home;
+    try {
+      writeFileSync(codexTrustLedgerFile(), JSON.stringify({ [home]: daysAgo(1), [join(home, "gone")]: daysAgo(1) }));
+      const plan = planGc({ agentDays: 7, trashDays: 30 });
+      expect(plan.codexTrust).toEqual([join(home, "gone")]);
+      // No config entry left to remove, so apply needs no daemon.
+      expect(applyGc(plan)).toContain(`removed codex trust entry for ${join(home, "gone")}`);
+      expect(Object.keys(readCodexTrustLedger())).toEqual([home]);
+    } finally {
+      delete process.env.CODEX_HOME;
+    }
   });
 });

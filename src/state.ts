@@ -36,6 +36,8 @@ export interface AgentState {
   codexDaemon?: boolean;
   // Whether the current launch actually attached (codexDaemon may have fallen back to in-process).
   codexDaemonAttached?: boolean;
+  // Codex only: the dir whose config.toml trust entry am wrote for this agent.
+  codexTrustedDir?: string;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;
   worktreeBranch?: string;

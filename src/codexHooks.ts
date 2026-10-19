@@ -33,7 +33,7 @@ export function codexConfigFile(): string {
 const BLOCK_BEGIN = "# >>> agent-manager hooks — managed by `am`, do not edit by hand >>>";
 const BLOCK_END = "# <<< agent-manager hooks <<<";
 
-function tomlBasicString(value: string): string {
+export function tomlBasicString(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 

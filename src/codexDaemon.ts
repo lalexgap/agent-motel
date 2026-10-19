@@ -1,9 +1,12 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { codexHome } from "./codexHooks";
+import { codexConfigFile, codexHome, tomlBasicString } from "./codexHooks";
 import { loadConfig } from "./config";
 import { nestedSessionVars } from "./nestedSession";
-import { agentProvider, agentSessionId, type AgentState } from "./state";
+import { baseDir } from "./paths";
+import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { withFileLock } from "./filelock";
+import { agentProvider, agentSessionId, listAgents, type AgentState } from "./state";
 
 // Remote-control codex agents attach their TUI to the shared app-server
 // daemon. The daemon owns the turn, which outlives the tmux pane.
@@ -65,7 +68,7 @@ export function codexDaemonLaunch(requested: boolean, dir: string): boolean {
   }
   // A daemon-attached TUI prompts to trust its exact dir (not its repo root),
   // and nobody is there to answer for a fresh worktree.
-  if (loadConfig().skipPermissions && !runDetached("trust-dir", dir)) {
+  if (loadConfig().skipPermissions && !pretrustCodexDir(dir)) {
     console.error(`warning: could not mark ${dir} trusted for codex — launching codex in-process (no remote control)`);
     return false;
   }
@@ -175,6 +178,12 @@ export async function trustCodexDir(dir: string, opts: { socket?: string; timeou
   );
 }
 
+export async function untrustCodexDir(dir: string, opts: { socket?: string; timeoutMs?: number } = {}): Promise<void> {
+  await withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, (call) =>
+    call("config/value/write", { keyPath: `projects.${tomlBasicString(dir)}`, value: null, mergeStrategy: "replace" }),
+  );
+}
+
 export interface CodexThreadOpts {
   cwd: string;
   name: string;
@@ -204,8 +213,80 @@ export async function startCodexThread(
   });
 }
 
+// Trust entries am wrote to config.toml (dir -> when), so cleanup never
+// removes one the user made.
+export function codexTrustLedgerFile(): string {
+  return join(baseDir(), "codex-trusted-dirs.json");
+}
+
+export function readCodexTrustLedger(): Record<string, string> {
+  return readJsonOrNull<Record<string, string>>(codexTrustLedgerFile()) ?? {};
+}
+
+function updateCodexTrustLedger(fn: (ledger: Record<string, string>) => void): void {
+  mkdirSync(baseDir(), { recursive: true });
+  withFileLock(`${codexTrustLedgerFile()}.lock`, () => {
+    const ledger = readCodexTrustLedger();
+    fn(ledger);
+    writeJsonAtomic(codexTrustLedgerFile(), ledger);
+  });
+}
+
+// The dir's [projects] entry: null when absent, undefined when config.toml
+// can't be read or parsed.
+export function codexProjectEntry(dir: string): Record<string, unknown> | null | undefined {
+  try {
+    const file = codexConfigFile();
+    if (!existsSync(file)) return null;
+    const projects = (Bun.TOML.parse(readFileSync(file, "utf8")) as { projects?: Record<string, unknown> }).projects;
+    const entry = projects?.[dir];
+    return entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAmTrustEntry(entry: Record<string, unknown>): boolean {
+  const keys = Object.keys(entry);
+  return keys.length === 1 && entry.trust_level === "trusted";
+}
+
+export function pretrustCodexDir(dir: string, write = (d: string) => runDetached("trust-dir", d)): boolean {
+  const entry = codexProjectEntry(dir);
+  if (entry?.trust_level === "trusted") return true;
+  if (!write(dir)) return false;
+  if (entry === null) updateCodexTrustLedger((ledger) => void (ledger[dir] = new Date().toISOString()));
+  return true;
+}
+
+// The dir, when its trust entry is am's to clean up.
+export function amTrustedCodexDir(dir: string): string | undefined {
+  return readCodexTrustLedger()[dir] ? dir : undefined;
+}
+
+// Drops am's trust entry for dir. False leaves it in the ledger for gc to
+// retry. An entry the user has since edited is theirs: forgotten, kept.
+export function forgetCodexTrust(
+  dir: string,
+  remove = (d: string) => existsSync(codexDaemonSocket()) && runDetached("untrust-dir", d),
+): boolean {
+  if (!readCodexTrustLedger()[dir]) return true;
+  const entry = codexProjectEntry(dir);
+  if (entry === undefined) return false;
+  if (entry && isAmTrustEntry(entry) && !remove(dir)) return false;
+  updateCodexTrustLedger((ledger) => void delete ledger[dir]);
+  return true;
+}
+
+// On rm: release the agent's trusted dir unless another agent still uses it.
+export function releaseCodexTrust(dir: string, owner: string, remove?: (dir: string) => boolean): void {
+  if (!readCodexTrustLedger()[dir]) return;
+  if (listAgents().some((a) => a.name !== owner && (a.dir === dir || a.codexTrustedDir === dir))) return;
+  forgetCodexTrust(dir, remove);
+}
+
 // Child process so sync callers stay sync and a wedged daemon stays bounded.
-function runDetached(command: "stop-thread" | "trust-dir", arg: string): boolean {
+function runDetached(command: "stop-thread" | "trust-dir" | "untrust-dir", arg: string): boolean {
   const result = Bun.spawnSync([process.execPath, import.meta.path, command, arg, codexDaemonSocket()], {
     stdout: "ignore",
     stderr: "ignore",
@@ -227,6 +308,7 @@ if (import.meta.main) {
   try {
     if (command === "stop-thread" && arg) await stopCodexThread(arg, { socket });
     else if (command === "trust-dir" && arg) await trustCodexDir(arg, { socket });
+    else if (command === "untrust-dir" && arg) await untrustCodexDir(arg, { socket });
     else process.exit(2);
     process.exit(0);
   } catch {

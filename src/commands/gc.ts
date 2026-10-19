@@ -37,6 +37,11 @@ function renderPlan(plan: GcPlan, agentDays: number, trashDays: number): string[
     for (const w of plan.worktrees) lines.push(`  ${shortenHome(w.path)}`);
   }
 
+  if (plan.codexTrust.length > 0) {
+    lines.push("codex trust entries am wrote for dirs that no longer exist — remove from ~/.codex/config.toml:");
+    for (const dir of plan.codexTrust) lines.push(`  ${shortenHome(dir)}`);
+  }
+
   return lines;
 }
 
