@@ -179,6 +179,27 @@ export function stripSgr(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+// TUIs render placeholders and suggested prompts faint (SGR 2).
+export function stripFaint(text: string): string {
+  let faint = false;
+  let out = "";
+  for (const part of text.split(/(\x1b\[[0-9;]*m)/)) {
+    const sgr = /^\x1b\[([0-9;]*)m$/.exec(part);
+    if (!sgr) {
+      if (!faint) out += part;
+      continue;
+    }
+    const codes = (sgr[1] || "0").split(";");
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === "38" || code === "48" || code === "58") i += codes[i + 1] === "2" ? 4 : 2;
+      else if (code === "2") faint = true;
+      else if (code === "" || code === "0" || code === "22") faint = false;
+    }
+  }
+  return out;
+}
+
 export function insideTmux(): boolean {
   return !!process.env.TMUX;
 }

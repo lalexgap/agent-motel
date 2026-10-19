@@ -77,13 +77,15 @@ usage:
                               --role applies a named behavior preset
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
-                              --worktree <branch> picks the branch
+                              --worktree <branch> picks the branch; new branches
+                              start from freshly fetched origin/main (--base <ref>
+                              to start elsewhere, e.g. --base HEAD)
                               (--report-to <t> / --report make it report progress
                                to <t> / to the agent that spawned it)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens the provider's session picker)
-  am run <name> -m msg [--dir path] [--worktree b | --in-place] [--codex]
+  am run <name> -m msg [--dir path] [--worktree b [--base ref] | --in-place] [--codex]
                        [--role name] [--timeout secs] [--rm] [--json]
                               spawn a real agent, wait for its turn, print its
                               final message (for fan-out: the agent stays in
@@ -241,7 +243,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -548,6 +550,7 @@ async function main(): Promise<void> {
         message: await resolveTask(args.flags),
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+        base: args.flags.base as string | undefined,
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
@@ -569,6 +572,7 @@ async function main(): Promise<void> {
         message: runMessage,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+        base: args.flags.base as string | undefined,
         inPlace: !!args.flags["in-place"],
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,

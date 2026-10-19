@@ -1,7 +1,15 @@
 import { resolve } from "node:path";
 import { agentProvider, agentSessionId, listAgents, matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
 import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
-import { acquireDeliverLock, deliverNext, pendingDeliveryId, releaseDeliverLock, spawnDeliver } from "../deliver";
+import {
+  acquireDeliverLock,
+  confirmInboxDelivery,
+  deliverNext,
+  finishConfirmedDelivery,
+  pendingDeliveryId,
+  releaseDeliverLock,
+  spawnDeliver,
+} from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
@@ -161,7 +169,10 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
     const pending: string[] = [];
     let head;
     while ((head = queueHead(name)) !== null) {
-      if (head.id === pendingDeliveryId(name)) break;
+      if (head.id === pendingDeliveryId(name)) {
+        if (finishConfirmedDelivery(name, head.id)) continue;
+        break;
+      }
       queuePopId(name, head.id);
       pending.push(head.message);
     }
@@ -180,7 +191,10 @@ function stopGate(name: string): string | null {
     const pending: string[] = [];
     let head;
     while ((head = queueHead(name)) !== null) {
-      if (head.id === pendingDeliveryId(name)) break;
+      if (head.id === pendingDeliveryId(name)) {
+        if (finishConfirmedDelivery(name, head.id)) continue;
+        break;
+      }
       queuePopId(name, head.id);
       pending.push(head.message);
     }
@@ -353,6 +367,12 @@ export async function hookCommand(event: string): Promise<void> {
     // Codex includes the rollout file path; saves `am transcript` a search.
     if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
   }
+  // Settings load once at launch, so only a session started by an am that
+  // passes crossSessionInbound=accept may receive inbox-socket deliveries.
+  if (event === "session-start" && !fromSubagent) {
+    const accepts = agentProvider(agent) === "claude" && process.env.AGENTMGR_PEER_INBOX === "1";
+    agent.peerInboxSession = accepts && typeof payload.session_id === "string" ? payload.session_id : undefined;
+  }
   if (event === "user-prompt-submit" && !agent.workingSince) {
     agent.workingSince = new Date().toISOString();
   }
@@ -366,7 +386,10 @@ export async function hookCommand(event: string): Promise<void> {
   // its queue and inject them into a conversation the operator can't see or
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
-    if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
+    if (event === "user-prompt-submit") {
+      if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt);
+      surfaceInbox(name, "UserPromptSubmit");
+    }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }
 

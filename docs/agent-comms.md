@@ -281,3 +281,31 @@ carried through `am move`. Neither is a silent-loss path.
 | `src/paths.ts` | `commsLogFile()` for the ledger |
 | `src/commands/ls.ts`, `src/fleet.ts` | `→ reportTo` in picker meta |
 | `docs/`, `README.md` | document the feature |
+
+### Idle delivery: native inboxes first, typing as fallback
+
+Delivering to an idle agent used to mean typing the message into its pane with
+`tmux send-keys` and scraping the screen to confirm the submit. `deliverNext`
+now hands the queue head to the provider's own inbox when it can:
+
+- **Claude** — each interactive session lists itself in
+  `~/.claude/sessions/<pid>.json` and accepts NDJSON user frames on a private
+  Unix socket (`src/claudePeer.ts`). am launches agents with
+  `crossSessionInbound: "accept"` (in the hook settings) and `AGENTMGR_PEER_INBOX=1`;
+  SessionStart records the session as `peerInboxSession`, and only that session,
+  found in the agent's own pane, receives frames. Only **peer** messages
+  (`[am · from X] …`) take this route: Claude presents inbox content as "from
+  another session, not typed by your user", which would demote an operator's
+  own message, so those are still typed.
+- **Codex** — a one-shot `codex app-server --listen stdio://` calls
+  `thread/queue/add` on the agent's thread (`src/codexQueue.ts`). Codex's queue
+  is durable and drained by whichever process owns the thread (a busy agent runs
+  it next, a dead one on resume), so a successful add is delivery. All messages
+  go this way: Codex queues them as plain user input.
+
+Both preserve a half-typed draft. Claude's socket sends no acknowledgement, so
+its UserPromptSubmit hook confirms delivery when the prompt carries the pending
+message; only then is it popped. An unconfirmed message is typed instead after
+30s (at-least-once). Both inboxes are internal/experimental upstream, so
+any failure falls back to typing. Agents started before this change keep being
+typed to until they are restarted, since Claude reads settings once at launch.
