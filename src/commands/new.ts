@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { agentNameOwner, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
+import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
@@ -15,6 +15,19 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import {
+  amTrustedCodexDir,
+  CODEX_LAUNCH_BUDGET_MS,
+  codexDaemonLaunch,
+  codexDeadline,
+  codexDaemonWanted,
+  codexPreload,
+  deadlineRemaining,
+  missDeadline,
+  startCodexThread,
+  type CodexDeadline,
+  type CodexThreadOpts,
+} from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -154,6 +167,17 @@ export interface NewOptions {
   concierge?: boolean;
 }
 
+// Without a thread up front, hooks fall back to matching the launch by dir.
+async function createCodexThread(opts: CodexThreadOpts, deadline: CodexDeadline, quiet?: boolean): Promise<string | undefined> {
+  try {
+    return await startCodexThread(opts, { timeoutMs: deadlineRemaining(deadline) });
+  } catch (error) {
+    if (/timed out/.test((error as Error).message)) missDeadline(deadline);
+    else if (!quiet) console.error(`warning: could not create the codex thread up front (${(error as Error).message}) — starting it from the TUI`);
+    return undefined;
+  }
+}
+
 export async function newCommand(opts: NewOptions): Promise<void> {
   const { name } = opts;
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
@@ -243,19 +267,37 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Who created this agent? Any `am` call inside a managed session carries
   // AGENTMGR_AGENT — lets `--report` default to "whoever made me".
-  const inheritedSpawner = process.env.AGENTMGR_AGENT?.trim() || undefined;
+  const inheritedSpawner = callingAgentName();
   const spawnedBy = inheritedSpawner ? (matchAgent(inheritedSpawner)?.name ?? inheritedSpawner) : undefined;
   const reportTo = opts.reportTo ?? (opts.report ? spawnedBy : undefined);
   if (opts.report && !reportTo && !opts.quiet) {
     console.error("warning: --report but no spawning agent — set a target with --report-to <name>");
   }
 
+  // Persisted even when this launch falls back to in-process.
+  const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
+  const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
+  const codexDaemonRequested = codexDaemonWanted(!!codexDaemon, !!opts.continue || opts.resume === true);
+  const codexDaemonLaunched = provider === "codex" ? codexDaemonLaunch(codexDaemonRequested, dir, deadline) : undefined;
+  let codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume, deadline) : codexDaemonLaunched;
+  const codexThreadId = codexDaemonAttached && !opts.resume && !opts.continue
+    ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, deadline, opts.quiet)
+    : undefined;
+  // A daemon that stopped answering would hang the attached TUI too.
+  if (codexDaemonAttached && deadline.missed) {
+    console.error("warning: the codex app-server daemon didn't respond in time — launching codex in-process (no remote control)");
+    codexDaemonAttached = false;
+  }
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
-    model,
+    resume: codexThreadId ?? opts.resume,
+    // The thread already carries these; a loaded thread ignores them on resume.
+    model: codexThreadId ? undefined : model,
+    effort: codexThreadId ? undefined : opts.effort,
     reportTo,
     role: role?.name,
     roleInstructions,
+    codexDaemonDir: codexDaemonAttached ? dir : undefined,
   });
 
   const now = new Date().toISOString();
@@ -267,6 +309,10 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     dir,
     tmuxSession: session,
     provider,
+    codexDaemon,
+    codexDaemonAttached,
+    codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,
+    sessionId: codexThreadId,
     worktreePath,
     worktreeBranch,
     repoRoot,

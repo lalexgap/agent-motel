@@ -263,6 +263,50 @@ describe("buildLaunchCommand", () => {
   });
 });
 
+describe("codex daemon attach", () => {
+  const prefix = ["codex", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"];
+
+  test("a new agent attaches to the daemon with its dir, before the prompt", () => {
+    const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", codexDaemonDir: "/work/wt" });
+    expect(plan.command.slice(0, 8)).toEqual([...prefix, "--remote", "unix://", "-C", "/work/wt"]);
+    expect(plan.command).toHaveLength(9);
+    expect(plan.command.at(-1)).toContain("do the thing");
+    expect(plan.deferredMessage).toBeUndefined();
+  });
+
+  test("an adopted conversation passes the daemon flags to the resume subcommand", () => {
+    const plan = buildLaunchCommand("codex", "worker", { resume: "id-9", codexDaemonDir: "/work/wt" });
+    // The daemon refuses permission overrides on resume; the thread keeps its own.
+    expect(plan.command).toEqual([
+      "codex", "-c", "check_for_update_on_startup=false", "resume", "id-9", "--remote", "unix://", "-C", "/work/wt",
+    ]);
+  });
+
+  test("a thread created up front is resumed with the task prompt last", () => {
+    const plan = buildLaunchCommand("codex", "worker", { resume: "thread-1", message: "do the thing", codexDaemonDir: "/work/wt" });
+    expect(plan.command.slice(0, 9)).toEqual([
+      "codex", "-c", "check_for_update_on_startup=false", "resume", "thread-1", "--remote", "unix://", "-C", "/work/wt",
+    ]);
+    expect(plan.command).toHaveLength(10);
+    expect(plan.command.at(-1)).toContain("do the thing");
+  });
+
+  test("without a daemon dir the launch stays in-process", () => {
+    const plan = buildLaunchCommand("codex", "worker", { message: "do the thing", remote: true });
+    expect(plan.command).not.toContain("--remote");
+    expect(plan.command).not.toContain("-C");
+  });
+
+  test("resume re-attaches in the agent's dir only in daemon mode", () => {
+    const a = agent({ sessionId: "id-1", dir: "/work/wt" });
+    expect(buildResumeCommand("codex", a, { codexDaemon: true }).command).toEqual([
+      "codex", "-c", "check_for_update_on_startup=false", "resume", "id-1", "--remote", "unix://", "-C", "/work/wt",
+    ]);
+    expect(buildResumeCommand("codex", a, { codexDaemon: true, message: "go on" }).command.at(-1)).toBe("go on");
+    expect(buildResumeCommand("codex", a, { codexDaemon: false }).command).toEqual([...prefix, "resume", "id-1"]);
+  });
+});
+
 function agent(overrides: Partial<AgentState>): AgentState {
   return {
     name: "a",

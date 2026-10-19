@@ -15,7 +15,8 @@ import {
   splitAddr,
 } from "../src/comms";
 import { configFile } from "../src/paths";
-import { writeAgent } from "../src/state";
+import { callingAgentName, writeAgent } from "../src/state";
+import { recordSubagentStart } from "../src/subagents";
 
 let home: string;
 
@@ -28,6 +29,8 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env.AGENTMGR_HOME;
   delete process.env.AGENTMGR_AGENT;
+  delete process.env.CODEX_THREAD_ID;
+  delete process.env.CODEX_SESSION_ID;
 });
 
 describe("resolveSender", () => {
@@ -55,6 +58,64 @@ describe("resolveSender", () => {
 
     expect(resolveSender()).toBe("api-v2");
     expect(resolveSender("remote:api")).toBe("remote:api");
+  });
+});
+
+describe("resolveSender for daemon-attached codex agents", () => {
+  function writeCodexAgent(name: string, sessionId: string): void {
+    const now = new Date().toISOString();
+    writeAgent({
+      name,
+      provider: "codex",
+      sessionId,
+      codexDaemonAttached: true,
+      status: "working",
+      dir: "/tmp",
+      tmuxSession: `agentmgr-${name}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  test("CODEX_THREAD_ID matching an agent's session id resolves to that agent", () => {
+    writeCodexAgent("worker", "thread-123");
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-123";
+    expect(resolveSender()).toBe("worker");
+    expect(callingAgentName()).toBe("worker");
+  });
+
+  test("non-matching CODEX_THREAD_ID resolves to undefined", () => {
+    writeCodexAgent("worker", "thread-123");
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-other";
+    expect(resolveSender()).toBeUndefined();
+    expect(callingAgentName()).toBeUndefined();
+  });
+
+  test("a subagent's thread resolves to the agent that recorded it", () => {
+    writeCodexAgent("worker", "thread-123");
+    writeCodexAgent("other", "thread-456");
+    recordSubagentStart("worker", { id: "thread-sub", type: "explorer" });
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-sub";
+    process.env.CODEX_SESSION_ID = "thread-456";
+    expect(callingAgentName()).toBe("worker");
+  });
+
+  test("an unrecorded subagent falls back to its root session", () => {
+    writeCodexAgent("worker", "thread-123");
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-sub";
+    process.env.CODEX_SESSION_ID = "thread-123";
+    expect(callingAgentName()).toBe("worker");
+  });
+
+  test("AGENTMGR_AGENT wins over CODEX_THREAD_ID", () => {
+    writeCodexAgent("worker", "thread-123");
+    process.env.AGENTMGR_AGENT = "lead";
+    process.env.CODEX_THREAD_ID = "thread-123";
+    expect(callingAgentName()).toBe("lead");
   });
 });
 

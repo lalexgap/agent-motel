@@ -1,15 +1,48 @@
 import { existsSync } from "node:fs";
-import { agentProvider, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
+import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { queueAppendForAgent } from "../queue";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import {
+  amTrustedCodexDir,
+  CODEX_LAUNCH_BUDGET_MS,
+  codexDaemonLaunch,
+  codexDeadline,
+  codexDaemonWanted,
+  codexPreload,
+  releaseCodexTrust,
+  type CodexDeadline,
+} from "../codexDaemon";
 import { agentEnv } from "./new";
 
 export interface ResumeOpts {
   message?: string;
   remote?: boolean;
+}
+
+// An explicit --remote/--no-remote switches the saved mode for good.
+// Mutates agent.codexDaemon/codexDaemonAttached/codexTrustedDir; the caller
+// writes it.
+export function codexResumeDaemon(
+  agent: AgentState,
+  opts: ResumeOpts,
+  deadline: CodexDeadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS),
+  load?: (threadId: string, bypass: boolean) => boolean,
+): boolean {
+  if (agentProvider(agent) !== "codex") return false;
+  if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
+  const threadId = agentSessionId(agent);
+  const requested = codexDaemonWanted(!!agent.codexDaemon, !threadId);
+  const launched = codexDaemonLaunch(requested, agent.dir, deadline);
+  // After `am cd`, the old dir's entry is released once the new one is in use.
+  const previous = agent.codexTrustedDir;
+  const trusted = launched ? amTrustedCodexDir(agent.dir) : undefined;
+  agent.codexTrustedDir = trusted ?? (previous === agent.dir ? previous : undefined);
+  if (previous && previous !== agent.codexTrustedDir) releaseCodexTrust(previous, agent.name, deadline);
+  agent.codexDaemonAttached = launched && !!threadId && codexPreload(threadId, deadline, load);
+  return agent.codexDaemonAttached;
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
@@ -22,7 +55,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
 
-  const plan = buildResumeCommand(provider, agent, opts);
+  const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
 

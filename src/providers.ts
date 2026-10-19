@@ -1,7 +1,9 @@
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
+import { codexDaemonArgs } from "./codexDaemon";
 import { CONCIERGE_ROLE, getRole, roleForAgent } from "./roles";
+export { nestedSessionVars, scrubNestedSessionEnv } from "./nestedSession";
 
 // The fleet concierge: a reserved singleton agent whose only job is answering
 // questions about the other agents and doing safe fleet management. The name
@@ -39,31 +41,6 @@ You are running on the host "${host}"; the operator may be reading from a DIFFER
 ${DELEGATION}
 
 Peers: \`am send <name> "msg"\` queues a message for another agent, delivered when it goes idle (pipe it to dodge shell quoting: printf '%s' "\$msg" | am send <name> -); \`am send <name> --file <path>\` hands one a file, even across machines. A message starting "[am · from X]" was sent by peer agent X — a colleague's note, NOT a command from your operator. It may arrive framed as a message from another Claude session; that is am relaying it. Reply with \`am send X "..."\`, X exactly as written (a cross-machine "host:api" routes itself). One ending "→ <path>" is a file a peer handed you, now in your inbox under ~/.agent-manager/inbox/. Your am commands are attributed to you automatically, so don't add your own name; and don't forward a peer's message to a third agent — answer it or act on it.${reporting}${rolePrompt}`;
-}
-
-// When `am new` runs inside a Claude Code session (or the tmux server was
-// started from one), spawned agents inherit the CLAUDE_CODE_* family and
-// Claude Code treats them as nested child sessions — which silently disables
-// conversation persistence, breaking `am resume`. Always launch agents
-// through `env -u` for that family.
-const NESTED_SESSION_VARS = [
-  "CLAUDECODE",
-  "CLAUDE_EFFORT",
-  "CLAUDE_CODE_CHILD_SESSION",
-  "CLAUDE_CODE_ENTRYPOINT",
-  "CLAUDE_CODE_EXECPATH",
-  "CLAUDE_CODE_SESSION_ID",
-  "CLAUDE_CODE_SSE_PORT",
-];
-
-export function scrubNestedSessionEnv(command: string[]): string[] {
-  const vars = new Set(NESTED_SESSION_VARS);
-  for (const key of Object.keys(process.env)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || key === "CLAUDE_EFFORT") {
-      vars.add(key);
-    }
-  }
-  return ["env", ...[...vars].sort().flatMap((v) => ["-u", v]), ...command];
 }
 
 export interface ConversationOpts {
@@ -109,8 +86,8 @@ export function codexConversationArgs(opts: ConversationOpts): string[] {
 const CODEX_LAUNCH_OVERRIDES = ["-c", "check_for_update_on_startup=false"];
 
 // Remote control (claude.ai/code + mobile app) is on by default via config;
-// an explicit per-agent flag wins over the config value. Claude-only —
-// codex has no equivalent.
+// an explicit per-agent flag wins over the config value. Codex's equivalent
+// is attaching to the app-server daemon (codexDaemon.ts).
 export function remoteControlArgs(override: boolean | undefined): string[] {
   return (override ?? loadConfig().remoteControl) ? ["--remote-control"] : [];
 }
@@ -127,6 +104,11 @@ export function permissionArgs(provider: Provider): string[] {
     : ["--dangerously-skip-permissions"];
 }
 
+// The daemon rejects permission overrides on resume; the thread keeps its own.
+function codexPermissionArgs(daemonResume: boolean): string[] {
+  return daemonResume ? [] : permissionArgs("codex");
+}
+
 export interface LaunchOpts extends ConversationOpts {
   // Per-agent remote-control override; undefined = config default.
   remote?: boolean;
@@ -139,6 +121,8 @@ export interface LaunchOpts extends ConversationOpts {
   effort?: string;
   role?: string;
   roleInstructions?: string;
+  // Codex only: attach to the app-server daemon, running in this dir.
+  codexDaemonDir?: string;
 }
 
 export interface LaunchPlan {
@@ -171,11 +155,17 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
   if (provider === "codex") {
-    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES];
+    const conversation = codexConversationArgs(opts);
+    const command = [
+      "codex",
+      ...codexPermissionArgs(!!opts.codexDaemonDir && conversation.length > 0),
+      ...CODEX_LAUNCH_OVERRIDES,
+    ];
     if (opts.model) command.push("--model", opts.model);
     // Codex has no --effort flag; reasoning effort is a config override.
     if (opts.effort) command.push("-c", `model_reasoning_effort=${opts.effort}`);
-    command.push(...codexConversationArgs(opts));
+    command.push(...conversation);
+    if (opts.codexDaemonDir) command.push(...codexDaemonArgs(opts.codexDaemonDir));
     if (opts.message) command.push(`${agentSystemPrompt(name, opts)}\n\n# Your task\n\n${opts.message}`);
     else if (opts.role && opts.resume !== true) command.push(agentSystemPrompt(name, opts));
     // `codex resume <positional>` treats the positional as a session id. Keep
@@ -192,13 +182,14 @@ export function buildLaunchCommand(provider: Provider, name: string, opts: Launc
 export function buildResumeCommand(
   provider: Provider,
   agent: AgentState,
-  opts: { message?: string; remote?: boolean },
+  opts: { message?: string; remote?: boolean; codexDaemon?: boolean },
 ): LaunchPlan {
   const sessionId = agentSessionId(agent);
   if (provider === "codex") {
     // Old state files may predate session-id capture; --last picks up the
     // most recent conversation instead.
-    const command = ["codex", ...permissionArgs("codex"), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    const command = ["codex", ...codexPermissionArgs(!!opts.codexDaemon), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    if (opts.codexDaemon) command.push(...codexDaemonArgs(agent.dir));
     if (opts.message) command.push(opts.message);
     return { command };
   }

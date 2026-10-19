@@ -33,7 +33,7 @@ export function codexConfigFile(): string {
 const BLOCK_BEGIN = "# >>> agent-manager hooks — managed by `am`, do not edit by hand >>>";
 const BLOCK_END = "# <<< agent-manager hooks <<<";
 
-function tomlBasicString(value: string): string {
+export function tomlBasicString(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
@@ -41,13 +41,14 @@ function tomlBasicString(value: string): string {
 // launch overrides: Codex's hook trust is keyed positionally to the config
 // file the hook is defined in (file:event:group:handler), so a per-launch
 // hook can never be durably trusted and is silently skipped. One persistent,
-// $AGENTMGR_AGENT-guarded definition serves every agent — the hook command
-// no-ops outside managed sessions — and survives trust review exactly once.
+// definition serves every agent — the hook command no-ops outside managed
+// sessions (in-process agents carry $AGENTMGR_AGENT; daemon-attached ones are
+// matched by session id or dir) — and survives trust review exactly once.
 export function codexHooksBlock(): string {
   const lines: string[] = [BLOCK_BEGIN];
   lines.push(
     "# These run `am hook <event>` to track managed-agent status. They exit",
-    "# immediately when $AGENTMGR_AGENT is unset, so normal codex sessions",
+    "# without effect for sessions am doesn't manage, so normal codex sessions",
     "# are unaffected. Changing this block invalidates Codex's hook trust",
     "# and triggers a one-time re-review at the next managed launch.",
   );

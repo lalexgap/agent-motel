@@ -10,6 +10,7 @@ import { listSubagentLedgers } from "./subagents";
 import { readJsonOrNull } from "./fsutil";
 import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
+import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -21,6 +22,7 @@ import { inferWorktree, withWorktreeMeta } from "./commands/move";
 //   • unreferenced worktrees under ~/.agent-manager/worktrees — removed only
 //     when clean AND unclaimed by any live or restorable (trashed) agent; the
 //     branch itself survives in the repo, so committed work is never lost
+//   • codex trust entries am wrote to config.toml for dirs that are gone
 
 const DAY_MS = 86_400_000;
 // A just-created stray may belong to an agent mid-registration or mid-move —
@@ -57,6 +59,7 @@ export interface GcPlan {
   worktrees: WorktreeRemoval[];
   // Unreferenced but deliberately not collected — surfaced so the user knows.
   keptWorktrees: KeptWorktree[];
+  codexTrust: string[];
 }
 
 // Missing/garbage timestamps read as infinitely old: gc exists to collect
@@ -241,6 +244,7 @@ export function planGc(opts: GcOptions): GcPlan {
     orphans: orphanScan(liveNames, restorableNames, opts.trashDays, now),
     worktrees: remove,
     keptWorktrees: kept,
+    codexTrust: Object.keys(readCodexTrustLedger()).filter((dir) => !existsSync(dir)),
   };
 }
 
@@ -249,7 +253,8 @@ export function gcIsEmpty(plan: GcPlan): boolean {
     plan.agents.length === 0 &&
     plan.trash.length === 0 &&
     plan.orphans.length === 0 &&
-    plan.worktrees.length === 0
+    plan.worktrees.length === 0 &&
+    plan.codexTrust.length === 0
   );
 }
 
@@ -288,6 +293,12 @@ export function applyGc(plan: GcPlan): string[] {
     const result = git(w.repoRoot, "worktree", "remove", w.path);
     if (result.ok) lines.push(`removed worktree ${w.path}`);
     else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
+  }
+
+  for (const dir of plan.codexTrust) {
+    if (existsSync(dir)) continue;
+    if (forgetCodexTrust(dir)) lines.push(`removed codex trust entry for ${dir}`);
+    else lines.push(`warning: could not remove codex trust entry for ${dir} (is the codex app-server daemon running?)`);
   }
 
   return lines;
