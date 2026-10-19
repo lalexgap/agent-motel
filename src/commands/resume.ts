@@ -5,7 +5,16 @@ import { ensureDaemon } from "../daemon";
 import { queueAppendForAgent } from "../queue";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { amTrustedCodexDir, codexDaemonLaunch, codexPreload, releaseCodexTrust } from "../codexDaemon";
+import {
+  amTrustedCodexDir,
+  CODEX_LAUNCH_BUDGET_MS,
+  codexDaemonLaunch,
+  codexDeadline,
+  codexDaemonWanted,
+  codexPreload,
+  releaseCodexTrust,
+  type CodexDeadline,
+} from "../codexDaemon";
 import { agentEnv } from "./new";
 
 export interface ResumeOpts {
@@ -16,16 +25,23 @@ export interface ResumeOpts {
 // An explicit --remote/--no-remote switches the saved mode for good.
 // Mutates agent.codexDaemon/codexDaemonAttached/codexTrustedDir; the caller
 // writes it.
-export function codexResumeDaemon(agent: AgentState, opts: ResumeOpts, load?: (threadId: string) => boolean): boolean {
+export function codexResumeDaemon(
+  agent: AgentState,
+  opts: ResumeOpts,
+  deadline: CodexDeadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS),
+  load?: (threadId: string, bypass: boolean) => boolean,
+): boolean {
   if (agentProvider(agent) !== "codex") return false;
   if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
-  const launched = codexDaemonLaunch(agent.codexDaemon ?? false, agent.dir);
+  const threadId = agentSessionId(agent);
+  const requested = codexDaemonWanted(!!agent.codexDaemon, !threadId);
+  const launched = codexDaemonLaunch(requested, agent.dir, deadline);
   // After `am cd`, the old dir's entry is released once the new one is in use.
   const previous = agent.codexTrustedDir;
   const trusted = launched ? amTrustedCodexDir(agent.dir) : undefined;
   agent.codexTrustedDir = trusted ?? (previous === agent.dir ? previous : undefined);
-  if (previous && previous !== agent.codexTrustedDir) releaseCodexTrust(previous, agent.name);
-  agent.codexDaemonAttached = launched && codexPreload(agentSessionId(agent), load);
+  if (previous && previous !== agent.codexTrustedDir) releaseCodexTrust(previous, agent.name, deadline);
+  agent.codexDaemonAttached = launched && !!threadId && codexPreload(threadId, deadline, load);
   return agent.codexDaemonAttached;
 }
 

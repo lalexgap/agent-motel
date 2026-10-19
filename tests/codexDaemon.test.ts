@@ -1,13 +1,18 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   amTrustedCodexDir,
   codexDaemonEnv,
+  codexDaemonLaunch,
+  codexDaemonWanted,
+  codexDeadline,
   codexDaemonSocket,
   codexPreload,
+  deadlineRemaining,
   forgetCodexTrust,
+  missDeadline,
   pretrustCodexDir,
   readCodexTrustLedger,
   releaseCodexTrust,
@@ -15,7 +20,7 @@ import {
   startCodexThread,
   stopCodexDaemonWork,
   stopCodexThread,
-  stopCodexThreads,
+  stopCodexThreadTree,
   trustCodexDir,
   untrustCodexDir,
 } from "../src/codexDaemon";
@@ -24,6 +29,7 @@ import { writeAgent, type AgentState } from "../src/state";
 import { recordSubagentStart, recordSubagentStop } from "../src/subagents";
 
 let dir: string | undefined;
+const soon = () => codexDeadline(10_000);
 let server: ReturnType<typeof Bun.serve> | undefined;
 
 afterEach(() => {
@@ -91,17 +97,39 @@ describe("stopCodexThread", () => {
     await expect(stopCodexThread("thread-1", { socket, timeoutMs: 200 })).rejects.toThrow(/timed out/);
   });
 
-  test("stops several threads over one connection, in order", async () => {
+  test("stops the root, then the loaded threads in its tree, over one connection", async () => {
+    const threads: Record<string, { sessionId: string; parentThreadId: string | null }> = {
+      root: { sessionId: "root", parentThreadId: null },
+      child: { sessionId: "root", parentThreadId: "root" },
+      grandchild: { sessionId: "other", parentThreadId: "child" },
+      // parent not loaded, but in the root's session
+      orphan: { sessionId: "root", parentThreadId: "gone" },
+      "other-agent": { sessionId: "other-agent", parentThreadId: null },
+      "other-sub": { sessionId: "other-agent", parentThreadId: "other-agent" },
+    };
     const { socket, calls } = fakeAppServer((method, params) => {
+      if (method === "thread/loaded/list") {
+        const ids = Object.keys(threads);
+        return params.cursor ? { data: ids.slice(3), nextCursor: null } : { data: ids.slice(0, 3), nextCursor: "page-2" };
+      }
+      if (method === "thread/read") return { thread: { id: params.threadId, ...threads[params.threadId] } };
       if (method === "thread/turns/list") return { data: [{ id: `turn-${params.threadId}`, status: "inProgress" }], nextCursor: null };
       return {};
     });
-    expect(await stopCodexThreads(["root", "sub"], { socket })).toEqual([
-      { interrupted: true, cleaned: true },
-      { interrupted: true, cleaned: true },
-    ]);
+    const results = await stopCodexThreadTree("root", ["stale-ledger-entry"], { socket });
+    expect(results).toHaveLength(4);
     expect(calls.filter(([m]) => m === "initialize")).toHaveLength(1);
-    expect(calls.filter(([m]) => m === "turn/interrupt").map(([, p]) => p.threadId)).toEqual(["root", "sub"]);
+    expect(calls.filter(([m]) => m === "turn/interrupt").map(([, p]) => p.threadId)).toEqual(["root", "child", "grandchild", "orphan"]);
+  });
+
+  test("falls back to the ledger when loaded threads can't be listed", async () => {
+    const { socket, calls } = fakeAppServer((method, params) => {
+      if (method === "thread/loaded/list") return new Error("unknown method");
+      if (method === "thread/turns/list") return { data: [{ id: `turn-${params.threadId}`, status: "inProgress" }], nextCursor: null };
+      return {};
+    });
+    await stopCodexThreadTree("root", ["sub-1", "root", "sub-1"], { socket });
+    expect(calls.filter(([m]) => m === "turn/interrupt").map(([, p]) => p.threadId)).toEqual(["root", "sub-1"]);
   });
 
   test("fails fast when nothing listens on the socket", async () => {
@@ -177,19 +205,101 @@ describe("startCodexThread", () => {
 });
 
 describe("resumeCodexThread", () => {
-  test("loads the thread with bypass permissions", async () => {
-    const { socket, calls } = fakeAppServer(() => ({ thread: { id: "thread-9" } }));
+  const loadedServer = (loaded: string[], probe: Record<string, unknown> = {}) =>
+    fakeAppServer((method) => {
+      if (method === "thread/loaded/list") return { data: loaded, nextCursor: null };
+      if (method === "thread/resume") return { thread: { id: "thread-9" }, cwd: "/work/wt" };
+      if (method === "thread/start") return { thread: { id: "probe-1" }, ...probe };
+      return {};
+    });
+
+  test("loads an unloaded thread with bypass permissions", async () => {
+    const { socket, calls } = loadedServer([]);
     await resumeCodexThread("thread-9", { bypass: true }, { socket });
-    expect(calls[2]).toEqual([
-      "thread/resume",
-      { threadId: "thread-9", approvalPolicy: "never", sandbox: "danger-full-access" },
+    expect(calls.slice(3)).toEqual([
+      ["thread/resume", { threadId: "thread-9", excludeTurns: true, approvalPolicy: "never", sandbox: "danger-full-access" }],
     ]);
   });
 
-  test("leaves permissions to config without bypass", async () => {
-    const { socket, calls } = fakeAppServer(() => ({}));
+  test("loads an unloaded thread with config's permissions without bypass", async () => {
+    const { socket, calls } = loadedServer([]);
     await resumeCodexThread("thread-9", { bypass: false }, { socket });
-    expect(calls[2]).toEqual(["thread/resume", { threadId: "thread-9" }]);
+    expect(calls.slice(3)).toEqual([["thread/resume", { threadId: "thread-9", excludeTurns: true }]]);
+  });
+
+  test("replaces a loaded thread's settings with bypass", async () => {
+    const { socket, calls } = loadedServer(["thread-9"]);
+    await resumeCodexThread("thread-9", { bypass: true }, { socket });
+    expect(calls.at(-1)).toEqual([
+      "thread/settings/update",
+      { threadId: "thread-9", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } },
+    ]);
+  });
+
+  test("puts a loaded thread back on codex's defaults for its dir without bypass", async () => {
+    const { socket, calls } = loadedServer(["thread-9"], {
+      approvalPolicy: "on-request",
+      sandbox: { type: "workspaceWrite" },
+      activePermissionProfile: { id: ":workspace", extends: null },
+    });
+    await resumeCodexThread("thread-9", { bypass: false }, { socket });
+    expect(calls.slice(4)).toEqual([
+      ["thread/start", { cwd: "/work/wt", ephemeral: true }],
+      ["thread/unsubscribe", { threadId: "probe-1" }],
+      ["thread/settings/update", { threadId: "thread-9", approvalPolicy: "on-request", permissions: ":workspace" }],
+    ]);
+  });
+
+  test("falls back to the sandbox policy when no profile is reported", async () => {
+    const { socket, calls } = loadedServer(["thread-9"], { approvalPolicy: "untrusted", sandbox: { type: "readOnly", networkAccess: false } });
+    await resumeCodexThread("thread-9", { bypass: false }, { socket });
+    expect(calls.at(-1)).toEqual([
+      "thread/settings/update",
+      { threadId: "thread-9", approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: false } },
+    ]);
+  });
+});
+
+describe("codex deadlines", () => {
+  test("a sub-deadline never outlasts its parent, and a miss stops both", () => {
+    const parent = codexDeadline(1000);
+    const child = codexDeadline(60_000, parent);
+    expect(deadlineRemaining(child)).toBeLessThanOrEqual(1000);
+    expect(codexDeadline(100, parent).at).toBeLessThan(parent.at);
+    missDeadline(child);
+    expect(deadlineRemaining(child)).toBe(0);
+    expect(deadlineRemaining(parent)).toBe(0);
+    expect(codexDeadline(5000, parent).missed).toBe(true);
+  });
+
+  test("a missed deadline launches in-process without touching the daemon", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const deadline = codexDeadline(10_000);
+      missDeadline(deadline);
+      const started = Date.now();
+      expect(codexDaemonLaunch(true, "/work/wt", deadline)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("didn't respond in time");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+describe("codexDaemonWanted", () => {
+  test("a resume without a thread id launches in-process, with a note", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(codexDaemonWanted(false, true)).toBe(false);
+      expect(codexDaemonWanted(true, false)).toBe(true);
+      expect(errors).not.toHaveBeenCalled();
+      expect(codexDaemonWanted(true, true)).toBe(false);
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("in-process");
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 
@@ -220,9 +330,9 @@ describe("codex trust ledger", () => {
     config('[projects."/work/user"]\ntrust_level = "trusted"\n[projects."/work/untrusted"]\ntrust_level = "untrusted"\n');
     const writes: string[] = [];
     const write = (dir: string) => (writes.push(dir), true);
-    expect(pretrustCodexDir("/work/user", write)).toBe(true);
-    expect(pretrustCodexDir("/work/untrusted", write)).toBe(false);
-    expect(pretrustCodexDir("/work/a", write)).toBe(true);
+    expect(pretrustCodexDir("/work/user", soon(), write)).toBe(true);
+    expect(pretrustCodexDir("/work/untrusted", soon(), write)).toBe(false);
+    expect(pretrustCodexDir("/work/a", soon(), write)).toBe(true);
     expect(writes).toEqual(["/work/a"]);
     expect(Object.keys(readCodexTrustLedger())).toEqual(["/work/a"]);
     expect(amTrustedCodexDir("/work/a")).toBe("/work/a");
@@ -231,46 +341,46 @@ describe("codex trust ledger", () => {
 
   test("an unreadable config is never recorded", () => {
     config("not = [valid toml");
-    expect(pretrustCodexDir("/work/a", ok)).toBe(true);
+    expect(pretrustCodexDir("/work/a", soon(), ok)).toBe(true);
     expect(readCodexTrustLedger()).toEqual({});
   });
 
   test("forget removes am's entry, keeps a user-edited one, and retries a failed removal", () => {
     config("");
-    pretrustCodexDir("/work/a", ok);
-    pretrustCodexDir("/work/b", ok);
-    pretrustCodexDir("/work/c", ok);
+    pretrustCodexDir("/work/a", soon(), ok);
+    pretrustCodexDir("/work/b", soon(), ok);
+    pretrustCodexDir("/work/c", soon(), ok);
     config('[projects."/work/a"]\ntrust_level = "trusted"\n[projects."/work/b"]\ntrust_level = "trusted"\nnote = "mine"\n[projects."/work/c"]\ntrust_level = "trusted"\n');
     const removed: string[] = [];
-    expect(forgetCodexTrust("/work/a", (dir) => (removed.push(dir), true))).toBe(true);
-    expect(forgetCodexTrust("/work/b", (dir) => (removed.push(dir), true))).toBe(true);
-    expect(forgetCodexTrust("/work/c", () => false)).toBe(false);
-    expect(forgetCodexTrust("/work/user", (dir) => (removed.push(dir), true))).toBe(true);
+    expect(forgetCodexTrust("/work/a", soon(), (dir) => (removed.push(dir), true))).toBe(true);
+    expect(forgetCodexTrust("/work/b", soon(), (dir) => (removed.push(dir), true))).toBe(true);
+    expect(forgetCodexTrust("/work/c", soon(), () => false)).toBe(false);
+    expect(forgetCodexTrust("/work/user", soon(), (dir) => (removed.push(dir), true))).toBe(true);
     expect(removed).toEqual(["/work/a"]);
     expect(Object.keys(readCodexTrustLedger())).toEqual(["/work/c"]);
   });
 
   test("release waits for the last agent using the dir", () => {
     config("");
-    pretrustCodexDir("/work/a", ok);
+    pretrustCodexDir("/work/a", soon(), ok);
     config('[projects."/work/a"]\ntrust_level = "trusted"\n');
     writeAgent(codexAgent("one", { codexTrustedDir: "/work/a" }));
     writeAgent(codexAgent("two"));
     const removed: string[] = [];
     const remove = (dir: string) => (removed.push(dir), true);
-    releaseCodexTrust("/work/a", "one", remove);
+    releaseCodexTrust("/work/a", "one", soon(), remove);
     expect(removed).toEqual([]);
-    releaseCodexTrust("/work/a", "two", remove);
+    releaseCodexTrust("/work/a", "two", soon(), remove);
     expect(removed).toEqual([]);
     rmSync(join(home, "agents", "two.json"));
-    releaseCodexTrust("/work/a", "one", remove);
+    releaseCodexTrust("/work/a", "one", soon(), remove);
     expect(removed).toEqual(["/work/a"]);
     expect(readCodexTrustLedger()).toEqual({});
   });
 
   test("resuming in a new dir releases the old dir's entry", () => {
     config("");
-    pretrustCodexDir("/work/old", ok);
+    pretrustCodexDir("/work/old", soon(), ok);
     const agent = codexAgent("mover", { dir: "/work/new", codexTrustedDir: "/work/old", codexDaemon: false });
     writeAgent(agent);
     expect(codexResumeDaemon(agent, {})).toBe(false);
@@ -278,18 +388,37 @@ describe("codex trust ledger", () => {
     expect(readCodexTrustLedger()).toEqual({});
   });
 
-  test("preloads the thread only with skipPermissions, and reports a failed load", () => {
-    const loaded: string[] = [];
-    const load = (ok: boolean) => (id: string) => (loaded.push(id), ok);
-    expect(codexPreload(undefined, load(true))).toBe(true);
-    expect(codexPreload("thread-1", load(true))).toBe(true);
-    expect(codexPreload("thread-2", load(false))).toBe(false);
-    writeFileSync(join(home, "config.json"), JSON.stringify({ skipPermissions: false }));
-    expect(codexPreload("thread-3", load(false))).toBe(true);
-    expect(loaded).toEqual(["thread-1", "thread-2"]);
+  test("preloads the thread with the current skipPermissions, and reports a failed load", () => {
+    const loaded: [string, boolean][] = [];
+    const load = (ok: boolean) => (id: string, bypass: boolean) => (loaded.push([id, bypass]), ok);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(codexPreload("thread-1", soon(), load(true))).toBe(true);
+      expect(codexPreload("thread-2", soon(), load(false))).toBe(false);
+      writeFileSync(join(home, "config.json"), JSON.stringify({ skipPermissions: false }));
+      expect(codexPreload("thread-3", soon(), load(true))).toBe(true);
+      expect(loaded).toEqual([["thread-1", true], ["thread-2", true], ["thread-3", false]]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
-  test("stopping an agent stops its running codex subagents too", () => {
+  test("a daemon-mode resume without a thread id launches in-process and loads nothing", () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const agent = codexAgent("nothread", { codexDaemon: true });
+      const loaded: string[] = [];
+      expect(codexResumeDaemon(agent, {}, soon(), (id) => (loaded.push(id), true))).toBe(false);
+      expect(agent.codexDaemon).toBe(true);
+      expect(agent.codexDaemonAttached).toBe(false);
+      expect(loaded).toEqual([]);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("no codex thread id");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("stopping an agent hands the daemon its thread plus the ledger as fallback", () => {
     mkdirSync(join(home, "app-server-control"), { recursive: true });
     writeFileSync(codexDaemonSocket(), "");
     const agent = codexAgent("boss", { codexDaemon: true, sessionId: "root" });
@@ -298,7 +427,33 @@ describe("codex trust ledger", () => {
     recordSubagentStop("boss", { id: "sub-2" });
     recordSubagentStart("boss", { id: "sub-3" });
     const stopped: string[][] = [];
-    stopCodexDaemonWork(agent, (ids) => (stopped.push(ids), true));
+    expect(stopCodexDaemonWork(agent, soon(), (ids) => (stopped.push(ids), true))).toBe(true);
     expect(stopped).toEqual([["root", "sub-1", "sub-3"]]);
+  });
+
+  test("a wedged daemon costs one deadline, then is skipped", () => {
+    // In-process, so it can't answer while the child blocks: a wedge.
+    server = Bun.serve({
+      unix: (mkdirSync(join(home, "app-server-control"), { recursive: true }), codexDaemonSocket()),
+      fetch(req, srv) {
+        return srv.upgrade(req, { data: undefined }) ? undefined : new Response("no", { status: 400 });
+      },
+      websocket: { message() {} },
+    });
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      config("");
+      const agent = codexAgent("wedged", { codexDaemon: true, sessionId: "root" });
+      const deadline = codexDeadline(1500);
+      const started = Date.now();
+      expect(stopCodexDaemonWork(agent, deadline)).toBe(false);
+      expect(deadline.missed).toBe(true);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("didn't respond in time");
+      expect(pretrustCodexDir("/work/a", deadline)).toBe(false);
+      expect(forgetCodexTrust("/work/a", deadline)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2500);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

@@ -4,7 +4,7 @@ import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
 import { hasSession, killSession } from "../tmux";
-import { releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
+import { CODEX_STOP_BUDGET_MS, codexDeadline, releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 
 // Stop = kill the tmux session but keep state, so `am resume` still works.
@@ -33,7 +33,8 @@ export function stopAgent(agent: AgentState, opts: { lifecycleLocked?: boolean }
 function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   const current = currentLifecycleAgent(agent);
   if (hasSession(current.tmuxSession)) killSession(current.tmuxSession);
-  stopCodexDaemonWork(current);
+  const deadline = codexDeadline(CODEX_STOP_BUDGET_MS);
+  stopCodexDaemonWork(current, deadline);
 
   if (clean && current.worktreePath && current.repoRoot) {
     const result = Bun.spawnSync([
@@ -60,7 +61,7 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   // including records left open by a kill that fired no Stop hook.
   removeSubagents(current.name);
   removeAgent(current.name);
-  if (current.codexTrustedDir) releaseCodexTrust(current.codexTrustedDir, current.name);
+  if (current.codexTrustedDir) releaseCodexTrust(current.codexTrustedDir, current.name, deadline);
 }
 
 export function destroyAgent(agent: AgentState, opts: { clean: boolean; lifecycleLocked?: boolean }): void {

@@ -24,12 +24,43 @@ export function codexDaemonArgs(dir: string): string[] {
   return ["--remote", CODEX_DAEMON_ENDPOINT, "-C", dir];
 }
 
-function codexDaemonRunning(): boolean {
+// One overall budget per user-facing command, shared by every daemon call in
+// it, so a wedged daemon costs one deadline rather than a stack of timeouts.
+// Once a call misses it, the rest of the command skips the daemon.
+export interface CodexDeadline {
+  at: number;
+  missed: boolean;
+  parent?: CodexDeadline;
+}
+
+export const CODEX_LAUNCH_BUDGET_MS = 10_000;
+export const CODEX_STOP_BUDGET_MS = 6_000;
+
+export function codexDeadline(ms: number, parent?: CodexDeadline): CodexDeadline {
+  const at = Date.now() + ms;
+  return { at: parent ? Math.min(at, parent.at) : at, missed: parent?.missed ?? false, parent };
+}
+
+export function deadlineRemaining(deadline: CodexDeadline): number {
+  return deadline.missed ? 0 : Math.max(0, deadline.at - Date.now());
+}
+
+export function missDeadline(deadline: CodexDeadline): void {
+  for (let d: CodexDeadline | undefined = deadline; d; d = d.parent) d.missed = true;
+}
+
+// Too little time left to start a child and get an answer back.
+const MIN_CALL_MS = 500;
+
+function codexDaemonRunning(deadline: CodexDeadline): boolean {
+  const timeout = deadlineRemaining(deadline);
+  if (timeout < MIN_CALL_MS) return false;
   const result = Bun.spawnSync(["codex", "app-server", "daemon", "version"], {
     stdout: "pipe",
     stderr: "ignore",
-    timeout: 5000,
+    timeout,
   });
+  if (result.exitCode === null) missDeadline(deadline);
   if (result.exitCode !== 0) return false;
   try {
     return JSON.parse(result.stdout.toString()).status === "running";
@@ -49,31 +80,50 @@ export function codexDaemonEnv(env: Record<string, string | undefined> = process
   return scrubbed;
 }
 
-export function ensureCodexDaemon(): boolean {
-  if (codexDaemonRunning()) return true;
+export function ensureCodexDaemon(deadline: CodexDeadline): boolean {
+  if (codexDaemonRunning(deadline)) return true;
+  const timeout = deadlineRemaining(deadline);
+  if (timeout < MIN_CALL_MS) return false;
   const started = Bun.spawnSync(["codex", "app-server", "daemon", "start"], {
     env: codexDaemonEnv(),
     stdout: "ignore",
     stderr: "ignore",
-    timeout: 20000,
+    timeout,
   });
-  return started.exitCode === 0 && codexDaemonRunning();
+  if (started.exitCode === null) missDeadline(deadline);
+  return started.exitCode === 0 && codexDaemonRunning(deadline);
+}
+
+const IN_PROCESS = "launching codex in-process (no remote control)";
+
+function warnUnavailable(deadline: CodexDeadline, what: string): void {
+  const why = deadline.missed ? "the codex app-server daemon didn't respond in time" : what;
+  console.error(`warning: ${why} — ${IN_PROCESS}`);
 }
 
 // Falls back to an in-process launch when the daemon can't be used.
-export function codexDaemonLaunch(requested: boolean, dir: string): boolean {
+export function codexDaemonLaunch(requested: boolean, dir: string, deadline: CodexDeadline): boolean {
   if (!requested) return false;
-  if (!ensureCodexDaemon()) {
-    console.error("warning: codex app-server daemon unavailable — launching codex in-process (no remote control)");
+  if (!ensureCodexDaemon(deadline)) {
+    warnUnavailable(deadline, "codex app-server daemon unavailable");
     return false;
   }
   // A daemon-attached TUI prompts to trust its exact dir (not its repo root),
   // and nobody is there to answer for a fresh worktree.
-  if (loadConfig().skipPermissions && !pretrustCodexDir(dir)) {
-    console.error(`warning: could not mark ${dir} trusted for codex — launching codex in-process (no remote control)`);
+  if (loadConfig().skipPermissions && !pretrustCodexDir(dir, deadline)) {
+    warnUnavailable(deadline, `could not mark ${dir} trusted for codex`);
     return false;
   }
   return true;
+}
+
+// Resuming without a thread id (--continue, the picker, a pre-capture state
+// file) leaves nothing to load with the current permissions first.
+export function codexDaemonWanted(requested: boolean, resumesWithoutThread: boolean): boolean {
+  if (!requested) return false;
+  if (!resumesWithoutThread) return true;
+  console.error(`note: no codex thread id to load into the daemon first — ${IN_PROCESS}`);
+  return false;
 }
 
 type Call = (method: string, params: unknown) => Promise<any>;
@@ -172,14 +222,62 @@ export async function stopCodexThread(
   return withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, (call) => stopThread(call, threadId));
 }
 
-// One connection for all of them, in order.
-export async function stopCodexThreads(
-  threadIds: string[],
+async function loadedThreadIds(call: Call): Promise<string[]> {
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await call("thread/loaded/list", cursor ? { cursor } : {});
+    ids.push(...(page?.data ?? []));
+    cursor = page?.nextCursor ?? null;
+  } while (cursor);
+  return ids;
+}
+
+type ThreadMeta = { id: string; sessionId?: string; parentThreadId?: string | null };
+
+// The loaded threads in rootId's tree: a parent chain back to it, or its
+// session id (shared by a session's subagents).
+export async function codexSubagentThreads(call: Call, rootId: string): Promise<string[]> {
+  const ids = (await loadedThreadIds(call)).filter((id) => id !== rootId);
+  const read = async (threadId: string): Promise<ThreadMeta | undefined> => {
+    try {
+      return (await call("thread/read", { threadId }))?.thread;
+    } catch {
+      return undefined;
+    }
+  };
+  const [root, ...metas] = await Promise.all([read(rootId), ...ids.map(read)]);
+  const threads = metas.filter((t): t is ThreadMeta => !!t?.parentThreadId);
+  const parentOf = new Map(threads.map((t) => [t.id, t.parentThreadId!]));
+  const descends = (id: string): boolean => {
+    const seen = new Set<string>();
+    for (let p = parentOf.get(id); p && !seen.has(p); p = parentOf.get(p)) {
+      if (p === rootId) return true;
+      seen.add(p);
+    }
+    return false;
+  };
+  return threads.filter((t) => descends(t.id) || (!!root?.sessionId && t.sessionId === root.sessionId)).map((t) => t.id);
+}
+
+// The root first, then its subagents over the same connection. Codex marks a
+// subagent done at each turn end, so the ledger misses one still working
+// after its parent's turn; it is only the fallback for a codex that can't
+// list loaded threads.
+export async function stopCodexThreadTree(
+  rootId: string,
+  fallbackSubagents: string[] = [],
   opts: { socket?: string; timeoutMs?: number } = {},
 ): Promise<StopResult[]> {
   return withCodexAppServer(opts.socket ?? codexDaemonSocket(), opts.timeoutMs ?? 4000, async (call) => {
-    const results: StopResult[] = [];
-    for (const id of threadIds) results.push(await stopThread(call, id));
+    const results = [await stopThread(call, rootId)];
+    let subagents: string[];
+    try {
+      subagents = await codexSubagentThreads(call, rootId);
+    } catch {
+      subagents = fallbackSubagents;
+    }
+    for (const id of new Set(subagents)) if (id !== rootId) results.push(await stopThread(call, id));
     return results;
   });
 }
@@ -230,25 +328,50 @@ export async function startCodexThread(
   });
 }
 
-// A thread reloaded after a daemon restart takes config's permissions, not
-// the ones it started with; a TUI resume of a loaded thread keeps these.
+// The thread takes this launch's permissions: bypass, or codex's defaults for
+// its dir. Resume overrides only reach a thread the daemon hasn't loaded; a
+// loaded one keeps its old settings (and a TUI resume keeps those), so they
+// are replaced.
 export async function resumeCodexThread(
   threadId: string,
   opts: { bypass: boolean },
   conn: { socket?: string; timeoutMs?: number } = {},
 ): Promise<void> {
-  await withCodexAppServer(conn.socket ?? codexDaemonSocket(), conn.timeoutMs ?? 4000, (call) =>
-    call("thread/resume", {
+  await withCodexAppServer(conn.socket ?? codexDaemonSocket(), conn.timeoutMs ?? 4000, async (call) => {
+    const loaded = (await loadedThreadIds(call)).includes(threadId);
+    const resumed = await call("thread/resume", {
       threadId,
+      excludeTurns: true,
       ...(opts.bypass ? { approvalPolicy: "never", sandbox: "danger-full-access" } : {}),
-    }),
-  );
+    });
+    if (!loaded) return;
+    if (opts.bypass) {
+      await call("thread/settings/update", { threadId, approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+      return;
+    }
+    // Codex's defaults for the dir, read off a throwaway thread. It runs no
+    // turn, so no hooks fire, and unloads once idle.
+    const probe = await call("thread/start", { cwd: resumed?.cwd, ephemeral: true });
+    if (probe?.thread?.id) await call("thread/unsubscribe", { threadId: probe.thread.id }).catch(() => undefined);
+    if (!probe?.approvalPolicy) throw new Error("app-server returned no default permissions");
+    const profile = probe.activePermissionProfile?.id;
+    await call("thread/settings/update", {
+      threadId,
+      approvalPolicy: probe.approvalPolicy,
+      ...(profile ? { permissions: profile } : { sandboxPolicy: probe.sandbox }),
+    });
+  });
 }
 
-// Resume can't pass the bypass flag, so the thread is loaded with it first.
-export function codexPreload(threadId: string | undefined, load = (id: string) => runDetached("load-thread", [id])): boolean {
-  if (!threadId || !loadConfig().skipPermissions || load(threadId)) return true;
-  console.error("warning: could not load the codex thread into the daemon — launching codex in-process (no remote control)");
+// Resume can't pass permission flags, so the thread is loaded with the
+// current skipPermissions first.
+export function codexPreload(
+  threadId: string,
+  deadline: CodexDeadline,
+  load = (id: string, bypass: boolean) => runDetached("load-thread", [id, bypass ? "bypass" : "default"], deadline),
+): boolean {
+  if (load(threadId, loadConfig().skipPermissions)) return true;
+  warnUnavailable(deadline, "could not load the codex thread into the daemon");
   return false;
 }
 
@@ -292,7 +415,11 @@ function isAmTrustEntry(entry: Record<string, unknown>): boolean {
 
 // An explicit trust level other than trusted is the user's choice: never
 // overridden.
-export function pretrustCodexDir(dir: string, write = (d: string) => runDetached("trust-dir", [d])): boolean {
+export function pretrustCodexDir(
+  dir: string,
+  deadline: CodexDeadline,
+  write = (d: string) => runDetached("trust-dir", [d], deadline),
+): boolean {
   const entry = codexProjectEntry(dir);
   if (entry?.trust_level === "trusted") return true;
   if (entry && "trust_level" in entry) return false;
@@ -310,7 +437,8 @@ export function amTrustedCodexDir(dir: string): string | undefined {
 // retry. An entry the user has since edited is theirs: forgotten, kept.
 export function forgetCodexTrust(
   dir: string,
-  remove = (d: string) => existsSync(codexDaemonSocket()) && runDetached("untrust-dir", [d]),
+  deadline = codexDeadline(CODEX_STOP_BUDGET_MS),
+  remove = (d: string) => existsSync(codexDaemonSocket()) && runDetached("untrust-dir", [d], deadline),
 ): boolean {
   if (!readCodexTrustLedger()[dir]) return true;
   const entry = codexProjectEntry(dir);
@@ -321,43 +449,61 @@ export function forgetCodexTrust(
 }
 
 // On rm: release the agent's trusted dir unless another agent still uses it.
-export function releaseCodexTrust(dir: string, owner: string, remove?: (dir: string) => boolean): void {
+export function releaseCodexTrust(dir: string, owner: string, deadline?: CodexDeadline, remove?: (dir: string) => boolean): void {
   if (!readCodexTrustLedger()[dir]) return;
   if (listAgents().some((a) => a.name !== owner && (a.dir === dir || a.codexTrustedDir === dir))) return;
-  forgetCodexTrust(dir, remove);
+  forgetCodexTrust(dir, deadline, remove);
 }
 
-// Child process so sync callers stay sync and a wedged daemon stays bounded.
-function runDetached(command: "stop-thread" | "load-thread" | "trust-dir" | "untrust-dir", args: string[]): boolean {
-  const result = Bun.spawnSync([process.execPath, import.meta.path, command, codexDaemonSocket(), ...args], {
-    stdout: "ignore",
-    stderr: "ignore",
-    timeout: 6000,
-  });
+const CHILD_STARTUP_MS = 300;
+const EXIT_TIMED_OUT = 3;
+
+// Child process so sync callers stay sync; it gets what's left of the
+// deadline, and a wedged daemon marks the deadline missed.
+function runDetached(
+  command: "stop-thread" | "load-thread" | "trust-dir" | "untrust-dir",
+  args: string[],
+  deadline: CodexDeadline,
+): boolean {
+  const timeout = deadlineRemaining(deadline);
+  if (timeout < MIN_CALL_MS) return false;
+  const result = Bun.spawnSync(
+    [process.execPath, import.meta.path, command, codexDaemonSocket(), String(timeout - CHILD_STARTUP_MS), ...args],
+    { stdout: "ignore", stderr: "ignore", timeout },
+  );
+  if (result.exitCode === null || result.exitCode === EXIT_TIMED_OUT) missDeadline(deadline);
   return result.exitCode === 0;
 }
 
 // Killing the tmux pane only kills the TUI; the daemon keeps running the turn,
-// and each codex subagent's turn on its own thread.
-export function stopCodexDaemonWork(agent: AgentState, stop = (ids: string[]) => runDetached("stop-thread", ids)): void {
-  if (agentProvider(agent) !== "codex" || !agent.codexDaemon) return;
+// and each codex subagent's turn on its own thread. False when the daemon
+// couldn't be told; the caller kills the pane regardless.
+export function stopCodexDaemonWork(
+  agent: AgentState,
+  deadline = codexDeadline(CODEX_STOP_BUDGET_MS),
+  stop = (ids: string[]) => runDetached("stop-thread", ids, deadline),
+): boolean {
+  if (agentProvider(agent) !== "codex" || !agent.codexDaemon) return true;
   const threadId = agentSessionId(agent);
-  if (!threadId || !existsSync(codexDaemonSocket())) return;
-  const subagents = activeSubagents(agent.name).map((r) => r.id).filter((id) => id !== threadId);
-  stop([threadId, ...new Set(subagents)]);
+  if (!threadId || !existsSync(codexDaemonSocket())) return true;
+  const ledger = activeSubagents(agent.name).map((r) => r.id).filter((id) => id !== threadId);
+  if (stop([threadId, ...new Set(ledger)])) return true;
+  if (deadline.missed) console.error(`warning: the codex app-server daemon didn't respond in time — ${agent.name}'s turn may still be running in it`);
+  return false;
 }
 
 if (import.meta.main) {
-  const [command, socket, ...args] = process.argv.slice(2);
+  const [command, socket, timeout, ...args] = process.argv.slice(2);
   const arg = args[0];
+  const timeoutMs = Math.max(Number(timeout) || 0, 100);
   try {
-    if (command === "stop-thread" && arg) await stopCodexThreads(args, { socket, timeoutMs: 5000 });
-    else if (command === "load-thread" && arg) await resumeCodexThread(arg, { bypass: true }, { socket });
-    else if (command === "trust-dir" && arg) await trustCodexDir(arg, { socket });
-    else if (command === "untrust-dir" && arg) await untrustCodexDir(arg, { socket });
+    if (command === "stop-thread" && arg) await stopCodexThreadTree(arg, args.slice(1), { socket, timeoutMs });
+    else if (command === "load-thread" && arg) await resumeCodexThread(arg, { bypass: args[1] === "bypass" }, { socket, timeoutMs });
+    else if (command === "trust-dir" && arg) await trustCodexDir(arg, { socket, timeoutMs });
+    else if (command === "untrust-dir" && arg) await untrustCodexDir(arg, { socket, timeoutMs });
     else process.exit(2);
     process.exit(0);
-  } catch {
-    process.exit(1);
+  } catch (error) {
+    process.exit(/timed out/.test((error as Error).message) ? EXIT_TIMED_OUT : 1);
   }
 }

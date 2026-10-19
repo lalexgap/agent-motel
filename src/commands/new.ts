@@ -15,7 +15,19 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { amTrustedCodexDir, codexDaemonLaunch, codexPreload, startCodexThread, type CodexThreadOpts } from "../codexDaemon";
+import {
+  amTrustedCodexDir,
+  CODEX_LAUNCH_BUDGET_MS,
+  codexDaemonLaunch,
+  codexDeadline,
+  codexDaemonWanted,
+  codexPreload,
+  deadlineRemaining,
+  missDeadline,
+  startCodexThread,
+  type CodexDeadline,
+  type CodexThreadOpts,
+} from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
@@ -156,11 +168,12 @@ export interface NewOptions {
 }
 
 // Without a thread up front, hooks fall back to matching the launch by dir.
-async function createCodexThread(opts: CodexThreadOpts, quiet?: boolean): Promise<string | undefined> {
+async function createCodexThread(opts: CodexThreadOpts, deadline: CodexDeadline, quiet?: boolean): Promise<string | undefined> {
   try {
-    return await startCodexThread(opts);
+    return await startCodexThread(opts, { timeoutMs: deadlineRemaining(deadline) });
   } catch (error) {
-    if (!quiet) console.error(`warning: could not create the codex thread up front (${(error as Error).message}) — starting it from the TUI`);
+    if (/timed out/.test((error as Error).message)) missDeadline(deadline);
+    else if (!quiet) console.error(`warning: could not create the codex thread up front (${(error as Error).message}) — starting it from the TUI`);
     return undefined;
   }
 }
@@ -263,11 +276,18 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   // Persisted even when this launch falls back to in-process.
   const codexDaemon = provider === "codex" ? (opts.remote ?? loadConfig().remoteControl) : undefined;
-  const codexDaemonLaunched = provider === "codex" ? !!codexDaemon && codexDaemonLaunch(true, dir) : undefined;
-  const codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume) : codexDaemonLaunched;
+  const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
+  const codexDaemonRequested = codexDaemonWanted(!!codexDaemon, !!opts.continue || opts.resume === true);
+  const codexDaemonLaunched = provider === "codex" ? codexDaemonLaunch(codexDaemonRequested, dir, deadline) : undefined;
+  let codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume, deadline) : codexDaemonLaunched;
   const codexThreadId = codexDaemonAttached && !opts.resume && !opts.continue
-    ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, opts.quiet)
+    ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, deadline, opts.quiet)
     : undefined;
+  // A daemon that stopped answering would hang the attached TUI too.
+  if (codexDaemonAttached && deadline.missed) {
+    console.error("warning: the codex app-server daemon didn't respond in time — launching codex in-process (no remote control)");
+    codexDaemonAttached = false;
+  }
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     resume: codexThreadId ?? opts.resume,
