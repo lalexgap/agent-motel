@@ -16,6 +16,7 @@ import {
 } from "../src/comms";
 import { configFile } from "../src/paths";
 import { callingAgentName, writeAgent } from "../src/state";
+import { recordSubagentStart } from "../src/subagents";
 
 let home: string;
 
@@ -29,6 +30,7 @@ afterEach(() => {
   delete process.env.AGENTMGR_HOME;
   delete process.env.AGENTMGR_AGENT;
   delete process.env.CODEX_THREAD_ID;
+  delete process.env.CODEX_SESSION_ID;
 });
 
 describe("resolveSender", () => {
@@ -89,6 +91,24 @@ describe("resolveSender for daemon-attached codex agents", () => {
     process.env.CODEX_THREAD_ID = "thread-other";
     expect(resolveSender()).toBeUndefined();
     expect(callingAgentName()).toBeUndefined();
+  });
+
+  test("a subagent's thread resolves to the agent that recorded it", () => {
+    writeCodexAgent("worker", "thread-123");
+    writeCodexAgent("other", "thread-456");
+    recordSubagentStart("worker", { id: "thread-sub", type: "explorer" });
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-sub";
+    process.env.CODEX_SESSION_ID = "thread-456";
+    expect(callingAgentName()).toBe("worker");
+  });
+
+  test("an unrecorded subagent falls back to its root session", () => {
+    writeCodexAgent("worker", "thread-123");
+    delete process.env.AGENTMGR_AGENT;
+    process.env.CODEX_THREAD_ID = "thread-sub";
+    process.env.CODEX_SESSION_ID = "thread-123";
+    expect(callingAgentName()).toBe("worker");
   });
 
   test("AGENTMGR_AGENT wins over CODEX_THREAD_ID", () => {

@@ -39,7 +39,9 @@ function codexDaemonRunning(): boolean {
 export function codexDaemonEnv(env: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const scrubbed = { ...env };
   for (const key of nestedSessionVars(env)) delete scrubbed[key];
-  for (const key of Object.keys(scrubbed)) if (key.startsWith("AGENTMGR_") || key === "CODEX_THREAD_ID") delete scrubbed[key];
+  for (const key of Object.keys(scrubbed)) {
+    if (key.startsWith("AGENTMGR_") || key === "CODEX_THREAD_ID" || key === "CODEX_SESSION_ID") delete scrubbed[key];
+  }
   return scrubbed;
 }
 

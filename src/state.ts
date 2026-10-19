@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { agentsDir, baseDir, ensureDirs, lastAttachedFile } from "./paths";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withFileLock } from "./filelock";
+import { readSubagents } from "./subagents";
 
 export type AgentStatus =
   | "starting"
@@ -190,13 +191,21 @@ export function listAgents(): AgentState[] {
 
 // The agent this `am` invocation runs inside. Daemon-attached codex agents run
 // tools in the app-server daemon without AGENTMGR_AGENT; codex sets
-// CODEX_THREAD_ID there, which matches the agent's recorded session id.
+// CODEX_THREAD_ID there — the agent's session id, or inside one of its
+// subagents the subagent's own thread (recorded by SubagentStart), with
+// CODEX_SESSION_ID naming the root thread.
 export function callingAgentName(env: Record<string, string | undefined> = process.env): string | undefined {
   const inherited = env.AGENTMGR_AGENT?.trim();
   if (inherited) return inherited;
   const threadId = env.CODEX_THREAD_ID?.trim();
   if (!threadId) return undefined;
-  return listAgents().find((a) => agentProvider(a) === "codex" && agentSessionId(a) === threadId)?.name;
+  const codex = listAgents().filter((a) => agentProvider(a) === "codex");
+  const sessionId = env.CODEX_SESSION_ID?.trim();
+  return (
+    codex.find((a) => agentSessionId(a) === threadId) ??
+    codex.find((a) => readSubagents(a.name).some((r) => r.id === threadId)) ??
+    (sessionId ? codex.find((a) => agentSessionId(a) === sessionId) : undefined)
+  )?.name;
 }
 
 export function agentNamesAndAliases(state: AgentState): string[] {
