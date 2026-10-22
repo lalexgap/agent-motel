@@ -61,6 +61,20 @@ export interface AgentState {
   // Set when a turn starts, used to measure the work stint for idle
   // notifications.
   workingSince?: string;
+  // The parent agent's latest prompt hook, and a hash of its text: delivery
+  // receipts use them to tell which turn received a message.
+  promptAt?: string;
+  promptKey?: string;
+  // When am last pressed Esc in the pane. Codex stops draining its input
+  // queue after an interrupt until a prompt is submitted.
+  escapedAt?: string;
+  // Keys of the prompts that Esc may have aborted, whose hooks can still land
+  // after it; what am typed since it (first when, and the keys); and the
+  // prompt that showed the agent took input again. See releaseEscapeHold.
+  escapedKeys?: string[];
+  typedSinceEscAt?: string;
+  typedSinceEscKeys?: string[];
+  escReleasedAt?: string;
   // Standing report relationship: this agent keeps `reportTo` posted. Drives
   // the primer briefing and the Stop-hook backstop heads-up.
   reportTo?: string;
@@ -149,6 +163,18 @@ export function writeAgent(state: AgentState): void {
     Object.assign(state, saved);
     readSnapshots.set(state, structuredClone(state));
     statusUpdates.delete(state);
+  });
+}
+
+// Read, check and write under the state lock, so a hook's write lands wholly
+// before or after. `fn` changes the current state, or returns false to leave it.
+export function updateAgentIf(name: string, fn: (state: AgentState) => boolean): boolean {
+  return withFileLock(stateLock(name), () => {
+    const current = readAgent(name);
+    if (!current || !fn(current)) return false;
+    current.updatedAt = new Date().toISOString();
+    writeJsonAtomic(stateFile(name), current);
+    return true;
   });
 }
 

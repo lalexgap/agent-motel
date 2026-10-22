@@ -96,10 +96,10 @@ function persistEntry(file: string, name: string): void {
 // Atomic write via tmp+rename, so a reader never sees a half-written message.
 // Returns the entry's id, so a caller that queued speculatively can take it
 // back with queuePopId (and only its own entry).
-function writeEntry(name: string, entry: QueueEntry, atMs?: number): string {
+function writeEntry(name: string, entry: QueueEntry, atMs?: number, fileId?: string): string {
   const dir = agentQueueDir(name);
   mkdirSync(dir, { recursive: true });
-  const id = atMs === undefined ? newMsgId() : msgIdAt(atMs);
+  const id = fileId?.replace(/\.json$/, "") ?? (atMs === undefined ? newMsgId() : msgIdAt(atMs));
   writeJsonAtomic(join(dir, `${id}.json`), entry, { pretty: false });
   persistEntry(join(dir, `${id}.json`), name);
   return `${id}.json`;
@@ -133,11 +133,22 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
-export function queueAppendLocked(name: string, message: string, msgId?: string): string {
+// `entryId` names the entry file (`<id>.json`) for a caller that tracks the
+// message by that id; it must be a fresh msgId so FIFO order holds.
+export function queueAppendLocked(name: string, message: string, msgId?: string, entryId?: string): string {
   if (msgId !== undefined) messageFile(name, msgId);
+  if (entryId !== undefined) messageFile(name, entryId.replace(/\.json$/, ""));
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
-  return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) });
+  return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) }, undefined, entryId);
+}
+
+// Put a handed-over entry back under its old id, so it sorts ahead of
+// everything queued after it. Callers hold the delivery lock.
+export function queueRestoreLocked(name: string, entryId: string, message: string): void {
+  messageFile(name, entryId.replace(/\.json$/, ""));
+  ensureDirs();
+  writeEntry(name, { message, queuedAt: new Date().toISOString() }, undefined, entryId);
 }
 
 export function queueAppend(name: string, message: string, msgId?: string): string {
@@ -281,6 +292,16 @@ export function queuePop(name: string): string | null {
 export function queueClear(name: string): void {
   rmSync(legacyQueueFile(name), { force: true });
   rmSync(agentQueueDir(name), { recursive: true, force: true });
+}
+
+// Drop the pending messages but keep their delivery receipts.
+export function queueClearEntries(name: string): void {
+  rmSync(legacyQueueFile(name), { force: true });
+  const dir = agentQueueDir(name);
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (f !== ".messages") rmSync(join(dir, f), { recursive: true, force: true });
+  }
 }
 
 export function queueStorageExists(name: string): boolean {

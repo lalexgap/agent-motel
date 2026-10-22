@@ -14,6 +14,8 @@ import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
+import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
+import { alreadyReason, conflictReason, isMessageId, readMessage, type Conflict, type ConflictReason } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import { loadConfig, localHostIdentity } from "./config";
 import {
@@ -119,6 +121,8 @@ export function agentDetail(name: string) {
     pane: hasSession(agent.tmuxSession)
       ? (capturePane(agent.tmuxSession)?.slice(-PANE_LINES).join("\n") ?? null)
       : null,
+    // Tells a serve on another host that this am returns ids from send --json.
+    messageReceipts: true,
   };
 }
 
@@ -144,20 +148,72 @@ function parseTarget(raw: string): { host: string | null; name: string } | Respo
   return { host: resolved, name };
 }
 
-function remoteFailure(error: unknown): Response {
-  if (error instanceof RemoteError) return json({ error: error.message }, error.status);
+// `fallback`: the reason a message or interrupt route gives a 409 whose
+// cause the remote am did not say.
+function remoteFailure(error: unknown, fallback?: "unknown"): Response {
+  if (error instanceof RemoteError) {
+    const reason = error.status === 409 ? (error.reason ?? fallback) : undefined;
+    return json(reason ? { error: error.message, reason } : { error: error.message }, error.status);
+  }
   return json({ error: (error as Error).message }, 502);
+}
+
+function conflict(error: string, reason: ConflictReason, state?: string): Response {
+  return json(state === undefined ? { error, reason } : { error, state, reason }, 409);
+}
+
+// A refusal thrown by a send or an interrupt.
+function thrownConflict(error: unknown): Response {
+  const message = (error as Error).message;
+  return conflict(message, conflictReason(message) ?? "unknown");
+}
+
+// A remote am from before reasons returns a refusal without one.
+function resultReason(result: Conflict): ConflictReason {
+  return result.reason ?? conflictReason(result.error) ?? (result.state === "queued" ? "unknown" : alreadyReason(result.state));
 }
 
 interface TranscriptShape {
   entries: { index: number }[];
 }
 
+function messageNotFound(name: string, id: string): Response {
+  return json({ error: `no message "${id}" for agent "${name}"` }, 404);
+}
+
+function cancelResponse(result: CancelResult): Response {
+  return result.ok ? json(result) : conflict(result.error, resultReason(result), result.state);
+}
+
+function interruptResponse(result: InterruptResult): Response {
+  return result.ok ? json({ ok: true }) : conflict(result.error, resultReason(result), result.state);
+}
+
+// {text?, messageId?}: an error response, or what to interrupt with.
+async function interruptBody(req: Request): Promise<Response | { text: string; messageId?: string }> {
+  const body = (await req.json().catch(() => null)) as { text?: unknown; messageId?: unknown } | null;
+  if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  if (body?.messageId != null && typeof body.messageId !== "string") return json({ error: "messageId must be a string" }, 400);
+  if (body?.messageId != null && body.text != null) return json({ error: "messageId and text are mutually exclusive" }, 400);
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  return typeof body?.messageId === "string" ? { text, messageId: body.messageId } : { text };
+}
+
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
   const route = rest[0];
-  if (rest.length > 1) return json({ error: "not found" }, 404);
+  const fallback = route === "messages" || route === "interrupt" ? "unknown" : undefined;
   try {
+    // A receipt: __message/__cancel ship after --exact and read the name
+    // exactly, and an am without them fails "unknown command", so they need
+    // no __detail precheck (which would double every poll's ssh round trip).
+    if (route === "messages" && rest.length === 2 && (method === "GET" || method === "DELETE")) {
+      const id = rest[1]!;
+      if (!isMessageId(id)) return messageNotFound(name, id);
+      if (method === "GET") return json(await runRemoteJson(host, ["__message", name, id]));
+      return cancelResponse(await runRemoteJson<CancelResult>(host, ["__cancel", name, id], { timeoutMs: 30_000 }));
+    }
+    if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "rename" && method === "POST") {
       return json({ error: "rename is not supported for remote agents" }, 501);
@@ -177,9 +233,18 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const text = typeof body?.text === "string" ? body.text.trim() : "";
       if (!text) return json({ error: "text required" }, 400);
       const mode = body?.mode ?? "queue";
-      if (mode === "interrupt") await run(["interrupt", name, "-"], { stdin: text });
-      else await run(["send", name, "-", ...(mode === "now" ? ["--now"] : [])], { stdin: text });
-      return json({ ok: true, mode });
+      // The __detail precheck doubles as the receipts capability check: an
+      // older am would take --json as noise, send, and print no id.
+      const detail = await runRemoteJson<{ messageReceipts?: boolean }>(host, ["__detail", name]);
+      if (detail?.messageReceipts !== true) {
+        return conflict(`remote am too old on ${host} (no message receipts)`, "remote_too_old");
+      }
+      const args = mode === "interrupt"
+        ? ["interrupt", name, "-", "--json"]
+        : ["send", name, "-", "--json", ...(mode === "now" ? ["--now"] : [])];
+      const sent = await runRemoteJson<{ id?: unknown }>(host, args, { stdin: text });
+      if (typeof sent?.id !== "string") return json({ error: `am send on ${host} returned no message id` }, 502);
+      return json({ ok: true, mode, id: sent.id });
     }
 
     if (route === "transcript" && method === "GET") {
@@ -195,9 +260,14 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
 
     if (route === "interrupt" && method === "POST") {
-      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
-      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const body = await interruptBody(req);
+      if (body instanceof Response) return body;
+      const { text, messageId } = body;
+      // Like __cancel: an am without __interrupt fails "unknown command".
+      if (messageId !== undefined) {
+        if (!isMessageId(messageId)) return messageNotFound(name, messageId);
+        return interruptResponse(await runRemoteJson<InterruptResult>(host, ["__interrupt", name, messageId], { timeoutMs: 30_000 }));
+      }
       if (text) await run(["interrupt", name, "-"], { stdin: text });
       else await run(["interrupt", name]);
       return json({ ok: true });
@@ -213,7 +283,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       return json({ ok: true });
     }
   } catch (error) {
-    return remoteFailure(error);
+    return remoteFailure(error, fallback);
   }
   return json({ error: "not found" }, 404);
 }
@@ -267,7 +337,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
-    return json({ ok: true, name: "am" });
+    return json({ ok: true, name: "am", messageReceipts: true });
   }
 
   // GET /api/agents — merged local + remote fleet (cached; never blocks on ssh)
@@ -376,13 +446,29 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       const text = body?.text?.trim();
       if (!text) return json({ error: "text required" }, 400);
       const mode = body?.mode ?? "queue";
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
       try {
-        if (mode === "interrupt") await interruptCommand(name, text);
-        else await sendCommand(name, text, { now: mode === "now" });
-        return json({ ok: true, mode });
+        const { id } = mode === "interrupt"
+          ? await interruptCommand(name, text, { exact: true, track: true })
+          : await sendCommand(name, text, { now: mode === "now", track: true });
+        if (!id) return conflict(`message to "${name}" was not sent`, "not_delivered");
+        return json({ ok: true, mode, id });
       } catch (error) {
-        return json({ error: (error as Error).message }, 409);
+        return thrownConflict(error);
       }
+    }
+
+    // GET /api/agents/:name/messages/:id — delivery receipt
+    // DELETE /api/agents/:name/messages/:id — cancel while still queued
+    if (parts.length === 4 && parts[2] === "messages" && (method === "GET" || method === "DELETE")) {
+      const id = parts[3]!;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      if (method === "GET") {
+        const message = readMessage(name, id);
+        return message ? json(message) : messageNotFound(name, id);
+      }
+      const result = await cancelMessage(name, id);
+      return result ? cancelResponse(result) : messageNotFound(name, id);
     }
 
     // GET /api/agents/:name/transcript?after=n — see transcriptJson
@@ -395,19 +481,24 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       return json(transcriptJson(agent, after));
     }
 
-    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given
+    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given;
+    // {messageId}: Esc only while that message's turn is running
     if (parts.length === 3 && parts[2] === "interrupt" && method === "POST") {
-      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
-      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const body = await interruptBody(req);
+      if (body instanceof Response) return body;
+      const { text, messageId } = body;
       const agent = readAgent(name);
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      if (messageId !== undefined) {
+        const result = await interruptMessage(agent.name, messageId);
+        return result ? interruptResponse(result) : messageNotFound(name, messageId);
+      }
       try {
         if (text) await interruptCommand(agent.name, text, { exact: true });
         else await abortTurn(agent.name);
         return json({ ok: true });
       } catch (error) {
-        return json({ error: (error as Error).message }, 409);
+        return thrownConflict(error);
       }
     }
 

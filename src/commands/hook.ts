@@ -5,12 +5,17 @@ import {
   acquireDeliverLock,
   confirmInboxDelivery,
   deliverNext,
+  dropCodexHandoff,
   finishConfirmedDelivery,
+  inboxDeliveryIn,
+  needsCodexRecovery,
   pendingDeliveryId,
   releaseDeliverLock,
+  releaseEscapeHold,
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
+import { claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -171,6 +176,34 @@ export function buildStopGate(messages: string[]): string | null {
   return JSON.stringify({ decision: "block", reason });
 }
 
+// Receipt bookkeeping must never fail a hook. One drain hands every message
+// over at once, so one mark (one transcript parse) serves them all.
+function receipt(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // the message still goes out; only its receipt lags
+  }
+}
+
+function drainReceipts(name: string) {
+  let shared: DeliveryMark | null = null;
+  return {
+    mark(entryId: string): DeliveryMark | null {
+      if (shared) return shared;
+      try {
+        shared = deliveryMark(name, entryId);
+      } catch {
+        return null;
+      }
+      return shared;
+    },
+    delivered(entryId: string, mark: DeliveryMark | null): void {
+      receipt(() => markDelivered(name, entryId, mark, "absorbed"));
+    },
+  };
+}
+
 // Drain this agent's queued peer messages and surface them as context — so it
 // reads its inbox automatically at the start of every turn AND between tool
 // calls mid-turn, no idle-wait, no "check your messages" nudge. queueDepth
@@ -188,12 +221,15 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
   try {
     const pending: string[] = [];
     let head;
+    const receipts = drainReceipts(name);
     while ((head = queueHead(name)) !== null) {
       if (head.id === pendingDeliveryId(name)) {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
+      const mark = receipts.mark(head.id);
       queuePopId(name, head.id);
+      receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
     const out = buildInboxOutput(pending, hookEventName, notes);
@@ -210,12 +246,15 @@ function stopGate(name: string): string | null {
   try {
     const pending: string[] = [];
     let head;
+    const receipts = drainReceipts(name);
     while ((head = queueHead(name)) !== null) {
       if (head.id === pendingDeliveryId(name)) {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
+      const mark = receipts.mark(head.id);
       queuePopId(name, head.id);
+      receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
     return buildStopGate(pending);
@@ -379,7 +418,16 @@ export async function hookCommand(event: string): Promise<void> {
     ? Math.max(0, (Date.now() - Date.parse(workingSince)) / 1000)
     : 0;
 
+  const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
   updateAgentStatus(agent, effects.status, effects.reason);
+  const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
+  // An inbox delivery reaches the hook inside Claude's cross-session framing;
+  // key the prompt by the text am sent, so it matches the message's record.
+  const inbox = event === "user-prompt-submit" && !fromSubagent && prompt ? inboxDeliveryIn(name, prompt) : null;
+  if (event === "user-prompt-submit" && !fromSubagent) {
+    agent.promptAt = new Date().toISOString();
+    agent.promptKey = typeof payload.prompt === "string" ? promptKey(inbox?.content ?? prompt) : undefined;
+  }
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
   // conversation, which `am transcript`, `am search` and the activity reader
@@ -400,6 +448,15 @@ export async function hookCommand(event: string): Promise<void> {
   }
   if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
+  if (event === "user-prompt-submit" && !fromSubagent) releaseEscapeHold(name);
+
+  // A turn ended: delivery receipts for messages it took are done. A blocked
+  // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
+  // session start. A session end finishes no turn of its own.
+  if (!fromSubagent && event !== "session-start") {
+    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent));
+    else if (effects.status === "exited") receipt(() => markSessionEnded(name, agent, lastIdleAt));
+  }
 
   // Surface any queued peer messages into context so the agent reads them
   // automatically — at turn start (UserPromptSubmit) and between tool calls
@@ -409,10 +466,18 @@ export async function hookCommand(event: string): Promise<void> {
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
     if (event === "user-prompt-submit") {
-      const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
-      const tag = prompt ? confirmInboxDelivery(name, prompt) : null;
+      const tag = inbox ? confirmInboxDelivery(name, prompt, agent.promptAt) : null;
       const forged = forgedOperatorNote(prompt, tag);
       surfaceInbox(name, "UserPromptSubmit", [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])]);
+      // A confirmed inbox delivery's receipt claims this prompt itself (the
+      // deliverer passes promptAt along); claiming here too could start a
+      // different record with the same text.
+      const { promptAt, promptKey: key } = agent;
+      if (promptAt && key && !inbox) {
+        receipt(() => {
+          dropCodexHandoff(name, key, claimPrompt(name, promptAt, key));
+        });
+      }
     }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }
@@ -449,7 +514,7 @@ export async function hookCommand(event: string): Promise<void> {
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);
-    if (depth > 0) {
+    if (depth > 0 || needsCodexRecovery(name)) {
       // Prefer the daemon as scheduler; fall back to a detached one-shot
       // delivery process when it isn't running.
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);

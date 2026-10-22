@@ -281,12 +281,21 @@ describe("transcript + interrupt api", () => {
   test("interrupt: unknown agent → 404, no live session → 409", async () => {
     expect((await fetch(url("/api/agents/ghost/interrupt"), auth({ method: "POST" }))).status).toBe(404);
     seedAgent("noint");
-    expect((await fetch(url("/api/agents/noint/interrupt"), auth({ method: "POST" }))).status).toBe(409);
+    const bare = await fetch(url("/api/agents/noint/interrupt"), auth({ method: "POST" }));
+    expect(bare.status).toBe(409);
+    expect(((await bare.json()) as any).reason).toBe("no_session");
     const withText = await fetch(
       url("/api/agents/noint/interrupt"),
       auth({ method: "POST", body: JSON.stringify({ text: "stop" }), headers: { "content-type": "application/json" } }),
     );
     expect(withText.status).toBe(409);
+    expect(((await withText.json()) as any).reason).toBe("no_session");
+    const message = await fetch(
+      url("/api/agents/noint/messages"),
+      auth({ method: "POST", body: JSON.stringify({ text: "hi" }), headers: { "content-type": "application/json" } }),
+    );
+    expect(message.status).toBe(409);
+    expect(((await message.json()) as any).reason).toBe("no_session");
   });
 
   test("non-string interrupt text, model or effort → 400", async () => {
@@ -353,20 +362,135 @@ describe("remote agents api (host:name)", () => {
     expect(calls[0]!.host).toBe("box.example.com");
   });
 
-  test("messages: queue/now via am send - (stdin), interrupt via am interrupt -", async () => {
-    expect((await post("/api/agents/laptop:api/messages", { text: "hi `there`" })).status).toBe(200);
-    expect(await (await post("/api/agents/laptop:api/messages", { text: "steer", mode: "now" })).json()).toEqual({ ok: true, mode: "now" });
-    await post("/api/agents/laptop:api/messages", { text: "stop that", mode: "interrupt" });
+  test("messages: queue/now via am send - --json (stdin), interrupt via am interrupt - --json", async () => {
+    let n = 0;
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", messageReceipts: true }) }
+        : { exitCode: 0, stdout: JSON.stringify({ id: `ID${++n}` }) };
+    const first = await post("/api/agents/laptop:api/messages", { text: "hi `there`" });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ ok: true, mode: "queue", id: "ID1" });
+    expect(await (await post("/api/agents/laptop:api/messages", { text: "steer", mode: "now" })).json()).toEqual({ ok: true, mode: "now", id: "ID2" });
+    expect(await (await post("/api/agents/laptop:api/messages", { text: "stop that", mode: "interrupt" })).json()).toEqual({ ok: true, mode: "interrupt", id: "ID3" });
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
       [["__detail", "api", "--local", "--exact"], undefined],
-      [["send", "api", "-", "--local", "--exact"], "hi `there`"],
+      [["send", "api", "-", "--json", "--local", "--exact"], "hi `there`"],
       [["__detail", "api", "--local", "--exact"], undefined],
-      [["send", "api", "-", "--now", "--local", "--exact"], "steer"],
+      [["send", "api", "-", "--json", "--now", "--local", "--exact"], "steer"],
       [["__detail", "api", "--local", "--exact"], undefined],
-      [["interrupt", "api", "-", "--local", "--exact"], "stop that"],
+      [["interrupt", "api", "-", "--json", "--local", "--exact"], "stop that"],
     ]);
     calls.length = 0;
     expect((await post("/api/agents/laptop:api/messages", { mode: "queue" })).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  test("messages: an am without receipts is refused before anything is sent", async () => {
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "api" }) });
+    const res = await post("/api/agents/laptop:api/messages", { text: "hi" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "remote am too old on laptop (no message receipts)", reason: "remote_too_old" });
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
+  });
+
+  test("messages and interrupts: a remote refusal on stderr carries its reason", async () => {
+    let stderr = "";
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", messageReceipts: true }) }
+        : { exitCode: 1, stderr };
+    const reasonOf = async (res: Response) => {
+      expect(res.status).toBe(409);
+      return ((await res.json()) as any).reason;
+    };
+    stderr = 'am: agent "api" has no live tmux session (status: exited)';
+    expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi" }))).toBe("no_session");
+    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("no_session");
+    stderr = 'am: agent "api" mailbox is busy — retry the message';
+    expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi", mode: "now" }))).toBe("mailbox_busy");
+    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt", { text: "redo" }))).toBe("mailbox_busy");
+    stderr = "am: something unexpected";
+    expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi" }))).toBe("unknown");
+    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("unknown");
+    stderr = 'am: unknown command "interrupt"';
+    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("remote_too_old");
+  });
+
+  test("message receipt and cancel forward to __message / __cancel", async () => {
+    const record = { id: "01ABC", state: "delivered", queuedAt: "q", deliveredAt: "d", doneAt: null, transcriptIndex: 4 };
+    reply = (call) => {
+      if (call.args[0] === "__message") return { exitCode: 0, stdout: JSON.stringify(record) };
+      if (call.args[2] === "01ABC") return { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01ABC is already delivered", state: "delivered", reason: "already_delivered" }) };
+      if (call.args[2] === "01OLD") return { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01OLD is already done", state: "done" }) };
+      return { exitCode: 0, stdout: JSON.stringify({ ok: true, state: "cancelled" }) };
+    };
+    const got = await fetch(url("/api/agents/laptop:api/messages/01ABC"), auth());
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual(record);
+    const refused = await fetch(url("/api/agents/laptop:api/messages/01ABC"), auth({ method: "DELETE" }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "message 01ABC is already delivered", state: "delivered", reason: "already_delivered" });
+    const cancelled = await fetch(url("/api/agents/laptop:api/messages/01XYZ"), auth({ method: "DELETE" }));
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual({ ok: true, state: "cancelled" });
+    // A remote am from before reasons refuses without one: its state says why.
+    const old = await fetch(url("/api/agents/laptop:api/messages/01OLD"), auth({ method: "DELETE" }));
+    expect(old.status).toBe(409);
+    expect(await old.json()).toEqual({ error: "message 01OLD is already done", state: "done", reason: "already_done" });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["__message", "api", "01ABC", "--local", "--exact"],
+      ["__cancel", "api", "01ABC", "--local", "--exact"],
+      ["__cancel", "api", "01XYZ", "--local", "--exact"],
+      ["__cancel", "api", "01OLD", "--local", "--exact"],
+    ]);
+  });
+
+  test("interrupt by messageId forwards to __interrupt", async () => {
+    reply = (call) =>
+      call.args[2] === "01ABC"
+        ? { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01ABC is already done", state: "done", reason: "already_done" }) }
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, state: "delivered" }) };
+    const refused = await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "message 01ABC is already done", state: "done", reason: "already_done" });
+    const ok = await post("/api/agents/laptop:api/interrupt", { messageId: "01XYZ" });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["__interrupt", "api", "01ABC", "--local", "--exact"],
+      ["__interrupt", "api", "01XYZ", "--local", "--exact"],
+    ]);
+
+    reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" })).status).toBe(404);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__interrupt" — see `am help`' });
+    const old = await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" });
+    expect(old.status).toBe(409);
+    expect(await old.json()).toMatchObject({ error: expect.stringContaining("remote am too old"), reason: "remote_too_old" });
+    calls.length = 0;
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "a.b" })).status).toBe(404);
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC", text: "hi" })).status).toBe(400);
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: 1 })).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  test("message receipts: unknown id → 404, old am → 409, bad id never reaches ssh", async () => {
+    reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
+    expect((await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth())).status).toBe(404);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__message" — see `am help`' });
+    const old = await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth());
+    expect(old.status).toBe(409);
+    expect(await old.json()).toMatchObject({ error: expect.stringContaining("remote am too old"), reason: "remote_too_old" });
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__cancel" — see `am help`' });
+    const oldCancel = await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth({ method: "DELETE" }));
+    expect(await oldCancel.json()).toMatchObject({ reason: "remote_too_old" });
+    reply = () => ({ exitCode: 0, stdout: "not json" });
+    const noJson = await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth({ method: "DELETE" }));
+    expect(noJson.status).toBe(409);
+    expect(await noJson.json()).toMatchObject({ reason: "remote_too_old" });
+    calls.length = 0;
+    expect((await fetch(url("/api/agents/laptop:api/messages/a.b"), auth())).status).toBe(404);
     expect(calls).toEqual([]);
   });
 

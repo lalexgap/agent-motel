@@ -265,7 +265,7 @@ describe("delivery verification", () => {
     const log = console.log;
     console.log = text => messages.push(text);
     let outcome;
-    try { outcome = await sendCommand("api", "hello", { now: false, quiet: true }); }
+    try { outcome = (await sendCommand("api", "hello", { now: false, quiet: true })).outcome; }
     finally { console.log = log; }
     expect(outcome).toBe("queued");
     expect(messages).toEqual([]);

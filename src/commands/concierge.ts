@@ -85,7 +85,7 @@ export async function ensureConcierge(question?: string, opts: { quiet?: boolean
     await reviveAgent(existing, question ? { message: question } : {});
     if (question) delivery = "revived";
   } else if (question) {
-    delivery = await sendCommand(CONCIERGE_NAME, question, { now: false, quiet: opts.quiet });
+    delivery = (await sendCommand(CONCIERGE_NAME, question, { now: false, quiet: opts.quiet })).outcome;
   }
   return { key: CONCIERGE_NAME, agent: existing, delivery };
 }

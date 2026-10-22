@@ -1,10 +1,10 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus } from "./state";
+import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "./deliver";
+import { acquireDeliverLock, deliverNext, needsCodexRecovery, releaseDeliverLock, type DeliveryResult } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
@@ -14,6 +14,7 @@ import { collectedSender, type OutboxEntry } from "./outbox";
 import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
 import { mailboxHandoffActive } from "./mailbox";
+import { settleMessages } from "./messages";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -168,6 +169,13 @@ async function collectFromRemotes(): Promise<number> {
   return total;
 }
 
+// The sweep's self-heal: an idle agent with messages queued, or a Codex
+// reclaim to finish (its message out of both queues until it does).
+export function drainStranded(agent: AgentState): Promise<DeliveryResult> | null {
+  if (agent.status !== "idle") return null;
+  return queueDepth(agent.name) > 0 || needsCodexRecovery(agent.name) ? deliverNext(agent.name) : null;
+}
+
 export interface DaemonHandle {
   stop(): void;
 }
@@ -259,7 +267,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         const { agent, event } = (await req.json()) as { agent?: string; event?: string };
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
         publish(event, agent);
-        if (event === "stop" && queueDepth(agent) > 0) {
+        if (event === "stop" && (queueDepth(agent) > 0 || needsCodexRecovery(agent))) {
           setTimeout(() => {
             // .catch, not try/catch: deliverNext is async, so a try around a
             // `void` call could never see its failures.
@@ -295,11 +303,13 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited", "tmux session disappeared");
+        settleMessages(agent.name);
         continue;
       }
-      if (agent.status === "idle" && queueDepth(agent.name) > 0) {
+      const draining = drainStranded(agent);
+      if (draining) {
         waiting.add(agent.name);
-        deliverNext(agent.name).then(
+        draining.then(
           (result) => {
             const reason = stuckDeliveryReason(result);
             if (reason && lastRefusal.get(agent.name) !== reason) log(`delivery to ${agent.name} held: ${reason}`);

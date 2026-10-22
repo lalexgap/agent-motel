@@ -1,12 +1,13 @@
 import { resolveAgent } from "../state";
-import { queueClear, queueList } from "../queue";
+import { queueList } from "../queue";
+import { clearQueue } from "../deliver";
 import { relativeTime } from "./ls";
 
-export function queueCommand(prefix: string, opts: { clear: boolean }): void {
+export async function queueCommand(prefix: string, opts: { clear: boolean }): Promise<void> {
   const agent = resolveAgent(prefix);
 
   if (opts.clear) {
-    queueClear(agent.name);
+    await clearQueue(agent.name);
     console.log(`cleared queue for "${agent.name}"`);
     return;
   }

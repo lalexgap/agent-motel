@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { enterDelayMs, inputBoxText, looksUnsubmitted, parsedInputBoxText } from "../src/deliver";
+import { enterDelayMs, inputBoxText, looksUnsubmitted, parsedInputBoxText, turnRunning } from "../src/deliver";
 import type { AgentState } from "../src/state";
 
 // Composer/footer lines captured from running Codex and Claude sessions.
@@ -23,6 +23,18 @@ const claude = (input: string) => [
 ];
 
 describe("provider composer captures", () => {
+  test("a running turn shows its hint beside the composer, not in the transcript", () => {
+    expect(turnRunning(codex(""), "codex")).toBe(true);
+    expect(turnRunning(codex("").slice(1), "codex")).toBe(false);
+    expect(turnRunning(["• Working (4m 46s • esc to interrupt)", ...Array(6).fill("text"), ...codex("").slice(1)], "codex")).toBe(false);
+    expect(turnRunning(claude(""))).toBe(false);
+    const running = claude("");
+    running[5] = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent";
+    expect(turnRunning(running)).toBe(true);
+    expect(turnRunning(["✶ Cogitating… (3s · esc to interrupt)", ...claude("").slice(2)])).toBe(true);
+    expect(turnRunning(["the hint says esc to interrupt", "", "", "", ...claude("")])).toBe(false);
+  });
+
   test("Codex placeholder and empty composer are empty", () => {
     expect(parsedInputBoxText(codex("Ask Codex to do anything"), "codex")).toBe("");
     expect(parsedInputBoxText(codex(""), "codex")).toBe("");
