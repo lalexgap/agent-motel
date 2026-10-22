@@ -258,6 +258,18 @@ describe("delivery verification", () => {
     expect(messages[0]).toStartWith('queued for "api"');
     expect(queueDepth("api")).toBe(1);
   });
+  test("quiet send reports its outcome instead of printing it", async () => {
+    fakeSession();
+    expect(acquireDeliverLock("api")).toBe(true);
+    const messages: string[] = [];
+    const log = console.log;
+    console.log = text => messages.push(text);
+    let outcome;
+    try { outcome = (await sendCommand("api", "hello", { now: false, quiet: true })).outcome; }
+    finally { console.log = log; }
+    expect(outcome).toBe("queued");
+    expect(messages).toEqual([]);
+  });
 });
 
 describe("exact names only", () => {

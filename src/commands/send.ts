@@ -8,16 +8,22 @@ import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
 import { immediateMark, queueTrackedMessage, recordImmediateDelivery } from "../messages";
 
+// How a send landed: injected mid-turn, delivered to an idle agent, queued
+// for its next idle, parked in the outbox, or dropped by the rate limiter.
+export type SendOutcome = "steered" | "delivered" | "queued" | "outbox" | "dropped";
+
 export interface SendResult {
   id: string | null;
+  outcome: SendOutcome;
 }
 
-function say(opts: { json?: boolean }, line: string): void {
-  if (!opts.json) console.log(line);
+// quiet and json both silence the human lines; json prints the id instead.
+function say(opts: { json?: boolean; quiet?: boolean }, line: string): void {
+  if (!opts.json && !opts.quiet) console.log(line);
 }
 
 function printResult(opts: { json?: boolean }, result: SendResult): SendResult {
-  if (opts.json) console.log(JSON.stringify(result));
+  if (opts.json) console.log(JSON.stringify({ id: result.id }));
   return result;
 }
 
@@ -36,7 +42,7 @@ function requireLiveSession(prefix: string, exact = false) {
 // queue for store-and-forward instead of erroring. A collector that owns this
 // name sweeps it out. Surfaces any of this sender's messages that expired
 // undelivered, so a bounce is never silent.
-function outboxFallback(prefix: string, message: string, opts: { from?: string; json?: boolean }): void {
+function outboxFallback(prefix: string, message: string, opts: { from?: string; json?: boolean; quiet?: boolean }): SendOutcome {
   const from = resolveSender(opts.from);
   const to = bareName(prefix);
   outboxAppend({ to, from, fromHost: hostname(), body: message });
@@ -46,29 +52,31 @@ function outboxFallback(prefix: string, message: string, opts: { from?: string; 
       `note: your earlier message to "${b.to}" expired undelivered (queued ${b.queuedAt}, never collected)`,
     );
   }
+  return "outbox";
 }
 
 // Drop notice when a send trips the per-pair rate limiter — surfaced so a
 // looping agent (or a human) sees why the message vanished.
-function rateLimited(from: string, to: string): void {
+function rateLimited(from: string, to: string): SendOutcome {
   const cfg = loadConfig();
   console.error(
     `am: dropped message from "${from}" to "${to}" — over the rate limit ` +
       `(${cfg.commsMaxPerWindow}/${cfg.commsWindowSeconds}s). Possible message loop.`,
   );
+  return "dropped";
 }
 
+// quiet: in-UI callers report the returned outcome themselves.
 export async function sendCommand(
   prefix: string,
   message: string,
-  opts: { now: boolean; from?: string; json?: boolean; track?: boolean },
+  opts: { now: boolean; from?: string; json?: boolean; quiet?: boolean; track?: boolean },
 ): Promise<SendResult> {
   const track = opts.track || opts.json;
   const agent = matchAgent(prefix);
   if (!agent && isExactNamesOnly()) throw new Error(`no agent matches "${prefix}"`);
   if (!agent) {
-    outboxFallback(prefix, message, opts);
-    return printResult(opts, { id: null });
+    return printResult(opts, { id: null, outcome: outboxFallback(prefix, message, opts) });
   }
   if (!hasSession(agent.tmuxSession)) {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
@@ -77,8 +85,7 @@ export async function sendCommand(
   const kind = opts.now ? "now" : "send";
   const att = attribute(from, agent.name, message, kind, undefined, { record: false });
   if (!att.allowed) {
-    rateLimited(from!, agent.name);
-    return printResult(opts, { id: null });
+    return printResult(opts, { id: null, outcome: rateLimited(from!, agent.name) });
   }
   const body = att.body;
 
@@ -95,7 +102,7 @@ export async function sendCommand(
     }
     finally { releaseDeliverLock(agent.name); }
     say(opts, `sent to "${agent.name}" (steering current turn)`);
-    return printResult(opts, { id });
+    return printResult(opts, { id, outcome: "steered" });
   }
 
   const trackedId = track ? queueTrackedMessage(agent.name, body) : null;
@@ -106,13 +113,13 @@ export async function sendCommand(
     const result = await deliverNext(agent.name);
     if (result.status === "submitted" && result.id === queuedId) {
       say(opts, `delivered to "${agent.name}" (was idle)`);
-    } else {
-      say(opts, `queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — awaiting delivery`);
+      return printResult(opts, { id: trackedId, outcome: "delivered" });
     }
+    say(opts, `queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — awaiting delivery`);
   } else {
     say(opts, `queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — delivered when it goes idle`);
   }
-  return printResult(opts, { id: trackedId });
+  return printResult(opts, { id: trackedId, outcome: "queued" });
 }
 
 export async function interruptCommand(
@@ -123,10 +130,7 @@ export async function interruptCommand(
   const agent = requireLiveSession(prefix, opts.exact);
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, "interrupt", undefined, { record: false });
-  if (!att.allowed) {
-    rateLimited(from!, agent.name);
-    return printResult(opts, { id: null });
-  }
+  if (!att.allowed) return printResult(opts, { id: null, outcome: rateLimited(from!, agent.name) });
 
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
   let id: string | null = null;
@@ -140,7 +144,7 @@ export async function interruptCommand(
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });
   } finally { releaseDeliverLock(agent.name); }
   say(opts, `interrupted "${agent.name}" with new message`);
-  return printResult(opts, { id });
+  return printResult(opts, { id, outcome: "steered" });
 }
 
 export async function abortTurn(name: string): Promise<void> {

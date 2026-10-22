@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONCIERGE_NAME } from "../src/providers";
 import { conciergeRow } from "../src/fleet";
-import { conciergeNewOptions, resolveConciergeHost } from "../src/commands/concierge";
+import { conciergeAskFeedback, conciergeNewOptions, resolveConciergeHost } from "../src/commands/concierge";
 import { newCommand } from "../src/commands/new";
 import { renameAgent } from "../src/commands/rename";
 import { writeAgent, type AgentState } from "../src/state";
@@ -118,5 +118,22 @@ describe("concierge name reservation", () => {
   test("renaming the concierge away is rejected", async () => {
     seedAgent(CONCIERGE_NAME);
     await expect(renameAgent(CONCIERGE_NAME, "helper")).rejects.toThrow(/cannot be renamed/);
+  });
+});
+
+describe("conciergeAskFeedback", () => {
+  const at = (delivery: Parameters<typeof conciergeAskFeedback>[0]["delivery"], host?: string) =>
+    conciergeAskFeedback({ key: CONCIERGE_NAME, host, delivery });
+
+  test("says whether the question was delivered, queued, or went remote", () => {
+    expect(at("delivered").text).toBe("sent to the concierge");
+    expect(at("queued").text).toContain("delivered when it goes idle");
+    expect(at("created").text).toContain("started the concierge");
+    expect(at("revived").text).toContain("revived the concierge");
+    expect(at("remote", "laptop").text).toBe("queued for the concierge on laptop");
+  });
+
+  test("a rate-limited drop is an error", () => {
+    expect(at("dropped").level).toBe("error");
   });
 });

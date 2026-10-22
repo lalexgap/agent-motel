@@ -223,11 +223,15 @@ function turnEndedSince(agent: AgentState, r: TurnFields): boolean {
 
 // Claude Code hands a long paste to UserPromptSubmit wrapped in these tags.
 const PASTE_TAG_RE = /<\/?pasted_content id="[^"]*">/g;
+// The marker operatorEnvelope puts on an operator message sent via the inbox;
+// the queued body (and a typed fallback) carries none.
+const OPERATOR_MARKER_RE = /\[am · operator message [0-9a-f]+\]/g;
 
 // Matches a UserPromptSubmit to the message it submits without storing the
 // message text.
 export function promptKey(text: string): string {
-  return createHash("sha256").update(text.replace(PASTE_TAG_RE, " ").replace(/\s+/g, " ").trim()).digest("hex");
+  const bare = text.replace(PASTE_TAG_RE, " ").replace(OPERATOR_MARKER_RE, " ");
+  return createHash("sha256").update(bare.replace(/\s+/g, " ").trim()).digest("hex");
 }
 
 const promptHeld = (records: MessageRecord[], promptAt: string) =>

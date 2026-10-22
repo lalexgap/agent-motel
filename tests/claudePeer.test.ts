@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,8 @@ import { peerTarget, sendPeerMessage } from "../src/claudePeer";
 import { confirmInboxDelivery, deliverNext, finishConfirmedDelivery, pendingDeliveryId, releaseDeliverLock } from "../src/deliver";
 import { ensureDirs, queueDir } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
-import { writeAgent, type AgentState } from "../src/state";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { promptKey, queueTrackedMessage, readMessage, recordImmediateDelivery } from "../src/messages";
 
 let home: string;
 let sessions: string;
@@ -140,13 +141,25 @@ describe("inbox delivery", () => {
     expect(frames.find((f) => f.type === "user")).toMatchObject({ message: { content: "[am · from web] ping" } });
   });
 
-  test("operator messages are still typed into the pane", async () => {
+  test("operator messages go through the inbox with a tagged marker the hook can verify", async () => {
     writeAgent(agent());
     liveEntry();
-    await listen(true);
+    await listen(false);
+    const id = queueAppend("api", "operator note");
+    await deliverNext("api");
+    expect(typed()).toBe(false);
+    const content: string = (frames.find((f: any) => f.type === "user") as any).message.content;
+    const tag = /^\[am · operator message ([0-9a-f]{16})\] operator note$/.exec(content)?.[1];
+    expect(tag).toBeDefined();
+    expect(confirmInboxDelivery("api", `Another Claude session sent a message:\n${content}`)).toBe(tag!);
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  }, 20_000);
+
+  test("an operator message falls back to typing without the marker", async () => {
+    writeAgent(agent());
+    liveEntry();
     queueAppend("api", "operator note");
     await deliverNext("api");
-    expect(frames).toHaveLength(0);
     expect(typed()).toBe(true);
   });
 
@@ -176,6 +189,13 @@ describe("inbox delivery", () => {
     expect(typed()).toBe(true);
   }, 20_000);
 
+  test("a pending marker from before `content` existed still confirms a peer send", () => {
+    const id = queueAppend("api", "[am · from web] ping");
+    writeFileSync(join(queueDir(), "api", ".delivery.pending"), JSON.stringify({ id, message: "[am · from web] ping", via: "inbox", sentAt: Date.now() }));
+    expect(confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · from web] ping")).toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  });
+
   test("a late confirmation retires the message for hook drains", async () => {
     writeAgent(agent());
     liveEntry();
@@ -187,6 +207,29 @@ describe("inbox delivery", () => {
     expect(finishConfirmedDelivery("api", id)).toBe(true);
     expect(queueDepth("api")).toBe(0);
     expect(pendingDeliveryId("api")).toBeNull();
+  }, 20_000);
+
+  test("an operator message is confirmed only by its own tagged marker", async () => {
+    writeAgent(agent());
+    liveEntry();
+    await listen(false);
+    const id = queueAppend("api", "ok");
+    await deliverNext("api");
+    const content: string = (frames.find((f: any) => f.type === "user") as any).message.content;
+    expect(confirmInboxDelivery("api", "ok, look at the logs")).toBeNull();
+    expect(confirmInboxDelivery("api", "[am · operator message 0000000000000000] ok")).toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(false);
+    expect(confirmInboxDelivery("api", content)).not.toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  }, 20_000);
+
+  test("peer messages confirm without an operator tag", async () => {
+    writeAgent(agent());
+    liveEntry();
+    await listen(false);
+    queueAppend("api", "[am · from web] ping");
+    await deliverNext("api");
+    expect(confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · from web] ping")).toBeNull();
   }, 20_000);
 });
 
@@ -209,5 +252,83 @@ describe("SessionStart", () => {
     expect(await sessionStart({ AGENTMGR_PEER_INBOX: "1" })).toBe("sess-9");
     expect(await sessionStart({})).toBeUndefined();
     expect(await sessionStart({ AGENTMGR_PEER_INBOX: "1" }, "codex")).toBeUndefined();
+  }, 20_000);
+});
+
+describe("operator inbox receipts", () => {
+  const CLI = join(import.meta.dir, "..", "src", "index.ts");
+  const framed = (content: string) => `Another Claude session sent a message:\n${content}`;
+  const raw = (id: string) => JSON.parse(readFileSync(join(queueDir(), "api", ".messages", `${id}.json`), "utf8"));
+
+  // The real hook, in a child process, against this test's fake tmux.
+  function hook(event: string, payload: Record<string, unknown> = {}): string {
+    const result = Bun.spawnSync([process.execPath, CLI, "hook", event], {
+      env: { ...process.env, AGENTMGR_AGENT: "api", PATH: `${home}:${oldPath}` },
+      stdin: Buffer.from(JSON.stringify(payload)),
+    });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  }
+
+  // Fake inbox whose frames are submitted as prompts through the real hook.
+  function listenWithHook(): Promise<string[]> {
+    frames = [];
+    const outputs: string[] = [];
+    return new Promise((resolve) => {
+      server = createServer((socket) => {
+        let data = "";
+        socket.on("data", (chunk) => { data += chunk; });
+        socket.on("end", () => {
+          for (const line of data.split("\n").filter(Boolean)) {
+            const frame = JSON.parse(line);
+            frames.push(frame);
+            if (frame.type === "user") outputs.push(hook("user-prompt-submit", { prompt: framed(frame.message.content) }));
+          }
+        });
+      });
+      server.listen(socketPath(), () => resolve(outputs));
+    });
+  }
+
+  beforeEach(() => {
+    writeFileSync(join(home, "config.json"), JSON.stringify({ notifyCommand: "true" }));
+    const transcript = join(home, "session.jsonl");
+    for (const text of ["first", "second"]) appendFileSync(transcript, JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n");
+    writeAgent(agent({ transcriptPath: transcript }));
+    liveEntry();
+  });
+
+  test("an operator inbox delivery is marked delivered, started by its verified prompt, then done", async () => {
+    const outputs = await listenWithHook();
+    const id = queueTrackedMessage("api", "operator note");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${id}.json` });
+    expect(typed()).toBe(false);
+    expect(outputs.join("")).toContain("[am] Verified operator message");
+    const promptAt = readAgent("api")!.promptAt;
+    expect(raw(id)).toMatchObject({ state: "delivered", via: "prompt", transcriptIndex: 2, startedAt: promptAt });
+    // Keyed by the message am sent, not Claude's framing or the marker.
+    expect(readAgent("api")!.promptKey).toBe(promptKey("operator note"));
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  }, 20_000);
+
+  test("the inbox prompt starts its own message, not an older one with the same text", async () => {
+    const older = recordImmediateDelivery("api", { transcriptIndex: 2, handedAt: new Date(Date.now() - 1000).toISOString() }, "ok");
+    await listenWithHook();
+    const id = queueTrackedMessage("api", "ok");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${id}.json` });
+    expect(raw(id).startedAt).toBe(readAgent("api")!.promptAt);
+    expect(raw(older).startedAt).toBeUndefined();
+  }, 20_000);
+
+  test("the typed fallback for an operator message keeps its receipt", async () => {
+    const id = queueTrackedMessage("api", "operator note");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${id}.json` });
+    expect(typed()).toBe(true);
+    expect(raw(id)).toMatchObject({ state: "delivered", transcriptIndex: 2 });
+    expect(hook("user-prompt-submit", { prompt: "operator note" })).not.toContain("Verified operator message");
+    expect(raw(id).startedAt).toBe(readAgent("api")!.promptAt);
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
   }, 20_000);
 });
