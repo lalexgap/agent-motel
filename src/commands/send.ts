@@ -106,3 +106,13 @@ export async function interruptCommand(
   } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}" with new message`);
 }
+
+// Abort the current turn (Esc) without sending anything after it.
+export async function abortTurn(prefix: string): Promise<void> {
+  const agent = requireLiveSession(prefix);
+  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry`);
+  try {
+    sendEscape(agent.tmuxSession);
+  } finally { releaseDeliverLock(agent.name); }
+  console.log(`interrupted "${agent.name}"`);
+}

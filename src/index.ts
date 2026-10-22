@@ -172,10 +172,12 @@ usage:
   am outbox [--clear]         messages queued here for an unreachable target
                               (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
-  am transcript <name> [--full] [--out file] [--subagent <id|type>]
+  am transcript <name> [--full] [--out file] [--subagent <id|type>] [--json]
                               render the agent's conversation as markdown
                               (--subagent renders one in-session subagent's
-                               side-chain instead)
+                               side-chain instead; --json prints indexed
+                               turns as {provider, sessionId, status, total,
+                               entries})
   am subagents [<name>] [--json]
                               in-session subagents (Claude Code's Task tool,
                               codex subagents): what a name has fanned out to,
@@ -725,6 +727,7 @@ async function main(): Promise<void> {
         full: !!args.flags.full,
         out: args.flags.out as string | undefined,
         subagent: args.flags.subagent as string | undefined,
+        json: !!args.flags.json,
       });
       break;
     case "subagents":

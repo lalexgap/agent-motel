@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { agentProvider, resolveAgent, type AgentState } from "../state";
-import { locateTranscript, parseTranscript, renderTranscript, type ParseOpts } from "../transcript";
+import { agentProvider, agentSessionId, resolveAgent, type AgentState, type Provider } from "../state";
+import { locateTranscript, parseTranscript, renderTranscript, type ParseOpts, type Turn } from "../transcript";
+import { displayStatus } from "./ls";
 import { readSubagents, subagentTranscriptFile, type SubagentRecord } from "../subagents";
 
 // A subagent is addressed by id (or an unambiguous prefix of one) or by type,
@@ -59,11 +60,58 @@ function subagentSource(agent: AgentState, query: string): TranscriptSource {
   return { file: locateTranscript(agent), opts: { sidechain: { agentId: record.id } }, label, missing };
 }
 
+export type TranscriptEntry = Turn & { index: number };
+
+export interface TranscriptJson {
+  provider: Provider;
+  sessionId: string | null;
+  status: string;
+  total: number;
+  entries: TranscriptEntry[];
+}
+
+// The machine-readable transcript behind `am transcript --json` and
+// GET /api/agents/:name/transcript. Indexes are positions in the full parsed
+// turn list; the native file is append-only, so an index keeps naming the
+// same turn as it grows — except that a tool turn's output/error is filled in
+// when its result lands, so an existing entry can change. Clients polling
+// with `after` should re-read from their oldest unsettled index (e.g. a tool
+// entry still missing its output), not from `total`.
+export function transcriptJson(agent: AgentState, after = 0): TranscriptJson {
+  const provider = agentProvider(agent);
+  let file: string | null = null;
+  try {
+    file = locateTranscript(agent);
+  } catch {
+    // No session id or no file yet: the agent hasn't produced a turn.
+  }
+  const transcript = file && existsSync(file) ? parseTranscript(provider, readFileSync(file, "utf8")) : null;
+  const turns = transcript?.turns ?? [];
+  return {
+    provider,
+    sessionId: agentSessionId(agent) ?? transcript?.sessionId ?? null,
+    status: displayStatus(agent),
+    total: turns.length,
+    entries: turns.slice(Math.max(0, after)).map((turn, i) => ({ index: Math.max(0, after) + i, ...turn })),
+  };
+}
+
 export function transcriptCommand(
   prefix: string,
-  opts: { full?: boolean; out?: string; subagent?: string },
+  opts: { full?: boolean; out?: string; subagent?: string; json?: boolean },
 ): void {
   const agent = resolveAgent(prefix);
+  if (opts.json) {
+    if (opts.subagent) throw new Error("--json does not support --subagent");
+    const out = JSON.stringify(transcriptJson(agent), null, 2);
+    if (opts.out) {
+      writeFileSync(opts.out, out + "\n");
+      console.log(`wrote ${opts.out}`);
+    } else {
+      console.log(out);
+    }
+    return;
+  }
   const source: TranscriptSource = opts.subagent
     ? subagentSource(agent, opts.subagent)
     : { file: locateTranscript(agent), opts: {}, label: agent.name };
