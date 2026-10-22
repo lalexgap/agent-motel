@@ -231,7 +231,7 @@ am serve
 am token
 ```
 
-The token-protected API can list, message, interrupt, create, stop, and resume agents, read their parsed transcripts (`GET /api/agents/:name/transcript?after=n`, indexed turns; the same object as `am transcript <name> --json`), with live fleet updates at `/api/events`. It can execute code through spawned agents, so keep it on loopback or behind a private network such as [Tailscale](https://tailscale.com). Do not expose it directly to the internet. A sample systemd unit is available at [`docs/am-serve.service`](docs/am-serve.service).
+The token-protected API can list, message, interrupt, create, stop, and resume agents, read their parsed transcripts (`GET /api/agents/:name/transcript?after=n`, indexed turns; the same object as `am transcript <name> --json`), with live fleet updates at `/api/events`. It drives agents on other fleet hosts too, over the same ssh as `am -H`: address one as `host:name` in `/api/agents/:name/...`, pass `host` (and optionally `remoteDir`; otherwise a `dir` under `$HOME` maps to the remote `$HOME`) to `POST /api/agents`, and list hosts with `GET /api/hosts`. It can execute code through spawned agents, so keep it on loopback or behind a private network such as [Tailscale](https://tailscale.com). Do not expose it directly to the internet. A sample systemd unit is available at [`docs/am-serve.service`](docs/am-serve.service).
 
 ## How it works
 
