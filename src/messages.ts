@@ -43,7 +43,8 @@ export type ConflictReason =
   | "no_session"
   | "mailbox_busy"
   | "already_delivered"
-  | "remote_too_old";
+  | "remote_too_old"
+  | "unknown";
 
 export type Conflict = { ok: false; error: string; state: MessageState; reason: ConflictReason };
 

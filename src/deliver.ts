@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, agentSessionId, readAgent, updateAgentStatus, writeAgent, type AgentState, type Provider } from "./state";
+import { agentProvider, agentSessionId, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
@@ -422,15 +422,21 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     if (Date.parse(agent.promptAt ?? "") > escAt) return false;
     const pane = capturePane(agent.tmuxSession, { colors: true });
     if (!pane || parsedInputBoxText(pane, agentProvider(agent)) !== "" || turnRunning(pane, agentProvider(agent))) continue;
-    const at = new Date();
+    // Recheck under the state lock: a prompt or Stop since the capture wins.
+    const ended = updateAgentIf(name, (current) => {
+      if (current.status !== "working" && current.status !== "needs-attention") return false;
+      if (Date.parse(current.promptAt ?? "") > escAt) return false;
+      updateAgentStatus(current, "idle");
+      delete current.workingSince;
+      return true;
+    });
+    if (!ended) return false;
     try {
-      markTurnEnded(name, agent, at, true);
+      // Bounded by the Esc, so a turn started since keeps its receipts.
+      markTurnEnded(name, agent, new Date(escAt), true);
     } catch {
       // a receipt must not keep the agent working
     }
-    updateAgentStatus(agent, "idle", undefined, at.toISOString());
-    agent.workingSince = undefined;
-    writeAgent(agent);
     if (queueDepth(name) > 0) await deliverNext(name);
     return true;
   }

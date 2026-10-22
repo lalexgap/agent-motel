@@ -15,7 +15,7 @@ import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
 import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
-import { conflictReason, isMessageId, readMessage, type ConflictReason } from "./messages";
+import { alreadyReason, conflictReason, isMessageId, readMessage, type Conflict, type ConflictReason } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import { loadConfig, localHostIdentity } from "./config";
 import {
@@ -150,7 +150,7 @@ function parseTarget(raw: string): { host: string | null; name: string } | Respo
 
 // `fallback`: the reason a message or interrupt route gives a 409 whose
 // cause the remote am did not say.
-function remoteFailure(error: unknown, fallback?: ConflictReason): Response {
+function remoteFailure(error: unknown, fallback?: "unknown"): Response {
   if (error instanceof RemoteError) {
     const reason = error.status === 409 ? (error.reason ?? fallback) : undefined;
     return json(reason ? { error: error.message, reason } : { error: error.message }, error.status);
@@ -163,9 +163,14 @@ function conflict(error: string, reason: ConflictReason, state?: string): Respon
 }
 
 // A refusal thrown by a send or an interrupt.
-function thrownConflict(error: unknown, fallback: ConflictReason): Response {
+function thrownConflict(error: unknown): Response {
   const message = (error as Error).message;
-  return conflict(message, conflictReason(message) ?? fallback);
+  return conflict(message, conflictReason(message) ?? "unknown");
+}
+
+// A remote am from before reasons returns a refusal without one.
+function resultReason(result: Conflict): ConflictReason {
+  return result.reason ?? conflictReason(result.error) ?? (result.state === "queued" ? "unknown" : alreadyReason(result.state));
 }
 
 interface TranscriptShape {
@@ -176,13 +181,12 @@ function messageNotFound(name: string, id: string): Response {
   return json({ error: `no message "${id}" for agent "${name}"` }, 404);
 }
 
-// A remote am from before reasons returns a refusal without one.
 function cancelResponse(result: CancelResult): Response {
-  return result.ok ? json(result) : conflict(result.error, result.reason ?? "remote_too_old", result.state);
+  return result.ok ? json(result) : conflict(result.error, resultReason(result), result.state);
 }
 
 function interruptResponse(result: InterruptResult): Response {
-  return result.ok ? json({ ok: true }) : conflict(result.error, result.reason ?? "remote_too_old", result.state);
+  return result.ok ? json({ ok: true }) : conflict(result.error, resultReason(result), result.state);
 }
 
 // {text?, messageId?}: an error response, or what to interrupt with.
@@ -198,8 +202,7 @@ async function interruptBody(req: Request): Promise<Response | { text: string; m
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
   const route = rest[0];
-  const fallback: ConflictReason | undefined =
-    route === "messages" ? "not_delivered" : route === "interrupt" ? "no_session" : undefined;
+  const fallback = route === "messages" || route === "interrupt" ? "unknown" : undefined;
   try {
     // A receipt: __message/__cancel ship after --exact and read the name
     // exactly, and an am without them fails "unknown command", so they need
@@ -451,7 +454,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         if (!id) return conflict(`message to "${name}" was not sent`, "not_delivered");
         return json({ ok: true, mode, id });
       } catch (error) {
-        return thrownConflict(error, "not_delivered");
+        return thrownConflict(error);
       }
     }
 
@@ -495,7 +498,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         else await abortTurn(agent.name);
         return json({ ok: true });
       } catch (error) {
-        return thrownConflict(error, "no_session");
+        return thrownConflict(error);
       }
     }
 

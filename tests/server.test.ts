@@ -411,8 +411,8 @@ describe("remote agents api (host:name)", () => {
     expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi", mode: "now" }))).toBe("mailbox_busy");
     expect(await reasonOf(await post("/api/agents/laptop:api/interrupt", { text: "redo" }))).toBe("mailbox_busy");
     stderr = "am: something unexpected";
-    expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi" }))).toBe("not_delivered");
-    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("no_session");
+    expect(await reasonOf(await post("/api/agents/laptop:api/messages", { text: "hi" }))).toBe("unknown");
+    expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("unknown");
     stderr = 'am: unknown command "interrupt"';
     expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("remote_too_old");
   });
@@ -434,10 +434,10 @@ describe("remote agents api (host:name)", () => {
     const cancelled = await fetch(url("/api/agents/laptop:api/messages/01XYZ"), auth({ method: "DELETE" }));
     expect(cancelled.status).toBe(200);
     expect(await cancelled.json()).toEqual({ ok: true, state: "cancelled" });
-    // A remote am from before reasons refuses without one.
+    // A remote am from before reasons refuses without one: its state says why.
     const old = await fetch(url("/api/agents/laptop:api/messages/01OLD"), auth({ method: "DELETE" }));
     expect(old.status).toBe(409);
-    expect(await old.json()).toEqual({ error: "message 01OLD is already done", state: "done", reason: "remote_too_old" });
+    expect(await old.json()).toEqual({ error: "message 01OLD is already done", state: "done", reason: "already_done" });
     expect(calls.map((c) => c.args)).toEqual([
       ["__message", "api", "01ABC", "--local", "--exact"],
       ["__cancel", "api", "01ABC", "--local", "--exact"],

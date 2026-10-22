@@ -722,6 +722,33 @@ describe("messages api", () => {
       expect(readAgent("api")!.status).toBe("idle");
     });
 
+    test("a prompt that lands after the pane check keeps its turn running", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      const next = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date(Date.now() + 1).toISOString() }, "next");
+      const inner = spawnSpy!.getMockImplementation()!;
+      let fired = false;
+      spawnSpy!.mockImplementation((cmd: any, opts?: any) => {
+        const result = inner(cmd, opts);
+        if (!fired && Array.isArray(cmd) && cmd[0] === "tmux" && cmd[1] === "capture-pane" && keys()) {
+          fired = true;
+          Bun.sleepSync(5);
+          hook("user-prompt-submit", { prompt: "next" });
+        }
+        return result;
+      });
+
+      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect(fired).toBe(true);
+      expect(readAgent("api")!.status).toBe("working");
+      expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
+      hook("stop");
+      expect(readMessage("api", next)).toMatchObject({ state: "done" });
+      expect(readMessage("api", id)).toMatchObject({ state: "done" });
+    });
+
     test("an empty composer that still shows a running turn is not ended", async () => {
       fakeSession("working");
       fastSleep();

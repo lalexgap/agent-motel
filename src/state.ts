@@ -156,6 +156,18 @@ export function writeAgent(state: AgentState): void {
   });
 }
 
+// Read, check and write under the state lock, so a hook's write lands wholly
+// before or after. `fn` changes the current state, or returns false to leave it.
+export function updateAgentIf(name: string, fn: (state: AgentState) => boolean): boolean {
+  return withFileLock(stateLock(name), () => {
+    const current = readAgent(name);
+    if (!current || !fn(current)) return false;
+    current.updatedAt = new Date().toISOString();
+    writeJsonAtomic(stateFile(name), current);
+    return true;
+  });
+}
+
 export function updateAgentStatus(
   state: AgentState,
   status: AgentStatus,
