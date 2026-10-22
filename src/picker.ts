@@ -579,7 +579,6 @@ export function paletteScreenRows(opts: {
   cursor: number;
   width: number;
   capacity: number;
-  // Ask prompt: the query row is the question, the body a hint.
   asking?: boolean;
 }): { rows: PaletteRowOut[]; total: number; cursor: number } {
   const { commands, agents, attachLabel, query, width } = opts;
@@ -749,7 +748,6 @@ export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult |
         if (key === "\x03" || key === "\x0b" || key === "\x10") return finishPopup(null);
         if (asking) {
           if (key === "\x1b") {
-            // Back to the command list, or closed if the prompt was the entry point.
             if (spec.ask) return finishPopup(null);
             asking = false;
             query = "";
@@ -1055,7 +1053,6 @@ export async function pick(
   let paletteQuery = "";
   let paletteCursor = 0;
   let paletteReturnMode: Mode = "list";
-  // Fallback palette's ask prompt; paletteQuery holds the question.
   let paletteAsking = false;
   let paletteAskDirect = false;
   let newName = "";
@@ -2185,8 +2182,7 @@ export async function pick(
       else runPaletteCommand(command!.id);
     };
 
-    // Fallback (in-picker) palette, optionally opening straight into the
-    // ask prompt. The overlay is full-screen, like the create form.
+    // The fallback palette overlay is full-screen, like the create form.
     const openFallbackPalette = (ask = false) => {
       paletteReturnMode = mode;
       mode = "palette";
@@ -2205,9 +2201,7 @@ export async function pick(
       setForm(false);
     };
 
-    // Inline ask: the question goes to the concierge (created or revived as
-    // needed) and the operator stays where they are. Asks are chained so two
-    // quick ones can't race to create the concierge twice.
+    // Chained so two quick asks can't race to create the concierge twice.
     let conciergeAsks: Promise<unknown> = Promise.resolve();
     const askConcierge = (question: string) => {
       if (!handlers.askConcierge) return;
@@ -2342,7 +2336,6 @@ export async function pick(
 
       if (mode === "palette" && paletteAsking) {
         if (key === "\x1b") {
-          // Back to the command list, or closed if the prompt was the entry point.
           if (paletteAskDirect) closeFallbackPalette();
           else {
             paletteAsking = false;

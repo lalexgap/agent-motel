@@ -49,8 +49,7 @@ function rateLimited(from: string, to: string): SendOutcome {
 // for its next idle, parked in the outbox, or dropped by the rate limiter.
 export type SendOutcome = "steered" | "delivered" | "queued" | "outbox" | "dropped";
 
-// quiet suppresses the CLI status line for in-UI callers (the picker reports
-// the returned outcome in its own banner instead).
+// quiet: in-UI callers report the returned outcome themselves.
 export async function sendCommand(
   prefix: string,
   message: string,

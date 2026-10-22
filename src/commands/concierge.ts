@@ -90,8 +90,6 @@ export async function ensureConcierge(question?: string, opts: { quiet?: boolean
   return { key: CONCIERGE_NAME, agent: existing, delivery };
 }
 
-// Banner for a question asked inline (the palette's ask prompt), saying
-// where it landed since the operator isn't watching the concierge's pane.
 export function conciergeAskFeedback(location: ConciergeLocation): FeedbackResult {
   switch (location.delivery) {
     case "created":
