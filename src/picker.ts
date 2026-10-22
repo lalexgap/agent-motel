@@ -673,18 +673,14 @@ function askScreenRows(question: string, width: number): { rows: PaletteRowOut[]
   const ruleText = `${THEME.form}${THEME.border}${"─".repeat(width)}`;
   const prompt = ` ${THEME.cyan}✦ ask the concierge ${THEME.blue}› `;
   // Keep the caret in view: show the tail of a question wider than the row.
-  const room = Math.max(1, width - visibleWidth(prompt) - 12);
+  const room = Math.max(1, width - visibleWidth(prompt) - 2);
   const shown = question.length > room ? "…" + question.slice(-(room - 1)) : question;
-  const keys = ` ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}send${THEME.form}`;
+  const keys = ` ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}send${THEME.form}  ${THEME.keycap} esc ${THEME.form} ${THEME.muted}back${THEME.form}`;
   return {
     rows: [
       { text: content("") },
       {
-        text: content(alignAnsi(
-          `${prompt}${THEME.bright}${shown}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`,
-          `${THEME.faint}esc back ${THEME.form}`,
-          width,
-        )),
+        text: content(`${prompt}${THEME.bright}${shown}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`),
       },
       { text: ruleText },
       { text: content(` ${THEME.muted}sent to the concierge — you stay here${THEME.form}`) },
@@ -2026,12 +2022,14 @@ export async function pick(
     // created on a remote host isn't in the cached fleet rows yet, so waiting
     // for (or worse, cursor-guessing) its row would select the wrong agent.
     let conciergeOpening = false;
+    // Opens and asks share one chain so they can't race to create the concierge twice.
+    let conciergeChain: Promise<unknown> = Promise.resolve();
     const openConcierge = () => {
       if (!handlers.concierge || conciergeOpening) return;
       conciergeOpening = true;
       feedback = { text: "opening the concierge…", level: "info" };
       render();
-      Promise.resolve()
+      conciergeChain = conciergeChain
         .then(handlers.concierge)
         .then(
           (key) => {
@@ -2201,13 +2199,11 @@ export async function pick(
       setForm(false);
     };
 
-    // Chained so two quick asks can't race to create the concierge twice.
-    let conciergeAsks: Promise<unknown> = Promise.resolve();
     const askConcierge = (question: string) => {
       if (!handlers.askConcierge) return;
       feedback = { text: "sending to the concierge…", level: "info" };
       render();
-      conciergeAsks = conciergeAsks
+      conciergeChain = conciergeChain
         .then(() => handlers.askConcierge!(question))
         .then(
           (message) => {

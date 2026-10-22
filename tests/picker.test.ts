@@ -344,6 +344,12 @@ describe("paletteScreenRows ask prompt", () => {
     expect(line).toContain("END");
     expect(line.length).toBe(60);
   });
+
+  test("a narrow panel still shows part of the question", () => {
+    const line = paletteScreenRows({ ...base, width: 36, query: "who is on auth?", asking: true }).rows.map((row) => strip(row.text))[1]!;
+    expect(line).toContain("auth?");
+    expect(line.length).toBe(36);
+  });
 });
 
 describe("clipAnsi", () => {
