@@ -549,6 +549,14 @@ export type PaletteResult =
   | { type: "agent"; name: string }
   | { type: "ask"; question: string };
 
+// A line break with more keys after it in the same stdin chunk is part of a
+// paste, not the Enter key: in the ask prompt it becomes a space, so a
+// multi-line paste is one question instead of sending its first line and
+// spilling the rest into whatever handles keys next.
+export function joinPastedLines(keys: string[]): string[] {
+  return keys.map((key, i) => (key === "\r" || key === "\n") && i < keys.length - 1 ? " " : key);
+}
+
 // Picking this command turns the palette's query row into a one-line prompt
 // whose text goes to the concierge, rather than closing the palette.
 export const ASK_CONCIERGE_ID = "ask-concierge";
@@ -737,7 +745,8 @@ export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult |
       resolve(value);
     };
     const onData = (data: Buffer) => {
-      for (const key of splitKeys(data.toString("utf8"))) {
+      const keys = splitKeys(data.toString("utf8"));
+      for (const key of asking ? joinPastedLines(keys) : keys) {
         const commands = filterPaletteCommands(spec.commands, query);
         const agents = filterPaletteAgents(spec.agents, query);
         const total = commands.length + agents.length;
@@ -1971,7 +1980,8 @@ export async function pick(
     };
 
     const onData = (data: Buffer) => {
-      for (const key of splitKeys(data.toString())) {
+      const keys = splitKeys(data.toString());
+      for (const key of mode === "palette" && paletteAsking ? joinPastedLines(keys) : keys) {
         if (finished) return;
         // A throwing handler must not crash the picker process — in
         // persistent mode that would take the whole sidebar pane down.

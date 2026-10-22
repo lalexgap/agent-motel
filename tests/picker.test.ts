@@ -5,6 +5,7 @@ import {
   cycleField,
   editMenuHelp,
   hasEditActions,
+  joinPastedLines,
   EFFORT_OPTIONS,
   effortOptionsFor,
   effortStripOptions,
@@ -349,6 +350,13 @@ describe("paletteScreenRows ask prompt", () => {
     const line = paletteScreenRows({ ...base, width: 36, query: "who is on auth?", asking: true }).rows.map((row) => strip(row.text))[1]!;
     expect(line).toContain("auth?");
     expect(line.length).toBe(36);
+  });
+});
+
+describe("joinPastedLines", () => {
+  test("line breaks inside a pasted chunk become spaces; a final Enter still submits", () => {
+    expect(joinPastedLines(splitKeys("ab\ncd\r\nef\r"))).toEqual(["a", "b", " ", "c", "d", " ", "e", "f", "\r"]);
+    expect(joinPastedLines(["\r"])).toEqual(["\r"]);
   });
 });
 
