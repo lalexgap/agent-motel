@@ -7,8 +7,9 @@ import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
 
-function requireLiveSession(prefix: string) {
-  const agent = resolveAgent(prefix);
+function requireLiveSession(prefix: string, exact = false) {
+  const agent = exact ? readAgent(prefix) : resolveAgent(prefix);
+  if (!agent) throw new Error(`no local agent "${prefix}"`);
   if (!hasSession(agent.tmuxSession)) {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);
   }
@@ -90,9 +91,9 @@ export async function sendCommand(
 export async function interruptCommand(
   prefix: string,
   message: string,
-  opts: { from?: string } = {},
+  opts: { from?: string; exact?: boolean } = {},
 ): Promise<void> {
-  const agent = requireLiveSession(prefix);
+  const agent = requireLiveSession(prefix, opts.exact);
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, "interrupt", undefined, { record: false });
   if (!att.allowed) return rateLimited(from!, agent.name);
@@ -107,8 +108,8 @@ export async function interruptCommand(
   console.log(`interrupted "${agent.name}" with new message`);
 }
 
-export async function abortTurn(prefix: string): Promise<void> {
-  const agent = requireLiveSession(prefix);
+export async function abortTurn(name: string): Promise<void> {
+  const agent = requireLiveSession(name, true);
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry`);
   try {
     sendEscape(agent.tmuxSession);

@@ -285,6 +285,15 @@ describe("transcript + interrupt api", () => {
     );
     expect(withText.status).toBe(409);
   });
+
+  test("non-string interrupt text, model or effort → 400", async () => {
+    const post = (path: string, body: unknown) =>
+      fetch(url(path), auth({ method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }));
+    seedAgent("badtext");
+    expect((await post("/api/agents/badtext/interrupt", { text: 42 })).status).toBe(400);
+    expect((await post("/api/agents", { name: "badmodel", model: 5 })).status).toBe(400);
+    expect((await post("/api/agents", { name: "badeffort", effort: true })).status).toBe(400);
+  });
 });
 
 describe("token storage", () => {

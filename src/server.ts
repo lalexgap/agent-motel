@@ -166,6 +166,9 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         }
       | null;
     if (!body?.name) return json({ error: "name required" }, 400);
+    for (const field of ["model", "effort"] as const) {
+      if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
+    }
     // `provider` names either one; the older boolean `codex` only ever meant
     // "not the default", so it can't ask for claude now that codex IS the
     // default — clients that want claude send provider.
@@ -236,12 +239,14 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
     // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given
     if (parts.length === 3 && parts[2] === "interrupt" && method === "POST") {
-      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
-      const body = (await req.json().catch(() => null)) as { text?: string } | null;
-      const text = body?.text?.trim();
+      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
+      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
       try {
-        if (text) await interruptCommand(name, text);
-        else await abortTurn(name);
+        if (text) await interruptCommand(agent.name, text, { exact: true });
+        else await abortTurn(agent.name);
         return json({ ok: true });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
