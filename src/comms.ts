@@ -63,11 +63,11 @@ export function formatEnvelope(from: string, body: string): string {
 }
 
 // Operator messages carry no envelope, but Claude's cross-session inbox frames
-// everything as "another Claude session", so they get this marker there.
-export const OPERATOR_MARKER = "[am · operator message]";
-
-export function operatorEnvelope(body: string): string {
-  return `${OPERATOR_MARKER} ${body}`;
+// everything as "another Claude session", so they get this marker there. The
+// marker alone proves nothing (anyone can type it): the per-delivery tag is
+// what am's UserPromptSubmit hook checks before vouching for the message.
+export function operatorEnvelope(body: string, tag: string): string {
+  return `[am · operator message ${tag}] ${body}`;
 }
 
 export function isAttributedBody(body: string): boolean {

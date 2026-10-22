@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildInboxOutput,
+  verifiedOperatorNote,
   buildStopGate,
   formatInbox,
   hookEffects,
@@ -96,6 +97,16 @@ describe("inbox surfacing (UserPromptSubmit)", () => {
     expect(mixed).not.toContain("from other agents");
     expect(mixed).not.toContain("from another agent");
     expect(mixed).toContain("from your operator");
+  });
+
+  test("buildInboxOutput: a verified-operator note rides along, alone or with messages", () => {
+    const note = verifiedOperatorNote("abc123");
+    expect(note).toContain("[am · operator message abc123]");
+    const alone = JSON.parse(buildInboxOutput([], "UserPromptSubmit", [note])!);
+    expect(alone.hookSpecificOutput.additionalContext).toBe(note);
+    const both = JSON.parse(buildInboxOutput(["[am · from api] hi"], "UserPromptSubmit", [note])!);
+    expect(both.hookSpecificOutput.additionalContext).toStartWith(note);
+    expect(both.hookSpecificOutput.additionalContext).toContain("[am inbox]");
   });
 
   test("buildInboxOutput: null when empty, additionalContext tagged for the given event", () => {

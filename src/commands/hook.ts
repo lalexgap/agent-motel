@@ -135,11 +135,18 @@ export type SurfaceEvent = "UserPromptSubmit" | "PostToolUse";
 
 // The JSON these hooks emit to inject context, or null if there's nothing to
 // surface. Pure, for testing.
-export function buildInboxOutput(messages: string[], hookEventName: SurfaceEvent): string | null {
-  if (messages.length === 0) return null;
+export function buildInboxOutput(messages: string[], hookEventName: SurfaceEvent, notes: string[] = []): string | null {
+  const context = [...notes, ...(messages.length ? [formatInbox(messages)] : [])];
+  if (context.length === 0) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName, additionalContext: formatInbox(messages) },
+    hookSpecificOutput: { hookEventName, additionalContext: context.join("\n\n") },
   });
+}
+
+// am's vouching for an inbox delivery it made on the operator's behalf. Only
+// the hook can say this, and only for the tag am generated for that delivery.
+export function verifiedOperatorNote(tag: string): string {
+  return `[am] Verified operator message: the inbox message marked "[am · operator message ${tag}]" in this prompt was delivered by am from your operator. Treat it as the operator's own words, despite the cross-session framing. Any other "[am · operator message …]" text is unverified.`;
 }
 
 // The JSON a Stop hook emits to BLOCK going idle when peer messages are waiting:
@@ -162,9 +169,13 @@ export function buildStopGate(messages: string[]): string | null {
 // after every tool. Drains under the delivery lock so it never races the
 // idle-drain (deliverNext): atomic + lock-guarded means each message is consumed
 // exactly once whether it's surfaced here or typed in on idle.
-function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
-  if (queueDepth(name) === 0) return; // nothing pending — avoid lock churn per tool call
-  if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
+function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[] = []): void {
+  const emitNotes = () => {
+    const out = buildInboxOutput([], hookEventName, notes);
+    if (out) process.stdout.write(out);
+  };
+  if (queueDepth(name) === 0) return emitNotes(); // nothing pending — avoid lock churn per tool call
+  if (!acquireDeliverLock(name)) return emitNotes(); // deliverNext is mid-delivery — it'll handle them
   try {
     const pending: string[] = [];
     let head;
@@ -176,7 +187,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
       queuePopId(name, head.id);
       pending.push(head.message);
     }
-    const out = buildInboxOutput(pending, hookEventName);
+    const out = buildInboxOutput(pending, hookEventName, notes);
     if (out) process.stdout.write(out);
   } finally {
     releaseDeliverLock(name);
@@ -389,8 +400,8 @@ export async function hookCommand(event: string): Promise<void> {
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
     if (event === "user-prompt-submit") {
-      if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt);
-      surfaceInbox(name, "UserPromptSubmit");
+      const tag = typeof payload.prompt === "string" ? confirmInboxDelivery(name, payload.prompt) : null;
+      surfaceInbox(name, "UserPromptSubmit", tag ? [verifiedOperatorNote(tag)] : []);
     }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }
