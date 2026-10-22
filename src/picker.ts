@@ -161,6 +161,9 @@ export interface PickerHandlers {
   // Ensure the fleet concierge exists (created or revived as needed) and
   // resolve with its picker key; the picker then selects it like any row.
   concierge?: () => string | Promise<string>;
+  // Send a question to the concierge without attaching (created or revived
+  // as needed); resolves with banner feedback saying where it landed.
+  askConcierge?: (question: string) => Feedback | Promise<Feedback>;
   // Persistent mode (am ui sidebar): enter calls select instead of resolving
   // the picker, esc calls quit, and the picker keeps running. Returns
   // optional banner feedback.
@@ -537,9 +540,18 @@ export interface PaletteSpec {
   agents: PaletteAgentEntry[];
   // "lock in" on the hub (the right pane follows), "attach" elsewhere.
   attachLabel: string;
+  // Open straight into the ask-the-concierge prompt (the sidebar's C key).
+  ask?: boolean;
 }
 
-export type PaletteResult = { type: "command"; id: string } | { type: "agent"; name: string };
+export type PaletteResult =
+  | { type: "command"; id: string }
+  | { type: "agent"; name: string }
+  | { type: "ask"; question: string };
+
+// Picking this command turns the palette's query row into a one-line prompt
+// whose text goes to the concierge, rather than closing the palette.
+export const ASK_CONCIERGE_ID = "ask-concierge";
 
 export function filterPaletteAgents<T extends { label: string; search?: string }>(agents: T[], query: string): T[] {
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -567,8 +579,11 @@ export function paletteScreenRows(opts: {
   cursor: number;
   width: number;
   capacity: number;
+  // Ask prompt: the query row is the question, the body a hint.
+  asking?: boolean;
 }): { rows: PaletteRowOut[]; total: number; cursor: number } {
   const { commands, agents, attachLabel, query, width } = opts;
+  if (opts.asking) return askScreenRows(query, width);
   const total = commands.length + agents.length;
   const cursor = Math.min(opts.cursor, Math.max(0, total - 1));
 
@@ -654,6 +669,36 @@ export function paletteScreenRows(opts: {
   return { rows, total, cursor };
 }
 
+function askScreenRows(question: string, width: number): { rows: PaletteRowOut[]; total: number; cursor: number } {
+  const content = (value: string): string => `${THEME.form}${padAnsi(value, width)}`;
+  const ruleText = `${THEME.form}${THEME.border}${"─".repeat(width)}`;
+  const prompt = ` ${THEME.cyan}✦ ask the concierge ${THEME.blue}› `;
+  // Keep the caret in view: show the tail of a question wider than the row.
+  const room = Math.max(1, width - visibleWidth(prompt) - 12);
+  const shown = question.length > room ? "…" + question.slice(-(room - 1)) : question;
+  const keys = ` ${THEME.keycap} ⏎ ${THEME.form} ${THEME.muted}send${THEME.form}`;
+  return {
+    rows: [
+      { text: content("") },
+      {
+        text: content(alignAnsi(
+          `${prompt}${THEME.bright}${shown}${bg("7aa2f7")}${fg("16161e")} ${THEME.form}`,
+          `${THEME.faint}esc back ${THEME.form}`,
+          width,
+        )),
+      },
+      { text: ruleText },
+      { text: content(` ${THEME.muted}sent to the concierge — you stay here${THEME.form}`) },
+      { text: content(` ${THEME.faint}an empty question cancels${THEME.form}`) },
+      { text: ruleText },
+      { text: content(keys) },
+      { text: content("") },
+    ],
+    total: 0,
+    cursor: 0,
+  };
+}
+
 // The interactive UI inside a `tmux display-popup` (`am __palette`): the
 // popup window is exactly the panel, floating over the hub, so what's
 // underneath stays visible. Purely presentational — it resolves with the
@@ -661,6 +706,7 @@ export function paletteScreenRows(opts: {
 export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult | null> {
   let query = "";
   let cursor = 0;
+  let asking = !!spec.ask;
   const out = (s: string) => process.stdout.write(s);
   const render = () => {
     const width = process.stdout.columns ?? 74;
@@ -673,6 +719,7 @@ export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult |
       cursor,
       width,
       capacity: Math.max(1, rows - 6),
+      asking,
     });
     cursor = panel.cursor;
     const lines = panel.rows.map((row) => row.text + RESET);
@@ -699,10 +746,30 @@ export async function palettePopupUi(spec: PaletteSpec): Promise<PaletteResult |
         const commands = filterPaletteCommands(spec.commands, query);
         const agents = filterPaletteAgents(spec.agents, query);
         const total = commands.length + agents.length;
-        if (key === "\x03" || key === "\x1b" || key === "\x0b" || key === "\x10") return finishPopup(null);
+        if (key === "\x03" || key === "\x0b" || key === "\x10") return finishPopup(null);
+        if (asking) {
+          if (key === "\x1b") {
+            // Back to the command list, or closed if the prompt was the entry point.
+            if (spec.ask) return finishPopup(null);
+            asking = false;
+            query = "";
+          } else if (key === "\r" || key === "\n") {
+            const question = query.trim();
+            return finishPopup(question ? { type: "ask", question } : null);
+          } else if (key === "\x7f" || key === "\b") query = query.slice(0, -1);
+          else if (key >= " " && !key.startsWith("\x1b")) query += key;
+          continue;
+        }
+        if (key === "\x1b") return finishPopup(null);
         if (key === "\r" || key === "\n") {
           if (cursor < commands.length) {
             const command = commands[cursor];
+            if (command?.id === ASK_CONCIERGE_ID) {
+              asking = true;
+              query = "";
+              cursor = 0;
+              continue;
+            }
             return finishPopup(command ? { type: "command", id: command.id } : null);
           }
           const agent = agents[cursor - commands.length];
@@ -988,6 +1055,9 @@ export async function pick(
   let paletteQuery = "";
   let paletteCursor = 0;
   let paletteReturnMode: Mode = "list";
+  // Fallback palette's ask prompt; paletteQuery holds the question.
+  let paletteAsking = false;
+  let paletteAskDirect = false;
   let newName = "";
   let newTask = "";
   let newDir = "";
@@ -1101,7 +1171,8 @@ export async function pick(
         shortcut: "enter",
       },
       handlers.create && { id: "create", label: "Create agent", keywords: "new spawn", shortcut: "n" },
-      handlers.concierge && { id: "concierge", label: "Ask the concierge", keywords: "assistant fleet manage status find which agent question", shortcut: "c" },
+      handlers.askConcierge && { id: ASK_CONCIERGE_ID, label: "Ask the concierge…", keywords: "assistant fleet manage status find which agent question inline", shortcut: "C" },
+      handlers.concierge && { id: "concierge", label: "Open the concierge", keywords: "assistant fleet chat jump attach session", shortcut: "c" },
       { id: "filter", label: "Filter agents", keywords: "find name task", shortcut: "f" },
       { id: "search", label: "Search conversations", keywords: "chat transcript history", shortcut: "/" },
       {
@@ -1336,6 +1407,7 @@ export async function pick(
       width: panelWidth,
       // Fixed chrome: pad, query, rule above — rule, footer, pad below.
       capacity: Math.max(1, available - PALETTE_TOP - 6),
+      asking: paletteAsking,
     });
     paletteCursor = panel.cursor;
 
@@ -1500,7 +1572,8 @@ export async function pick(
         "",
         `${THEME.muted}FLEET${THEME.sidebar}`,
         ...(handlers.create ? [`${key("n")} create agent`] : []),
-        ...(handlers.concierge ? [`${key("c")} ask the concierge`] : []),
+        ...(handlers.concierge ? [`${key("c")} open the concierge`] : []),
+        ...(handlers.askConcierge ? [`${key("C")} ask the concierge (stay here)`] : []),
         `${key("f")} filter names/tasks`,
         `${key("r")} filter by role`,
         `${key("/")} search conversations`,
@@ -2099,6 +2172,10 @@ export async function pick(
       if (!command && !agent) return;
       paletteQuery = "";
       paletteCursor = 0;
+      if (command?.id === ASK_CONCIERGE_ID) {
+        paletteAsking = true;
+        return;
+      }
       feedback = null;
       // Un-zoom the palette overlay — except into the create form, which is
       // itself zoomed (beginCreate re-asserts it; skipping the toggle avoids
@@ -2108,10 +2185,55 @@ export async function pick(
       else runPaletteCommand(command!.id);
     };
 
+    // Fallback (in-picker) palette, optionally opening straight into the
+    // ask prompt. The overlay is full-screen, like the create form.
+    const openFallbackPalette = (ask = false) => {
+      paletteReturnMode = mode;
+      mode = "palette";
+      paletteQuery = "";
+      paletteCursor = 0;
+      paletteAsking = ask;
+      paletteAskDirect = ask;
+      feedback = null;
+      setForm(true);
+    };
+    const closeFallbackPalette = () => {
+      mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
+      paletteQuery = "";
+      paletteCursor = 0;
+      paletteAsking = false;
+      setForm(false);
+    };
+
+    // Inline ask: the question goes to the concierge (created or revived as
+    // needed) and the operator stays where they are. Asks are chained so two
+    // quick ones can't race to create the concierge twice.
+    let conciergeAsks: Promise<unknown> = Promise.resolve();
+    const askConcierge = (question: string) => {
+      if (!handlers.askConcierge) return;
+      feedback = { text: "sending to the concierge…", level: "info" };
+      render();
+      conciergeAsks = conciergeAsks
+        .then(() => handlers.askConcierge!(question))
+        .then(
+          (message) => {
+            if (finished) return;
+            feedback = asFeedback(message);
+            items = load();
+            render();
+          },
+          (error: Error) => {
+            if (finished) return;
+            feedback = { text: error.message, level: "error" };
+            render();
+          },
+        );
+    };
+
     // Popup palette: hand the current commands + fleet to the overlay host
     // and execute whatever it resolves with. The picker keeps refreshing
     // underneath — the popup floats above it.
-    const openPalettePopup = () => {
+    const openPalettePopup = (ask = false) => {
       if (paletteOpen || !handlers.palettePopup) return;
       paletteOpen = true;
       pushKeyBar("palette", true);
@@ -2128,6 +2250,7 @@ export async function pick(
           role: i.role,
         })),
         attachLabel: handlers.select ? "lock in" : "attach",
+        ask,
       };
       handlers.palettePopup(spec).then(
         (result) => {
@@ -2136,6 +2259,7 @@ export async function pick(
           if (result) {
             feedback = null;
             if (result.type === "agent") jumpToPaletteAgent(result.name);
+            else if (result.type === "ask") askConcierge(result.question);
             else runPaletteCommand(result.id);
           }
           if (!finished) render();
@@ -2155,19 +2279,8 @@ export async function pick(
           openPalettePopup();
           return;
         }
-        if (mode === "palette") {
-          mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
-          paletteQuery = "";
-          paletteCursor = 0;
-          setForm(false);
-        } else {
-          paletteReturnMode = mode;
-          mode = "palette";
-          paletteQuery = "";
-          paletteCursor = 0;
-          feedback = null;
-          setForm(true); // the overlay is full-screen, like the create form
-        }
+        if (mode === "palette") closeFallbackPalette();
+        else openFallbackPalette();
         return render();
       }
 
@@ -2227,12 +2340,29 @@ export async function pick(
         return render();
       }
 
+      if (mode === "palette" && paletteAsking) {
+        if (key === "\x1b") {
+          // Back to the command list, or closed if the prompt was the entry point.
+          if (paletteAskDirect) closeFallbackPalette();
+          else {
+            paletteAsking = false;
+            paletteQuery = "";
+          }
+        } else if (key === "\r" || key === "\n") {
+          const question = paletteQuery.trim();
+          closeFallbackPalette();
+          if (question) askConcierge(question);
+        } else if (key === "\x7f" || key === "\b") {
+          paletteQuery = paletteQuery.slice(0, -1);
+        } else if (key >= " " && !key.startsWith("\x1b")) {
+          paletteQuery += key;
+        }
+        return render();
+      }
+
       if (mode === "palette") {
         if (key === "\x1b") {
-          mode = paletteReturnMode === "palette" ? "list" : paletteReturnMode;
-          paletteQuery = "";
-          paletteCursor = 0;
-          setForm(false);
+          closeFallbackPalette();
         } else if (key === "\r" || key === "\n") {
           executePaletteCommand();
         } else if (key === "\x1b[A") {
@@ -2574,6 +2704,9 @@ export async function pick(
         beginCreate();
       } else if (key === "c" && handlers.concierge) {
         openConcierge();
+      } else if (key === "C" && handlers.askConcierge) {
+        if (handlers.palettePopup) openPalettePopup(true);
+        else openFallbackPalette(true);
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;

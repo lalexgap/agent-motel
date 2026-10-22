@@ -21,33 +21,42 @@ function requireLiveSession(prefix: string) {
 // queue for store-and-forward instead of erroring. A collector that owns this
 // name sweeps it out. Surfaces any of this sender's messages that expired
 // undelivered, so a bounce is never silent.
-function outboxFallback(prefix: string, message: string, opts: { from?: string }): void {
+function outboxFallback(prefix: string, message: string, opts: { from?: string; quiet?: boolean }): SendOutcome {
   const from = resolveSender(opts.from);
   const to = bareName(prefix);
   outboxAppend({ to, from, fromHost: hostname(), body: message });
-  console.log(`queued in outbox for "${to}" — delivered when a collector picks it up`);
+  if (!opts.quiet) console.log(`queued in outbox for "${to}" — delivered when a collector picks it up`);
   for (const b of from ? takeBouncesFrom(from) : []) {
     console.error(
       `note: your earlier message to "${b.to}" expired undelivered (queued ${b.queuedAt}, never collected)`,
     );
   }
+  return "outbox";
 }
 
 // Drop notice when a send trips the per-pair rate limiter — surfaced so a
 // looping agent (or a human) sees why the message vanished.
-function rateLimited(from: string, to: string): void {
+function rateLimited(from: string, to: string): SendOutcome {
   const cfg = loadConfig();
   console.error(
     `am: dropped message from "${from}" to "${to}" — over the rate limit ` +
       `(${cfg.commsMaxPerWindow}/${cfg.commsWindowSeconds}s). Possible message loop.`,
   );
+  return "dropped";
 }
 
+// How a send landed: injected mid-turn, delivered to an idle agent, queued
+// for its next idle, parked in the outbox, or dropped by the rate limiter.
+export type SendOutcome = "steered" | "delivered" | "queued" | "outbox" | "dropped";
+
+// quiet suppresses the CLI status line for in-UI callers (the picker reports
+// the returned outcome in its own banner instead).
 export async function sendCommand(
   prefix: string,
   message: string,
-  opts: { now: boolean; from?: string },
-): Promise<void> {
+  opts: { now: boolean; from?: string; quiet?: boolean },
+): Promise<SendOutcome> {
+  const log = (line: string) => { if (!opts.quiet) console.log(line); };
   const agent = matchAgent(prefix);
   if (!agent) return outboxFallback(prefix, message, opts);
   if (!hasSession(agent.tmuxSession)) {
@@ -68,8 +77,8 @@ export async function sendCommand(
       if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
     }
     finally { releaseDeliverLock(agent.name); }
-    console.log(`sent to "${agent.name}" (steering current turn)`);
-    return;
+    log(`sent to "${agent.name}" (steering current turn)`);
+    return "steered";
   }
 
   const queuedId = queueAppendForAgent(agent.name, body);
@@ -78,13 +87,14 @@ export async function sendCommand(
     // Agent isn't working, so no Stop hook is coming — deliver right away.
     const result = await deliverNext(agent.name);
     if (result.status === "submitted" && result.id === queuedId) {
-      console.log(`delivered to "${agent.name}" (was idle)`);
-    } else {
-      console.log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — awaiting delivery`);
+      log(`delivered to "${agent.name}" (was idle)`);
+      return "delivered";
     }
+    log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — awaiting delivery`);
   } else {
-    console.log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — delivered when it goes idle`);
+    log(`queued for "${agent.name}" (${queueDepth(agent.name)} in queue) — delivered when it goes idle`);
   }
+  return "queued";
 }
 
 export async function interruptCommand(
@@ -95,7 +105,7 @@ export async function interruptCommand(
   const agent = requireLiveSession(prefix);
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, "interrupt", undefined, { record: false });
-  if (!att.allowed) return rateLimited(from!, agent.name);
+  if (!att.allowed) { rateLimited(from!, agent.name); return; }
 
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
   try {
