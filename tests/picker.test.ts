@@ -5,6 +5,7 @@ import {
   cycleField,
   editMenuHelp,
   hasEditActions,
+  joinPastedLines,
   EFFORT_OPTIONS,
   effortOptionsFor,
   effortStripOptions,
@@ -14,6 +15,7 @@ import {
   formFields,
   matchesPickerRole,
   nestPickerItems,
+  paletteScreenRows,
   parseMouseEvent,
   pickerRoleFilterOptions,
   preservedFieldIndex,
@@ -320,6 +322,41 @@ describe("filterPaletteCommands", () => {
     expect(filterPaletteCommands(commands, "search chat").map((c) => c.id)).toEqual(["search"]);
     expect(filterPaletteCommands(commands, "e x").map((c) => c.id)).toEqual(["stop"]);
     expect(filterPaletteCommands(commands, "stop").map((c) => c.id)).toEqual(["stop", "all"]);
+  });
+});
+
+describe("paletteScreenRows ask prompt", () => {
+  const strip = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+  const base = { commands: [{ id: "create", label: "Create agent" }], agents: [], attachLabel: "attach", cursor: 0, width: 60, capacity: 10 };
+
+  test("replaces the results with the question prompt", () => {
+    const panel = paletteScreenRows({ ...base, query: "who is on auth?", asking: true });
+    const text = panel.rows.map((row) => strip(row.text));
+    expect(text.some((line) => line.includes("ask the concierge › who is on auth?"))).toBe(true);
+    expect(text.some((line) => line.includes("Create agent"))).toBe(false);
+    expect(panel.rows.every((row) => row.entry === undefined)).toBe(true);
+    expect(panel.rows.every((row) => visibleWidth(row.text) === 60)).toBe(true);
+  });
+
+  test("a long question shows its tail so the caret stays visible", () => {
+    const question = "x".repeat(100) + "END";
+    const line = paletteScreenRows({ ...base, query: question, asking: true }).rows.map((row) => strip(row.text))[1]!;
+    expect(line).toContain("…");
+    expect(line).toContain("END");
+    expect(line.length).toBe(60);
+  });
+
+  test("a narrow panel still shows part of the question", () => {
+    const line = paletteScreenRows({ ...base, width: 36, query: "who is on auth?", asking: true }).rows.map((row) => strip(row.text))[1]!;
+    expect(line).toContain("auth?");
+    expect(line.length).toBe(36);
+  });
+});
+
+describe("joinPastedLines", () => {
+  test("line breaks inside a pasted chunk become spaces; a final Enter still submits", () => {
+    expect(joinPastedLines(splitKeys("ab\ncd\r\nef\r"))).toEqual(["a", "b", " ", "c", "d", " ", "e", "f", "\r"]);
+    expect(joinPastedLines(["\r"])).toEqual(["\r"]);
   });
 });
 

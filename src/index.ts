@@ -24,7 +24,7 @@ import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { restartAgent, restartCommand } from "./commands/restart";
-import { conciergeCommand, ensureConcierge } from "./commands/concierge";
+import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
 import { searchCommand } from "./commands/search";
@@ -469,6 +469,7 @@ async function pickerFlow(): Promise<void> {
       return shortenHome(agent?.dir ?? process.cwd());
     },
     concierge: async () => (await ensureConcierge()).key,
+    askConcierge: async (question: string) => conciergeAskFeedback(await ensureConcierge(question, { quiet: true })),
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,

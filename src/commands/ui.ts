@@ -12,7 +12,7 @@ import { pick, type Feedback, type PaletteResult, type PaletteSpec, type PickerH
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
 import { newCommand } from "./new";
-import { ensureConcierge } from "./concierge";
+import { ensureConcierge, conciergeAskFeedback } from "./concierge";
 import { destroyAgent, stopAgent } from "./rm";
 import { reviveAgent } from "./resume";
 import { restartAgent } from "./restart";
@@ -481,6 +481,7 @@ export async function sidebarCommand(): Promise<void> {
       return shortenHome(agent?.dir ?? process.cwd());
     },
     concierge: async () => (await ensureConcierge()).key,
+    askConcierge: async (question: string) => conciergeAskFeedback(await ensureConcierge(question, { quiet: true })),
     move: moveHandler,
     clone: cloneHandler,
     handoff: handoffHandler,
