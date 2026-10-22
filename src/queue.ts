@@ -143,6 +143,14 @@ export function queueAppendLocked(name: string, message: string, msgId?: string,
   return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) }, undefined, entryId);
 }
 
+// Put a handed-over entry back under its old id, so it sorts ahead of
+// everything queued after it. Callers hold the delivery lock.
+export function queueRestoreLocked(name: string, entryId: string, message: string): void {
+  messageFile(name, entryId.replace(/\.json$/, ""));
+  ensureDirs();
+  writeEntry(name, { message, queuedAt: new Date().toISOString() }, undefined, entryId);
+}
+
 export function queueAppend(name: string, message: string, msgId?: string): string {
   return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId));
 }

@@ -312,6 +312,18 @@ export function markDelivered(
   afterHandover(name, id, confirmedBy);
 }
 
+// A delivered message the agent never started, taken back to be handed over
+// again: queued as it was before its handover. Callers hold the delivery lock.
+export function requeueDelivered(name: string, entryId: string): void {
+  const id = entryMessageId(entryId);
+  if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
+  updateRecord(name, id, (r) => {
+    if (r.state !== "delivered" || r.startedAt) return null;
+    const { handedAt: _h, via: _v, interruptedAt: _i, interrupted: _x, ...rest } = r;
+    return { ...rest, state: "queued", deliveredAt: null, doneAt: null, transcriptIndex: null };
+  });
+}
+
 // Queue a tracked message: the record lands before the entry, under the
 // producer lock, so a deliverer never pops an entry whose record is missing
 // and a cancel (which also takes the producer lock) never sees one half made.

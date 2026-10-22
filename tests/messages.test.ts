@@ -69,7 +69,8 @@ function say(type: "user" | "assistant", text: string): void {
 // box clears on Enter (mode "submit"); mode "dead" makes the session vanish,
 // a `busy` file hides the composer behind a running turn, and a `running`
 // file shows an empty composer with the running-turn hint under it. C-u
-// empties the input box and returns to mode "submit".
+// empties the input box and returns to mode "submit", unless a `stuck` file
+// makes it do nothing.
 function fakeSession(status: AgentState["status"] = "idle") {
   writeAgent({
     name: "api", provider: "claude", status, tmuxSession: "agentmgr-api", dir: home,
@@ -97,7 +98,7 @@ case "$1" in
       printf '%s\\n' "$6" >> "$AGENTMGR_HOME/typed"
     else
       printf '%s\\n' "$4" >> "$AGENTMGR_HOME/keys"
-      [ "$4" = C-u ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
+      [ "$4" = C-u ] && [ ! -e "$AGENTMGR_HOME/stuck" ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
       [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
@@ -715,6 +716,26 @@ describe("messages api", () => {
       expect(readAgent("api")!.status).toBe("idle");
       expect(readFileSync(join(home, "keys"), "utf8")).toBe("Escape\nC-u\nEnter\n");
       expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
+    });
+
+    test("a put-back prompt Ctrl+U doesn't shorten gets one press, not one per poll", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      writeFileSync(join(home, "mode"), "keep");
+      writeFileSync(join(home, "input"), "go");
+      writeFileSync(join(home, "stuck"), "");
+
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect((await interrupt({ messageId: id })).status).toBe(200);
+      } finally {
+        log.mockRestore();
+      }
+      expect(keys()).toBe("Escape\nC-u\n");
+      expect(readMessage("api", id)).toMatchObject({ state: "delivered" });
+      expect(readAgent("api")!.status).toBe("working");
     });
 
     test("Esc-only with other text in the composer leaves the turn running", async () => {
