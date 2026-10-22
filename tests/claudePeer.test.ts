@@ -198,6 +198,18 @@ describe("inbox delivery", () => {
     expect(queueDepth("api")).toBe(0);
     expect(pendingDeliveryId("api")).toBeNull();
   }, 20_000);
+
+  test("an operator message is confirmed only by a prompt carrying its marker", async () => {
+    writeAgent(agent());
+    liveEntry();
+    await listen(false);
+    const id = queueAppend("api", "ok");
+    await deliverNext("api");
+    confirmInboxDelivery("api", "ok, look at the logs");
+    expect(finishConfirmedDelivery("api", id)).toBe(false);
+    confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · operator message] ok");
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  }, 20_000);
 });
 
 describe("SessionStart", () => {

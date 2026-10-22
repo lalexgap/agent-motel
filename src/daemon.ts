@@ -22,10 +22,7 @@ export const DELIVERY_DELAY_MS = 500;
 // loaded host for no visible freshness.
 const RECONCILE_INTERVAL_MS = 15_000;
 
-// The daemon's stdout/stderr are redirected to daemonLogFile() by ensureDaemon,
-// so these lines are what you find when cross-machine mail stops flowing.
-// Why a queued message to an idle agent wasn't delivered, or null when it was
-// (or the hold is a momentary lock). Pure.
+// Why a queued message to an idle agent was held, or null for delivered or a momentary lock.
 export function stuckDeliveryReason(result: DeliveryResult): string | null {
   if (result.status !== "queued") return null;
   switch (result.reason) {
@@ -40,6 +37,8 @@ export function stuckDeliveryReason(result: DeliveryResult): string | null {
   }
 }
 
+// The daemon's stdout/stderr are redirected to daemonLogFile() by ensureDaemon,
+// so these lines are what you find when cross-machine mail stops flowing.
 function log(message: string): void {
   console.error(`[${new Date().toISOString()}] ${message}`);
 }
@@ -277,7 +276,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // them to exited so status stays honest. Also self-heal queues that got
   // stranded while an agent was idle (e.g. a send racing a status change):
   // an idle agent fires no Stop hook, so nothing else would drain them.
-  // Refusals repeat every sweep; log only when an agent's reason changes.
+  // Holds repeat every sweep; log only when an agent's reason changes.
   const lastRefusal = new Map<string, string>();
   const reconciler = setInterval(() => {
     // Bound the log during a long run — rotation at spawn can't help a daemon

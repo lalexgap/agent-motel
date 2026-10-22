@@ -141,7 +141,7 @@ function normalized(text: string): string {
 // deliverer holds the lock while it waits for exactly this.
 export function confirmInboxDelivery(name: string, prompt: string): void {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
-  if (pending?.via !== "inbox" || !normalized(prompt).includes(normalized(pending.message))) return;
+  if (pending?.via !== "inbox" || !normalized(prompt).includes(normalized(claudeInboxContent(pending.message)))) return;
   writeJsonAtomic(confirmedPath(name), { id: pending.id });
 }
 
@@ -253,11 +253,14 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
 // Codex's queue is durable, so a successful add is delivery. Claude's socket
 // never replies, so its sends wait for the hook's confirmation. Claude frames
 // inbox content as "not typed by your user", so operator messages carry an
-// explicit marker there. Typing remains the fallback when the inbox is
-// unusable or never confirms.
+// explicit marker there.
 interface InboxSender {
   send: () => Promise<void>;
   confirm: boolean;
+}
+
+function claudeInboxContent(message: string): string {
+  return isAttributedBody(message) ? message : operatorEnvelope(message);
 }
 
 function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
@@ -267,7 +270,7 @@ function inboxSender(agent: AgentState, head: { id: string; message: string }): 
       ? { send: () => queueCodexMessage(threadId, head.message, clientMessageId(head.id)), confirm: false }
       : null;
   }
-  const content = isAttributedBody(head.message) ? head.message : operatorEnvelope(head.message);
+  const content = claudeInboxContent(head.message);
   if (!peerSendable(content)) return null;
   const target = peerTarget(agent);
   return target ? { send: () => sendPeerMessage(target, content, randomUUID()), confirm: true } : null;
