@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { hostname } from "node:os";
-import { agentProvider, listAgents, readAgent, resolveAgent, type Provider } from "./state";
+import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
 import { palettePopupUi, pick, type PaletteSpec, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
@@ -539,6 +539,7 @@ async function main(): Promise<void> {
   if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
 
   const args = parseArgs(rest);
+  if (args.flags.exact === true) setExactNamesOnly(true);
   if (!forceLocal) maybeForwardToFleet(command, args, localArgv);
 
   switch (command) {

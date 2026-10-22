@@ -37,7 +37,8 @@ export function resolveHost(host: string): string | null | undefined {
 }
 
 // Run `am <args>` on host and return stdout. `--local` keeps the remote am
-// from forwarding a name it doesn't have to yet another fleet host.
+// from forwarding a name it doesn't have to yet another fleet host; `--exact`
+// disables prefix matching, as the local routes do.
 export async function runRemoteAm(
   host: string,
   args: string[],
@@ -46,7 +47,7 @@ export async function runRemoteAm(
   const timeoutMs = opts.timeoutMs ?? REMOTE_TIMEOUT_MS;
   let result: SshResult;
   try {
-    result = await amRunner(host, [...args, "--local"], { stdin: opts.stdin, timeoutMs });
+    result = await amRunner(host, [...args, "--local", "--exact"], { stdin: opts.stdin, timeoutMs });
   } catch (error) {
     throw new RemoteError(`ssh ${host}: ${(error as Error).message}`, 502);
   }

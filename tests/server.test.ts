@@ -344,7 +344,7 @@ describe("remote agents api (host:name)", () => {
     const res = await fetch(url("/api/agents/laptop:api"), auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(detail);
-    expect(calls).toEqual([{ host: "laptop", args: ["__detail", "api", "--local"], stdin: undefined, timeoutMs: 20_000 }]);
+    expect(calls).toEqual([{ host: "laptop", args: ["__detail", "api", "--local", "--exact"], stdin: undefined, timeoutMs: 20_000 }]);
   });
 
   test("an encoded colon routes too; dotted hosts are accepted", async () => {
@@ -358,9 +358,9 @@ describe("remote agents api (host:name)", () => {
     expect(await (await post("/api/agents/laptop:api/messages", { text: "steer", mode: "now" })).json()).toEqual({ ok: true, mode: "now" });
     await post("/api/agents/laptop:api/messages", { text: "stop that", mode: "interrupt" });
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
-      [["send", "api", "-", "--local"], "hi `there`"],
-      [["send", "api", "-", "--now", "--local"], "steer"],
-      [["interrupt", "api", "-", "--local"], "stop that"],
+      [["send", "api", "-", "--local", "--exact"], "hi `there`"],
+      [["send", "api", "-", "--now", "--local", "--exact"], "steer"],
+      [["interrupt", "api", "-", "--local", "--exact"], "stop that"],
     ]);
     expect((await post("/api/agents/laptop:api/messages", { mode: "queue" })).status).toBe(400);
   });
@@ -374,7 +374,7 @@ describe("remote agents api (host:name)", () => {
     const body = (await (await fetch(url("/api/agents/laptop:api/transcript?after=1"), auth())).json()) as any;
     expect(body.total).toBe(3);
     expect(body.entries.map((e: any) => e.index)).toEqual([1, 2]);
-    expect(calls[0]!.args).toEqual(["transcript", "api", "--json", "--local"]);
+    expect(calls[0]!.args).toEqual(["transcript", "api", "--json", "--local", "--exact"]);
     expect((await fetch(url("/api/agents/laptop:api/transcript?after=-1"), auth())).status).toBe(400);
   });
 
@@ -392,11 +392,11 @@ describe("remote agents api (host:name)", () => {
     await post("/api/agents/laptop:api/resume");
     await fetch(url("/api/agents/laptop:api"), auth({ method: "DELETE" }));
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
-      [["interrupt", "api", "--local"], undefined],
-      [["interrupt", "api", "-", "--local"], "new plan"],
-      [["stop", "api", "--local"], undefined],
-      [["resume", "api", "--local"], undefined],
-      [["rm", "api", "--local"], undefined],
+      [["interrupt", "api", "--local", "--exact"], undefined],
+      [["interrupt", "api", "-", "--local", "--exact"], "new plan"],
+      [["stop", "api", "--local", "--exact"], undefined],
+      [["resume", "api", "--local", "--exact"], undefined],
+      [["rm", "api", "--local", "--exact"], undefined],
     ]);
     expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);
   });
@@ -447,7 +447,7 @@ describe("remote agents api (host:name)", () => {
     expect(calls[1]).toEqual({
       host: "laptop",
       args: ["new", "far", "--no-jump", "-m", "-", "--dir", "/Users/remote/code/app", "--in-place", "--claude",
-        "--model", "opus", "--effort", "high", "--role", "engineer", "--local"],
+        "--model", "opus", "--effort", "high", "--role", "engineer", "--local", "--exact"],
       stdin: "fix it",
       timeoutMs: 90_000,
     });
@@ -456,7 +456,7 @@ describe("remote agents api (host:name)", () => {
   test("POST with remoteDir skips the mapping; non-home dir needs remoteDir", async () => {
     await post("/api/agents", { name: "far", host: "laptop", dir: "/srv/x", remoteDir: "/opt/y", codex: true });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.args).toEqual(["new", "far", "--no-jump", "--dir", "/opt/y", "--codex", "--local"]);
+    expect(calls[0]!.args).toEqual(["new", "far", "--no-jump", "--dir", "/opt/y", "--codex", "--local", "--exact"]);
     expect((await post("/api/agents", { name: "far", host: "laptop", dir: "/srv/x" })).status).toBe(400);
     expect((await post("/api/agents", { name: "far", host: "laptop", remoteDir: "rel" })).status).toBe(400);
   });
