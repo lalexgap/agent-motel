@@ -67,7 +67,8 @@ function say(type: "user" | "assistant", text: string): void {
 
 // A claude agent with a three-entry transcript and a fake tmux whose input
 // box clears on Enter (mode "submit"); mode "dead" makes the session vanish,
-// and a `busy` file hides the composer behind a running turn.
+// a `busy` file hides the composer behind a running turn, and a `running`
+// file shows an empty composer with the running-turn hint under it.
 function fakeSession(status: AgentState["status"] = "idle") {
   writeAgent({
     name: "api", provider: "claude", status, tmuxSession: "agentmgr-api", dir: home,
@@ -87,6 +88,7 @@ case "$1" in
     echo '────────────────────'
     printf '❯ '; cat "$AGENTMGR_HOME/input"; echo
     echo '────────────────────'
+    [ -e "$AGENTMGR_HOME/running" ] && echo '  ⏵⏵ bypass permissions on · esc to interrupt'
     ;;
   send-keys)
     if [ "$4" = '-l' ]; then
@@ -718,6 +720,22 @@ describe("messages api", () => {
       expect(res.status).toBe(200);
       expect(readMessage("api", second)).toMatchObject({ state: "done", interrupted: true });
       expect(readAgent("api")!.status).toBe("idle");
+    });
+
+    test("an empty composer that still shows a running turn is not ended", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      writeFileSync(join(home, "running"), "");
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect((await interrupt({ messageId: id })).status).toBe(200);
+      } finally {
+        log.mockRestore();
+      }
+      expect(readMessage("api", id)).toMatchObject({ state: "delivered" });
+      expect(readAgent("api")!.status).toBe("working");
     });
 
     test("an unrelated prompt doesn't make it interruptible", async () => {

@@ -110,6 +110,25 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
   return PLACEHOLDER_RE.test(text) ? "" : text;
 }
 
+const RUNNING_RE = /esc to interrupt/;
+
+// Whether the TUI shows a turn running, from the hint beside its composer:
+// Claude's footer under it, or the status line just above it (Codex, and
+// older Claude). Transcript text further up the pane can't pass for it.
+export function turnRunning(pane: string[], provider: Provider = "claude"): boolean {
+  const plain = pane.map(stripSgr);
+  if (provider === "codex") {
+    let prompt = -1;
+    for (let i = 0; i < plain.length; i++) if (/^\s*›(?:\s|$)/.test(plain[i]!)) prompt = i;
+    return prompt >= 0 && plain.slice(Math.max(0, prompt - 5), prompt).some(line => RUNNING_RE.test(line));
+  }
+  const seps: number[] = [];
+  for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
+  if (seps.length < 2) return false;
+  const top = seps[seps.length - 2]!;
+  return plain.slice(Math.max(0, top - 3), top).concat(plain.slice(seps[seps.length - 1]! + 1)).some(line => RUNNING_RE.test(line));
+}
+
 export function inputBoxText(pane: string[], provider: Provider = "claude"): string {
   return parsedInputBoxText(pane, provider) ?? "";
 }
@@ -389,7 +408,8 @@ const ABORT_POLLS = 16;
 
 // Neither TUI fires Stop for a turn aborted with Esc, so nothing else ends it:
 // the agent stays working, its receipts delivered, its queue undrained. Once
-// the pane is back at an empty composer (the check deliverNext submits by),
+// the pane is back at an empty composer (the check deliverNext submits by)
+// with no running-turn hint (which an Esc the turn ignored leaves up),
 // end the turn as a Stop would, its receipts done and marked interrupted, and
 // deliver what is queued. A Stop or a prompt since the Esc means the turn
 // ended or a new one started, either of which brings its own Stop.
@@ -401,7 +421,7 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     if (agent.status !== "working" && agent.status !== "needs-attention") return false;
     if (Date.parse(agent.promptAt ?? "") > escAt) return false;
     const pane = capturePane(agent.tmuxSession, { colors: true });
-    if (!pane || parsedInputBoxText(pane, agentProvider(agent)) !== "") continue;
+    if (!pane || parsedInputBoxText(pane, agentProvider(agent)) !== "" || turnRunning(pane, agentProvider(agent))) continue;
     const at = new Date();
     try {
       markTurnEnded(name, agent, at, true);
