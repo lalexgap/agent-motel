@@ -146,7 +146,9 @@ function normalized(text: string): string {
 // vouch for it.
 export function confirmInboxDelivery(name: string, prompt: string): string | null {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
-  if (pending?.via !== "inbox" || !pending.content || !normalized(prompt).includes(normalized(pending.content))) return null;
+  // Markers written before `content` existed came only from peer sends, whose content was the message itself.
+  const content = pending?.content ?? (pending && isAttributedBody(pending.message) ? pending.message : null);
+  if (pending?.via !== "inbox" || !content || !normalized(prompt).includes(normalized(content))) return null;
   writeJsonAtomic(confirmedPath(name), { id: pending.id });
   return pending.operatorTag ?? null;
 }

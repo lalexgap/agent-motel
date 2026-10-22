@@ -188,6 +188,13 @@ describe("inbox delivery", () => {
     expect(typed()).toBe(true);
   }, 20_000);
 
+  test("a pending marker from before `content` existed still confirms a peer send", () => {
+    const id = queueAppend("api", "[am · from web] ping");
+    writeFileSync(join(queueDir(), "api", ".delivery.pending"), JSON.stringify({ id, message: "[am · from web] ping", via: "inbox", sentAt: Date.now() }));
+    expect(confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · from web] ping")).toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  });
+
   test("a late confirmation retires the message for hook drains", async () => {
     writeAgent(agent());
     liveEntry();
