@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
-import { queueHead, queuePopId } from "./queue";
+import { queueClearEntries, queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
@@ -20,7 +20,7 @@ import {
   releaseProducerLock,
   renewHandoff,
 } from "./mailbox";
-import { cancelQueuedLocked, deliveryMark, isMessageId, markDelivered, readMessage, type DeliveryMark, type MessageState } from "./messages";
+import { cancelQueuedLocked, clearQueuedLocked, deliveryMark, isMessageId, markDelivered, readMessage, type DeliveryMark, type MessageState } from "./messages";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
 // new inode while the current holder is still delivering. The kernel releases
@@ -163,7 +163,11 @@ function deliveryConfirmed(name: string, id: string): boolean {
 function finishDelivery(name: string, id: string): void {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
   queuePopId(name, id);
-  markDelivered(name, id, pending?.id === id ? pending.mark : undefined);
+  try {
+    markDelivered(name, id, pending?.id === id ? pending.mark : undefined);
+  } catch {
+    // a receipt must not undo a delivery
+  }
   rmSync(pendingPath(name), { force: true });
   rmSync(confirmedPath(name), { force: true });
 }
@@ -353,6 +357,30 @@ export async function cancelMessage(name: string, id: string): Promise<CancelRes
       }
     }
     if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry the cancel`, state: "queued" };
+    await Bun.sleep(100);
+  }
+}
+
+// `am queue --clear`: under both locks, so no enqueue or delivery interleaves
+// with marking the receipts and removing the entries.
+export async function clearQueue(name: string): Promise<void> {
+  for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
+    if (acquireDeliverLock(name)) {
+      try {
+        if (acquireProducerLock(name)) {
+          try {
+            clearQueuedLocked(name, pendingDeliveryId(name));
+            queueClearEntries(name);
+            return;
+          } finally {
+            releaseProducerLock(name);
+          }
+        }
+      } finally {
+        releaseDeliverLock(name);
+      }
+    }
+    if (Date.now() >= deadline) throw new Error(`agent "${name}" mailbox is busy — retry`);
     await Bun.sleep(100);
   }
 }

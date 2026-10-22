@@ -11,7 +11,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
-import { deliveryMark, markDelivered, markTurnEnded } from "../messages";
+import { deliveryMark, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -156,6 +156,34 @@ export function buildStopGate(messages: string[]): string | null {
   return JSON.stringify({ decision: "block", reason });
 }
 
+// Receipt bookkeeping must never fail a hook. One drain hands every message
+// over at once, so one mark (one transcript parse) serves them all.
+function receipt(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // the message still goes out; only its receipt lags
+  }
+}
+
+function drainReceipts(name: string) {
+  let shared: DeliveryMark | null = null;
+  return {
+    mark(entryId: string): DeliveryMark | null {
+      if (shared) return shared;
+      try {
+        shared = deliveryMark(name, entryId);
+      } catch {
+        return null;
+      }
+      return shared;
+    },
+    delivered(entryId: string, mark: DeliveryMark | null): void {
+      receipt(() => markDelivered(name, entryId, mark, "absorbed"));
+    },
+  };
+}
+
 // Drain this agent's queued peer messages and surface them as context — so it
 // reads its inbox automatically at the start of every turn AND between tool
 // calls mid-turn, no idle-wait, no "check your messages" nudge. queueDepth
@@ -169,14 +197,15 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
   try {
     const pending: string[] = [];
     let head;
+    const receipts = drainReceipts(name);
     while ((head = queueHead(name)) !== null) {
       if (head.id === pendingDeliveryId(name)) {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
-      const mark = deliveryMark(name, head.id);
+      const mark = receipts.mark(head.id);
       queuePopId(name, head.id);
-      markDelivered(name, head.id, mark);
+      receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
     const out = buildInboxOutput(pending, hookEventName);
@@ -193,14 +222,15 @@ function stopGate(name: string): string | null {
   try {
     const pending: string[] = [];
     let head;
+    const receipts = drainReceipts(name);
     while ((head = queueHead(name)) !== null) {
       if (head.id === pendingDeliveryId(name)) {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
-      const mark = deliveryMark(name, head.id);
+      const mark = receipts.mark(head.id);
       queuePopId(name, head.id);
-      markDelivered(name, head.id, mark);
+      receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
     return buildStopGate(pending);
@@ -364,7 +394,13 @@ export async function hookCommand(event: string): Promise<void> {
     ? Math.max(0, (Date.now() - Date.parse(workingSince)) / 1000)
     : 0;
 
+  const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
   updateAgentStatus(agent, effects.status, effects.reason);
+  if (!fromSubagent) {
+    const now = new Date().toISOString();
+    if (event === "user-prompt-submit") agent.promptAt = now;
+    if (event === "pre-tool-use" || event === "post-tool-use") agent.toolAt = now;
+  }
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
   // conversation, which `am transcript`, `am search` and the activity reader
@@ -388,9 +424,10 @@ export async function hookCommand(event: string): Promise<void> {
 
   // A turn ended: delivery receipts for messages it took are done. A blocked
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
-  // session start.
-  if (!fromSubagent && event !== "session-start" && (effects.status === "idle" || effects.status === "exited")) {
-    markTurnEnded(name);
+  // session start. A session end finishes no turn of its own.
+  if (!fromSubagent && event !== "session-start") {
+    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent));
+    else if (effects.status === "exited") receipt(() => markSessionEnded(name, agent, lastIdleAt));
   }
 
   // Surface any queued peer messages into context so the agent reads them

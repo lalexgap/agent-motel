@@ -8,18 +8,13 @@ import { agentProvider, readAgent, type AgentState } from "./state";
 import { locateTranscript, parseTranscript } from "./transcript";
 import { hasSession } from "./tmux";
 import { queueAppendLocked, queuePopId } from "./queue";
-import {
-  acquireMailboxLock,
-  acquireProducerLock,
-  releaseMailboxLock,
-  releaseProducerLock,
-  withMailboxWrite,
-} from "./mailbox";
+import { withMailboxWrite } from "./mailbox";
 
 // Delivery receipts for tracked messages (API sends, `am send --json`).
 // Records live in queue/<name>/.messages/, so rename, rm and gc carry them with
 // the queue. A queued record's id is also its queue entry's file name
-// (`<id>.json`), which is how the delivery paths find it.
+// (`<id>.json`), which is how the delivery paths find it. A queued record
+// waits out a stopped session, as its entry does, for a resume to deliver it.
 
 export type MessageState = "queued" | "delivered" | "done" | "cancelled" | "failed";
 
@@ -33,10 +28,14 @@ export interface MessageView {
   error?: string;
 }
 
+// How the agent got the message: as a new turn's prompt, steered into the
+// running turn, or absorbed into it by a hook. Records without it are prompts.
+export type DeliveryVia = "prompt" | "steer" | "absorbed";
+
 interface MessageRecord extends MessageView {
-  // When am began handing the message over: a turn that ends after this is
-  // the turn that began with or absorbed it.
+  // When am began handing the message over.
   handedAt?: string;
+  via?: DeliveryVia;
 }
 
 // Taken immediately before am hands a message over, so everything the agent
@@ -72,7 +71,7 @@ function entryMessageId(entryId: string): string {
 }
 
 function view(record: MessageRecord): MessageView {
-  const { handedAt: _handedAt, ...rest } = record;
+  const { handedAt: _handedAt, via: _via, ...rest } = record;
   return rest;
 }
 
@@ -157,21 +156,39 @@ export function deliveryMark(name: string, entryId: string): DeliveryMark | null
   return markNow(readAgent(name));
 }
 
-function turnEndedSince(agent: AgentState, since: string | undefined): boolean {
-  if (!since) return false;
-  return agent.status === "idle" && Date.parse(agent.statusChangedAt ?? "") > Date.parse(since);
+const after = (at: string | undefined, since: number) => Date.parse(at ?? "") > since;
+
+// Whether a turn ending at `end` is one that handled this message: the agent
+// must have started a turn (or, for a steer, used a tool) since the handover.
+function completesAt(r: Pick<MessageRecord, "handedAt" | "via">, agent: AgentState, end: number): boolean {
+  if (!r.handedAt) return false;
+  const handed = Date.parse(r.handedAt);
+  if (!(handed <= end)) return false;
+  switch (r.via ?? "prompt") {
+    case "absorbed":
+      return true;
+    case "steer":
+      return after(agent.promptAt, handed) || after(agent.toolAt, handed);
+    case "prompt":
+      return after(agent.promptAt, handed);
+  }
+}
+
+function turnEndedSince(agent: AgentState, r: Pick<MessageRecord, "handedAt" | "via">): boolean {
+  if (!r.handedAt || agent.status !== "idle" || !after(agent.statusChangedAt, Date.parse(r.handedAt))) return false;
+  return completesAt(r, agent, Date.parse(agent.statusChangedAt!));
 }
 
 // Callers hold the delivery lock and have just popped the entry. A typed
 // delivery is confirmed only once the input box clears, by which time a
 // short turn may already have ended — then it goes straight to done.
-export function markDelivered(name: string, entryId: string, mark?: DeliveryMark | null): void {
+export function markDelivered(name: string, entryId: string, mark?: DeliveryMark | null, via: DeliveryVia = "prompt"): void {
   const id = entryMessageId(entryId);
   if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
   const agent = readAgent(name);
   const m = mark ?? markNow(agent);
   const now = new Date().toISOString();
-  const ended = agent !== null && turnEndedSince(agent, m.handedAt);
+  const ended = agent !== null && turnEndedSince(agent, { handedAt: m.handedAt, via });
   updateRecord(name, id, (r) =>
     r.state !== "queued"
       ? null
@@ -182,6 +199,7 @@ export function markDelivered(name: string, entryId: string, mark?: DeliveryMark
           doneAt: ended ? now : null,
           transcriptIndex: m.transcriptIndex,
           handedAt: m.handedAt,
+          via,
         },
   );
 }
@@ -212,7 +230,7 @@ export function queueTrackedMessage(name: string, body: string): string {
 }
 
 // For --now and interrupt sends: take the mark before typing, record after.
-export function recordImmediateDelivery(name: string, mark: DeliveryMark): string {
+export function recordImmediateDelivery(name: string, mark: DeliveryMark, via: DeliveryVia = "prompt"): string {
   const id = newMsgId();
   const now = new Date().toISOString();
   createRecord(name, {
@@ -223,6 +241,7 @@ export function recordImmediateDelivery(name: string, mark: DeliveryMark): strin
     doneAt: null,
     transcriptIndex: mark.transcriptIndex,
     handedAt: mark.handedAt,
+    via,
   });
   return id;
 }
@@ -231,55 +250,46 @@ export function immediateMark(agent: AgentState): DeliveryMark {
   return markNow(agent);
 }
 
-export function markTurnEnded(name: string, at: Date = new Date()): void {
+export function markTurnEnded(name: string, agent: AgentState, at: Date = new Date()): void {
   const iso = at.toISOString();
   for (const r of listRecords(name)) {
-    if (r.state !== "delivered" || !r.handedAt || Date.parse(r.handedAt) > at.getTime()) continue;
+    if (r.state !== "delivered" || !completesAt(r, agent, at.getTime())) continue;
     updateRecord(name, r.id, (cur) => (cur.state === "delivered" ? { ...cur, state: "done", doneAt: iso } : null));
   }
 }
 
-export function cancelQueuedMessages(name: string): void {
+const SESSION_ENDED = "session ended before the turn finished";
+
+// The session is gone: a delivered message is done only if a turn that ended
+// at `lastEnd` handled it; otherwise it never will be.
+function finishDelivered(name: string, id: string, agent: AgentState | null, lastEnd: string | undefined): MessageRecord | null {
+  const now = new Date().toISOString();
+  return updateRecord(name, id, (cur) => {
+    if (cur.state !== "delivered") return null;
+    return agent && lastEnd && completesAt(cur, agent, Date.parse(lastEnd))
+      ? { ...cur, state: "done", doneAt: now }
+      : { ...cur, state: "failed", error: SESSION_ENDED };
+  });
+}
+
+// `lastEnd`: when the agent went idle, if it was idle as its session ended.
+export function markSessionEnded(name: string, agent: AgentState, lastEnd: string | undefined): void {
   for (const r of listRecords(name)) {
-    if (r.state !== "queued") continue;
-    updateRecord(name, r.id, (cur) => (cur.state === "queued" ? { ...cur, state: "cancelled", error: "queue cleared" } : null));
+    if (r.state === "delivered") finishDelivered(name, r.id, agent, lastEnd);
   }
 }
 
-// Catch up a record with what the hooks may have missed: a delivered message
-// whose turn ended (or whose session died) is done; a queued one whose
-// session died is abandoned — taken out of the queue so a later resume can't
-// deliver a message its sender was told failed.
+// Catch up a delivered record with a turn end or session death the hooks
+// missed. Queued records are left for a resume to deliver.
 function settle(name: string, record: MessageRecord): MessageRecord {
-  if (isTerminal(record.state)) return record;
+  if (record.state !== "delivered") return record;
   const agent = readAgent(name);
-  const live = agent !== null && hasSession(agent.tmuxSession);
-  if (record.state === "delivered") {
-    if (live && !turnEndedSince(agent!, record.handedAt)) return record;
+  if (agent && turnEndedSince(agent, record)) {
     const now = new Date().toISOString();
     return updateRecord(name, record.id, (cur) => (cur.state === "delivered" ? { ...cur, state: "done", doneAt: now } : null)) ?? record;
   }
-  if (live) return record;
-  // Both locks: no delivery or enqueue of this entry can be in flight.
-  if (!acquireMailboxLock(name)) return record;
-  try {
-    if (!acquireProducerLock(name)) return record;
-    try {
-      const current = readAgent(name);
-      if (current && hasSession(current.tmuxSession)) return record;
-      return (
-        updateRecord(name, record.id, (cur) => {
-          if (cur.state !== "queued") return null;
-          queuePopId(name, `${cur.id}.json`);
-          return { ...cur, state: "failed", error: "session ended before delivery" };
-        }) ?? record
-      );
-    } finally {
-      releaseProducerLock(name);
-    }
-  } finally {
-    releaseMailboxLock(name);
-  }
+  if (agent && hasSession(agent.tmuxSession)) return record;
+  return finishDelivered(name, record.id, agent, undefined) ?? record;
 }
 
 export function readMessage(name: string, id: string): MessageView | null {
@@ -307,4 +317,20 @@ export function cancelQueuedLocked(
   queuePopId(name, `${id}.json`);
   updateRecord(name, id, (cur) => (cur.state === "queued" ? { ...cur, state: "cancelled" } : null));
   return { ok: true, state: "cancelled" };
+}
+
+// Callers hold the delivery and producer locks and remove the entries next.
+// The in-flight entry may already be with the agent, so it is not cancelled.
+export function clearQueuedLocked(name: string, inFlightEntryId: string | null): void {
+  for (const r of listRecords(name)) {
+    if (r.state !== "queued") continue;
+    const inFlight = inFlightEntryId === `${r.id}.json`;
+    updateRecord(name, r.id, (cur) =>
+      cur.state !== "queued"
+        ? null
+        : inFlight
+          ? { ...cur, state: "failed", error: "queue cleared during an unconfirmed delivery" }
+          : { ...cur, state: "cancelled", error: "queue cleared" },
+    );
+  }
 }

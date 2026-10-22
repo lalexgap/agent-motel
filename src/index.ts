@@ -729,7 +729,7 @@ async function main(): Promise<void> {
       break;
     case "queue":
     case "q":
-      queueCommand(requirePositional(args, 0, "agent name"), { clear: !!args.flags.clear });
+      await queueCommand(requirePositional(args, 0, "agent name"), { clear: !!args.flags.clear });
       break;
     case "transcript":
       transcriptCommand(requirePositional(args, 0, "agent name"), {

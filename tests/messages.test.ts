@@ -146,7 +146,8 @@ describe("delivery receipts", () => {
     const id = queueTrackedMessage("api", "quick one");
     const mark = deliveryMark("api", `${id}.json`)!;
     const agent = readAgent("api")!;
-    writeAgent({ ...agent, status: "idle", statusChangedAt: new Date(Date.parse(mark.handedAt) + 50).toISOString() });
+    const later = (ms: number) => new Date(Date.parse(mark.handedAt) + ms).toISOString();
+    writeAgent({ ...agent, status: "idle", promptAt: later(20), statusChangedAt: later(50) });
     expect(acquireDeliverLock("api")).toBe(true);
     queuePopId("api", `${id}.json`);
     markDelivered("api", `${id}.json`, mark);
@@ -169,12 +170,93 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id!)!.state).toBe("done");
   });
 
-  test("PostToolUse surfacing delivers mid-turn", async () => {
+  test("PostToolUse surfacing delivers mid-turn; the running turn's stop finishes it", async () => {
     fakeSession("working");
     const { id } = await sendCommand("api", "mid turn note", { now: false, track: true });
     say("assistant", "working on it");
     expect(hook("post-tool-use")).toContain("mid turn note");
     expect(readMessage("api", id!)).toMatchObject({ state: "delivered", transcriptIndex: 4 });
+    hook("stop");
+    expect(readMessage("api", id!)!.state).toBe("done");
+  });
+
+  test("a --now steer finishes only at a stop after a prompt or tool call that followed it", async () => {
+    fakeSession("working");
+    fastSleep();
+    const first = (await sendCommand("api", "steer one", { now: true, track: true })).id!;
+    hook("stop");
+    expect(readMessage("api", first)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "next" });
+    hook("stop");
+    expect(readMessage("api", first)!.state).toBe("done");
+
+    const second = (await sendCommand("api", "steer two", { now: true, track: true })).id!;
+    hook("pre-tool-use");
+    hook("stop");
+    expect(readMessage("api", second)!.state).toBe("done");
+  });
+
+  test("a stale stop after an interrupt leaves it delivered; the new turn's stop finishes it", async () => {
+    fakeSession("working");
+    fastSleep();
+    const { id } = await interruptCommand("api", "change course", { exact: true, track: true });
+    hook("stop");
+    expect(readMessage("api", id!)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "change course" });
+    hook("stop");
+    expect(readMessage("api", id!)!.state).toBe("done");
+  });
+
+  test("a prompt delivery (Codex queue, typed) is not finished by the earlier turn's stop", () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "for the next turn");
+    const mark = deliveryMark("api", `${id}.json`);
+    queuePopId("api", `${id}.json`);
+    markDelivered("api", `${id}.json`, mark);
+    hook("post-tool-use");
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "for the next turn" });
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
+  test("a session that ends before the message's turn finishes fails it", () => {
+    fakeSession("working");
+    const handled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    hook("user-prompt-submit", { prompt: "go" });
+    hook("stop");
+    const unhandled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const midTurn = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    hook("user-prompt-submit", { prompt: "go again" });
+    hook("session-end");
+    expect(readMessage("api", handled)!.state).toBe("done");
+    for (const id of [unhandled, midTurn]) {
+      expect(readMessage("api", id)).toMatchObject({ state: "failed", error: "session ended before the turn finished", doneAt: null });
+    }
+  });
+
+  test("a session that ended idle keeps a message its last turn handled", () => {
+    fakeSession("working");
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const agent = readAgent("api")!;
+    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
+    writeAgent({ ...agent, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+    hook("session-end");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
+  test("one drain marks every tracked message with a single transcript parse", async () => {
+    fakeSession("working");
+    for (let i = 0; i < 20_000; i++) say(i % 2 ? "assistant" : "user", `line ${i}`);
+    const ids = [];
+    for (const text of ["a", "b", "c"]) ids.push(queueTrackedMessage("api", text));
+    const out = hook("post-tool-use");
+    for (const text of ["a", "b", "c"]) expect(out).toContain(text);
+    const raw = ids.map((id) => JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8")));
+    expect(raw.map((r) => r.state)).toEqual(["delivered", "delivered", "delivered"]);
+    expect(new Set(raw.map((r) => r.handedAt)).size).toBe(1);
+    expect(new Set(raw.map((r) => r.transcriptIndex))).toEqual(new Set([20_003]));
   });
 
   test("now and interrupt are delivered immediately but still get an id and record", async () => {
@@ -189,6 +271,7 @@ describe("delivery receipts", () => {
       expect(record.deliveredAt).toBeTruthy();
     }
     expect(now.id).not.toBe(int.id);
+    hook("user-prompt-submit", { prompt: "new plan" });
     hook("stop");
     expect(readMessage("api", now.id!)!.state).toBe("done");
     expect(readMessage("api", int.id!)!.state).toBe("done");
@@ -256,29 +339,46 @@ describe("delivery receipts", () => {
     expect(queueDepth("api")).toBe(1);
   });
 
-  test("a session that dies: queued → failed (and out of the queue), delivered → done", async () => {
+  test("a session that dies: queued stays queued for a resume, an unfinished delivery fails", async () => {
     fakeSession("working");
-    const queued = queueTrackedMessage("api", "too late");
+    const queued = queueTrackedMessage("api", "after resume");
     const delivered = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
     writeFileSync(join(home, "mode"), "dead");
-    const failed = readMessage("api", queued)!;
-    expect(failed.state).toBe("failed");
-    expect(failed.error).toContain("session ended");
-    expect(queueDepth("api")).toBe(0);
-    expect(readMessage("api", delivered)!.state).toBe("done");
+    expect(readMessage("api", queued)!.state).toBe("queued");
+    expect(queueDepth("api")).toBe(1);
+    expect(readMessage("api", delivered)).toMatchObject({ state: "failed", error: "session ended before the turn finished" });
   });
 
-  test("am queue --clear cancels tracked messages", () => {
+  test("am queue --clear cancels queued messages and fails the unconfirmed in-flight one", async () => {
     fakeSession("working");
-    const id = queueTrackedMessage("api", "clear me");
+    const a = queueTrackedMessage("api", "clear me");
+    const b = queueTrackedMessage("api", "typed already");
+    writeFileSync(join(home, "queue", "api", ".delivery.pending"), JSON.stringify({ id: `${b}.json`, message: "typed already", typed: true }));
     const log = spyOn(console, "log").mockImplementation(() => {});
     try {
-      queueCommand("api", { clear: true });
+      await queueCommand("api", { clear: true });
     } finally {
       log.mockRestore();
     }
     expect(queueDepth("api")).toBe(0);
-    expect(readMessage("api", id)!.state).toBe("cancelled");
+    expect(readMessage("api", a)).toMatchObject({ state: "cancelled", error: "queue cleared" });
+    expect(readMessage("api", b)).toMatchObject({ state: "failed", error: "queue cleared during an unconfirmed delivery" });
+  });
+
+  test("am queue --clear refuses while a delivery holds the mailbox", async () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "keep me");
+    expect(acquireDeliverLock("api")).toBe(true);
+    fastSleep();
+    let t = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => (t += 20_000));
+    try {
+      await expect(queueCommand("api", { clear: true })).rejects.toThrow('agent "api" mailbox is busy — retry');
+    } finally {
+      clock.mockRestore();
+    }
+    expect(queueDepth("api")).toBe(1);
+    expect(readMessage("api", id)!.state).toBe("queued");
   });
 
   test("finished records older than a week are pruned", () => {
@@ -367,5 +467,14 @@ describe("messages api", () => {
     expect((await call("/api/agents/api/messages/NOPE", { method: "DELETE" })).status).toBe(404);
     expect((await call(`/api/agents/ghost/messages/${id}`)).status).toBe(404);
     expect((await call("/api/agents/ghost/messages", { method: "POST", body: JSON.stringify({ text: "x" }) })).status).toBe(404);
+  });
+
+  test("GET on a stopped agent leaves a queued message queued", async () => {
+    fakeSession("working");
+    const posted = (await (await call("/api/agents/api/messages", { method: "POST", body: JSON.stringify({ text: "later" }) })).json()) as any;
+    writeFileSync(join(home, "mode"), "dead");
+    const got = (await (await call(`/api/agents/api/messages/${posted.id}`)).json()) as any;
+    expect(got).toMatchObject({ id: posted.id, state: "queued" });
+    expect(queueDepth("api")).toBe(1);
   });
 });
