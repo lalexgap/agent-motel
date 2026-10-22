@@ -10,6 +10,7 @@ import {
   removeAgent,
   resolveAgentName,
   resolveAgent,
+  setExactNamesOnly,
   setStatus,
   updateAgentStatus,
   writeAgent,
@@ -217,6 +218,22 @@ describe("agent aliases", () => {
 
     expect(resolveAgent("former-name").name).toBe("current");
     expect(() => resolveAgent("former")).toThrow(/no agent matches/);
+  });
+});
+
+describe("exact names only", () => {
+  afterEach(() => setExactNamesOnly(false));
+
+  test("resolveAgent rejects prefixes and aliases", () => {
+    writeAgent(makeAgent("alpha"));
+    const renamed = readAgent("alpha")!;
+    renamed.aliases = ["former-name"];
+    writeAgent(renamed);
+    setExactNamesOnly(true);
+
+    expect(resolveAgent("alpha").name).toBe("alpha");
+    expect(() => resolveAgent("a")).toThrow(/no agent matches/);
+    expect(() => resolveAgent("former-name")).toThrow(/no agent matches/);
   });
 });
 

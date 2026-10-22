@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
 import { readAgent, writeAgent } from "../src/state";
 import { queueAppend } from "../src/queue";
 import { daemonRequest, startDaemonServer } from "../src/daemon";
 import { addRole } from "../src/roles";
+import { setRemoteRunnersForTests } from "../src/remoteAgents";
+import { localHostIdentity } from "../src/config";
+import { resetFleetCacheForTests, setFleetFetchForTests } from "../src/fleet";
 
 let home: string;
 let server: ApiServerHandle;
@@ -293,6 +296,209 @@ describe("transcript + interrupt api", () => {
     expect((await post("/api/agents/badtext/interrupt", { text: 42 })).status).toBe(400);
     expect((await post("/api/agents", { name: "badmodel", model: 5 })).status).toBe(400);
     expect((await post("/api/agents", { name: "badeffort", effort: true })).status).toBe(400);
+  });
+});
+
+describe("remote agents api (host:name)", () => {
+  interface Call {
+    host: string;
+    args: string[];
+    stdin?: string;
+    timeoutMs?: number;
+  }
+  let calls: Call[];
+  let reply: (call: Call) => { exitCode: number; stdout?: string; stderr?: string };
+
+  beforeEach(() => {
+    writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop", "box.example.com"] }));
+    calls = [];
+    reply = () => ({ exitCode: 0, stdout: "" });
+    setRemoteRunnersForTests({
+      am: async (host, args, opts = {}) => {
+        const call = { host, args, stdin: opts.stdin, timeoutMs: opts.timeoutMs };
+        calls.push(call);
+        const r = reply(call);
+        return { exitCode: r.exitCode, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+      },
+      sh: async (host, command) => {
+        calls.push({ host, args: ["sh", command] });
+        return { exitCode: 0, stdout: "/Users/remote\n", stderr: "" };
+      },
+    });
+    setFleetFetchForTests(async () => null);
+    resetFleetCacheForTests();
+  });
+
+  afterEach(() => {
+    setRemoteRunnersForTests();
+    setFleetFetchForTests();
+    resetFleetCacheForTests();
+  });
+
+  const post = (path: string, body?: unknown) =>
+    fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+
+  test("detail runs am __detail on the host and returns its JSON", async () => {
+    const detail = { name: "api", status: "idle", queue: [], pane: "hi" };
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify(detail) });
+    const res = await fetch(url("/api/agents/laptop:api"), auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(detail);
+    expect(calls).toEqual([{ host: "laptop", args: ["__detail", "api", "--local", "--exact"], stdin: undefined, timeoutMs: 20_000 }]);
+  });
+
+  test("an encoded colon routes too; dotted hosts are accepted", async () => {
+    reply = () => ({ exitCode: 0, stdout: "{}" });
+    expect((await fetch(url("/api/agents/box.example.com%3Aapi"), auth())).status).toBe(200);
+    expect(calls[0]!.host).toBe("box.example.com");
+  });
+
+  test("messages: queue/now via am send - (stdin), interrupt via am interrupt -", async () => {
+    expect((await post("/api/agents/laptop:api/messages", { text: "hi `there`" })).status).toBe(200);
+    expect(await (await post("/api/agents/laptop:api/messages", { text: "steer", mode: "now" })).json()).toEqual({ ok: true, mode: "now" });
+    await post("/api/agents/laptop:api/messages", { text: "stop that", mode: "interrupt" });
+    expect(calls.map((c) => [c.args, c.stdin])).toEqual([
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["send", "api", "-", "--local", "--exact"], "hi `there`"],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["send", "api", "-", "--now", "--local", "--exact"], "steer"],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["interrupt", "api", "-", "--local", "--exact"], "stop that"],
+    ]);
+    calls.length = 0;
+    expect((await post("/api/agents/laptop:api/messages", { mode: "queue" })).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  test("transcript slices entries by after", async () => {
+    const transcript = {
+      provider: "claude", sessionId: "s", status: "idle", total: 3,
+      entries: [0, 1, 2].map((index) => ({ index, kind: "user", text: String(index) })),
+    };
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify(transcript) });
+    const body = (await (await fetch(url("/api/agents/laptop:api/transcript?after=1"), auth())).json()) as any;
+    expect(body.total).toBe(3);
+    expect(body.entries.map((e: any) => e.index)).toEqual([1, 2]);
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail", "transcript"]);
+    expect(calls[1]!.args).toEqual(["transcript", "api", "--json", "--local", "--exact"]);
+    expect((await fetch(url("/api/agents/laptop:api/transcript?after=-1"), auth())).status).toBe(400);
+  });
+
+  test("transcript from an am without --json → 409 remote am too old", async () => {
+    reply = () => ({ exitCode: 0, stdout: "# api\n\nmarkdown transcript" });
+    const res = await fetch(url("/api/agents/laptop:api/transcript"), auth());
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toContain("remote am too old");
+  });
+
+  test("interrupt with and without text; stop, resume, delete", async () => {
+    await post("/api/agents/laptop:api/interrupt");
+    await post("/api/agents/laptop:api/interrupt", { text: "new plan" });
+    await post("/api/agents/laptop:api/stop");
+    await post("/api/agents/laptop:api/resume");
+    await fetch(url("/api/agents/laptop:api"), auth({ method: "DELETE" }));
+    expect(calls.map((c) => [c.args, c.stdin])).toEqual([
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["interrupt", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["interrupt", "api", "-", "--local", "--exact"], "new plan"],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["stop", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["resume", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
+      [["rm", "api", "--local", "--exact"], undefined],
+    ]);
+    expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);
+  });
+
+  test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 1, stderr: 'am: unknown command "__detail" — see `am help`' }
+        : { exitCode: 0 };
+    const res = await fetch(url("/api/agents/laptop:a"), auth({ method: "DELETE" }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toContain("remote am too old");
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
+  });
+
+  test("this host's own name and \"local\" stay local", async () => {
+    seedAgent("mine");
+    expect((await fetch(url(`/api/agents/${localHostIdentity()}:mine`), auth())).status).toBe(200);
+    expect((await fetch(url("/api/agents/local:mine"), auth())).status).toBe(200);
+    expect(calls).toEqual([]);
+  });
+
+  test("error mapping: unknown host 404, ssh failure/timeout 502, cli failure 409, missing agent 404", async () => {
+    expect((await fetch(url("/api/agents/nowhere:api"), auth())).status).toBe(404);
+    reply = () => ({ exitCode: 255, stderr: "ssh: connect to host laptop port 22: No route to host" });
+    const unreachable = await post("/api/agents/laptop:api/stop");
+    expect(unreachable.status).toBe(502);
+    expect(((await unreachable.json()) as any).error).toContain("No route to host");
+    reply = () => ({ exitCode: 124 });
+    expect((await post("/api/agents/laptop:api/stop")).status).toBe(502);
+    reply = () => ({ exitCode: 1, stderr: 'am: agent "api" has no live tmux session (status: exited)' });
+    const failed = await post("/api/agents/laptop:api/messages", { text: "hi" });
+    expect(failed.status).toBe(409);
+    expect(((await failed.json()) as any).error).toBe('agent "api" has no live tmux session (status: exited)');
+    reply = () => ({ exitCode: 1, stderr: 'am: no agent matches "api"' });
+    expect((await post("/api/agents/laptop:api/stop")).status).toBe(404);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__detail" — see `am help`' });
+    const old = await fetch(url("/api/agents/laptop:api"), auth());
+    expect(old.status).toBe(409);
+    expect(((await old.json()) as any).error).toContain("remote am too old");
+  });
+
+  test("names and hosts are validated before ssh or the filesystem", async () => {
+    for (const bad of ["..%2F..%2Fconfig", "a%20b", "laptop:..%2Fx", "la%24(id):api", "laptop:", "%E0%A4%A"]) {
+      expect((await fetch(url(`/api/agents/${bad}`), auth())).status).toBe(400);
+      expect((await fetch(url(`/api/agents/${bad}/transcript`), auth())).status).toBe(400);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("POST /api/agents with host maps a $HOME dir onto the remote $HOME", async () => {
+    const res = await post("/api/agents", {
+      name: "far", host: "laptop", task: "fix it", dir: join(homedir(), "code", "app"),
+      provider: "claude", model: "opus", effort: "high", role: "engineer", inPlace: true,
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true, name: "far", host: "laptop" });
+    expect(calls[0]).toEqual({ host: "laptop", args: ["sh", "echo $HOME"] });
+    expect(calls[1]).toEqual({
+      host: "laptop",
+      args: ["new", "far", "--no-jump", "-m", "-", "--dir", "/Users/remote/code/app", "--in-place", "--claude",
+        "--model", "opus", "--effort", "high", "--role", "engineer", "--local", "--exact"],
+      stdin: "fix it",
+      timeoutMs: 90_000,
+    });
+  });
+
+  test("POST with remoteDir skips the mapping; non-home dir needs remoteDir", async () => {
+    await post("/api/agents", { name: "far", host: "laptop", dir: "/srv/x", remoteDir: "/opt/y", codex: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.args).toEqual(["new", "far", "--no-jump", "--dir", "/opt/y", "--codex", "--local", "--exact"]);
+    expect((await post("/api/agents", { name: "far", host: "laptop", dir: "/srv/x" })).status).toBe(400);
+    expect((await post("/api/agents", { name: "far", host: "laptop", remoteDir: "rel" })).status).toBe(400);
+  });
+
+  test("POST with host: unknown 404, invalid 400, bad name 409, cli failure 409", async () => {
+    expect((await post("/api/agents", { name: "far", host: "nowhere" })).status).toBe(404);
+    expect((await post("/api/agents", { name: "far", host: "a;b" })).status).toBe(400);
+    expect((await post("/api/agents", { name: "bad name", host: "laptop" })).status).toBe(409);
+    reply = () => ({ exitCode: 1, stderr: 'am: agent "far" already exists' });
+    const res = await post("/api/agents", { name: "far", host: "laptop" });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toBe('agent "far" already exists');
+  });
+
+  test("GET /api/hosts lists this host and the configured remotes", async () => {
+    const res = await fetch(url("/api/hosts"), auth());
+    const body = (await res.json()) as any;
+    expect(body.local).toBe(localHostIdentity());
+    expect(body.hosts.map((h: any) => h.name)).toEqual(["laptop", "box.example.com"]);
+    expect(body.hosts.every((h: any) => typeof h.reachable === "boolean")).toBe(true);
   });
 });
 

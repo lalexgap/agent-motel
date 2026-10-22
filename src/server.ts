@@ -1,7 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
-import { loadConfig } from "./config";
 import { type Provider, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, waitingInfo } from "./commands/ls";
@@ -16,6 +15,18 @@ import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
 import { listRoles, roleForAgent } from "./roles";
+import { loadConfig, localHostIdentity } from "./config";
+import {
+  AGENT_NAME_RE,
+  HOST_RE,
+  REMOTE_NEW_TIMEOUT_MS,
+  RemoteError,
+  ensureExactCapable,
+  remoteSpawnDir,
+  resolveHost,
+  runRemoteAm,
+  runRemoteJson,
+} from "./remoteAgents";
 
 // The HTTP layer for remote clients — scripts, and the in-progress native
 // phone app (lives on its own branch; nothing on main consumes these routes).
@@ -84,7 +95,7 @@ You can uninstall this icon.</p>
 <script>navigator.serviceWorker?.register("/sw.js");</script>
 `;
 
-function agentDetail(name: string) {
+export function agentDetail(name: string) {
   const agent = readAgent(name);
   if (!agent) return null;
   const status = displayStatus(agent);
@@ -109,6 +120,144 @@ function agentDetail(name: string) {
       ? (capturePane(agent.tmuxSession)?.slice(-PANE_LINES).join("\n") ?? null)
       : null,
   };
+}
+
+// --- remote agents ---------------------------------------------------------
+
+// `:name` is a bare local name or `host:name` (the `am send host:name` form).
+// Validated here so nothing unchecked reaches ssh or a state-file path.
+function parseTarget(raw: string): { host: string | null; name: string } | Response {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return json({ error: "malformed agent name" }, 400);
+  }
+  const colon = decoded.indexOf(":");
+  const host = colon === -1 ? null : decoded.slice(0, colon);
+  const name = colon === -1 ? decoded : decoded.slice(colon + 1);
+  if (!AGENT_NAME_RE.test(name)) return json({ error: `invalid agent name "${name}"` }, 400);
+  if (host === null) return { host: null, name };
+  if (!HOST_RE.test(host)) return json({ error: `invalid host "${host}"` }, 400);
+  const resolved = resolveHost(host);
+  if (resolved === undefined) return json({ error: `unknown host "${host}" (not in config.remotes)` }, 404);
+  return { host: resolved, name };
+}
+
+function remoteFailure(error: unknown): Response {
+  if (error instanceof RemoteError) return json({ error: error.message }, error.status);
+  return json({ error: (error as Error).message }, 502);
+}
+
+interface TranscriptShape {
+  entries: { index: number }[];
+}
+
+async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
+  const method = req.method;
+  const route = rest[0];
+  if (rest.length > 1) return json({ error: "not found" }, 404);
+  try {
+    if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
+    if (route === "rename" && method === "POST") {
+      return json({ error: "rename is not supported for remote agents" }, 501);
+    }
+    const run = async (args: string[], opts?: { stdin?: string }) => {
+      await ensureExactCapable(host, name);
+      return runRemoteAm(host, args, opts);
+    };
+
+    if (!route && method === "DELETE") {
+      await run(["rm", name]);
+      return json({ ok: true });
+    }
+
+    if (route === "messages" && method === "POST") {
+      const body = (await req.json().catch(() => null)) as { text?: unknown; mode?: string } | null;
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      if (!text) return json({ error: "text required" }, 400);
+      const mode = body?.mode ?? "queue";
+      if (mode === "interrupt") await run(["interrupt", name, "-"], { stdin: text });
+      else await run(["send", name, "-", ...(mode === "now" ? ["--now"] : [])], { stdin: text });
+      return json({ ok: true, mode });
+    }
+
+    if (route === "transcript" && method === "GET") {
+      const raw = new URL(req.url).searchParams.get("after");
+      const after = raw === null || raw === "" ? 0 : Number(raw);
+      if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
+      await ensureExactCapable(host, name);
+      const transcript = await runRemoteJson<TranscriptShape>(host, ["transcript", name, "--json"], { timeoutMs: 30_000 });
+      if (!Array.isArray(transcript?.entries)) {
+        return json({ error: `remote am too old on ${host} (transcript --json has no entries)` }, 409);
+      }
+      return json({ ...transcript, entries: transcript.entries.filter((entry) => entry.index >= after) });
+    }
+
+    if (route === "interrupt" && method === "POST") {
+      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
+      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      if (text) await run(["interrupt", name, "-"], { stdin: text });
+      else await run(["interrupt", name]);
+      return json({ ok: true });
+    }
+
+    if (route === "stop" && method === "POST") {
+      await run(["stop", name]);
+      return json({ ok: true });
+    }
+
+    if (route === "resume" && method === "POST") {
+      await run(["resume", name]);
+      return json({ ok: true });
+    }
+  } catch (error) {
+    return remoteFailure(error);
+  }
+  return json({ error: "not found" }, 404);
+}
+
+interface SpawnBody {
+  name?: string;
+  task?: string;
+  dir?: string;
+  remoteDir?: string;
+  host?: string;
+  provider?: string;
+  codex?: boolean;
+  role?: string;
+  model?: string;
+  effort?: string;
+  inPlace?: boolean;
+}
+
+async function spawnRemote(host: string, body: SpawnBody & { name: string }): Promise<Response> {
+  if (!AGENT_NAME_RE.test(body.name)) {
+    return json({ error: "agent name must be alphanumeric with dashes/underscores" }, 409);
+  }
+  if (body.remoteDir != null && (typeof body.remoteDir !== "string" || !body.remoteDir.startsWith("/"))) {
+    return json({ error: "remoteDir must be an absolute path" }, 400);
+  }
+  if (body.dir != null && (typeof body.dir !== "string" || !body.dir.startsWith("/"))) {
+    return json({ error: "dir must be an absolute path" }, 400);
+  }
+  const provider = body.provider ?? (body.codex ? "codex" : undefined);
+  try {
+    const dir = await remoteSpawnDir(host, body.dir, body.remoteDir || undefined);
+    const args = ["new", body.name, "--no-jump"];
+    if (body.task) args.push("-m", "-");
+    if (dir) args.push("--dir", dir);
+    if (body.inPlace === true) args.push("--in-place");
+    if (provider) args.push(`--${provider}`);
+    if (body.model) args.push("--model", body.model);
+    if (body.effort) args.push("--effort", body.effort);
+    if (body.role) args.push("--role", body.role);
+    await runRemoteAm(host, args, { stdin: body.task || undefined, timeoutMs: REMOTE_NEW_TIMEOUT_MS });
+    return json({ ok: true, name: body.name, host }, 201);
+  } catch (error) {
+    return remoteFailure(error);
+  }
 }
 
 // --- routing ---------------------------------------------------------------
@@ -150,21 +299,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     });
   }
 
-  // POST /api/agents — spawn a new (local) agent
+  // GET /api/hosts — this machine plus config.remotes, for a host picker.
+  if (parts.length === 1 && parts[0] === "hosts" && method === "GET") {
+    const { unreachable } = cachedFleetRows();
+    return json({
+      local: localHostIdentity(),
+      hosts: (loadConfig().remotes ?? []).map((name) => ({ name, reachable: !unreachable.includes(name) })),
+    });
+  }
+
+  // POST /api/agents — spawn a new agent (on `host` when set)
   if (parts.length === 1 && parts[0] === "agents" && method === "POST") {
-    const body = (await req.json().catch(() => null)) as
-      | {
-          name?: string;
-          task?: string;
-          dir?: string;
-          provider?: string;
-          codex?: boolean;
-          role?: string;
-          model?: string;
-          effort?: string;
-          inPlace?: boolean;
-        }
-      | null;
+    const body = (await req.json().catch(() => null)) as SpawnBody | null;
     if (!body?.name) return json({ error: "name required" }, 400);
     for (const field of ["model", "effort"] as const) {
       if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
@@ -174,6 +320,15 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     // default — clients that want claude send provider.
     if (body.provider && body.provider !== "claude" && body.provider !== "codex") {
       return json({ error: `provider must be "claude" or "codex"` }, 400);
+    }
+    for (const field of ["task", "role", "dir", "remoteDir"] as const) {
+      if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
+    }
+    if (body.host != null) {
+      if (typeof body.host !== "string" || !HOST_RE.test(body.host)) return json({ error: "invalid host" }, 400);
+      const host = resolveHost(body.host);
+      if (host === undefined) return json({ error: `unknown host "${body.host}" (not in config.remotes)` }, 404);
+      if (host !== null) return spawnRemote(host, { ...body, name: body.name });
     }
     try {
       await newCommand({
@@ -194,9 +349,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     }
   }
 
-  // /api/agents/:name[/...]
+  // /api/agents/:name[/...] — :name may be host:name
   if (parts[0] === "agents" && parts.length >= 2) {
-    const name = decodeURIComponent(parts[1]!);
+    const target = parseTarget(parts[1]!);
+    if (target instanceof Response) return target;
+    if (target.host) return handleRemoteAgent(req, target.host, target.name, parts.slice(2));
+    const { name } = target;
 
     // GET /api/agents/:name — detail + queue + pane snapshot (local agents)
     if (parts.length === 2 && method === "GET") {

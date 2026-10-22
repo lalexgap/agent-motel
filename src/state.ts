@@ -217,10 +217,22 @@ export function agentNamesAndAliases(state: AgentState): string[] {
 // Exact current names win over aliases. Aliases are deliberately exact-only:
 // `am send old-name` should survive a rename, while a short prefix should keep
 // resolving against the visible, current fleet rather than hidden history.
+let exactNamesOnly = false;
+
+// `am ... --exact` (what `am serve` passes to a remote am): names must match
+// exactly, no alias or prefix, so an Esc can't land on `alpha` for `a`.
+export function setExactNamesOnly(value: boolean): void {
+  exactNamesOnly = value;
+}
+
+export function isExactNamesOnly(): boolean {
+  return exactNamesOnly;
+}
+
 export function matchAgent(prefix: string): AgentState | null {
   const agents = listAgents();
   const exact = agents.find((agent) => agent.name === prefix);
-  if (exact) return exact;
+  if (exact || exactNamesOnly) return exact ?? null;
 
   const aliasMatches = agents.filter((agent) => agent.aliases?.includes(prefix));
   if (aliasMatches.length === 1) return aliasMatches[0]!;

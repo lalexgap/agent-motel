@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { hostname } from "node:os";
-import { agentProvider, listAgents, readAgent, resolveAgent, type Provider } from "./state";
+import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
 import { palettePopupUi, pick, type PaletteSpec, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
 import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
-import { sendCommand, interruptCommand } from "./commands/send";
+import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
+import { agentDetail } from "./server";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { shareCommand } from "./commands/share";
@@ -150,7 +151,8 @@ usage:
   am files [<agent>] [--json] list shared artifacts across the fleet
   am open <agent> [n|name]    pull that agent's latest (or nth/named) shared
                               artifact to this machine and open it
-  am interrupt <name> <msg>   abort current turn (Esc), then send message
+  am interrupt <name> [msg]   abort current turn (Esc), then send message
+                              (no message: Esc only; - reads it from stdin)
                               (sends from inside an agent are auto-attributed:
                                the recipient sees "[am · from <you>] …")
   am wait <name> [--status s] [--timeout secs] [--quiet]
@@ -224,7 +226,8 @@ remote (agents running on a server, am on your laptop):
   am -H <host> <command...>   run any am command on <host> over ssh
                               (bare \`am -H box\` opens the full hub UI remotely)
   export AM_HOST=<host>       make every am command remote by default;
-                              -L / --local forces a one-off local run
+                              -L / --local forces a one-off local run (and
+                              skips forwarding a name to another fleet host)
   am ls [--local-only]        merged fleet across config.remotes hosts
   am move <name> <host>       move an agent to <host>: conversation + queue
   am move <host>:<name>       ...or pull one back from <host>
@@ -537,7 +540,8 @@ async function main(): Promise<void> {
   if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
 
   const args = parseArgs(rest);
-  maybeForwardToFleet(command, args, localArgv);
+  if (args.flags.exact === true) setExactNamesOnly(true);
+  if (!forceLocal) maybeForwardToFleet(command, args, localArgv);
 
   switch (command) {
     case undefined:
@@ -679,11 +683,12 @@ async function main(): Promise<void> {
       await openCommand(requirePositional(args, 0, "agent name"), args.positional[1]);
       break;
     case "interrupt":
-    case "int":
-      await interruptCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
-        from: args.flags.from as string | undefined,
-      });
+    case "int": {
+      const target = requirePositional(args, 0, "agent name");
+      if (args.positional.length === 1) await abortTurn(resolveAgent(target).name);
+      else await interruptCommand(target, await resolveMessage(args), { from: args.flags.from as string | undefined });
       break;
+    }
     case "report":
       reportCommand(requirePositional(args, 0, "agent name"), {
         to: args.flags.to as string | undefined,
@@ -842,6 +847,14 @@ async function main(): Promise<void> {
       const spec = JSON.parse(await Bun.file(requirePositional(args, 0, "spec path")).text()) as PaletteSpec;
       const result = await palettePopupUi(spec);
       if (result) await Bun.write(requirePositional(args, 1, "result path"), JSON.stringify(result));
+      break;
+    }
+    case "__detail": {
+      // `am serve` on another host reads a remote agent's detail through this.
+      const name = requirePositional(args, 0, "agent name");
+      const detail = agentDetail(name);
+      if (!detail) throw new Error(`no local agent "${name}"`);
+      console.log(JSON.stringify(detail));
       break;
     }
     case "__deliver":
