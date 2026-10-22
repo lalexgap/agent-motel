@@ -15,6 +15,7 @@ import {
   markDelivered,
   queueTrackedMessage,
   readMessage,
+  claimPrompt,
   recordImmediateDelivery,
   transcriptLength,
   withSettledRecord,
@@ -242,6 +243,7 @@ describe("delivery receipts", () => {
     const agent = readAgent("api")!;
     const later = (ms: number) => new Date(Date.now() + ms).toISOString();
     writeAgent({ ...agent, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
     hook("session-end");
     expect(readMessage("api", id)!.state).toBe("done");
   });
@@ -271,9 +273,12 @@ describe("delivery receipts", () => {
       expect(record.deliveredAt).toBeTruthy();
     }
     expect(now.id).not.toBe(int.id);
-    hook("user-prompt-submit", { prompt: "new plan" });
+    hook("user-prompt-submit", { prompt: "steer" });
     hook("stop");
     expect(readMessage("api", now.id!)!.state).toBe("done");
+    expect(readMessage("api", int.id!)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "new plan" });
+    hook("stop");
     expect(readMessage("api", int.id!)!.state).toBe("done");
   });
 
@@ -415,11 +420,68 @@ describe("delivery receipts", () => {
     expect(am("__message", "ghost", id).stderr.toString()).toContain("no local agent");
   });
 
+  test("Codex-style queue adds start in order: each prompt finishes only its own message", () => {
+    fakeSession("working");
+    const deliver = () => {
+      const id = queueTrackedMessage("api", "queued in codex");
+      const mark = deliveryMark("api", `${id}.json`);
+      queuePopId("api", `${id}.json`);
+      markDelivered("api", `${id}.json`, mark);
+      return id;
+    };
+    const first = deliver();
+    const second = deliver();
+    hook("stop");
+    expect([readMessage("api", first)!.state, readMessage("api", second)!.state]).toEqual(["delivered", "delivered"]);
+    hook("user-prompt-submit", { prompt: "one" });
+    hook("stop");
+    expect([readMessage("api", first)!.state, readMessage("api", second)!.state]).toEqual(["done", "delivered"]);
+    hook("user-prompt-submit", { prompt: "two" });
+    hook("stop");
+    expect(readMessage("api", second)!.state).toBe("done");
+  });
+
+  test("a typed delivery confirmed after its UserPromptSubmit still claims that prompt", () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "typed");
+    const mark = deliveryMark("api", `${id}.json`);
+    hook("user-prompt-submit", { prompt: "typed" });
+    queuePopId("api", `${id}.json`);
+    markDelivered("api", `${id}.json`, mark);
+    expect(readMessage("api", id)!.state).toBe("delivered");
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
+  test("a repeated UserPromptSubmit (Claude's put-back) starts at most one more message, oldest first", () => {
+    fakeSession("working");
+    const ids = [0, 1, 2].map(() => recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }));
+    hook("user-prompt-submit", { prompt: "p" });
+    hook("user-prompt-submit", { prompt: "p" });
+    const raw = ids.map((id) => JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8")));
+    expect(raw.map((r) => typeof r.startedAt)).toEqual(["string", "string", "undefined"]);
+    expect(raw[0].startedAt).not.toBe(raw[1].startedAt);
+    hook("stop");
+    expect(ids.map((id) => readMessage("api", id)!.state)).toEqual(["done", "done", "delivered"]);
+  });
+
+  test("a record from before prompt claims (no via) still finishes at a later prompt's stop", () => {
+    fakeSession("working");
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const file = join(home, "queue", "api", ".messages", `${id}.json`);
+    const { via: _via, ...legacy } = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify(legacy));
+    hook("user-prompt-submit", { prompt: "go" });
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
   test("a turn end the hooks have not marked yet is settled inside the records lock", () => {
     fakeSession("working");
     const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
     const later = (ms: number) => new Date(Date.now() + ms).toISOString();
     writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
     expect(withSettledRecord("api", id, (r) => r.state)).toBe("done");
     const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
     expect(raw.state).toBe("done");
@@ -501,16 +563,26 @@ describe("messages api", () => {
     const keys = () => (existsSync(join(home, "keys")) ? readFileSync(join(home, "keys"), "utf8") : "");
     const interrupt = (body: unknown) => call("/api/agents/api/interrupt", { method: "POST", body: JSON.stringify(body) });
 
-    test("Esc while delivered; refused once done", async () => {
+    test("refused before its turn starts; one Esc once started; refused once done", async () => {
       fakeSession("working");
       const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const early = await interrupt({ messageId: id });
+      expect(early.status).toBe(409);
+      expect(await early.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered" });
+      expect(keys()).toBe("");
+
+      hook("user-prompt-submit", { prompt: "go" });
       const ok = await interrupt({ messageId: id });
       expect(ok.status).toBe(200);
       expect(await ok.json()).toEqual({ ok: true });
       expect(keys()).toBe("Escape\n");
+      const again = await interrupt({ messageId: id });
+      expect(again.status).toBe(409);
+      expect(await again.json()).toEqual({ error: `message ${id} was already interrupted`, state: "delivered" });
+      expect(keys()).toBe("Escape\n");
+      expect(Object.keys(readMessage("api", id)!).sort()).toEqual(["deliveredAt", "doneAt", "id", "queuedAt", "state", "transcriptIndex"]);
 
       rmSync(join(home, "keys"));
-      hook("user-prompt-submit", { prompt: "go" });
       hook("stop");
       const done = await interrupt({ messageId: id });
       expect(done.status).toBe(409);
@@ -523,6 +595,7 @@ describe("messages api", () => {
       const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
       const later = (ms: number) => new Date(Date.now() + ms).toISOString();
       writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
       const res = await interrupt({ messageId: id });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done" });

@@ -11,7 +11,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
-import { deliveryMark, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
+import { claimPrompt, deliveryMark, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -436,6 +436,8 @@ export async function hookCommand(event: string): Promise<void> {
     if (event === "user-prompt-submit") {
       if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt);
       surfaceInbox(name, "UserPromptSubmit");
+      const promptAt = agent.promptAt;
+      if (promptAt) receipt(() => claimPrompt(name, promptAt));
     }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }

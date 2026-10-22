@@ -33,10 +33,13 @@ export interface MessageView {
 // running turn by a hook. Records without it are prompts.
 export type DeliveryVia = "prompt" | "absorbed";
 
-interface MessageRecord extends MessageView {
+export interface MessageRecord extends MessageView {
   // When am began handing the message over.
   handedAt?: string;
   via?: DeliveryVia;
+  // The prompt (UserPromptSubmit) that started its turn; see claimPrompt.
+  startedAt?: string;
+  interruptedAt?: string;
 }
 
 // Taken immediately before am hands a message over, so everything the agent
@@ -72,7 +75,7 @@ function entryMessageId(entryId: string): string {
 }
 
 function view(record: MessageRecord): MessageView {
-  const { handedAt: _handedAt, via: _via, ...rest } = record;
+  const { handedAt: _handedAt, via: _via, startedAt: _startedAt, interruptedAt: _interruptedAt, ...rest } = record;
   return rest;
 }
 
@@ -159,43 +162,80 @@ export function deliveryMark(name: string, entryId: string): DeliveryMark | null
 
 const after = (at: string | undefined, since: number) => Date.parse(at ?? "") > since;
 
-// Whether a turn ending at `end` is one that handled this message: a prompt
-// must have been submitted since the handover.
-function completesAt(r: Pick<MessageRecord, "handedAt" | "via">, agent: AgentState, end: number): boolean {
+type TurnFields = Pick<MessageRecord, "handedAt" | "via" | "startedAt">;
+
+// Whether a turn ending at `end` is one that handled this message: one it
+// was absorbed into, or one its own claimed prompt started. Records from
+// before claims existed (no `via`) take any prompt since the handover.
+function completesAt(r: TurnFields, agent: AgentState, end: number): boolean {
   if (!r.handedAt) return false;
   const handed = Date.parse(r.handedAt);
   if (!(handed <= end)) return false;
-  return r.via === "absorbed" || after(agent.promptAt, handed);
+  if (r.via === "absorbed") return true;
+  if (r.via === undefined) return after(agent.promptAt, handed);
+  return r.startedAt !== undefined && Date.parse(r.startedAt) < end;
 }
 
-function turnEndedSince(agent: AgentState, r: Pick<MessageRecord, "handedAt" | "via">): boolean {
+function turnEndedSince(agent: AgentState, r: TurnFields): boolean {
   if (!r.handedAt || agent.status !== "idle" || !after(agent.statusChangedAt, Date.parse(r.handedAt))) return false;
   return completesAt(r, agent, Date.parse(agent.statusChangedAt!));
 }
 
-// Callers hold the delivery lock and have just popped the entry. A typed
-// delivery is confirmed only once the input box clears, by which time a
-// short turn may already have ended — then it goes straight to done.
+// Each UserPromptSubmit starts the turn of at most one prompt delivery: the
+// oldest delivered one handed over before it and not yet started. A queue of
+// prompts (Codex's thread queue) thus starts in order. Claude can fire
+// UserPromptSubmit twice for one prompt it puts back and resubmits, which
+// starts one more message early; that message then finishes a turn early.
+export function claimPrompt(name: string, promptAt: string): string | null {
+  if (!existsSync(recordsDir(name))) return null;
+  return withFileLock(recordsLock(name), () => {
+    const records = listRecords(name);
+    if (records.some((r) => r.via === "prompt" && r.startedAt === promptAt)) return null;
+    const at = Date.parse(promptAt);
+    const next = records
+      .filter((r) => r.state === "delivered" && r.via === "prompt" && !r.startedAt && Date.parse(r.handedAt ?? "") < at)
+      .sort((a, b) => Date.parse(a.handedAt!) - Date.parse(b.handedAt!) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+    if (!next) return null;
+    writeJsonAtomic(recordFile(name, next.id), { ...next, startedAt: promptAt }, { pretty: false });
+    return next.id;
+  });
+}
+
+// A delivery can be confirmed after its UserPromptSubmit already fired, and
+// even after a short turn ended: claim that prompt now, then settle.
+function afterHandover(name: string, id: string): void {
+  const agent = readAgent(name);
+  if (!agent) return;
+  const record = readJsonOrNull<MessageRecord>(recordFile(name, id));
+  if (record?.state !== "delivered") return;
+  if (record.via === "prompt" && !record.startedAt && agent.promptAt && after(agent.promptAt, Date.parse(record.handedAt ?? ""))) {
+    claimPrompt(name, agent.promptAt);
+  }
+  const now = new Date().toISOString();
+  updateRecord(name, id, (cur) => (cur.state === "delivered" && turnEndedSince(agent, cur) ? { ...cur, state: "done", doneAt: now } : null));
+}
+
+// Callers hold the delivery lock and have just popped the entry.
 export function markDelivered(name: string, entryId: string, mark?: DeliveryMark | null, via: DeliveryVia = "prompt"): void {
   const id = entryMessageId(entryId);
   if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
-  const agent = readAgent(name);
-  const m = mark ?? markNow(agent);
+  const m = mark ?? markNow(readAgent(name));
   const now = new Date().toISOString();
-  const ended = agent !== null && turnEndedSince(agent, { handedAt: m.handedAt, via });
   updateRecord(name, id, (r) =>
     r.state !== "queued"
       ? null
       : {
           ...r,
-          state: ended ? "done" : "delivered",
+          state: "delivered",
           deliveredAt: now,
-          doneAt: ended ? now : null,
+          doneAt: null,
           transcriptIndex: m.transcriptIndex,
           handedAt: m.handedAt,
           via,
+          ...(via === "absorbed" ? { startedAt: m.handedAt } : {}),
         },
   );
+  afterHandover(name, id);
 }
 
 // Queue a tracked message: the record lands before the entry, under the
@@ -236,7 +276,9 @@ export function recordImmediateDelivery(name: string, mark: DeliveryMark, via: D
     transcriptIndex: mark.transcriptIndex,
     handedAt: mark.handedAt,
     via,
+    ...(via === "absorbed" ? { startedAt: mark.handedAt } : {}),
   });
+  afterHandover(name, id);
   return id;
 }
 
@@ -288,8 +330,12 @@ function settle(name: string, record: MessageRecord): MessageRecord {
 
 // Runs `fn` under the records lock on a record caught up with any turn end
 // the hooks have yet to mark, so none can land between its check and its
-// action. Null: no such record.
-export function withSettledRecord<T>(name: string, id: string, fn: (record: MessageView) => T): T | null {
+// action; `save` writes it back. Null: no such record.
+export function withSettledRecord<T>(
+  name: string,
+  id: string,
+  fn: (record: MessageRecord, save: (next: MessageRecord) => void) => T,
+): T | null {
   if (!ID_RE.test(id)) return null;
   const file = recordFile(name, id);
   if (!existsSync(file)) return null;
@@ -301,7 +347,7 @@ export function withSettledRecord<T>(name: string, id: string, fn: (record: Mess
       record = { ...record, state: "done", doneAt: new Date().toISOString() };
       writeJsonAtomic(file, record, { pretty: false });
     }
-    return fn(view(record));
+    return fn(record, (next) => writeJsonAtomic(file, next, { pretty: false }));
   });
 }
 

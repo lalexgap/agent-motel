@@ -378,7 +378,7 @@ function notInterruptible(id: string, state: MessageState): InterruptResult {
   return { ok: false, error, state };
 }
 
-// Esc the turn handling a delivered message, and only that turn. The delivery
+// Esc the turn handling a delivered message, once, and only that turn. The delivery
 // lock keeps the next message from being handed over, and the records lock
 // keeps the Stop hook from marking it done, between the check and the Esc.
 // Null: no such message.
@@ -390,13 +390,19 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
     if (record.state !== "delivered") return notInterruptible(id, record.state);
     if (acquireDeliverLock(name)) {
       try {
-        return withSettledRecord(name, id, (current): InterruptResult => {
+        return withSettledRecord(name, id, (current, save): InterruptResult => {
           if (current.state !== "delivered") return notInterruptible(id, current.state);
+          // A delivered message can still wait behind an earlier turn (Codex's
+          // queue, a deferred steer); Esc then would abort that turn instead.
+          if (!current.startedAt && current.via !== "absorbed") return { ok: false, error: `message ${id} has not started yet`, state: "delivered" };
+          // A second Esc rewinds the conversation in both TUIs.
+          if (current.interruptedAt) return { ok: false, error: `message ${id} was already interrupted`, state: "delivered" };
           const agent = readAgent(name);
           if (!agent || !hasSession(agent.tmuxSession)) {
             return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state };
           }
           sendEscape(agent.tmuxSession);
+          save({ ...current, interruptedAt: new Date().toISOString() });
           return { ok: true, state: "delivered" };
         });
       } finally {
