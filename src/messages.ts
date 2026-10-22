@@ -184,10 +184,13 @@ function turnEndedSince(agent: AgentState, r: TurnFields): boolean {
   return completesAt(r, agent, Date.parse(agent.statusChangedAt!));
 }
 
+// Claude Code hands a long paste to UserPromptSubmit wrapped in these tags.
+const PASTE_TAG_RE = /<\/?pasted_content id="[^"]*">/g;
+
 // Matches a UserPromptSubmit to the message it submits without storing the
 // message text.
 export function promptKey(text: string): string {
-  return createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex");
+  return createHash("sha256").update(text.replace(PASTE_TAG_RE, " ").replace(/\s+/g, " ").trim()).digest("hex");
 }
 
 const promptHeld = (records: MessageRecord[], promptAt: string) =>

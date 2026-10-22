@@ -481,6 +481,15 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id)!.state).toBe("done");
   });
 
+  test("a long paste, which Claude wraps in pasted_content tags, still starts its message", () => {
+    fakeSession("working");
+    const body = "line one\nline two\n";
+    const id = recordImmediateDelivery("api", { transcriptIndex: 0, handedAt: new Date().toISOString() }, body);
+    hook("user-prompt-submit", { prompt: `\n\n<pasted_content id="9aed">\n${body}</pasted_content id="9aed">\n\n` });
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
   test("a typed delivery confirmed after another prompt's UserPromptSubmit stays unstarted", () => {
     fakeSession("working");
     const id = queueTrackedMessage("api", "typed");
