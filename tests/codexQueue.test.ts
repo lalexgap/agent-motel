@@ -117,6 +117,21 @@ describe("codex inbox delivery", () => {
     expect(typed()).toBe(true);
   });
 
+  test("after an Esc, typing until a prompt is submitted", async () => {
+    fakeCodex("ok");
+    const agent = { name: "api", provider: "codex" as const, status: "idle" as const, tmuxSession: "agentmgr-api", dir: home, createdAt: "now", updatedAt: "now", sessionId: "thread-1" };
+    writeAgent({ ...agent, promptAt: "2026-01-01T00:00:00.000Z", escapedAt: "2026-01-01T00:00:01.000Z" });
+    queueAppend("api", "operator note");
+    await deliverNext("api");
+    expect(calls()).toHaveLength(0);
+    expect(typed()).toBe(true);
+
+    writeAgent({ ...agent, promptAt: "2026-01-01T00:00:02.000Z", escapedAt: "2026-01-01T00:00:01.000Z" });
+    const id = queueAppend("api", "next note");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(calls().some((c) => c.msg.method === "thread/queue/add")).toBe(true);
+  });
+
   test("no thread id means typing", async () => {
     fakeCodex("ok");
     writeAgent({ name: "api", provider: "codex", status: "idle", tmuxSession: "agentmgr-api", dir: home, createdAt: "now", updatedAt: "now" });

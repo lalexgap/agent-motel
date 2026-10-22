@@ -65,6 +65,9 @@ export interface AgentState {
   // receipts use them to tell which turn received a message.
   promptAt?: string;
   promptKey?: string;
+  // When am last pressed Esc in the pane. Codex stops draining its input
+  // queue after an interrupt until a prompt is submitted.
+  escapedAt?: string;
   // Standing report relationship: this agent keeps `reportTo` posted. Drives
   // the primer briefing and the Stop-hook backstop heads-up.
   reportTo?: string;

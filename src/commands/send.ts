@@ -1,8 +1,8 @@
 import { hostname } from "node:os";
 import { isExactNamesOnly, matchAgent, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
-import { hasSession, sendEscape, sendText } from "../tmux";
-import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, releaseDeliverLock } from "../deliver";
+import { hasSession, sendText } from "../tmux";
+import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, releaseDeliverLock } from "../deliver";
 import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
@@ -131,7 +131,7 @@ export async function interruptCommand(
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
   let id: string | null = null;
   try {
-    sendEscape(agent.tmuxSession);
+    escapeTurn(agent);
     await Bun.sleep(400);
     const mark = opts.track || opts.json ? immediateMark(agent) : null;
     sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
@@ -147,7 +147,7 @@ export async function abortTurn(name: string): Promise<void> {
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry`);
   const escAt = Date.now();
   try {
-    sendEscape(agent.tmuxSession);
+    escapeTurn(agent);
   } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}"`);
   await endAbortedTurn(agent.name, escAt);

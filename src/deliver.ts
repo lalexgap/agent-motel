@@ -313,10 +313,29 @@ interface InboxSender {
   confirm: boolean;
 }
 
+function noteEscape(name: string): void {
+  updateAgentIf(name, (current) => {
+    current.escapedAt = new Date().toISOString();
+    return true;
+  });
+}
+
+// Esc the agent's turn, noted for codexQueueHeld. Callers hold the delivery lock.
+export function escapeTurn(agent: AgentState): void {
+  sendEscape(agent.tmuxSession);
+  noteEscape(agent.name);
+}
+
+// After an Esc, Codex leaves new queue entries unstarted until a prompt is
+// submitted, so a message added then would sit there with the agent idle.
+function codexQueueHeld(agent: AgentState): boolean {
+  return agent.escapedAt !== undefined && !(Date.parse(agent.promptAt ?? "") > Date.parse(agent.escapedAt));
+}
+
 function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
   if (agentProvider(agent) === "codex") {
     const threadId = agentSessionId(agent);
-    return threadId
+    return threadId && !codexQueueHeld(agent)
       ? { send: () => queueCodexMessage(threadId, head.message, clientMessageId(head.id)), confirm: false }
       : null;
   }
@@ -477,6 +496,8 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
           save({ ...current, interruptedAt: new Date().toISOString() });
           return { ok: true, state: "delivered" };
         });
+        // Outside the records lock, but before a delivery can follow.
+        if (result?.ok) noteEscape(name);
       } finally {
         releaseDeliverLock(name);
       }
