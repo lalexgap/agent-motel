@@ -163,6 +163,11 @@ export function sendEscape(session: string): void {
   tmux("send-keys", "-t", paneTarget(session), "Escape");
 }
 
+// Ctrl+U: deletes one composer row.
+export function sendClearLine(session: string): void {
+  tmux("send-keys", "-t", paneTarget(session), "C-u");
+}
+
 export function capturePane(session: string, opts: { colors?: boolean } = {}): string[] | null {
   // -e keeps SGR escape sequences so previews render in full color.
   const flags = opts.colors ? ["-p", "-e"] : ["-p"];

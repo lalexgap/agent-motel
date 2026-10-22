@@ -68,7 +68,8 @@ function say(type: "user" | "assistant", text: string): void {
 // A claude agent with a three-entry transcript and a fake tmux whose input
 // box clears on Enter (mode "submit"); mode "dead" makes the session vanish,
 // a `busy` file hides the composer behind a running turn, and a `running`
-// file shows an empty composer with the running-turn hint under it.
+// file shows an empty composer with the running-turn hint under it. C-u
+// empties the input box and returns to mode "submit".
 function fakeSession(status: AgentState["status"] = "idle") {
   writeAgent({
     name: "api", provider: "claude", status, tmuxSession: "agentmgr-api", dir: home,
@@ -96,6 +97,7 @@ case "$1" in
       printf '%s\\n' "$6" >> "$AGENTMGR_HOME/typed"
     else
       printf '%s\\n' "$4" >> "$AGENTMGR_HOME/keys"
+      [ "$4" = C-u ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
       [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
@@ -697,6 +699,40 @@ describe("messages api", () => {
       const finished = readMessage("api", next)!;
       expect(finished.state).toBe("done");
       expect(finished.interrupted).toBeUndefined();
+    });
+
+    test("Esc-only before the turn gets going: the prompt Claude puts back is cleared, and the queue drains", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go  slowly");
+      hook("user-prompt-submit", { prompt: "go  slowly" });
+      const next = queueTrackedMessage("api", "next one");
+      writeFileSync(join(home, "mode"), "keep");
+      writeFileSync(join(home, "input"), "go slowly");
+
+      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
+      expect(readAgent("api")!.status).toBe("idle");
+      expect(readFileSync(join(home, "keys"), "utf8")).toBe("Escape\nC-u\nEnter\n");
+      expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
+    });
+
+    test("Esc-only with other text in the composer leaves the turn running", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      writeFileSync(join(home, "mode"), "keep");
+      writeFileSync(join(home, "input"), "something else");
+
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect((await interrupt({ messageId: id })).status).toBe(200);
+      } finally {
+        log.mockRestore();
+      }
+      expect(readMessage("api", id)).toMatchObject({ state: "delivered" });
+      expect(readAgent("api")!.status).toBe("working");
     });
 
     test("am interrupt / POST interrupt with no text end the Esc'd turn too", async () => {

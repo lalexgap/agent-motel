@@ -3,7 +3,7 @@ import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
+import { capturePane, hasSession, sendClearLine, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
@@ -28,6 +28,7 @@ import {
   isMessageId,
   markDelivered,
   markTurnEnded,
+  promptKey,
   readMessage,
   withSettledRecord,
   type Conflict,
@@ -424,6 +425,19 @@ function notInterruptible(id: string, state: MessageState): InterruptResult {
 
 const ABORT_POLL_MS = 250;
 const ABORT_POLLS = 16;
+const CLEAR_PRESSES = 20;
+const CLEAR_PRESS_MS = 100;
+
+// One row per press, while the composer holds what is left of `text`.
+async function clearComposer(agent: AgentState, text: string): Promise<void> {
+  for (let press = 0; press < CLEAR_PRESSES; press++) {
+    sendClearLine(agent.tmuxSession);
+    await Bun.sleep(CLEAR_PRESS_MS);
+    const pane = capturePane(agent.tmuxSession, { colors: true });
+    const left = pane && parsedInputBoxText(pane, agentProvider(agent));
+    if (!left || !text.startsWith(left)) return;
+  }
+}
 
 // Neither TUI fires Stop for a turn aborted with Esc, so nothing else ends it:
 // the agent stays working, its receipts delivered, its queue undrained. Once
@@ -440,7 +454,14 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     if (agent.status !== "working" && agent.status !== "needs-attention") return false;
     if (Date.parse(agent.promptAt ?? "") > escAt) return false;
     const pane = capturePane(agent.tmuxSession, { colors: true });
-    if (!pane || parsedInputBoxText(pane, agentProvider(agent)) !== "" || turnRunning(pane, agentProvider(agent))) continue;
+    const input = pane && parsedInputBoxText(pane, agentProvider(agent));
+    if (!pane || input === null || turnRunning(pane, agentProvider(agent))) continue;
+    if (input !== "") {
+      // Claude puts back a prompt Esc'd before its turn got going. Left
+      // there, it would hold the queue behind it, and Enter would rerun it.
+      if (promptKey(input) === agent.promptKey) await clearComposer(agent, input);
+      continue;
+    }
     // Recheck under the state lock: a prompt or Stop since the capture wins.
     const ended = updateAgentIf(name, (current) => {
       if (current.status !== "working" && current.status !== "needs-attention") return false;
