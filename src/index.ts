@@ -684,7 +684,6 @@ async function main(): Promise<void> {
     case "interrupt":
     case "int": {
       const target = requirePositional(args, 0, "agent name");
-      // No message: Esc only, ending the turn without sending anything.
       if (args.positional.length === 1) await abortTurn(resolveAgent(target).name);
       else await interruptCommand(target, await resolveMessage(args), { from: args.flags.from as string | undefined });
       break;
