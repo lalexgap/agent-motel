@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { isExactNamesOnly, matchAgent, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendText } from "../tmux";
-import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, releaseDeliverLock } from "../deliver";
+import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, noteTypedAfterEscape, releaseDeliverLock } from "../deliver";
 import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
@@ -134,6 +134,7 @@ export async function interruptCommand(
     escapeTurn(agent);
     await Bun.sleep(400);
     const mark = opts.track || opts.json ? immediateMark(agent) : null;
+    noteTypedAfterEscape(agent.name, att.body);
     sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
     if (mark) id = recordImmediateDelivery(agent.name, mark, att.body);
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });

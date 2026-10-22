@@ -68,6 +68,13 @@ export interface AgentState {
   // When am last pressed Esc in the pane. Codex stops draining its input
   // queue after an interrupt until a prompt is submitted.
   escapedAt?: string;
+  // Keys of the prompts that Esc may have aborted, whose hooks can still land
+  // after it; what am typed since it (first when, and the keys); and the
+  // prompt that showed the agent took input again. See releaseEscapeHold.
+  escapedKeys?: string[];
+  typedSinceEscAt?: string;
+  typedSinceEscKeys?: string[];
+  escReleasedAt?: string;
   // Standing report relationship: this agent keeps `reportTo` posted. Drives
   // the primer briefing and the Stop-hook backstop heads-up.
   reportTo?: string;

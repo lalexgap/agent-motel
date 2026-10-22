@@ -70,7 +70,9 @@ function say(type: "user" | "assistant", text: string): void {
 // a `busy` file hides the composer behind a running turn, and a `running`
 // file shows an empty composer with the running-turn hint under it. C-u
 // empties the input box and returns to mode "submit", unless a `stuck` file
-// makes it do nothing.
+// makes it do nothing, or a `late` file holding N makes it take one word
+// off, showing at the Nth capture after the press (a slow redraw of a
+// multi-row composer).
 function fakeSession(status: AgentState["status"] = "idle") {
   writeAgent({
     name: "api", provider: "claude", status, tmuxSession: "agentmgr-api", dir: home,
@@ -86,6 +88,11 @@ case "$1" in
   has-session) [ "$(cat "$AGENTMGR_HOME/mode")" = dead ] && exit 1; exit 0 ;;
   display-message) echo "server:session:pane:1" ;;
   capture-pane)
+    if [ -e "$AGENTMGR_HOME/redraw-in" ]; then
+      n=$(($(cat "$AGENTMGR_HOME/redraw-in") - 1))
+      if [ "$n" -le 0 ]; then rm "$AGENTMGR_HOME/redraw-in"; printf '%s' "$(sed 's/ *[^ ]*$//' "$AGENTMGR_HOME/input")" > "$AGENTMGR_HOME/input"
+      else echo "$n" > "$AGENTMGR_HOME/redraw-in"; fi
+    fi
     [ -e "$AGENTMGR_HOME/busy" ] && { echo '✻ Working… (esc to interrupt)'; exit 0; }
     echo '────────────────────'
     printf '❯ '; cat "$AGENTMGR_HOME/input"; echo
@@ -98,7 +105,8 @@ case "$1" in
       printf '%s\\n' "$6" >> "$AGENTMGR_HOME/typed"
     else
       printf '%s\\n' "$4" >> "$AGENTMGR_HOME/keys"
-      [ "$4" = C-u ] && [ ! -e "$AGENTMGR_HOME/stuck" ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
+      [ "$4" = C-u ] && [ -e "$AGENTMGR_HOME/late" ] && cp "$AGENTMGR_HOME/late" "$AGENTMGR_HOME/redraw-in"
+      [ "$4" = C-u ] && [ ! -e "$AGENTMGR_HOME/stuck" ] && [ ! -e "$AGENTMGR_HOME/late" ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
       [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
@@ -718,7 +726,7 @@ describe("messages api", () => {
       expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
     });
 
-    test("a put-back prompt Ctrl+U doesn't shorten gets one press, not one per poll", async () => {
+    test("a put-back prompt Ctrl+U doesn't shorten gets two presses, not one per poll", async () => {
       fakeSession("working");
       fastSleep();
       const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
@@ -733,9 +741,51 @@ describe("messages api", () => {
       } finally {
         log.mockRestore();
       }
-      expect(keys()).toBe("Escape\nC-u\n");
+      expect(keys()).toBe("Escape\nC-u\nC-u\n");
       expect(readMessage("api", id)).toMatchObject({ state: "delivered" });
       expect(readAgent("api")!.status).toBe("working");
+    });
+
+    test("a put-back prompt the TUI is slow to redraw after Ctrl+U is still cleared, and the turn ends", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go on slowly");
+      hook("user-prompt-submit", { prompt: "go on slowly" });
+      writeFileSync(join(home, "mode"), "keep");
+      writeFileSync(join(home, "input"), "go on slowly");
+      writeFileSync(join(home, "late"), "4");
+
+      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect(keys()).toBe("Escape\nC-u\nC-u\nC-u\n");
+      expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
+      expect(readAgent("api")!.status).toBe("idle");
+    });
+
+    test("a late hook for the aborted prompt doesn't keep its turn from ending", async () => {
+      fakeSession("working");
+      fastSleep();
+      hook("user-prompt-submit", { prompt: "earlier" });
+      // Handed over just before the Esc; its hook lands after it.
+      recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      const inner = spawnSpy!.getMockImplementation()!;
+      let fired = false;
+      spawnSpy!.mockImplementation((cmd: any, opts?: any) => {
+        const result = inner(cmd, opts);
+        if (!fired && Array.isArray(cmd) && cmd[0] === "tmux" && cmd[1] === "capture-pane" && keys()) {
+          fired = true;
+          Bun.sleepSync(5);
+          hook("user-prompt-submit", { prompt: "go" });
+        }
+        return result;
+      });
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await abortTurn("api");
+      } finally {
+        log.mockRestore();
+      }
+      expect(fired).toBe(true);
+      expect(readAgent("api")!.status).toBe("idle");
     });
 
     test("Esc-only with other text in the composer leaves the turn running", async () => {

@@ -5,9 +5,11 @@ import {
   acquireDeliverLock,
   confirmInboxDelivery,
   deliverNext,
+  dropCodexHandoff,
   finishConfirmedDelivery,
   pendingDeliveryId,
   releaseDeliverLock,
+  releaseEscapeHold,
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -399,6 +401,7 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "user-prompt-submit" && !fromSubagent) {
     agent.promptAt = new Date().toISOString();
     agent.promptKey = typeof payload.prompt === "string" ? promptKey(payload.prompt) : undefined;
+    releaseEscapeHold(agent);
   }
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
@@ -440,7 +443,12 @@ export async function hookCommand(event: string): Promise<void> {
       if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt, agent.promptAt);
       surfaceInbox(name, "UserPromptSubmit");
       const { promptAt, promptKey: key } = agent;
-      if (promptAt && key) receipt(() => claimPrompt(name, promptAt, key));
+      if (promptAt && key) {
+        receipt(() => {
+          const started = claimPrompt(name, promptAt, key);
+          if (started) dropCodexHandoff(name, `${started}.json`);
+        });
+      }
     }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }

@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, rmSync } from "node:fs";
+import { closeSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked } from "./queue";
 import { capturePane, hasSession, sendClearLine, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
-import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
+import { baseDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
+import { withFileLock } from "./filelock";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { isAttributedBody } from "./comms";
 import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
-import { clientMessageId, queueCodexMessage, reclaimCodexMessages } from "./codexQueue";
+import { clientMessageId, CodexOutcomeUnknown, queueCodexMessage, reclaimCodexMessages } from "./codexQueue";
 import {
   acquireMailboxLock,
   acquireProducerLock,
@@ -25,7 +26,9 @@ import {
   cancelQueuedLocked,
   clearQueuedLocked,
   deliveryMark,
+  entryUnstarted,
   isMessageId,
+  lateHookKeys,
   markDelivered,
   markTurnEnded,
   promptKey,
@@ -237,12 +240,15 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
     const incarnation = sessionIncarnation(agent);
     if (!incarnation) return { status: "queued", reason: "unavailable" };
+    const provider = agentProvider(agent);
+    // A reclaim cut short left a message mid-claim; settle it before anything
+    // queued behind it goes out.
+    if (provider === "codex" && codexReclaimPending(name)) await reclaimCodexHandoffs(name, agent, true);
     const head = queueHead(name);
     if (head === null) return { status: "queued", reason: "empty" };
     const markerPath = pendingPath(name);
     const marker = readJsonOrNull<PendingDelivery>(markerPath);
     let pending = marker?.incarnation === incarnation ? marker : null;
-    const provider = agentProvider(agent);
 
     if (pending?.id === head.id && pending.via === "inbox") {
       if (deliveryConfirmed(name, head.id)) {
@@ -281,6 +287,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       // the receiving TUI has no transactional acknowledgement protocol.
       mark = deliveryMark(name, head.id) ?? undefined;
       writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, mark });
+      noteTypedAfterEscape(name, head.message);
       sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
       writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, typed: true, mark });
     }
@@ -315,9 +322,15 @@ interface InboxSender {
   confirm: boolean;
 }
 
-function noteEscape(name: string): void {
+// Each Esc starts over: what was typed since an earlier one, or let it go,
+// no longer counts.
+function noteEscape(name: string, abortedKeys: (string | undefined)[]): void {
   updateAgentIf(name, (current) => {
     current.escapedAt = new Date().toISOString();
+    current.escapedKeys = [...new Set(abortedKeys.filter((k): k is string => !!k))];
+    delete current.typedSinceEscAt;
+    delete current.typedSinceEscKeys;
+    delete current.escReleasedAt;
     return true;
   });
 }
@@ -325,26 +338,61 @@ function noteEscape(name: string): void {
 // Esc the agent's turn, noted for codexQueueHeld. Callers hold the delivery lock.
 export function escapeTurn(agent: AgentState): void {
   sendEscape(agent.tmuxSession);
-  noteEscape(agent.name);
+  noteEscape(agent.name, [agent.promptKey, ...lateHookKeys(agent.name, agent)]);
+}
+
+const TYPED_SINCE_ESC_KEPT = 20;
+
+// Before am types into a pane whose last Esc still holds, so the prompt that
+// typing submits is recognisably one am typed after it.
+export function noteTypedAfterEscape(name: string, message: string): void {
+  updateAgentIf(name, (current) => {
+    if (!current.escapedAt || current.escReleasedAt) return false;
+    current.typedSinceEscAt ??= new Date().toISOString();
+    current.typedSinceEscKeys = [...(current.typedSinceEscKeys ?? []), promptKey(message)].slice(-TYPED_SINCE_ESC_KEPT);
+    return true;
+  });
 }
 
 // promptAt is when the UserPromptSubmit hook ran, not when the prompt was
-// submitted, so the hook for a prompt submitted just before the Esc (one the
-// Esc aborted) can run after it. Only a prompt this long after counts.
-const PROMPT_AFTER_ESC_MS = 2000;
+// submitted, so the hook for the prompt an Esc aborted can run after the Esc.
+// Time can't tell them apart, so identity does: a prompt is the agent taking
+// input again when its key isn't one the Esc may have aborted, or is one am
+// typed since. The hold on Codex's queue lifts only once am has typed since
+// the Esc, so a late hook whose key am never knew can't lift it either.
+function abortedPrompt(agent: AgentState): boolean {
+  return (agent.escapedKeys ?? []).includes(agent.promptKey ?? "")
+    && !(agent.typedSinceEscKeys ?? []).includes(agent.promptKey ?? "");
+}
+
+// At UserPromptSubmit, once promptAt and promptKey are set.
+export function releaseEscapeHold(agent: AgentState): void {
+  if (!agent.escapedAt || agent.escReleasedAt || !agent.promptAt || !agent.typedSinceEscAt) return;
+  if (Date.parse(agent.promptAt) > Date.parse(agent.typedSinceEscAt) && !abortedPrompt(agent)) agent.escReleasedAt = agent.promptAt;
+}
+
+// Whether a prompt since the Esc at `escAt` started a turn of its own.
+function promptSinceEsc(agent: AgentState, escAt: number): boolean {
+  if (!(Date.parse(agent.promptAt ?? "") > escAt)) return false;
+  return Date.parse(agent.escReleasedAt ?? "") > escAt || !abortedPrompt(agent);
+}
 
 // After an Esc, Codex leaves new queue entries unstarted until a prompt is
 // submitted, so a message added then would sit there with the agent idle.
 function codexQueueHeld(agent: AgentState): boolean {
-  return agent.escapedAt !== undefined
-    && !(Date.parse(agent.promptAt ?? "") > Date.parse(agent.escapedAt) + PROMPT_AFTER_ESC_MS);
+  return agent.escapedAt !== undefined && agent.escReleasedAt === undefined;
 }
 
 // Entries handed to Codex's queue, oldest first, so an Esc that leaves them
-// unstarted can take them back (reclaimCodexHandoffs).
+// unstarted can take them back (reclaimCodexHandoffs). The body is kept
+// because nothing else has it once the entry leaves am's queue: a record
+// keeps only a hash. `reclaiming`: its delete may have gone out. `uncertain`:
+// the add's outcome is unknown, so am typed it as well.
 interface CodexHandoff {
   entryId: string;
   message: string;
+  reclaiming?: boolean;
+  uncertain?: boolean;
 }
 
 const CODEX_HANDOFFS_KEPT = 50;
@@ -353,57 +401,101 @@ function codexHandoffsPath(name: string): string {
   return join(queueDir(), name, ".codex-handoffs");
 }
 
+function codexHandoffsLock(name: string): string {
+  return join(baseDir(), "locks", `codex-handoffs.${name}.lock`);
+}
+
 function readCodexHandoffs(name: string): CodexHandoff[] {
   return readJsonOrNull<CodexHandoff[]>(codexHandoffsPath(name)) ?? [];
 }
 
-function writeCodexHandoffs(name: string, handoffs: CodexHandoff[]): void {
-  if (handoffs.length) writeJsonAtomic(codexHandoffsPath(name), handoffs.slice(-CODEX_HANDOFFS_KEPT), { pretty: false });
-  else rmSync(codexHandoffsPath(name), { force: true });
+// Locked, since the prompt hook prunes it without the delivery lock.
+function updateCodexHandoffs(name: string, fn: (handoffs: CodexHandoff[]) => CodexHandoff[]): void {
+  withFileLock(codexHandoffsLock(name), () => {
+    const handoffs = fn(readCodexHandoffs(name)).slice(-CODEX_HANDOFFS_KEPT);
+    if (handoffs.length) writeJsonAtomic(codexHandoffsPath(name), handoffs, { pretty: false });
+    else rmSync(codexHandoffsPath(name), { force: true });
+  });
+}
+
+// UserPromptSubmit claimed this entry's message: it started, so it is no
+// longer Codex's to hold or am's to take back.
+export function dropCodexHandoff(name: string, entryId: string): void {
+  if (!existsSync(codexHandoffsPath(name))) return;
+  updateCodexHandoffs(name, (handoffs) => handoffs.filter((h) => h.entryId !== entryId));
 }
 
 // Noted before the add, so a crash after it still leaves the entry findable;
-// one Codex never got is dropped when reclaimed.
+// one Codex never got is dropped when reclaimed. An add that may have landed
+// keeps its note, marked, so a reclaim deletes the copy without restoring it.
 async function handToCodexQueue(name: string, threadId: string, head: { id: string; message: string }): Promise<void> {
-  const before = readCodexHandoffs(name).filter((h) => h.entryId !== head.id);
-  writeCodexHandoffs(name, [...before, { entryId: head.id, message: head.message }]);
+  const others = (handoffs: CodexHandoff[]) => handoffs.filter((h) => h.entryId !== head.id);
+  updateCodexHandoffs(name, (handoffs) => [...others(handoffs), { entryId: head.id, message: head.message }]);
   try {
     await queueCodexMessage(threadId, head.message, clientMessageId(head.id));
   } catch (error) {
-    writeCodexHandoffs(name, before);
+    updateCodexHandoffs(name, (handoffs) => error instanceof CodexOutcomeUnknown
+      ? handoffs.map((h) => (h.entryId === head.id ? { ...h, uncertain: true } : h))
+      : others(handoffs));
     throw error;
   }
+}
+
+function codexReclaimPending(name: string): boolean {
+  return readCodexHandoffs(name).some((h) => h.reclaiming);
 }
 
 // After an Esc, Codex starts nothing more from its queue until a prompt is
 // typed, so what still waits there would wait for good, already marked
 // delivered. Take it back from Codex, then put it at the front of am's queue
 // under its old id, its receipt queued again, for deliverNext to type.
-// Deleting from Codex first means a failure can at worst leave a message
-// where it was, never in both queues. Callers hold the delivery lock.
-async function reclaimCodexHandoffs(name: string, agent: AgentState): Promise<void> {
+// One entry at a time: it is marked before its delete goes out, and put back
+// and unnoted as soon as Codex confirms the delete, before the next. A failure
+// or crash part way leaves the rest in Codex's queue, and the one in flight
+// marked; `pendingOnly` finishes those: one gone from Codex's queue was
+// deleted (or started, which its record shows), so it goes back. At worst a
+// message is left where it was, or (a crash between putting it back and
+// unnoting it, then a delivery that skips the recovery) delivered twice; never
+// in neither queue. Callers hold the delivery lock.
+async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly = false): Promise<void> {
   const threadId = agentSessionId(agent);
-  const handoffs = readCodexHandoffs(name);
-  if (!threadId || !handoffs.length) return;
-  let result: { deleted: string[]; gone: string[] };
+  const targets = readCodexHandoffs(name).filter((h) => !pendingOnly || h.reclaiming);
+  if (!threadId || !targets.length) return;
+  const byClientId = new Map(targets.map((h) => [clientMessageId(h.entryId), h]));
+  const drop = (h: CodexHandoff) => updateCodexHandoffs(name, (handoffs) => handoffs.filter((x) => x.entryId !== h.entryId));
+  const restore = (h: CodexHandoff) => {
+    if (!h.uncertain) {
+      queueRestoreLocked(name, h.entryId, h.message);
+      try {
+        requeueDelivered(name, h.entryId);
+      } catch {
+        // a receipt must not keep the message from being delivered
+      }
+    }
+    drop(h);
+  };
   try {
-    result = await reclaimCodexMessages(threadId, handoffs.map((h) => clientMessageId(h.entryId)));
+    await reclaimCodexMessages(threadId, [...byClientId.keys()], {
+      gone: (clientIds) => {
+        for (const id of clientIds) {
+          const h = byClientId.get(id)!;
+          if (h.reclaiming && entryUnstarted(name, h.entryId)) restore(h);
+          else drop(h);
+        }
+      },
+      claiming: (clientId) => {
+        const h = byClientId.get(clientId)!;
+        updateCodexHandoffs(name, (handoffs) => handoffs.map((x) => (x.entryId === h.entryId ? { ...x, reclaiming: true } : x)));
+      },
+      claimed: (clientId, deleted) => {
+        const h = byClientId.get(clientId)!;
+        if (deleted) restore(h);
+        else drop(h);
+      },
+    });
   } catch (error) {
     console.error(`am: could not take back "${name}"'s messages from the Codex queue: ${error instanceof Error ? error.message : error}`);
-    return;
   }
-  const deleted = new Set(result.deleted);
-  const settled = new Set([...result.deleted, ...result.gone]);
-  for (const h of handoffs) {
-    if (!deleted.has(clientMessageId(h.entryId))) continue;
-    queueRestoreLocked(name, h.entryId, h.message);
-    try {
-      requeueDelivered(name, h.entryId);
-    } catch {
-      // a receipt must not keep the message from being delivered
-    }
-  }
-  writeCodexHandoffs(name, handoffs.filter((h) => !settled.has(clientMessageId(h.entryId))));
 }
 
 function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
@@ -501,20 +593,33 @@ const ABORT_POLLS = 16;
 // Wall-clock cap on waiting out an Esc, clearing included.
 const ABORT_WAIT_MS = 5000;
 const CLEAR_PRESSES = 20;
-const CLEAR_PRESS_MS = 100;
+// A TUI can take a while to redraw after a press, so each press waits up to
+// CLEAR_REDRAW_POLLS × CLEAR_POLL_MS for the composer to shorten, and only
+// CLEAR_STALLS presses in a row that never do mean it won't.
+const CLEAR_POLL_MS = 100;
+const CLEAR_REDRAW_POLLS = 5;
+const CLEAR_STALLS = 2;
 
 // One row per press, while the composer holds what is left of `text`. False
-// when a press left it no shorter: something else holds the composer.
+// when presses leave it no shorter: something else holds the composer.
 async function clearComposer(agent: AgentState, text: string, deadline: number): Promise<boolean> {
   let length = text.length;
+  let stalls = 0;
   for (let press = 0; press < CLEAR_PRESSES && Date.now() < deadline; press++) {
     sendClearLine(agent.tmuxSession);
-    await Bun.sleep(CLEAR_PRESS_MS);
-    const pane = capturePane(agent.tmuxSession, { colors: true });
-    const left = pane && parsedInputBoxText(pane, agentProvider(agent));
-    if (!left || !text.startsWith(left)) return true;
-    if (left.length >= length) return false;
-    length = left.length;
+    let shortened = false;
+    for (let poll = 0; poll < CLEAR_REDRAW_POLLS && !shortened && Date.now() < deadline; poll++) {
+      await Bun.sleep(CLEAR_POLL_MS);
+      const pane = capturePane(agent.tmuxSession, { colors: true });
+      const left = pane && parsedInputBoxText(pane, agentProvider(agent));
+      if (!left || !text.startsWith(left)) return true;
+      if (left.length < length) {
+        length = left.length;
+        shortened = true;
+      }
+    }
+    stalls = shortened ? 0 : stalls + 1;
+    if (stalls >= CLEAR_STALLS) return false;
   }
   return false;
 }
@@ -525,7 +630,8 @@ async function clearComposer(agent: AgentState, text: string, deadline: number):
 // with no running-turn hint (which an Esc the turn ignored leaves up),
 // end the turn as a Stop would, its receipts done and marked interrupted, and
 // deliver what is queued. A Stop or a prompt since the Esc means the turn
-// ended or a new one started, either of which brings its own Stop.
+// ended or a new one started, either of which brings its own Stop; a late
+// hook for the prompt the Esc aborted is neither (promptSinceEsc).
 export async function endAbortedTurn(name: string, escAt: number): Promise<boolean> {
   const deadline = escAt + ABORT_WAIT_MS;
   let clearFailed = false;
@@ -534,7 +640,7 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     const agent = readAgent(name);
     if (!agent || !hasSession(agent.tmuxSession)) return false;
     if (agent.status !== "working" && agent.status !== "needs-attention") return false;
-    if (Date.parse(agent.promptAt ?? "") > escAt) return false;
+    if (promptSinceEsc(agent, escAt)) return false;
     const pane = capturePane(agent.tmuxSession, { colors: true });
     const input = pane && parsedInputBoxText(pane, agentProvider(agent));
     if (!pane || input === null || turnRunning(pane, agentProvider(agent))) continue;
@@ -552,7 +658,7 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
       // Recheck under the state lock: a prompt or Stop since the capture wins.
       const ended = updateAgentIf(name, (current) => {
         if (current.status !== "working" && current.status !== "needs-attention") return false;
-        if (Date.parse(current.promptAt ?? "") > escAt) return false;
+        if (promptSinceEsc(current, escAt)) return false;
         updateAgentStatus(current, "idle");
         delete current.workingSince;
         return true;
@@ -568,7 +674,7 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     } finally {
       if (codex) releaseDeliverLock(name);
     }
-    if (queueDepth(name) > 0) await deliverNext(name);
+    if (queueDepth(name) > 0 || (codex && codexReclaimPending(name))) await deliverNext(name);
     return true;
   }
   console.error(`am: "${name}" did not return to its prompt after Esc; leaving it as it is`);
@@ -587,6 +693,7 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
     if (record.state !== "delivered") return notInterruptible(id, record.state);
     if (acquireDeliverLock(name)) {
       let result: InterruptResult | null;
+      let abortedKey: string | undefined;
       const escAt = Date.now();
       try {
         result = withSettledRecord(name, id, (current, save): InterruptResult => {
@@ -605,11 +712,12 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
             return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state, reason: "no_session" };
           }
           sendEscape(agent.tmuxSession);
+          abortedKey = current.promptKey;
           save({ ...current, interruptedAt: new Date().toISOString() });
           return { ok: true, state: "delivered" };
         });
         // Outside the records lock, but before a delivery can follow.
-        if (result?.ok) noteEscape(name);
+        if (result?.ok) noteEscape(name, [abortedKey]);
       } finally {
         releaseDeliverLock(name);
       }

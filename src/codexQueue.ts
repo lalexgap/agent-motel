@@ -16,6 +16,13 @@ export function clientMessageId(entryId: string): string {
 
 type Request = (method: string, params: object) => Promise<Record<string, unknown>>;
 
+// The app server answered with an error, so the request had no effect.
+export class CodexRpcError extends Error {}
+
+// The request went out but no answer came back (the app server exited or was
+// killed on timeout): Codex may or may not have applied it.
+export class CodexOutcomeUnknown extends Error {}
+
 async function withAppServer<T>(timeoutMs: number, fn: (request: Request) => Promise<T>): Promise<T> {
   // Resolve against the live PATH; Bun.spawn's own lookup may not see it.
   const codex = Bun.which("codex", { PATH: process.env.PATH ?? "" });
@@ -48,7 +55,7 @@ async function withAppServer<T>(timeoutMs: number, fn: (request: Request) => Pro
           continue;
         }
         if (msg.id !== id) continue;
-        if (msg.error) throw new Error(`codex app-server: ${JSON.stringify(msg.error)}`);
+        if (msg.error) throw new CodexRpcError(`codex app-server: ${JSON.stringify(msg.error)}`);
         return msg;
       }
       const chunk = await reader.read();
@@ -72,14 +79,21 @@ async function withAppServer<T>(timeoutMs: number, fn: (request: Request) => Pro
 }
 
 export async function queueCodexMessage(threadId: string, text: string, clientId: string): Promise<void> {
-  await withAppServer(TIMEOUT_MS, async (request) => {
-    const added = await request("thread/queue/add", {
-      threadId,
-      clientUserMessageId: clientId,
-      input: [{ type: "text", text, text_elements: [] }],
+  let sent = false;
+  try {
+    await withAppServer(TIMEOUT_MS, async (request) => {
+      sent = true;
+      const added = await request("thread/queue/add", {
+        threadId,
+        clientUserMessageId: clientId,
+        input: [{ type: "text", text, text_elements: [] }],
+      });
+      if (!added.queuedSubmission) throw new CodexRpcError("codex app-server did not confirm the queued message");
     });
-    if (!added.queuedSubmission) throw new Error("codex app-server did not confirm the queued message");
-  });
+  } catch (error) {
+    if (!sent || error instanceof CodexRpcError) throw error;
+    throw new CodexOutcomeUnknown(error instanceof Error ? error.message : String(error));
+  }
 }
 
 interface QueuedSubmission {
@@ -87,16 +101,24 @@ interface QueuedSubmission {
   clientUserMessageId: string;
 }
 
+// Each step runs as soon as Codex has answered for it, before the next
+// request, so a failure part way leaves every earlier step done.
+export interface ReclaimSteps {
+  // After the listing: the given client ids not waiting at all.
+  gone(clientIds: string[]): void;
+  // Before its delete goes out.
+  claiming(clientId: string): void;
+  // Codex's answer: deleted, so it can no longer start, or not (it started).
+  claimed(clientId: string, deleted: boolean): void;
+}
+
 // Take back, oldest first, the given submissions still waiting in the thread's
 // queue. Codex's delete is the claim: one it reports deleted can no longer
 // start, so am may hand it over again. It stops at the first it could not
-// delete (it started meanwhile, so Codex drains the rest itself). Returns the
-// client ids deleted, and those no longer waiting at all.
-export async function reclaimCodexMessages(
-  threadId: string,
-  clientIds: string[],
-): Promise<{ deleted: string[]; gone: string[] }> {
-  return withAppServer(RECLAIM_TIMEOUT_MS, async (request) => {
+// delete (it started meanwhile, so Codex drains the rest itself), and on any
+// error, which leaves the claim in flight then unknown.
+export async function reclaimCodexMessages(threadId: string, clientIds: string[], steps: ReclaimSteps): Promise<void> {
+  await withAppServer(RECLAIM_TIMEOUT_MS, async (request) => {
     const waiting = new Map<string, string>();
     let cursor: string | null = null;
     do {
@@ -104,14 +126,14 @@ export async function reclaimCodexMessages(
       for (const s of (page.data as QueuedSubmission[] | undefined) ?? []) waiting.set(s.clientUserMessageId, s.id);
       cursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
     } while (cursor);
-    const deleted: string[] = [];
+    steps.gone(clientIds.filter((id) => !waiting.has(id)));
     for (const clientId of clientIds) {
       const submission = waiting.get(clientId);
       if (!submission) continue;
+      steps.claiming(clientId);
       const result = await request("thread/queue/delete", { threadId, queuedSubmissionId: submission });
+      steps.claimed(clientId, result.deleted === true);
       if (result.deleted !== true) break;
-      deleted.push(clientId);
     }
-    return { deleted, gone: clientIds.filter((id) => !waiting.has(id)) };
   });
 }

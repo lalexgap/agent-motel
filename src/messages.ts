@@ -324,6 +324,24 @@ export function requeueDelivered(name: string, entryId: string): void {
   });
 }
 
+// Whether an entry taken back from Codex may go back in am's queue: its
+// record, if it has one, shows it handed over and not started.
+export function entryUnstarted(name: string, entryId: string): boolean {
+  const id = entryMessageId(entryId);
+  if (!ID_RE.test(id)) return false;
+  const r = readJsonOrNull<MessageRecord>(recordFile(name, id));
+  return !r || (r.state === "delivered" && !r.startedAt);
+}
+
+// Prompts an Esc now may abort whose UserPromptSubmit hook hasn't run yet:
+// handed over as prompts since the agent's last prompt, and not started.
+export function lateHookKeys(name: string, agent: AgentState): string[] {
+  const since = Date.parse(agent.promptAt ?? "") || 0;
+  return listRecords(name)
+    .filter((r) => r.state === "delivered" && r.via === "prompt" && !r.startedAt && r.promptKey && Date.parse(r.handedAt ?? "") > since)
+    .map((r) => r.promptKey!);
+}
+
 // Queue a tracked message: the record lands before the entry, under the
 // producer lock, so a deliverer never pops an entry whose record is missing
 // and a cancel (which also takes the producer lock) never sees one half made.
