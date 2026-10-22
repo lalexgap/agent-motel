@@ -62,6 +62,14 @@ export function formatEnvelope(from: string, body: string): string {
   return `[am · from ${from}] ${body}`;
 }
 
+// Operator messages carry no envelope, but Claude's cross-session inbox frames
+// everything as "another Claude session", so they get this marker there.
+export const OPERATOR_MARKER = "[am · operator message]";
+
+export function operatorEnvelope(body: string): string {
+  return `${OPERATOR_MARKER} ${body}`;
+}
+
 export function isAttributedBody(body: string): boolean {
   return body.startsWith("[am · from ");
 }

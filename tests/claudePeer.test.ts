@@ -140,13 +140,23 @@ describe("inbox delivery", () => {
     expect(frames.find((f) => f.type === "user")).toMatchObject({ message: { content: "[am · from web] ping" } });
   });
 
-  test("operator messages are still typed into the pane", async () => {
+  test("operator messages go through the inbox with the operator marker", async () => {
     writeAgent(agent());
     liveEntry();
     await listen(true);
+    const id = queueAppend("api", "operator note");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(typed()).toBe(false);
+    expect(frames.find((f) => f.type === "user")).toMatchObject({
+      message: { content: "[am · operator message] operator note" },
+    });
+  });
+
+  test("an operator message falls back to typing without the marker", async () => {
+    writeAgent(agent());
+    liveEntry();
     queueAppend("api", "operator note");
     await deliverNext("api");
-    expect(frames).toHaveLength(0);
     expect(typed()).toBe(true);
   });
 

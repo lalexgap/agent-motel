@@ -7,7 +7,7 @@ import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmu
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { isAttributedBody } from "./comms";
+import { isAttributedBody, operatorEnvelope } from "./comms";
 import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
 import { clientMessageId, queueCodexMessage } from "./codexQueue";
 import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
@@ -252,8 +252,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
 
 // Codex's queue is durable, so a successful add is delivery. Claude's socket
 // never replies, so its sends wait for the hook's confirmation. Claude frames
-// inbox content as "not typed by your user", which would demote an operator's
-// message, so only peer messages go that way.
+// inbox content as "not typed by your user", so operator messages carry an
+// explicit marker there. Typing remains the fallback when the inbox is
+// unusable or never confirms.
 interface InboxSender {
   send: () => Promise<void>;
   confirm: boolean;
@@ -266,9 +267,10 @@ function inboxSender(agent: AgentState, head: { id: string; message: string }): 
       ? { send: () => queueCodexMessage(threadId, head.message, clientMessageId(head.id)), confirm: false }
       : null;
   }
-  if (!isAttributedBody(head.message) || !peerSendable(head.message)) return null;
+  const content = isAttributedBody(head.message) ? head.message : operatorEnvelope(head.message);
+  if (!peerSendable(content)) return null;
   const target = peerTarget(agent);
-  return target ? { send: () => sendPeerMessage(target, head.message, randomUUID()), confirm: true } : null;
+  return target ? { send: () => sendPeerMessage(target, content, randomUUID()), confirm: true } : null;
 }
 
 // Null means the inbox was unusable, so the caller types the message instead.
