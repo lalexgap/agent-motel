@@ -7,6 +7,7 @@ import {
   deliverNext,
   dropCodexHandoff,
   finishConfirmedDelivery,
+  needsCodexRecovery,
   pendingDeliveryId,
   releaseDeliverLock,
   releaseEscapeHold,
@@ -401,7 +402,6 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "user-prompt-submit" && !fromSubagent) {
     agent.promptAt = new Date().toISOString();
     agent.promptKey = typeof payload.prompt === "string" ? promptKey(payload.prompt) : undefined;
-    releaseEscapeHold(agent);
   }
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
@@ -423,6 +423,7 @@ export async function hookCommand(event: string): Promise<void> {
   }
   if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
+  if (event === "user-prompt-submit" && !fromSubagent) releaseEscapeHold(name);
 
   // A turn ended: delivery receipts for messages it took are done. A blocked
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
@@ -445,8 +446,7 @@ export async function hookCommand(event: string): Promise<void> {
       const { promptAt, promptKey: key } = agent;
       if (promptAt && key) {
         receipt(() => {
-          const started = claimPrompt(name, promptAt, key);
-          if (started) dropCodexHandoff(name, `${started}.json`);
+          dropCodexHandoff(name, key, claimPrompt(name, promptAt, key));
         });
       }
     }
@@ -485,7 +485,7 @@ export async function hookCommand(event: string): Promise<void> {
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);
-    if (depth > 0) {
+    if (depth > 0 || needsCodexRecovery(name)) {
       // Prefer the daemon as scheduler; fall back to a detached one-shot
       // delivery process when it isn't running.
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);

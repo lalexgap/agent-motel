@@ -241,9 +241,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     const incarnation = sessionIncarnation(agent);
     if (!incarnation) return { status: "queued", reason: "unavailable" };
     const provider = agentProvider(agent);
-    // A reclaim cut short left a message mid-claim; settle it before anything
-    // queued behind it goes out.
-    if (provider === "codex" && codexReclaimPending(name)) await reclaimCodexHandoffs(name, agent, true);
+    // A reclaim cut short left a message to take back; settle it before
+    // anything queued behind it goes out.
+    if (provider === "codex" && needsCodexRecovery(name)) await reclaimCodexHandoffs(name, agent, true);
     const head = queueHead(name);
     if (head === null) return { status: "queued", reason: "empty" };
     const markerPath = pendingPath(name);
@@ -365,10 +365,16 @@ function abortedPrompt(agent: AgentState): boolean {
     && !(agent.typedSinceEscKeys ?? []).includes(agent.promptKey ?? "");
 }
 
-// At UserPromptSubmit, once promptAt and promptKey are set.
-export function releaseEscapeHold(agent: AgentState): void {
-  if (!agent.escapedAt || agent.escReleasedAt || !agent.promptAt || !agent.typedSinceEscAt) return;
-  if (Date.parse(agent.promptAt) > Date.parse(agent.typedSinceEscAt) && !abortedPrompt(agent)) agent.escReleasedAt = agent.promptAt;
+// At UserPromptSubmit, once promptAt and promptKey are written. Decided on
+// the current state, so a hook that read it before a later Esc can't lift
+// that Esc's hold.
+export function releaseEscapeHold(name: string): void {
+  updateAgentIf(name, (agent) => {
+    if (!agent.escapedAt || agent.escReleasedAt || !agent.promptAt || !agent.typedSinceEscAt) return false;
+    if (!(Date.parse(agent.promptAt) > Date.parse(agent.typedSinceEscAt)) || abortedPrompt(agent)) return false;
+    agent.escReleasedAt = agent.promptAt;
+    return true;
+  });
 }
 
 // Whether a prompt since the Esc at `escAt` started a turn of its own.
@@ -386,16 +392,26 @@ function codexQueueHeld(agent: AgentState): boolean {
 // Entries handed to Codex's queue, oldest first, so an Esc that leaves them
 // unstarted can take them back (reclaimCodexHandoffs). The body is kept
 // because nothing else has it once the entry leaves am's queue: a record
-// keeps only a hash. `reclaiming`: its delete may have gone out. `uncertain`:
-// the add's outcome is unknown, so am typed it as well.
+// keeps only a hash. `key`: its prompt key, so the prompt hook can tell it
+// started, tracked or not. `reclaiming`: its delete may have gone out.
+// `uncertain`: the add's outcome is unknown, so am typed it as well.
+// `retries`/`retryAt`: a reclaim that failed, to try again then.
 interface CodexHandoff {
   entryId: string;
   message: string;
+  key?: string;
   reclaiming?: boolean;
   uncertain?: boolean;
+  retries?: number;
+  retryAt?: number;
 }
 
 const CODEX_HANDOFFS_KEPT = 50;
+// A failed reclaim is retried at once, then after 15s, 30s, ... up to 10
+// minutes apart, and given up after the last.
+const RECLAIM_RETRIES = 8;
+const RECLAIM_BACKOFF_MS = 15_000;
+const RECLAIM_BACKOFF_MAX_MS = 10 * 60_000;
 
 function codexHandoffsPath(name: string): string {
   return join(queueDir(), name, ".codex-handoffs");
@@ -418,11 +434,19 @@ function updateCodexHandoffs(name: string, fn: (handoffs: CodexHandoff[]) => Cod
   });
 }
 
-// UserPromptSubmit claimed this entry's message: it started, so it is no
-// longer Codex's to hold or am's to take back.
-export function dropCodexHandoff(name: string, entryId: string): void {
+// UserPromptSubmit saw this prompt: the entry it came from started, so it is
+// no longer Codex's to hold or am's to take back. A tracked message's claim
+// names its entry; otherwise the oldest entry with the prompt's key, as Codex
+// starts its queue in order. An `uncertain` entry stays: am typed it too, and
+// the prompt may be that copy, so only a reclaim settles Codex's.
+export function dropCodexHandoff(name: string, key: string, startedId: string | null): void {
   if (!existsSync(codexHandoffsPath(name))) return;
-  updateCodexHandoffs(name, (handoffs) => handoffs.filter((h) => h.entryId !== entryId));
+  updateCodexHandoffs(name, (handoffs) => {
+    const i = startedId
+      ? handoffs.findIndex((h) => h.entryId === `${startedId}.json`)
+      : handoffs.findIndex((h) => h.key === key && !h.uncertain);
+    return i < 0 || handoffs[i]!.uncertain ? handoffs : handoffs.filter((_, j) => j !== i);
+  });
 }
 
 // Noted before the add, so a crash after it still leaves the entry findable;
@@ -430,7 +454,8 @@ export function dropCodexHandoff(name: string, entryId: string): void {
 // keeps its note, marked, so a reclaim deletes the copy without restoring it.
 async function handToCodexQueue(name: string, threadId: string, head: { id: string; message: string }): Promise<void> {
   const others = (handoffs: CodexHandoff[]) => handoffs.filter((h) => h.entryId !== head.id);
-  updateCodexHandoffs(name, (handoffs) => [...others(handoffs), { entryId: head.id, message: head.message }]);
+  const note = { entryId: head.id, message: head.message, key: promptKey(head.message) };
+  updateCodexHandoffs(name, (handoffs) => [...others(handoffs), note]);
   try {
     await queueCodexMessage(threadId, head.message, clientMessageId(head.id));
   } catch (error) {
@@ -441,8 +466,18 @@ async function handToCodexQueue(name: string, threadId: string, head: { id: stri
   }
 }
 
-function codexReclaimPending(name: string): boolean {
-  return readCodexHandoffs(name).some((h) => h.reclaiming);
+// A reclaim cut short (a crash with a delete in flight, or a failure) left
+// this entry to finish, and its next try is due.
+function reclaimDue(h: CodexHandoff, now: number): boolean {
+  return (h.reclaiming === true || h.retries !== undefined) && (h.retries ?? 0) < RECLAIM_RETRIES && (h.retryAt ?? 0) <= now;
+}
+
+// Whether deliverNext has a reclaim to finish for this agent though am's
+// queue may be empty, so the drains that wait on queued messages run it too.
+export function needsCodexRecovery(name: string): boolean {
+  if (!existsSync(codexHandoffsPath(name))) return false;
+  const now = Date.now();
+  return readCodexHandoffs(name).some((h) => reclaimDue(h, now));
 }
 
 // After an Esc, Codex starts nothing more from its queue until a prompt is
@@ -451,50 +486,72 @@ function codexReclaimPending(name: string): boolean {
 // under its old id, its receipt queued again, for deliverNext to type.
 // One entry at a time: it is marked before its delete goes out, and put back
 // and unnoted as soon as Codex confirms the delete, before the next. A failure
-// or crash part way leaves the rest in Codex's queue, and the one in flight
-// marked; `pendingOnly` finishes those: one gone from Codex's queue was
-// deleted (or started, which its record shows), so it goes back. At worst a
-// message is left where it was, or (a crash between putting it back and
-// unnoting it, then a delivery that skips the recovery) delivered twice; never
-// in neither queue. Callers hold the delivery lock.
+// or crash part way leaves the rest in Codex's queue, the one in flight
+// marked, and each a retry, backed off; `pendingOnly` finishes those. One
+// gone from Codex's queue started, unless its delete may have gone out and
+// the prompt hook never dropped its note (nor its record shows it started):
+// then it was deleted, so it goes back. At worst a message is left where it
+// was, or (a crash between putting it back and unnoting it, then a delivery
+// that skips the recovery, or a prompt hook later than the recovery) delivered
+// twice; never in neither queue. Callers hold the delivery lock.
 async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly = false): Promise<void> {
   const threadId = agentSessionId(agent);
-  const targets = readCodexHandoffs(name).filter((h) => !pendingOnly || h.reclaiming);
+  const now = Date.now();
+  const targets = readCodexHandoffs(name).filter((h) => !pendingOnly || reclaimDue(h, now));
   if (!threadId || !targets.length) return;
   const byClientId = new Map(targets.map((h) => [clientMessageId(h.entryId), h]));
+  const mark = (h: CodexHandoff, fn: (x: CodexHandoff) => CodexHandoff) =>
+    updateCodexHandoffs(name, (handoffs) => handoffs.map((x) => (x.entryId === h.entryId ? fn(x) : x)));
   const drop = (h: CodexHandoff) => updateCodexHandoffs(name, (handoffs) => handoffs.filter((x) => x.entryId !== h.entryId));
-  const restore = (h: CodexHandoff) => {
-    if (!h.uncertain) {
-      queueRestoreLocked(name, h.entryId, h.message);
-      try {
-        requeueDelivered(name, h.entryId);
-      } catch {
-        // a receipt must not keep the message from being delivered
+  // Under the notes' lock, so a prompt hook that drops the note first wins.
+  const restore = (h: CodexHandoff, ifNoted: boolean) => {
+    updateCodexHandoffs(name, (handoffs) => {
+      if (ifNoted && !handoffs.some((x) => x.entryId === h.entryId)) return handoffs;
+      if (!h.uncertain) {
+        queueRestoreLocked(name, h.entryId, h.message);
+        try {
+          requeueDelivered(name, h.entryId);
+        } catch {
+          // a receipt must not keep the message from being delivered
+        }
       }
-    }
-    drop(h);
+      return handoffs.filter((x) => x.entryId !== h.entryId);
+    });
   };
   try {
     await reclaimCodexMessages(threadId, [...byClientId.keys()], {
       gone: (clientIds) => {
         for (const id of clientIds) {
           const h = byClientId.get(id)!;
-          if (h.reclaiming && entryUnstarted(name, h.entryId)) restore(h);
+          if (h.reclaiming && entryUnstarted(name, h.entryId)) restore(h, true);
           else drop(h);
         }
       },
-      claiming: (clientId) => {
-        const h = byClientId.get(clientId)!;
-        updateCodexHandoffs(name, (handoffs) => handoffs.map((x) => (x.entryId === h.entryId ? { ...x, reclaiming: true } : x)));
-      },
+      claiming: (clientId) => mark(byClientId.get(clientId)!, (x) => ({ ...x, reclaiming: true })),
       claimed: (clientId, deleted) => {
         const h = byClientId.get(clientId)!;
-        if (deleted) restore(h);
+        if (deleted) restore(h, false);
         else drop(h);
       },
+      unclaimed: (clientId) => mark(byClientId.get(clientId)!, ({ reclaiming: _, ...x }) => x),
     });
+    // Codex started one, so it drains the rest itself.
+    for (const h of targets) mark(h, ({ retries: _, retryAt: __, ...x }) => x);
   } catch (error) {
-    console.error(`am: could not take back "${name}"'s messages from the Codex queue: ${error instanceof Error ? error.message : error}`);
+    const reason = error instanceof Error ? error.message : String(error);
+    for (const h of targets) {
+      let retries = 0;
+      updateCodexHandoffs(name, (handoffs) => handoffs.map((x) => {
+        if (x.entryId !== h.entryId) return x;
+        retries = (x.retries ?? 0) + 1;
+        const delay = retries < 2 ? 0 : Math.min(RECLAIM_BACKOFF_MS * 2 ** (retries - 2), RECLAIM_BACKOFF_MAX_MS);
+        return { ...x, retries, retryAt: Date.now() + delay };
+      }));
+      if (!retries) continue;
+      console.error(retries < RECLAIM_RETRIES
+        ? `am: could not take back "${name}"'s message ${h.entryId} from the Codex queue (try ${retries} of ${RECLAIM_RETRIES}): ${reason}`
+        : `am: giving up taking back "${name}"'s message ${h.entryId} from the Codex queue after ${retries} tries: ${reason}`);
+    }
   }
 }
 
@@ -674,7 +731,7 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     } finally {
       if (codex) releaseDeliverLock(name);
     }
-    if (queueDepth(name) > 0 || (codex && codexReclaimPending(name))) await deliverNext(name);
+    if (queueDepth(name) > 0 || (codex && needsCodexRecovery(name))) await deliverNext(name);
     return true;
   }
   console.error(`am: "${name}" did not return to its prompt after Esc; leaving it as it is`);

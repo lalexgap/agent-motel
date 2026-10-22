@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clientMessageId, queueCodexMessage } from "../src/codexQueue";
-import { deliverNext, dropCodexHandoff, interruptMessage, releaseDeliverLock, releaseEscapeHold } from "../src/deliver";
+import { acquireDeliverLock, deliverNext, dropCodexHandoff, escapeTurn, interruptMessage, noteTypedAfterEscape, releaseDeliverLock, releaseEscapeHold } from "../src/deliver";
+import { drainStranded } from "../src/daemon";
 import { claimPrompt, markTurnEnded, promptKey, queueTrackedMessage, readMessage } from "../src/messages";
 import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
@@ -18,14 +19,17 @@ let sleepSpy: ReturnType<typeof spyOn> | undefined;
 // Fake `codex app-server --listen stdio://`, its thread queue kept in
 // codex-queue. Past the first delete (counted across processes), the
 // delete-fails mode answers each with an error, and delete-exits applies it
-// and exits without answering; add-exits does that to an add.
-type CodexMode = "ok" | "error" | "delete-fails" | "delete-exits" | "add-exits";
+// and exits without answering, then (with a codex-down file) every later
+// app server exits at once; add-exits does that to an add. delete-starts:
+// Codex starts the entry instead (its prompt hook runs) and never answers.
+type CodexMode = "ok" | "error" | "delete-fails" | "delete-exits" | "add-exits" | "delete-starts";
 function fakeCodex(mode: CodexMode) {
   writeFileSync(join(home, "codex-mode"), mode);
   writeFileSync(join(home, "codex"), `#!${process.execPath}
 const { appendFileSync, readFileSync } = require("node:fs");
 const home = process.env.AGENTMGR_HOME;
 const mode = readFileSync(home + "/codex-mode", "utf8");
+if (require("node:fs").existsSync(home + "/codex-down")) process.exit(0);
 const reply = (msg) => process.stdout.write(JSON.stringify(msg) + "\\n");
 let buf = "";
 process.stdin.on("data", (chunk) => {
@@ -55,10 +59,20 @@ process.stdin.on("data", (chunk) => {
       try { n = Number(readFileSync(counter, "utf8")); } catch {}
       require("node:fs").writeFileSync(counter, String(++n));
       if (n > 1 && mode === "delete-fails") { reply({ id: msg.id, error: { code: -32000, message: "delete failed" } }); continue; }
+      if (mode === "delete-starts") {
+        const started = queue.find((s) => s.id === msg.params.queuedSubmissionId);
+        queue = queue.filter((s) => s !== started);
+        save();
+        require("node:child_process").spawnSync(process.execPath, [${JSON.stringify(join(import.meta.dir, "../src/index.ts"))}, "hook", "user-prompt-submit"], { env: { ...process.env, AGENTMGR_AGENT: "api" }, input: JSON.stringify({ prompt: started.input[0].text }) });
+        process.exit(0);
+      }
       const before = queue.length;
       queue = queue.filter((s) => s.id !== msg.params.queuedSubmissionId);
       save();
-      if (n > 1 && mode === "delete-exits") process.exit(0);
+      if (n > 1 && mode === "delete-exits") {
+        if (require("node:fs").existsSync(home + "/codex-down-next")) require("node:fs").writeFileSync(home + "/codex-down", "");
+        process.exit(0);
+      }
       reply({ id: msg.id, result: { deleted: queue.length < before } });
     }
   }
@@ -79,11 +93,12 @@ const typedLines = () => existsSync(join(home, "typed")) ? readFileSync(join(hom
 const prompt = (body: string) => {
   Bun.sleepSync(3);
   const agent = { ...readAgent("api")!, status: "working" as const, promptAt: new Date().toISOString(), promptKey: promptKey(body) };
-  releaseEscapeHold(agent);
   writeAgent(agent);
-  const started = claimPrompt("api", agent.promptAt, agent.promptKey);
-  if (started) dropCodexHandoff("api", `${started}.json`);
+  releaseEscapeHold("api");
+  dropCodexHandoff("api", agent.promptKey, claimPrompt("api", agent.promptAt, agent.promptKey));
 };
+// Make a backed-off reclaim retry due now.
+const retryNow = () => writeFileSync(join(home, "queue", "api", ".codex-handoffs"), JSON.stringify(handoffs().map((h) => ({ ...h, retryAt: 0 }))));
 const stop = () => {
   Bun.sleepSync(3);
   const agent = { ...readAgent("api")!, status: "idle" as const, statusChangedAt: new Date().toISOString() };
@@ -293,11 +308,17 @@ describe("codex inbox delivery", () => {
     expect(typedLines()).toBe("second\n");
     expect(readMessage("api", second)).toMatchObject({ state: "delivered" });
     expect(codexQueue().map((q) => q.input[0]!.text)).toEqual(["third"]);
-    expect(handoffs()).toEqual([expect.objectContaining({ entryId: `${third}.json`, reclaiming: true })]);
+    // Its delete was answered with an error, so it had no effect; the retry
+    // right after failed too, so the next waits.
+    expect(handoffs()).toEqual([expect.objectContaining({ entryId: `${third}.json`, retries: 2 })]);
+    expect(handoffs()[0]!.reclaiming).toBeUndefined();
     expect(readMessage("api", third)).toMatchObject({ state: "delivered" });
     expect(queueDepth("api")).toBe(0);
 
     fakeCodex("ok");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "empty" });
+    expect(codexQueue().map((q) => q.input[0]!.text)).toEqual(["third"]);
+    retryNow();
     expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${third}.json` });
     expect(typedLines()).toBe("second\nthird\n");
     expect(codexQueue()).toEqual([]);
@@ -321,8 +342,10 @@ describe("codex inbox delivery", () => {
     expect(typedLines()).toBe("maybe\n");
     expect(codexQueue().map((q) => q.input[0]!.text)).toEqual(["maybe"]);
     expect(handoffs()).toEqual([expect.objectContaining({ entryId: `${id}.json`, uncertain: true })]);
+    // The typed copy's prompt starts the message, but says nothing of Codex's.
+    prompt("maybe");
+    expect(handoffs()).toEqual([expect.objectContaining({ entryId: `${id}.json`, uncertain: true })]);
 
-    writeAgent({ ...readAgent("api")!, status: "working" });
     sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined);
     const log = spyOn(console, "log").mockImplementation(() => {});
     try {
@@ -349,5 +372,83 @@ describe("codex inbox delivery", () => {
     expect(handoffs()).toEqual([]);
     expect(existsSync(join(home, "queue", "api", ".codex-handoffs"))).toBe(false);
     expect(readMessage("api", id)).toMatchObject({ state: "delivered" });
+  });
+
+  // Two untracked messages handed to Codex's queue; Codex starts the first.
+  async function untrackedPair(): Promise<string> {
+    fakeCodex("ok");
+    queueAppend("api", "first");
+    await deliverNext("api");
+    const second = queueAppend("api", "second");
+    await deliverNext("api");
+    writeFileSync(join(home, "codex-queue"), JSON.stringify(codexQueue().slice(1)));
+    prompt("first");
+    expect(handoffs().map((h) => h.entryId)).toEqual([second]);
+    sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+    return second;
+  }
+
+  async function quietly(fn: () => Promise<unknown>): Promise<void> {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const out = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await fn();
+    } finally {
+      err.mockRestore();
+      out.mockRestore();
+    }
+  }
+
+  test("an untracked message Codex starts while its delete goes unanswered is not typed again", async () => {
+    await untrackedPair();
+    fakeCodex("delete-starts");
+    await quietly(() => abortTurn("api"));
+    expect(codexQueue()).toEqual([]);
+    expect(handoffs()).toEqual([]);
+    expect(queueDepth("api")).toBe(0);
+    expect(typedLines()).toBe("");
+  });
+
+  test("a reclaim whose retry fails too is finished by the daemon sweep, with am's queue empty", async () => {
+    const second = await untrackedPair();
+    // The delete goes through unanswered, then Codex stays down for the retry.
+    writeFileSync(join(home, "codex-deletes"), "1");
+    writeFileSync(join(home, "codex-down-next"), "");
+    fakeCodex("delete-exits");
+    await quietly(() => abortTurn("api"));
+    expect(codexQueue()).toEqual([]);
+    expect(queueDepth("api")).toBe(0);
+    expect(typedLines()).toBe("");
+    expect(handoffs()).toEqual([expect.objectContaining({ entryId: second, reclaiming: true, retries: 2 })]);
+    expect(readAgent("api")!.status).toBe("idle");
+    // Backed off: the sweep leaves it until the retry is due.
+    expect(drainStranded(readAgent("api")!)).toBeNull();
+
+    rmSync(join(home, "codex-down"));
+    fakeCodex("ok");
+    retryNow();
+    expect(await drainStranded(readAgent("api")!)).toEqual({ status: "submitted", id: second });
+    expect(typedLines()).toBe("second\n");
+    expect(handoffs()).toEqual([]);
+  });
+
+  test("a prompt hook that read state before a later Esc doesn't lift that Esc's hold", () => {
+    writeAgent({ ...readAgent("api")!, promptAt: "2026-01-01T00:00:00.000Z", escapedAt: "2026-01-01T00:00:01.000Z", escapedKeys: [promptKey("aborted")] });
+    noteTypedAfterEscape("api", "typed note");
+    Bun.sleepSync(3);
+    const stale = readAgent("api")!;
+    stale.promptAt = new Date().toISOString();
+    stale.promptKey = promptKey("typed note");
+    Bun.sleepSync(3);
+    expect(acquireDeliverLock("api")).toBe(true);
+    try {
+      escapeTurn(readAgent("api")!);
+    } finally {
+      releaseDeliverLock("api");
+    }
+    writeAgent(stale);
+    releaseEscapeHold("api");
+    expect(readAgent("api")!.promptAt).toBe(stale.promptAt);
+    expect(readAgent("api")!.escReleasedAt).toBeUndefined();
   });
 });

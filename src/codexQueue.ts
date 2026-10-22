@@ -110,6 +110,8 @@ export interface ReclaimSteps {
   claiming(clientId: string): void;
   // Codex's answer: deleted, so it can no longer start, or not (it started).
   claimed(clientId: string, deleted: boolean): void;
+  // Codex answered the delete with an error: it had no effect.
+  unclaimed(clientId: string): void;
 }
 
 // Take back, oldest first, the given submissions still waiting in the thread's
@@ -131,7 +133,13 @@ export async function reclaimCodexMessages(threadId: string, clientIds: string[]
       const submission = waiting.get(clientId);
       if (!submission) continue;
       steps.claiming(clientId);
-      const result = await request("thread/queue/delete", { threadId, queuedSubmissionId: submission });
+      let result: Record<string, unknown>;
+      try {
+        result = await request("thread/queue/delete", { threadId, queuedSubmissionId: submission });
+      } catch (error) {
+        if (error instanceof CodexRpcError) steps.unclaimed(clientId);
+        throw error;
+      }
       steps.claimed(clientId, result.deleted === true);
       if (result.deleted !== true) break;
     }

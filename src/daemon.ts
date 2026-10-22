@@ -1,10 +1,10 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus } from "./state";
+import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock } from "./deliver";
+import { acquireDeliverLock, deliverNext, needsCodexRecovery, releaseDeliverLock, type DeliveryResult } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
@@ -154,6 +154,13 @@ async function collectFromRemotes(): Promise<number> {
   return total;
 }
 
+// The sweep's self-heal: an idle agent with messages queued, or a Codex
+// reclaim to finish (its message out of both queues until it does).
+export function drainStranded(agent: AgentState): Promise<DeliveryResult> | null {
+  if (agent.status !== "idle") return null;
+  return queueDepth(agent.name) > 0 || needsCodexRecovery(agent.name) ? deliverNext(agent.name) : null;
+}
+
 export interface DaemonHandle {
   stop(): void;
 }
@@ -245,7 +252,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         const { agent, event } = (await req.json()) as { agent?: string; event?: string };
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
         publish(event, agent);
-        if (event === "stop" && queueDepth(agent) > 0) {
+        if (event === "stop" && (queueDepth(agent) > 0 || needsCodexRecovery(agent))) {
           setTimeout(() => {
             // .catch, not try/catch: deliverNext is async, so a try around a
             // `void` call could never see its failures.
@@ -281,9 +288,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         settleMessages(agent.name);
         continue;
       }
-      if (agent.status === "idle" && queueDepth(agent.name) > 0) {
-        deliverNext(agent.name).catch((error) => log(`delivery to ${agent.name} failed: ${error}`));
-      }
+      drainStranded(agent)?.catch((error) => log(`delivery to ${agent.name} failed: ${error}`));
     }
   }, RECONCILE_INTERVAL_MS);
 
