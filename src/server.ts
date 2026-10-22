@@ -14,6 +14,8 @@ import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
+import { cancelMessage, type CancelResult } from "./deliver";
+import { isMessageId, readMessage } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import { loadConfig, localHostIdentity } from "./config";
 import {
@@ -153,11 +155,28 @@ interface TranscriptShape {
   entries: { index: number }[];
 }
 
+function messageNotFound(name: string, id: string): Response {
+  return json({ error: `no message "${id}" for agent "${name}"` }, 404);
+}
+
+function cancelResponse(result: CancelResult): Response {
+  return result.ok ? json(result) : json({ error: result.error, state: result.state }, 409);
+}
+
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
   const route = rest[0];
-  if (rest.length > 1) return json({ error: "not found" }, 404);
   try {
+    // A receipt: __message/__cancel ship after --exact and read the name
+    // exactly, and an am without them fails "unknown command", so they need
+    // no __detail precheck (which would double every poll's ssh round trip).
+    if (route === "messages" && rest.length === 2 && (method === "GET" || method === "DELETE")) {
+      const id = rest[1]!;
+      if (!isMessageId(id)) return messageNotFound(name, id);
+      if (method === "GET") return json(await runRemoteJson(host, ["__message", name, id]));
+      return cancelResponse(await runRemoteJson<CancelResult>(host, ["__cancel", name, id], { timeoutMs: 30_000 }));
+    }
+    if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "rename" && method === "POST") {
       return json({ error: "rename is not supported for remote agents" }, 501);
@@ -177,9 +196,18 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const text = typeof body?.text === "string" ? body.text.trim() : "";
       if (!text) return json({ error: "text required" }, 400);
       const mode = body?.mode ?? "queue";
-      if (mode === "interrupt") await run(["interrupt", name, "-"], { stdin: text });
-      else await run(["send", name, "-", ...(mode === "now" ? ["--now"] : [])], { stdin: text });
-      return json({ ok: true, mode });
+      // The __detail precheck doubles as the receipts capability check: an
+      // older am would take --json as noise, send, and print no id.
+      const detail = await runRemoteJson<{ messageReceipts?: boolean }>(host, ["__detail", name]);
+      if (detail?.messageReceipts !== true) {
+        return json({ error: `remote am too old on ${host} (no message receipts)` }, 409);
+      }
+      const args = mode === "interrupt"
+        ? ["interrupt", name, "-", "--json"]
+        : ["send", name, "-", "--json", ...(mode === "now" ? ["--now"] : [])];
+      const sent = await runRemoteJson<{ id?: unknown }>(host, args, { stdin: text });
+      if (typeof sent?.id !== "string") return json({ error: `am send on ${host} returned no message id` }, 502);
+      return json({ ok: true, mode, id: sent.id });
     }
 
     if (route === "transcript" && method === "GET") {
@@ -376,13 +404,29 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       const text = body?.text?.trim();
       if (!text) return json({ error: "text required" }, 400);
       const mode = body?.mode ?? "queue";
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
       try {
-        if (mode === "interrupt") await interruptCommand(name, text);
-        else await sendCommand(name, text, { now: mode === "now" });
-        return json({ ok: true, mode });
+        const { id } = mode === "interrupt"
+          ? await interruptCommand(name, text, { exact: true, track: true })
+          : await sendCommand(name, text, { now: mode === "now", track: true });
+        if (!id) return json({ error: `message to "${name}" was not sent` }, 409);
+        return json({ ok: true, mode, id });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
       }
+    }
+
+    // GET /api/agents/:name/messages/:id — delivery receipt
+    // DELETE /api/agents/:name/messages/:id — cancel while still queued
+    if (parts.length === 4 && parts[2] === "messages" && (method === "GET" || method === "DELETE")) {
+      const id = parts[3]!;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      if (method === "GET") {
+        const message = readMessage(name, id);
+        return message ? json(message) : messageNotFound(name, id);
+      }
+      const result = await cancelMessage(name, id);
+      return result ? cancelResponse(result) : messageNotFound(name, id);
     }
 
     // GET /api/agents/:name/transcript?after=n — see transcriptJson

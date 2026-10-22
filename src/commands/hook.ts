@@ -11,6 +11,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
+import { deliveryMark, markDelivered, markTurnEnded } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -173,7 +174,9 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
+      const mark = deliveryMark(name, head.id);
       queuePopId(name, head.id);
+      markDelivered(name, head.id, mark);
       pending.push(head.message);
     }
     const out = buildInboxOutput(pending, hookEventName);
@@ -195,7 +198,9 @@ function stopGate(name: string): string | null {
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
+      const mark = deliveryMark(name, head.id);
       queuePopId(name, head.id);
+      markDelivered(name, head.id, mark);
       pending.push(head.message);
     }
     return buildStopGate(pending);
@@ -380,6 +385,13 @@ export async function hookCommand(event: string): Promise<void> {
   }
   if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
+
+  // A turn ended: delivery receipts for messages it took are done. A blocked
+  // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
+  // session start.
+  if (!fromSubagent && event !== "session-start" && (effects.status === "idle" || effects.status === "exited")) {
+    markTurnEnded(name);
+  }
 
   // Surface any queued peer messages into context so the agent reads them
   // automatically — at turn start (UserPromptSubmit) and between tool calls

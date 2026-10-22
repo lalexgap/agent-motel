@@ -57,7 +57,7 @@ export async function runRemoteAm(
   if (result.exitCode === 255) throw new RemoteError(`ssh ${host}: ${stderr || "connection failed"}`, 502);
   if (result.exitCode === 127) throw new RemoteError(`am not found on ${host}: ${stderr}`, 502);
   if (/unknown command/.test(stderr)) throw new RemoteError(`remote am too old on ${host} (${stderr})`, 409);
-  if (/no agent matches|no agents exist|no local agent/.test(stderr)) throw new RemoteError(stderr, 404);
+  if (/no agent matches|no agents exist|no local agent|no message "/.test(stderr)) throw new RemoteError(stderr, 404);
   throw new RemoteError(stderr || `am ${args[0]} failed on ${host} (exit ${result.exitCode})`, 409);
 }
 
@@ -69,7 +69,11 @@ export async function ensureExactCapable(host: string, name: string): Promise<vo
   await runRemoteAm(host, ["__detail", name]);
 }
 
-export async function runRemoteJson<T>(host: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<T> {
+export async function runRemoteJson<T>(
+  host: string,
+  args: string[],
+  opts: { stdin?: string; timeoutMs?: number } = {},
+): Promise<T> {
   const stdout = await runRemoteAm(host, args, opts);
   try {
     return JSON.parse(stdout) as T;

@@ -1,12 +1,14 @@
 import { resolveAgent } from "../state";
-import { queueClear, queueList } from "../queue";
+import { queueClearEntries, queueList } from "../queue";
+import { cancelQueuedMessages } from "../messages";
 import { relativeTime } from "./ls";
 
 export function queueCommand(prefix: string, opts: { clear: boolean }): void {
   const agent = resolveAgent(prefix);
 
   if (opts.clear) {
-    queueClear(agent.name);
+    cancelQueuedMessages(agent.name);
+    queueClearEntries(agent.name);
     console.log(`cleared queue for "${agent.name}"`);
     return;
   }

@@ -48,7 +48,8 @@ import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { summaryCommand } from "./commands/summary";
 import { usageCommand } from "./commands/usage";
-import { deliverCommand } from "./deliver";
+import { cancelMessage, deliverCommand } from "./deliver";
+import { readMessage } from "./messages";
 import { runEventsPipe, runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
 import { roleCommand } from "./commands/role";
@@ -141,6 +142,8 @@ usage:
   am send <name> <msg> --now  type it into the session immediately (steer)
   am send <name> -            read the message body from stdin (no shell quoting
                               headaches: \`am transcript x | am send y -\`)
+  am send <name> <msg> --json print {"id"} instead: a delivery receipt id
+                              (also on am interrupt <name> <msg> --json)
   am send <name> [msg] --file <path>
                               hand a file to the agent (works across machines):
                               lands in its inbox, with a note pointing at it
@@ -664,6 +667,7 @@ async function main(): Promise<void> {
         await sendCommand(requirePositional(args, 0, "agent name"), await resolveMessage(args), {
           now: !!args.flags.now,
           from: args.flags.from as string | undefined,
+          json: !!args.flags.json,
         });
       }
       break;
@@ -685,7 +689,7 @@ async function main(): Promise<void> {
     case "int": {
       const target = requirePositional(args, 0, "agent name");
       if (args.positional.length === 1) await abortTurn(resolveAgent(target).name);
-      else await interruptCommand(target, await resolveMessage(args), { from: args.flags.from as string | undefined });
+      else await interruptCommand(target, await resolveMessage(args), { from: args.flags.from as string | undefined, json: !!args.flags.json });
       break;
     }
     case "report":
@@ -853,7 +857,28 @@ async function main(): Promise<void> {
       const name = requirePositional(args, 0, "agent name");
       const detail = agentDetail(name);
       if (!detail) throw new Error(`no local agent "${name}"`);
-      console.log(JSON.stringify(detail));
+      // messageReceipts tells that serve this am returns ids from send --json.
+      console.log(JSON.stringify({ ...detail, messageReceipts: true }));
+      break;
+    }
+    case "__message": {
+      // A delivery receipt, for `am serve` on another host.
+      const name = requirePositional(args, 0, "agent name");
+      const id = requirePositional(args, 1, "message id");
+      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
+      const message = readMessage(name, id);
+      if (!message) throw new Error(`no message "${id}" for agent "${name}"`);
+      console.log(JSON.stringify(message));
+      break;
+    }
+    case "__cancel": {
+      // Prints the outcome either way; a conflict is {ok: false, error, state}.
+      const name = requirePositional(args, 0, "agent name");
+      const id = requirePositional(args, 1, "message id");
+      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
+      const result = await cancelMessage(name, id);
+      if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
+      console.log(JSON.stringify(result));
       break;
     }
     case "__deliver":

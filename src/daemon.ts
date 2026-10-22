@@ -14,6 +14,7 @@ import { collectedSender, type OutboxEntry } from "./outbox";
 import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
 import { mailboxHandoffActive } from "./mailbox";
+import { settleMessages } from "./messages";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -277,6 +278,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited", "tmux session disappeared");
+        settleMessages(agent.name);
         continue;
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {

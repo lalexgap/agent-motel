@@ -10,7 +10,17 @@ import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { isAttributedBody } from "./comms";
 import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
 import { clientMessageId, queueCodexMessage } from "./codexQueue";
-import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
+import {
+  acquireMailboxLock,
+  acquireProducerLock,
+  beginHandoff,
+  endHandoff,
+  mailboxLockPath,
+  releaseMailboxLock,
+  releaseProducerLock,
+  renewHandoff,
+} from "./mailbox";
+import { cancelQueuedLocked, deliveryMark, isMessageId, markDelivered, readMessage, type DeliveryMark, type MessageState } from "./messages";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
 // new inode while the current holder is still delivering. The kernel releases
@@ -119,6 +129,7 @@ interface PendingDelivery {
   via?: "inbox";
   sentAt?: number;
   inboxFailed?: boolean;
+  mark?: DeliveryMark;
 }
 
 const INBOX_CONFIRM_MS = 5000;
@@ -150,7 +161,9 @@ function deliveryConfirmed(name: string, id: string): boolean {
 }
 
 function finishDelivery(name: string, id: string): void {
+  const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
   queuePopId(name, id);
+  markDelivered(name, id, pending?.id === id ? pending.mark : undefined);
   rmSync(pendingPath(name), { force: true });
   rmSync(confirmedPath(name), { force: true });
 }
@@ -211,8 +224,10 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     const before = capturePane(agent.tmuxSession, { colors: true });
     if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
+    let mark = pending?.id === head.id ? pending.mark : undefined;
     if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
       queuePopId(name, head.id);
+      markDelivered(name, head.id, mark);
       rmSync(markerPath, { force: true });
       return { status: "submitted", id: head.id };
     }
@@ -225,9 +240,10 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       // Persist before typing so a process crash with the text in the input box
       // is recoverable. A crash after submission can still cause redelivery;
       // the receiving TUI has no transactional acknowledgement protocol.
-      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation });
+      mark = deliveryMark(name, head.id) ?? undefined;
+      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, mark });
       sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
-      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, typed: true });
+      writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, typed: true, mark });
     }
 
     for (let attempt = 0; attempt <= SUBMIT_RETRIES; attempt++) {
@@ -238,6 +254,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
       if (parsedInputBoxText(pane, provider) === "") {
         queuePopId(name, head.id);
+        markDelivered(name, head.id, mark);
         rmSync(markerPath, { force: true });
         return { status: "submitted", id: head.id };
       }
@@ -279,6 +296,7 @@ async function deliverToInbox(
   inbox: InboxSender,
 ): Promise<DeliveryResult | null> {
   const markerPath = pendingPath(name);
+  const mark = deliveryMark(name, head.id) ?? undefined;
   if (!inbox.confirm) {
     try {
       await inbox.send();
@@ -286,10 +304,11 @@ async function deliverToInbox(
       return null;
     }
     queuePopId(name, head.id);
+    markDelivered(name, head.id, mark);
     return { status: "submitted", id: head.id };
   }
   rmSync(confirmedPath(name), { force: true });
-  writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, via: "inbox", sentAt: Date.now() });
+  writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, via: "inbox", sentAt: Date.now(), mark });
   try {
     await inbox.send();
   } catch {
@@ -304,6 +323,38 @@ async function deliverToInbox(
     }
   }
   return { status: "queued", reason: "unverified" };
+}
+
+export type CancelResult = { ok: true; state: "cancelled" } | { ok: false; error: string; state: MessageState };
+
+const CANCEL_WAIT_MS = 10_000;
+
+// Cancel a tracked message that is still queued. It takes the delivery lock
+// (so no deliverer or hook can pop it mid-cancel) and the producer lock (so
+// its enqueue is complete), waiting out a delivery in progress. Null: no such
+// message.
+export async function cancelMessage(name: string, id: string): Promise<CancelResult | null> {
+  if (!isMessageId(id)) return null;
+  for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
+    const record = readMessage(name, id);
+    if (!record) return null;
+    if (record.state !== "queued") return { ok: false, error: `message ${id} is already ${record.state}`, state: record.state };
+    if (acquireDeliverLock(name)) {
+      try {
+        if (acquireProducerLock(name)) {
+          try {
+            return cancelQueuedLocked(name, id, pendingDeliveryId(name) === `${id}.json`);
+          } finally {
+            releaseProducerLock(name);
+          }
+        }
+      } finally {
+        releaseDeliverLock(name);
+      }
+    }
+    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry the cancel`, state: "queued" };
+    await Bun.sleep(100);
+  }
 }
 
 // Fire-and-forget delivery from inside a hook. The hook must exit promptly
