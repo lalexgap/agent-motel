@@ -493,7 +493,8 @@ export function needsCodexRecovery(name: string): boolean {
 // then it was deleted, so it goes back. At worst a message is left where it
 // was, or (a crash between putting it back and unnoting it, then a delivery
 // that skips the recovery, or a prompt hook later than the recovery) delivered
-// twice; never in neither queue. Callers hold the delivery lock.
+// twice; in neither queue only if its delete went out unanswered and every
+// retry then failed (logged on giving up). Callers hold the delivery lock.
 async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly = false): Promise<void> {
   const threadId = agentSessionId(agent);
   const now = Date.now();
@@ -507,6 +508,8 @@ async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly
   const restore = (h: CodexHandoff, ifNoted: boolean) => {
     updateCodexHandoffs(name, (handoffs) => {
       if (ifNoted && !handoffs.some((x) => x.entryId === h.entryId)) return handoffs;
+      // The hook claims a prompt before dropping its note: started means Codex ran it.
+      if (ifNoted && !entryUnstarted(name, h.entryId)) return handoffs.filter((x) => x.entryId !== h.entryId);
       if (!h.uncertain) {
         queueRestoreLocked(name, h.entryId, h.message);
         try {
