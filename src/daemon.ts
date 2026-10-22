@@ -291,12 +291,14 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     } catch {
       // no log yet
     }
+    const waiting = new Set<string>();
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited", "tmux session disappeared");
         continue;
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {
+        waiting.add(agent.name);
         deliverNext(agent.name).then(
           (result) => {
             const reason = stuckDeliveryReason(result);
@@ -308,6 +310,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         );
       }
     }
+    for (const name of lastRefusal.keys()) if (!waiting.has(name)) lastRefusal.delete(name);
   }, RECONCILE_INTERVAL_MS);
 
   const keepalive = setInterval(() => {
