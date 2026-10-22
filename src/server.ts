@@ -224,9 +224,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // GET /api/agents/:name/transcript?after=n — indexed parsed turns. An
-    // entry at an existing index can change (a tool turn gains its output),
-    // so clients re-read from their oldest unsettled index.
+    // GET /api/agents/:name/transcript?after=n — see transcriptJson
     if (parts.length === 3 && parts[2] === "transcript" && method === "GET") {
       const agent = readAgent(name);
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);

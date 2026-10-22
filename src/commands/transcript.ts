@@ -70,13 +70,8 @@ export interface TranscriptJson {
   entries: TranscriptEntry[];
 }
 
-// The machine-readable transcript behind `am transcript --json` and
-// GET /api/agents/:name/transcript. Indexes are positions in the full parsed
-// turn list; the native file is append-only, so an index keeps naming the
-// same turn as it grows — except that a tool turn's output/error is filled in
-// when its result lands, so an existing entry can change. Clients polling
-// with `after` should re-read from their oldest unsettled index (e.g. a tool
-// entry still missing its output), not from `total`.
+// Indexes are positions in the full parsed turn list. A tool entry's output can
+// land later, so `after` pollers re-read from their oldest unsettled index.
 export function transcriptJson(agent: AgentState, after = 0): TranscriptJson {
   const provider = agentProvider(agent);
   let file: string | null = null;
