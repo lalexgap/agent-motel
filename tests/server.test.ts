@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
@@ -204,6 +204,95 @@ describe("agents api", () => {
     } finally {
       daemon.stop();
     }
+  });
+});
+
+describe("transcript + interrupt api", () => {
+  const line = (o: object) => JSON.stringify(o) + "\n";
+  const userLine = (text: string) => line({ type: "user", sessionId: "s-1", message: { role: "user", content: text } });
+  const toolUse = line({
+    type: "assistant",
+    sessionId: "s-1",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
+  });
+  const toolResult = line({
+    type: "user",
+    sessionId: "s-1",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "a.txt" }] },
+  });
+  const assistantLine = (text: string) =>
+    line({ type: "assistant", sessionId: "s-1", message: { role: "assistant", content: [{ type: "text", text }] } });
+
+  function seedWithTranscript(name: string, jsonl: string): string {
+    const file = join(home, `${name}.jsonl`);
+    writeFileSync(file, jsonl);
+    const now = new Date().toISOString();
+    writeAgent({
+      name, status: "idle", dir: "/tmp", tmuxSession: `agentmgr-${name}`,
+      sessionId: "s-1", transcriptPath: file, createdAt: now, updatedAt: now,
+    });
+    return file;
+  }
+
+  async function getTranscript(name: string, query = ""): Promise<any> {
+    const res = await fetch(url(`/api/agents/${name}/transcript${query}`), auth());
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  test("returns indexed turns, stable as the file grows; tool output lands at its existing index", async () => {
+    const file = seedWithTranscript("tx", userLine("hi") + toolUse);
+    const first = await getTranscript("tx");
+    expect(first.provider).toBe("claude");
+    expect(first.sessionId).toBe("s-1");
+    expect(first.status).toBe("dead"); // no tmux session in tests
+    expect(first.total).toBe(2);
+    expect(first.entries).toEqual([
+      { index: 0, kind: "user", text: "hi" },
+      { index: 1, kind: "tool", name: "Bash", input: '{"command":"ls"}' },
+    ]);
+
+    appendFileSync(file, toolResult + assistantLine("done") + '{"type":"assis'); // partial last line
+    const second = await getTranscript("tx", "?after=1");
+    expect(second.total).toBe(3);
+    expect(second.entries).toEqual([
+      { index: 1, kind: "tool", name: "Bash", input: '{"command":"ls"}', output: "a.txt" },
+      { index: 2, kind: "assistant", text: "done" },
+    ]);
+    expect((await getTranscript("tx", "?after=5")).entries).toEqual([]);
+  });
+
+  test("no transcript yet → empty", async () => {
+    seedAgent("fresh");
+    const body = await getTranscript("fresh");
+    expect(body).toMatchObject({ provider: "claude", sessionId: null, total: 0, entries: [] });
+  });
+
+  test("unknown agent → 404, bad after → 400", async () => {
+    expect((await fetch(url("/api/agents/ghost/transcript"), auth())).status).toBe(404);
+    seedAgent("bad-after");
+    expect((await fetch(url("/api/agents/bad-after/transcript?after=-1"), auth())).status).toBe(400);
+    expect((await fetch(url("/api/agents/bad-after/transcript?after=x"), auth())).status).toBe(400);
+  });
+
+  test("interrupt: unknown agent → 404, no live session → 409", async () => {
+    expect((await fetch(url("/api/agents/ghost/interrupt"), auth({ method: "POST" }))).status).toBe(404);
+    seedAgent("noint");
+    expect((await fetch(url("/api/agents/noint/interrupt"), auth({ method: "POST" }))).status).toBe(409);
+    const withText = await fetch(
+      url("/api/agents/noint/interrupt"),
+      auth({ method: "POST", body: JSON.stringify({ text: "stop" }), headers: { "content-type": "application/json" } }),
+    );
+    expect(withText.status).toBe(409);
+  });
+
+  test("non-string interrupt text, model or effort → 400", async () => {
+    const post = (path: string, body: unknown) =>
+      fetch(url(path), auth({ method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }));
+    seedAgent("badtext");
+    expect((await post("/api/agents/badtext/interrupt", { text: 42 })).status).toBe(400);
+    expect((await post("/api/agents", { name: "badmodel", model: 5 })).status).toBe(400);
+    expect((await post("/api/agents", { name: "badeffort", effort: true })).status).toBe(400);
   });
 });
 

@@ -8,7 +8,8 @@ import { displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
-import { sendCommand, interruptCommand } from "./commands/send";
+import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
+import { transcriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
@@ -152,9 +153,22 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   // POST /api/agents — spawn a new (local) agent
   if (parts.length === 1 && parts[0] === "agents" && method === "POST") {
     const body = (await req.json().catch(() => null)) as
-      | { name?: string; task?: string; dir?: string; provider?: string; codex?: boolean; role?: string }
+      | {
+          name?: string;
+          task?: string;
+          dir?: string;
+          provider?: string;
+          codex?: boolean;
+          role?: string;
+          model?: string;
+          effort?: string;
+          inPlace?: boolean;
+        }
       | null;
     if (!body?.name) return json({ error: "name required" }, 400);
+    for (const field of ["model", "effort"] as const) {
+      if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
+    }
     // `provider` names either one; the older boolean `codex` only ever meant
     // "not the default", so it can't ask for claude now that codex IS the
     // default — clients that want claude send provider.
@@ -168,6 +182,9 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         dir: body.dir,
         provider: (body.provider as Provider | undefined) ?? (body.codex ? "codex" : undefined),
         role: body.role,
+        model: body.model || undefined,
+        effort: body.effort || undefined,
+        inPlace: body.inPlace === true,
         jump: false,
         quiet: true,
       });
@@ -205,6 +222,32 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         if (mode === "interrupt") await interruptCommand(name, text);
         else await sendCommand(name, text, { now: mode === "now" });
         return json({ ok: true, mode });
+      } catch (error) {
+        return json({ error: (error as Error).message }, 409);
+      }
+    }
+
+    // GET /api/agents/:name/transcript?after=n — see transcriptJson
+    if (parts.length === 3 && parts[2] === "transcript" && method === "GET") {
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      const raw = new URL(req.url).searchParams.get("after");
+      const after = raw === null || raw === "" ? 0 : Number(raw);
+      if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
+      return json(transcriptJson(agent, after));
+    }
+
+    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given
+    if (parts.length === 3 && parts[2] === "interrupt" && method === "POST") {
+      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
+      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      try {
+        if (text) await interruptCommand(agent.name, text, { exact: true });
+        else await abortTurn(agent.name);
+        return json({ ok: true });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
       }
