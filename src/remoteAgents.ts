@@ -24,12 +24,10 @@ type ShRunner = (host: string, command: string, opts?: { timeoutMs?: number }) =
 
 let amRunner: AmRunner = sshAmAsync;
 let shRunner: ShRunner = sshRunAsync;
-const exactCapableHosts = new Set<string>();
 
 export function setRemoteRunnersForTests(runners: { am?: AmRunner; sh?: ShRunner } = {}): void {
   amRunner = runners.am ?? sshAmAsync;
   shRunner = runners.sh ?? sshRunAsync;
-  exactCapableHosts.clear();
 }
 
 // null = this machine; a string = a configured remote; undefined = unknown.
@@ -64,12 +62,11 @@ export async function runRemoteAm(
 }
 
 // An older remote am silently ignores --local/--exact and would prefix-match
-// (or fleet-forward) the name, so prove `__detail` exists — it ships with
-// --exact — before the first agent operation on each host.
+// (or fleet-forward) the name, so before every agent operation prove that
+// `__detail` (which ships with --exact) exists and finds this exact name.
+// Not cached: the remote am can be rolled back under a long-lived serve.
 export async function ensureExactCapable(host: string, name: string): Promise<void> {
-  if (exactCapableHosts.has(host)) return;
   await runRemoteAm(host, ["__detail", name]);
-  exactCapableHosts.add(host);
 }
 
 export async function runRemoteJson<T>(host: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<T> {

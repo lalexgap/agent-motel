@@ -360,10 +360,14 @@ describe("remote agents api (host:name)", () => {
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
       [["__detail", "api", "--local", "--exact"], undefined],
       [["send", "api", "-", "--local", "--exact"], "hi `there`"],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["send", "api", "-", "--now", "--local", "--exact"], "steer"],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["interrupt", "api", "-", "--local", "--exact"], "stop that"],
     ]);
+    calls.length = 0;
     expect((await post("/api/agents/laptop:api/messages", { mode: "queue" })).status).toBe(400);
+    expect(calls).toEqual([]);
   });
 
   test("transcript slices entries by after", async () => {
@@ -396,9 +400,13 @@ describe("remote agents api (host:name)", () => {
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
       [["__detail", "api", "--local", "--exact"], undefined],
       [["interrupt", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["interrupt", "api", "-", "--local", "--exact"], "new plan"],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["stop", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["resume", "api", "--local", "--exact"], undefined],
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["rm", "api", "--local", "--exact"], undefined],
     ]);
     expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);

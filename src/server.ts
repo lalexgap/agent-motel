@@ -162,10 +162,13 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (route === "rename" && method === "POST") {
       return json({ error: "rename is not supported for remote agents" }, 501);
     }
-    await ensureExactCapable(host, name);
+    const run = async (args: string[], opts?: { stdin?: string }) => {
+      await ensureExactCapable(host, name);
+      return runRemoteAm(host, args, opts);
+    };
 
     if (!route && method === "DELETE") {
-      await runRemoteAm(host, ["rm", name]);
+      await run(["rm", name]);
       return json({ ok: true });
     }
 
@@ -174,8 +177,8 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const text = typeof body?.text === "string" ? body.text.trim() : "";
       if (!text) return json({ error: "text required" }, 400);
       const mode = body?.mode ?? "queue";
-      if (mode === "interrupt") await runRemoteAm(host, ["interrupt", name, "-"], { stdin: text });
-      else await runRemoteAm(host, ["send", name, "-", ...(mode === "now" ? ["--now"] : [])], { stdin: text });
+      if (mode === "interrupt") await run(["interrupt", name, "-"], { stdin: text });
+      else await run(["send", name, "-", ...(mode === "now" ? ["--now"] : [])], { stdin: text });
       return json({ ok: true, mode });
     }
 
@@ -183,6 +186,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const raw = new URL(req.url).searchParams.get("after");
       const after = raw === null || raw === "" ? 0 : Number(raw);
       if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
+      await ensureExactCapable(host, name);
       const transcript = await runRemoteJson<TranscriptShape>(host, ["transcript", name, "--json"], { timeoutMs: 30_000 });
       if (!Array.isArray(transcript?.entries)) {
         return json({ error: `remote am too old on ${host} (transcript --json has no entries)` }, 409);
@@ -194,18 +198,18 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
       if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
       const text = typeof body?.text === "string" ? body.text.trim() : "";
-      if (text) await runRemoteAm(host, ["interrupt", name, "-"], { stdin: text });
-      else await runRemoteAm(host, ["interrupt", name]);
+      if (text) await run(["interrupt", name, "-"], { stdin: text });
+      else await run(["interrupt", name]);
       return json({ ok: true });
     }
 
     if (route === "stop" && method === "POST") {
-      await runRemoteAm(host, ["stop", name]);
+      await run(["stop", name]);
       return json({ ok: true });
     }
 
     if (route === "resume" && method === "POST") {
-      await runRemoteAm(host, ["resume", name]);
+      await run(["resume", name]);
       return json({ ok: true });
     }
   } catch (error) {
