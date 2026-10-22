@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { isExactNamesOnly, matchAgent, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
-import { acquireDeliverLock, deliverNext, enterDelayMs, releaseDeliverLock } from "../deliver";
+import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, releaseDeliverLock } from "../deliver";
 import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
@@ -145,8 +145,10 @@ export async function interruptCommand(
 export async function abortTurn(name: string): Promise<void> {
   const agent = requireLiveSession(name, true);
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry`);
+  const escAt = Date.now();
   try {
     sendEscape(agent.tmuxSession);
   } finally { releaseDeliverLock(agent.name); }
   console.log(`interrupted "${agent.name}"`);
+  await endAbortedTurn(agent.name, escAt);
 }

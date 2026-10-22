@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { loadConfig, localHostIdentity } from "./config";
 import { sshAmAsync, sshRunAsync, type SshResult } from "./remote";
 import { mapHomeDir, remoteHome } from "./commands/move";
+import { conflictReason, type ConflictReason } from "./messages";
 
 // `am serve` driving agents on other fleet hosts: each API call runs the
 // matching am CLI on that host over the same ssh transport `am -H` uses.
@@ -14,7 +15,7 @@ export const REMOTE_TIMEOUT_MS = 20_000;
 export const REMOTE_NEW_TIMEOUT_MS = 90_000;
 
 export class RemoteError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly reason?: ConflictReason) {
     super(message);
   }
 }
@@ -56,9 +57,9 @@ export async function runRemoteAm(
   if (result.exitCode === 124) throw new RemoteError(`ssh ${host}: timed out after ${timeoutMs / 1000}s`, 502);
   if (result.exitCode === 255) throw new RemoteError(`ssh ${host}: ${stderr || "connection failed"}`, 502);
   if (result.exitCode === 127) throw new RemoteError(`am not found on ${host}: ${stderr}`, 502);
-  if (/unknown command/.test(stderr)) throw new RemoteError(`remote am too old on ${host} (${stderr})`, 409);
+  if (/unknown command/.test(stderr)) throw new RemoteError(`remote am too old on ${host} (${stderr})`, 409, "remote_too_old");
   if (/no agent matches|no agents exist|no local agent|no message "/.test(stderr)) throw new RemoteError(stderr, 404);
-  throw new RemoteError(stderr || `am ${args[0]} failed on ${host} (exit ${result.exitCode})`, 409);
+  throw new RemoteError(stderr || `am ${args[0]} failed on ${host} (exit ${result.exitCode})`, 409, conflictReason(stderr));
 }
 
 // An older remote am silently ignores --local/--exact and would prefix-match
@@ -78,7 +79,7 @@ export async function runRemoteJson<T>(
   try {
     return JSON.parse(stdout) as T;
   } catch {
-    throw new RemoteError(`remote am too old on ${host} (\`am ${args.join(" ")}\` did not print JSON)`, 409);
+    throw new RemoteError(`remote am too old on ${host} (\`am ${args.join(" ")}\` did not print JSON)`, 409, "remote_too_old");
   }
 }
 

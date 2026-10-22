@@ -7,7 +7,7 @@ import { acquireProducerLock, releaseProducerLock } from "../src/mailbox";
 import { ensureDirs } from "../src/paths";
 import { queueDepth, queuePopId } from "../src/queue";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
-import { interruptCommand, sendCommand } from "../src/commands/send";
+import { abortTurn, interruptCommand, sendCommand } from "../src/commands/send";
 import { queueCommand } from "../src/commands/queue";
 import { renameAgent } from "../src/commands/rename";
 import {
@@ -66,7 +66,8 @@ function say(type: "user" | "assistant", text: string): void {
 }
 
 // A claude agent with a three-entry transcript and a fake tmux whose input
-// box clears on Enter (mode "submit"); mode "dead" makes the session vanish.
+// box clears on Enter (mode "submit"); mode "dead" makes the session vanish,
+// and a `busy` file hides the composer behind a running turn.
 function fakeSession(status: AgentState["status"] = "idle") {
   writeAgent({
     name: "api", provider: "claude", status, tmuxSession: "agentmgr-api", dir: home,
@@ -82,6 +83,7 @@ case "$1" in
   has-session) [ "$(cat "$AGENTMGR_HOME/mode")" = dead ] && exit 1; exit 0 ;;
   display-message) echo "server:session:pane:1" ;;
   capture-pane)
+    [ -e "$AGENTMGR_HOME/busy" ] && { echo '✻ Working… (esc to interrupt)'; exit 0; }
     echo '────────────────────'
     printf '❯ '; cat "$AGENTMGR_HOME/input"; echo
     echo '────────────────────'
@@ -202,6 +204,8 @@ describe("delivery receipts", () => {
     fakeSession("working");
     fastSleep();
     const { id } = await interruptCommand("api", "change course", { exact: true, track: true });
+    // The new message is the turn's prompt: no Esc-only turn end.
+    expect(readAgent("api")!.status).toBe("working");
     hook("stop");
     expect(readMessage("api", id!)!.state).toBe("delivered");
     hook("user-prompt-submit", { prompt: "change course" });
@@ -341,7 +345,7 @@ describe("delivery receipts", () => {
     fakeSession("idle");
     const id = queueTrackedMessage("api", "in flight");
     writeFileSync(join(home, "queue", "api", ".delivery.pending"), JSON.stringify({ id: `${id}.json`, message: "in flight", typed: true }));
-    expect(await cancelMessage("api", id)).toMatchObject({ ok: false, state: "queued" });
+    expect(await cancelMessage("api", id)).toEqual({ ok: false, error: `message ${id} is being delivered`, state: "queued", reason: "already_delivered" });
     expect(queueDepth("api")).toBe(1);
   });
 
@@ -413,7 +417,8 @@ describe("delivery receipts", () => {
     expect(JSON.parse(am("__detail", "api").stdout.toString()).messageReceipts).toBe(true);
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toEqual({ ok: true, state: "cancelled" });
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toMatchObject({ ok: false, state: "cancelled" });
-    expect(JSON.parse(am("__interrupt", "api", id).stdout.toString())).toEqual({ ok: false, error: `message ${id} is already cancelled`, state: "cancelled" });
+    expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toMatchObject({ reason: "already_cancelled" });
+    expect(JSON.parse(am("__interrupt", "api", id).stdout.toString())).toEqual({ ok: false, error: `message ${id} is already cancelled`, state: "cancelled", reason: "already_cancelled" });
     expect(am("__interrupt", "api", "01NOPE").stderr.toString()).toContain('no message "01NOPE"');
     const missing = am("__message", "api", "01NOPE");
     expect(missing.exitCode).toBe(1);
@@ -584,13 +589,13 @@ describe("messages api", () => {
     expect(await cancelled.json()).toEqual({ ok: true, state: "cancelled" });
     const again = await call(`/api/agents/api/messages/${id}`, { method: "DELETE" });
     expect(again.status).toBe(409);
-    expect(((await again.json()) as any).state).toBe("cancelled");
+    expect(await again.json()).toEqual({ error: `message ${id} is already cancelled`, state: "cancelled", reason: "already_cancelled" });
 
     const steer = (await (await call("/api/agents/api/messages", { method: "POST", body: JSON.stringify({ text: "now", mode: "now" }) })).json()) as any;
     expect(steer).toMatchObject({ ok: true, mode: "now" });
     const late = await call(`/api/agents/api/messages/${steer.id}`, { method: "DELETE" });
     expect(late.status).toBe(409);
-    expect(await late.json()).toMatchObject({ state: "delivered" });
+    expect(await late.json()).toEqual({ error: `message ${steer.id} is already delivered`, state: "delivered", reason: "already_delivered" });
 
     expect((await call("/api/agents/api/messages/NOPE")).status).toBe(404);
     expect((await call("/api/agents/api/messages/NOPE", { method: "DELETE" })).status).toBe(404);
@@ -622,17 +627,30 @@ describe("messages api", () => {
       const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
       const early = await interrupt({ messageId: id });
       expect(early.status).toBe(409);
-      expect(await early.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered" });
+      expect(await early.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" });
       expect(keys()).toBe("");
 
       hook("user-prompt-submit", { prompt: "go" });
-      const ok = await interrupt({ messageId: id });
+      // The pane never gets back to its prompt, so the turn is left running.
+      writeFileSync(join(home, "busy"), "");
+      fastSleep();
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      let ok: Response;
+      let logged: unknown[][];
+      try {
+        ok = await interrupt({ messageId: id });
+      } finally {
+        logged = [...log.mock.calls];
+        log.mockRestore();
+      }
       expect(ok.status).toBe(200);
       expect(await ok.json()).toEqual({ ok: true });
+      expect(logged).toEqual([['am: "api" did not return to its prompt after Esc; leaving it as it is']]);
       expect(keys()).toBe("Escape\n");
+      expect(readAgent("api")!.status).toBe("working");
       const again = await interrupt({ messageId: id });
       expect(again.status).toBe(409);
-      expect(await again.json()).toEqual({ error: `message ${id} was already interrupted`, state: "delivered" });
+      expect(await again.json()).toEqual({ error: `message ${id} was already interrupted`, state: "delivered", reason: "already_interrupted" });
       expect(keys()).toBe("Escape\n");
       expect(Object.keys(readMessage("api", id)!).sort()).toEqual(["deliveredAt", "doneAt", "id", "queuedAt", "state", "transcriptIndex"]);
 
@@ -640,8 +658,66 @@ describe("messages api", () => {
       hook("stop");
       const done = await interrupt({ messageId: id });
       expect(done.status).toBe(409);
-      expect(await done.json()).toEqual({ error: `message ${id} is already done`, state: "done" });
+      expect(await done.json()).toEqual({ error: `message ${id} is already done`, state: "done", reason: "already_done" });
       expect(keys()).toBe("");
+    });
+
+    test("Esc-only: back at its prompt, the turn ends interrupted, the queue drains, a late Stop is ignored", async () => {
+      fakeSession("working");
+      fastSleep();
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      const next = queueTrackedMessage("api", "next one");
+
+      const ok = await interrupt({ messageId: id });
+      expect(ok.status).toBe(200);
+      const interrupted = (await (await call(`/api/agents/api/messages/${id}`)).json()) as any;
+      expect(interrupted).toMatchObject({ id, state: "done", interrupted: true });
+      expect(interrupted.doneAt).not.toBeNull();
+      const agent = readAgent("api")!;
+      expect(agent.status).toBe("idle");
+      expect(agent.workingSince).toBeUndefined();
+      expect(queueDepth("api")).toBe(0);
+      expect(readFileSync(join(home, "typed"), "utf8")).toBe("next one\n");
+      expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
+
+      // A provider that does fire a Stop for the aborted turn, after the next
+      // message was handed over: it neither re-finishes the interrupted
+      // message nor finishes the next one, whose prompt hasn't come yet.
+      hook("stop");
+      expect(readMessage("api", id)).toEqual(interrupted);
+      expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
+      const repeat = await interrupt({ messageId: id });
+      expect(await repeat.json()).toMatchObject({ state: "done", reason: "already_done" });
+
+      hook("user-prompt-submit", { prompt: "next one" });
+      hook("stop");
+      const finished = readMessage("api", next)!;
+      expect(finished.state).toBe("done");
+      expect(finished.interrupted).toBeUndefined();
+    });
+
+    test("am interrupt / POST interrupt with no text end the Esc'd turn too", async () => {
+      fakeSession("working");
+      fastSleep();
+      const first = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await abortTurn("api");
+      } finally {
+        log.mockRestore();
+      }
+      expect(readMessage("api", first)).toMatchObject({ state: "done", interrupted: true });
+      expect(readAgent("api")!.status).toBe("idle");
+
+      const second = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "again");
+      hook("user-prompt-submit", { prompt: "again" });
+      expect(readAgent("api")!.status).toBe("working");
+      const res = await call("/api/agents/api/interrupt", { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(readMessage("api", second)).toMatchObject({ state: "done", interrupted: true });
+      expect(readAgent("api")!.status).toBe("idle");
     });
 
     test("an unrelated prompt doesn't make it interruptible", async () => {
@@ -650,7 +726,7 @@ describe("messages api", () => {
       hook("user-prompt-submit", { prompt: "something else" });
       const res = await interrupt({ messageId: id });
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered" });
+      expect(await res.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" });
       expect(keys()).toBe("");
     });
 
@@ -662,7 +738,7 @@ describe("messages api", () => {
     expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
       const res = await interrupt({ messageId: id });
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done" });
+      expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done", reason: "already_done" });
       expect(keys()).toBe("");
       expect(readMessage("api", id)!.state).toBe("done");
     });
@@ -672,7 +748,7 @@ describe("messages api", () => {
       const id = queueTrackedMessage("api", "not yet");
       const queued = await interrupt({ messageId: id });
       expect(queued.status).toBe(409);
-      expect(await queued.json()).toEqual({ error: `message ${id} is not delivered yet`, state: "queued" });
+      expect(await queued.json()).toEqual({ error: `message ${id} is not delivered yet`, state: "queued", reason: "not_delivered" });
       const missing = await interrupt({ messageId: "01NOPE" });
       expect(missing.status).toBe(404);
       expect(await missing.json()).toEqual({ error: 'no message "01NOPE" for agent "api"' });
@@ -699,7 +775,7 @@ describe("messages api", () => {
         clock.mockRestore();
       }
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'agent "api" mailbox is busy — retry', state: "delivered" });
+      expect(await res.json()).toEqual({ error: 'agent "api" mailbox is busy — retry', state: "delivered", reason: "mailbox_busy" });
       expect(keys()).toBe("");
     });
   });

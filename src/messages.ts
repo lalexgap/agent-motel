@@ -27,6 +27,42 @@ export interface MessageView {
   doneAt: string | null;
   transcriptIndex: number | null;
   error?: string;
+  // On a done record: its turn was aborted with Esc rather than finished.
+  interrupted?: true;
+}
+
+// Why a message or interrupt route refused (HTTP 409), for clients to branch
+// on without parsing `error`.
+export type ConflictReason =
+  | "not_delivered"
+  | "already_done"
+  | "already_cancelled"
+  | "already_failed"
+  | "not_started"
+  | "already_interrupted"
+  | "no_session"
+  | "mailbox_busy"
+  | "already_delivered"
+  | "remote_too_old";
+
+export type Conflict = { ok: false; error: string; state: MessageState; reason: ConflictReason };
+
+export function alreadyReason(state: Exclude<MessageState, "queued">): ConflictReason {
+  return `already_${state}`;
+}
+
+// The reason for a refusal that arrives as an error message: a local throw,
+// or a remote am's stderr. Undefined when the message is none of these.
+export function conflictReason(message: string): ConflictReason | undefined {
+  if (/remote am too old|unknown command/.test(message)) return "remote_too_old";
+  if (/mailbox is busy/.test(message)) return "mailbox_busy";
+  if (/has no live tmux session|no longer exists|no agent matches|no local agent/.test(message)) return "no_session";
+  if (/is being delivered/.test(message)) return "already_delivered";
+  if (/is not delivered yet/.test(message)) return "not_delivered";
+  if (/has not started yet/.test(message)) return "not_started";
+  if (/was already interrupted/.test(message)) return "already_interrupted";
+  const already = /is already (delivered|done|cancelled|failed)\b/.exec(message);
+  return already ? alreadyReason(already[1] as Exclude<MessageState, "queued">) : undefined;
 }
 
 // How the agent got the message: as a prompt (a new turn's, or one Claude
@@ -325,11 +361,13 @@ export function immediateMark(agent: AgentState): DeliveryMark {
   return markNow(agent);
 }
 
-export function markTurnEnded(name: string, agent: AgentState, at: Date = new Date()): void {
+export function markTurnEnded(name: string, agent: AgentState, at: Date = new Date(), interrupted = false): void {
   const iso = at.toISOString();
   for (const r of listRecords(name)) {
     if (r.state !== "delivered" || !completesAt(r, agent, at.getTime())) continue;
-    updateRecord(name, r.id, (cur) => (cur.state === "delivered" ? { ...cur, state: "done", doneAt: iso } : null));
+    updateRecord(name, r.id, (cur) =>
+      cur.state === "delivered" ? { ...cur, state: "done", doneAt: iso, ...(interrupted ? { interrupted: true as const } : {}) } : null,
+    );
   }
 }
 
@@ -405,13 +443,15 @@ export function cancelQueuedLocked(
   name: string,
   id: string,
   inFlight: boolean,
-): { ok: true; state: "cancelled" } | { ok: false; error: string; state: MessageState } | null {
+): { ok: true; state: "cancelled" } | Conflict | null {
   const record = readJsonOrNull<MessageRecord>(recordFile(name, id));
   if (!record) return null;
-  if (record.state !== "queued") return { ok: false, error: `message ${id} is already ${record.state}`, state: record.state };
+  if (record.state !== "queued") {
+    return { ok: false, error: `message ${id} is already ${record.state}`, state: record.state, reason: alreadyReason(record.state) };
+  }
   // Typed into the input box, or sent to the session inbox, awaiting
   // confirmation: the agent may already have it.
-  if (inFlight) return { ok: false, error: `message ${id} is being delivered`, state: "queued" };
+  if (inFlight) return { ok: false, error: `message ${id} is being delivered`, state: "queued", reason: "already_delivered" };
   queuePopId(name, `${id}.json`);
   updateRecord(name, id, (cur) => (cur.state === "queued" ? { ...cur, state: "cancelled" } : null));
   return { ok: true, state: "cancelled" };

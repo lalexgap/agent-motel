@@ -15,7 +15,7 @@ import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
 import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
-import { isMessageId, readMessage } from "./messages";
+import { conflictReason, isMessageId, readMessage, type ConflictReason } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import { loadConfig, localHostIdentity } from "./config";
 import {
@@ -148,9 +148,24 @@ function parseTarget(raw: string): { host: string | null; name: string } | Respo
   return { host: resolved, name };
 }
 
-function remoteFailure(error: unknown): Response {
-  if (error instanceof RemoteError) return json({ error: error.message }, error.status);
+// `fallback`: the reason a message or interrupt route gives a 409 whose
+// cause the remote am did not say.
+function remoteFailure(error: unknown, fallback?: ConflictReason): Response {
+  if (error instanceof RemoteError) {
+    const reason = error.status === 409 ? (error.reason ?? fallback) : undefined;
+    return json(reason ? { error: error.message, reason } : { error: error.message }, error.status);
+  }
   return json({ error: (error as Error).message }, 502);
+}
+
+function conflict(error: string, reason: ConflictReason, state?: string): Response {
+  return json(state === undefined ? { error, reason } : { error, state, reason }, 409);
+}
+
+// A refusal thrown by a send or an interrupt.
+function thrownConflict(error: unknown, fallback: ConflictReason): Response {
+  const message = (error as Error).message;
+  return conflict(message, conflictReason(message) ?? fallback);
 }
 
 interface TranscriptShape {
@@ -161,12 +176,13 @@ function messageNotFound(name: string, id: string): Response {
   return json({ error: `no message "${id}" for agent "${name}"` }, 404);
 }
 
+// A remote am from before reasons returns a refusal without one.
 function cancelResponse(result: CancelResult): Response {
-  return result.ok ? json(result) : json({ error: result.error, state: result.state }, 409);
+  return result.ok ? json(result) : conflict(result.error, result.reason ?? "remote_too_old", result.state);
 }
 
 function interruptResponse(result: InterruptResult): Response {
-  return result.ok ? json({ ok: true }) : json({ error: result.error, state: result.state }, 409);
+  return result.ok ? json({ ok: true }) : conflict(result.error, result.reason ?? "remote_too_old", result.state);
 }
 
 // {text?, messageId?}: an error response, or what to interrupt with.
@@ -182,6 +198,8 @@ async function interruptBody(req: Request): Promise<Response | { text: string; m
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
   const route = rest[0];
+  const fallback: ConflictReason | undefined =
+    route === "messages" ? "not_delivered" : route === "interrupt" ? "no_session" : undefined;
   try {
     // A receipt: __message/__cancel ship after --exact and read the name
     // exactly, and an am without them fails "unknown command", so they need
@@ -216,7 +234,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       // older am would take --json as noise, send, and print no id.
       const detail = await runRemoteJson<{ messageReceipts?: boolean }>(host, ["__detail", name]);
       if (detail?.messageReceipts !== true) {
-        return json({ error: `remote am too old on ${host} (no message receipts)` }, 409);
+        return conflict(`remote am too old on ${host} (no message receipts)`, "remote_too_old");
       }
       const args = mode === "interrupt"
         ? ["interrupt", name, "-", "--json"]
@@ -262,7 +280,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       return json({ ok: true });
     }
   } catch (error) {
-    return remoteFailure(error);
+    return remoteFailure(error, fallback);
   }
   return json({ error: "not found" }, 404);
 }
@@ -430,10 +448,10 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         const { id } = mode === "interrupt"
           ? await interruptCommand(name, text, { exact: true, track: true })
           : await sendCommand(name, text, { now: mode === "now", track: true });
-        if (!id) return json({ error: `message to "${name}" was not sent` }, 409);
+        if (!id) return conflict(`message to "${name}" was not sent`, "not_delivered");
         return json({ ok: true, mode, id });
       } catch (error) {
-        return json({ error: (error as Error).message }, 409);
+        return thrownConflict(error, "not_delivered");
       }
     }
 
@@ -477,7 +495,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         else await abortTurn(agent.name);
         return json({ ok: true });
       } catch (error) {
-        return json({ error: (error as Error).message }, 409);
+        return thrownConflict(error, "no_session");
       }
     }
 

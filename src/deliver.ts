@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
-import { queueClearEntries, queueHead, queuePopId } from "./queue";
+import { agentProvider, agentSessionId, readAgent, updateAgentStatus, writeAgent, type AgentState, type Provider } from "./state";
+import { queueClearEntries, queueDepth, queueHead, queuePopId } from "./queue";
 import { capturePane, hasSession, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
@@ -21,13 +21,16 @@ import {
   renewHandoff,
 } from "./mailbox";
 import {
+  alreadyReason,
   cancelQueuedLocked,
   clearQueuedLocked,
   deliveryMark,
   isMessageId,
   markDelivered,
+  markTurnEnded,
   readMessage,
   withSettledRecord,
+  type Conflict,
   type DeliveryMark,
   type MessageState,
 } from "./messages";
@@ -340,7 +343,7 @@ async function deliverToInbox(
   return { status: "queued", reason: "unverified" };
 }
 
-export type CancelResult = { ok: true; state: "cancelled" } | { ok: false; error: string; state: MessageState };
+export type CancelResult = { ok: true; state: "cancelled" } | Conflict;
 
 const CANCEL_WAIT_MS = 10_000;
 
@@ -353,7 +356,9 @@ export async function cancelMessage(name: string, id: string): Promise<CancelRes
   for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
     const record = readMessage(name, id);
     if (!record) return null;
-    if (record.state !== "queued") return { ok: false, error: `message ${id} is already ${record.state}`, state: record.state };
+    if (record.state !== "queued") {
+      return { ok: false, error: `message ${id} is already ${record.state}`, state: record.state, reason: alreadyReason(record.state) };
+    }
     if (acquireDeliverLock(name)) {
       try {
         if (acquireProducerLock(name)) {
@@ -367,16 +372,50 @@ export async function cancelMessage(name: string, id: string): Promise<CancelRes
         releaseDeliverLock(name);
       }
     }
-    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry the cancel`, state: "queued" };
+    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry the cancel`, state: "queued", reason: "mailbox_busy" };
     await Bun.sleep(100);
   }
 }
 
-export type InterruptResult = { ok: true; state: "delivered" } | { ok: false; error: string; state: MessageState };
+export type InterruptResult = { ok: true; state: "delivered" } | Conflict;
 
 function notInterruptible(id: string, state: MessageState): InterruptResult {
-  const error = state === "queued" ? `message ${id} is not delivered yet` : `message ${id} is already ${state}`;
-  return { ok: false, error, state };
+  if (state === "queued") return { ok: false, error: `message ${id} is not delivered yet`, state, reason: "not_delivered" };
+  return { ok: false, error: `message ${id} is already ${state}`, state, reason: alreadyReason(state) };
+}
+
+const ABORT_POLL_MS = 250;
+const ABORT_POLLS = 16;
+
+// Neither TUI fires Stop for a turn aborted with Esc, so nothing else ends it:
+// the agent stays working, its receipts delivered, its queue undrained. Once
+// the pane is back at an empty composer (the check deliverNext submits by),
+// end the turn as a Stop would, its receipts done and marked interrupted, and
+// deliver what is queued. A Stop or a prompt since the Esc means the turn
+// ended or a new one started, either of which brings its own Stop.
+export async function endAbortedTurn(name: string, escAt: number): Promise<boolean> {
+  for (let poll = 0; poll < ABORT_POLLS; poll++) {
+    await Bun.sleep(ABORT_POLL_MS);
+    const agent = readAgent(name);
+    if (!agent || !hasSession(agent.tmuxSession)) return false;
+    if (agent.status !== "working" && agent.status !== "needs-attention") return false;
+    if (Date.parse(agent.promptAt ?? "") > escAt) return false;
+    const pane = capturePane(agent.tmuxSession, { colors: true });
+    if (!pane || parsedInputBoxText(pane, agentProvider(agent)) !== "") continue;
+    const at = new Date();
+    try {
+      markTurnEnded(name, agent, at, true);
+    } catch {
+      // a receipt must not keep the agent working
+    }
+    updateAgentStatus(agent, "idle", undefined, at.toISOString());
+    agent.workingSince = undefined;
+    writeAgent(agent);
+    if (queueDepth(name) > 0) await deliverNext(name);
+    return true;
+  }
+  console.error(`am: "${name}" did not return to its prompt after Esc; leaving it as it is`);
+  return false;
 }
 
 // Esc the turn handling a delivered message, once, and only that turn. The delivery
@@ -390,17 +429,23 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
     if (!record) return null;
     if (record.state !== "delivered") return notInterruptible(id, record.state);
     if (acquireDeliverLock(name)) {
+      let result: InterruptResult | null;
+      const escAt = Date.now();
       try {
-        return withSettledRecord(name, id, (current, save): InterruptResult => {
+        result = withSettledRecord(name, id, (current, save): InterruptResult => {
           if (current.state !== "delivered") return notInterruptible(id, current.state);
           // A delivered message can still wait behind an earlier turn (Codex's
           // queue, a deferred steer); Esc then would abort that turn instead.
-          if (!current.startedAt && current.via !== "absorbed") return { ok: false, error: `message ${id} has not started yet`, state: "delivered" };
+          if (!current.startedAt && current.via !== "absorbed") {
+            return { ok: false, error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" };
+          }
           // A second Esc rewinds the conversation in both TUIs.
-          if (current.interruptedAt) return { ok: false, error: `message ${id} was already interrupted`, state: "delivered" };
+          if (current.interruptedAt) {
+            return { ok: false, error: `message ${id} was already interrupted`, state: "delivered", reason: "already_interrupted" };
+          }
           const agent = readAgent(name);
           if (!agent || !hasSession(agent.tmuxSession)) {
-            return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state };
+            return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state, reason: "no_session" };
           }
           sendEscape(agent.tmuxSession);
           save({ ...current, interruptedAt: new Date().toISOString() });
@@ -409,8 +454,10 @@ export async function interruptMessage(name: string, id: string): Promise<Interr
       } finally {
         releaseDeliverLock(name);
       }
+      if (result?.ok) await endAbortedTurn(name, escAt);
+      return result;
     }
-    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry`, state: record.state };
+    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry`, state: record.state, reason: "mailbox_busy" };
     await Bun.sleep(100);
   }
 }
