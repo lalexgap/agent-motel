@@ -140,13 +140,25 @@ describe("inbox delivery", () => {
     expect(frames.find((f) => f.type === "user")).toMatchObject({ message: { content: "[am · from web] ping" } });
   });
 
-  test("operator messages are still typed into the pane", async () => {
+  test("operator messages go through the inbox with a tagged marker the hook can verify", async () => {
     writeAgent(agent());
     liveEntry();
-    await listen(true);
+    await listen(false);
+    const id = queueAppend("api", "operator note");
+    await deliverNext("api");
+    expect(typed()).toBe(false);
+    const content: string = (frames.find((f: any) => f.type === "user") as any).message.content;
+    const tag = /^\[am · operator message ([0-9a-f]{16})\] operator note$/.exec(content)?.[1];
+    expect(tag).toBeDefined();
+    expect(confirmInboxDelivery("api", `Another Claude session sent a message:\n${content}`)).toBe(tag!);
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  }, 20_000);
+
+  test("an operator message falls back to typing without the marker", async () => {
+    writeAgent(agent());
+    liveEntry();
     queueAppend("api", "operator note");
     await deliverNext("api");
-    expect(frames).toHaveLength(0);
     expect(typed()).toBe(true);
   });
 
@@ -176,6 +188,13 @@ describe("inbox delivery", () => {
     expect(typed()).toBe(true);
   }, 20_000);
 
+  test("a pending marker from before `content` existed still confirms a peer send", () => {
+    const id = queueAppend("api", "[am · from web] ping");
+    writeFileSync(join(queueDir(), "api", ".delivery.pending"), JSON.stringify({ id, message: "[am · from web] ping", via: "inbox", sentAt: Date.now() }));
+    expect(confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · from web] ping")).toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  });
+
   test("a late confirmation retires the message for hook drains", async () => {
     writeAgent(agent());
     liveEntry();
@@ -187,6 +206,29 @@ describe("inbox delivery", () => {
     expect(finishConfirmedDelivery("api", id)).toBe(true);
     expect(queueDepth("api")).toBe(0);
     expect(pendingDeliveryId("api")).toBeNull();
+  }, 20_000);
+
+  test("an operator message is confirmed only by its own tagged marker", async () => {
+    writeAgent(agent());
+    liveEntry();
+    await listen(false);
+    const id = queueAppend("api", "ok");
+    await deliverNext("api");
+    const content: string = (frames.find((f: any) => f.type === "user") as any).message.content;
+    expect(confirmInboxDelivery("api", "ok, look at the logs")).toBeNull();
+    expect(confirmInboxDelivery("api", "[am · operator message 0000000000000000] ok")).toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(false);
+    expect(confirmInboxDelivery("api", content)).not.toBeNull();
+    expect(finishConfirmedDelivery("api", id)).toBe(true);
+  }, 20_000);
+
+  test("peer messages confirm without an operator tag", async () => {
+    writeAgent(agent());
+    liveEntry();
+    await listen(false);
+    queueAppend("api", "[am · from web] ping");
+    await deliverNext("api");
+    expect(confirmInboxDelivery("api", "Another Claude session sent a message:\n[am · from web] ping")).toBeNull();
   }, 20_000);
 });
 

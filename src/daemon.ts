@@ -4,7 +4,7 @@ import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus } fr
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
-import { acquireDeliverLock, deliverNext, releaseDeliverLock } from "./deliver";
+import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
@@ -21,6 +21,21 @@ export const DELIVERY_DELAY_MS = 500;
 // and self-heals queues — tightening it would just add subprocess churn on a
 // loaded host for no visible freshness.
 const RECONCILE_INTERVAL_MS = 15_000;
+
+// Why a queued message to an idle agent was held, or null for delivered or a momentary lock.
+export function stuckDeliveryReason(result: DeliveryResult): string | null {
+  if (result.status !== "queued") return null;
+  switch (result.reason) {
+    case "composing":
+      return "text is sitting in its input box";
+    case "unavailable":
+      return "its input box isn't recognisable on screen";
+    case "unverified":
+      return "the send wasn't confirmed";
+    default:
+      return null;
+  }
+}
 
 // The daemon's stdout/stderr are redirected to daemonLogFile() by ensureDaemon,
 // so these lines are what you find when cross-machine mail stops flowing.
@@ -261,6 +276,8 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // them to exited so status stays honest. Also self-heal queues that got
   // stranded while an agent was idle (e.g. a send racing a status change):
   // an idle agent fires no Stop hook, so nothing else would drain them.
+  // Holds repeat every sweep; log only when an agent's reason changes.
+  const lastRefusal = new Map<string, string>();
   const reconciler = setInterval(() => {
     // Bound the log during a long run — rotation at spawn can't help a daemon
     // that stays up for weeks. Truncate in place: the inherited append fd
@@ -274,15 +291,26 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     } catch {
       // no log yet
     }
+    const waiting = new Set<string>();
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited", "tmux session disappeared");
         continue;
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {
-        deliverNext(agent.name).catch((error) => log(`delivery to ${agent.name} failed: ${error}`));
+        waiting.add(agent.name);
+        deliverNext(agent.name).then(
+          (result) => {
+            const reason = stuckDeliveryReason(result);
+            if (reason && lastRefusal.get(agent.name) !== reason) log(`delivery to ${agent.name} held: ${reason}`);
+            if (reason) lastRefusal.set(agent.name, reason);
+            else lastRefusal.delete(agent.name);
+          },
+          (error) => log(`delivery to ${agent.name} failed: ${error}`),
+        );
       }
     }
+    for (const name of lastRefusal.keys()) if (!waiting.has(name)) lastRefusal.delete(name);
   }, RECONCILE_INTERVAL_MS);
 
   const keepalive = setInterval(() => {

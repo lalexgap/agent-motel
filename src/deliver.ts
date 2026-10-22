@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
@@ -7,7 +7,7 @@ import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmu
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { isAttributedBody } from "./comms";
+import { isAttributedBody, operatorEnvelope } from "./comms";
 import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
 import { clientMessageId, queueCodexMessage } from "./codexQueue";
 import { acquireMailboxLock, beginHandoff, endHandoff, mailboxLockPath, releaseMailboxLock, renewHandoff } from "./mailbox";
@@ -118,6 +118,9 @@ interface PendingDelivery {
   incarnation?: string;
   via?: "inbox";
   sentAt?: number;
+  // The exact inbox text, and for operator messages the tag the hook verifies.
+  content?: string;
+  operatorTag?: string;
   inboxFailed?: boolean;
 }
 
@@ -138,11 +141,16 @@ function normalized(text: string): string {
 
 // UserPromptSubmit: the prompt carrying the in-flight inbox message is the
 // acknowledgement that the turn really started. Lock-free, because the
-// deliverer holds the lock while it waits for exactly this.
-export function confirmInboxDelivery(name: string, prompt: string): void {
+// deliverer holds the lock while it waits for exactly this. Returns the
+// operator tag when the confirmed message is the operator's, so the hook can
+// vouch for it.
+export function confirmInboxDelivery(name: string, prompt: string): string | null {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
-  if (pending?.via !== "inbox" || !normalized(prompt).includes(normalized(pending.message))) return;
+  // Markers written before `content` existed came only from peer sends, whose content was the message itself.
+  const content = pending?.content ?? (pending && isAttributedBody(pending.message) ? pending.message : null);
+  if (pending?.via !== "inbox" || !content || !normalized(prompt).includes(normalized(content))) return null;
   writeJsonAtomic(confirmedPath(name), { id: pending.id });
+  return pending.operatorTag ?? null;
 }
 
 function deliveryConfirmed(name: string, id: string): boolean {
@@ -252,11 +260,13 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
 
 // Codex's queue is durable, so a successful add is delivery. Claude's socket
 // never replies, so its sends wait for the hook's confirmation. Claude frames
-// inbox content as "not typed by your user", which would demote an operator's
-// message, so only peer messages go that way.
+// inbox content as "not typed by your user", so operator messages carry an
+// explicit marker there.
 interface InboxSender {
   send: () => Promise<void>;
   confirm: boolean;
+  content?: string;
+  operatorTag?: string;
 }
 
 function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
@@ -266,9 +276,11 @@ function inboxSender(agent: AgentState, head: { id: string; message: string }): 
       ? { send: () => queueCodexMessage(threadId, head.message, clientMessageId(head.id)), confirm: false }
       : null;
   }
-  if (!isAttributedBody(head.message) || !peerSendable(head.message)) return null;
+  const operatorTag = isAttributedBody(head.message) ? undefined : randomBytes(8).toString("hex");
+  const content = operatorTag ? operatorEnvelope(head.message, operatorTag) : head.message;
+  if (!peerSendable(content)) return null;
   const target = peerTarget(agent);
-  return target ? { send: () => sendPeerMessage(target, head.message, randomUUID()), confirm: true } : null;
+  return target ? { send: () => sendPeerMessage(target, content, randomUUID()), confirm: true, content, operatorTag } : null;
 }
 
 // Null means the inbox was unusable, so the caller types the message instead.
@@ -289,7 +301,15 @@ async function deliverToInbox(
     return { status: "submitted", id: head.id };
   }
   rmSync(confirmedPath(name), { force: true });
-  writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, via: "inbox", sentAt: Date.now() });
+  writeJsonAtomic(markerPath, {
+    id: head.id,
+    message: head.message,
+    incarnation,
+    via: "inbox",
+    sentAt: Date.now(),
+    content: inbox.content,
+    operatorTag: inbox.operatorTag,
+  });
   try {
     await inbox.send();
   } catch {

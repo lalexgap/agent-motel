@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pipeEvents, startDaemonServer, daemonHealth, daemonRequest, nextPollMs, watchDaemonEvents, type DaemonHandle } from "../src/daemon";
+import { pipeEvents, startDaemonServer, stuckDeliveryReason, daemonHealth, daemonRequest, nextPollMs, watchDaemonEvents, type DaemonHandle } from "../src/daemon";
 import { writeAgent } from "../src/state";
 import { queueAppend } from "../src/queue";
 
@@ -169,5 +169,14 @@ describe("nextPollMs (adaptive backoff)", () => {
     expect(nextPollMs(8000, 2000, 30000, 1)).toBe(2000); // got mail → hot floor
     expect(nextPollMs(2000, 2000, 30000, 0)).toBe(3000); // idle → x1.5
     expect(nextPollMs(25000, 2000, 30000, 0)).toBe(30000); // clamped to cap
+  });
+});
+
+describe("stuckDeliveryReason", () => {
+  test("names holds that won't clear on their own, ignores the rest", () => {
+    expect(stuckDeliveryReason({ status: "queued", reason: "composing" })).toContain("input box");
+    expect(stuckDeliveryReason({ status: "queued", reason: "unavailable" })).toContain("isn't recognisable");
+    expect(stuckDeliveryReason({ status: "queued", reason: "locked" })).toBeNull();
+    expect(stuckDeliveryReason({ status: "submitted", id: "x" })).toBeNull();
   });
 });
