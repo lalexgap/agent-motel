@@ -17,6 +17,7 @@ import {
   readMessage,
   recordImmediateDelivery,
   transcriptLength,
+  withSettledRecord,
 } from "../src/messages";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 
@@ -88,6 +89,7 @@ case "$1" in
       printf '%s' "$6" >> "$AGENTMGR_HOME/input"
       printf '%s\\n' "$6" >> "$AGENTMGR_HOME/typed"
     else
+      printf '%s\\n' "$4" >> "$AGENTMGR_HOME/keys"
       [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
     fi
     ;;
@@ -405,10 +407,23 @@ describe("delivery receipts", () => {
     expect(JSON.parse(am("__detail", "api").stdout.toString()).messageReceipts).toBe(true);
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toEqual({ ok: true, state: "cancelled" });
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toMatchObject({ ok: false, state: "cancelled" });
+    expect(JSON.parse(am("__interrupt", "api", id).stdout.toString())).toEqual({ ok: false, error: `message ${id} is already cancelled`, state: "cancelled" });
+    expect(am("__interrupt", "api", "01NOPE").stderr.toString()).toContain('no message "01NOPE"');
     const missing = am("__message", "api", "01NOPE");
     expect(missing.exitCode).toBe(1);
     expect(missing.stderr.toString()).toContain('no message "01NOPE"');
     expect(am("__message", "ghost", id).stderr.toString()).toContain("no local agent");
+  });
+
+  test("a turn end the hooks have not marked yet is settled inside the records lock", () => {
+    fakeSession("working");
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
+    writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+    expect(withSettledRecord("api", id, (r) => r.state)).toBe("done");
+    const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
+    expect(raw.state).toBe("done");
+    expect(withSettledRecord("api", "01NOPE", (r) => r.state)).toBeNull();
   });
 
   test("rename carries the records", async () => {
@@ -474,5 +489,81 @@ describe("messages api", () => {
     const got = (await (await call(`/api/agents/api/messages/${posted.id}`)).json()) as any;
     expect(got).toMatchObject({ id: posted.id, state: "queued" });
     expect(queueDepth("api")).toBe(1);
+  });
+
+  test("health and local detail report messageReceipts", async () => {
+    fakeSession("idle");
+    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true });
+    expect(((await (await call("/api/agents/api")).json()) as any).messageReceipts).toBe(true);
+  });
+
+  describe("interrupt by messageId", () => {
+    const keys = () => (existsSync(join(home, "keys")) ? readFileSync(join(home, "keys"), "utf8") : "");
+    const interrupt = (body: unknown) => call("/api/agents/api/interrupt", { method: "POST", body: JSON.stringify(body) });
+
+    test("Esc while delivered; refused once done", async () => {
+      fakeSession("working");
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const ok = await interrupt({ messageId: id });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true });
+      expect(keys()).toBe("Escape\n");
+
+      rmSync(join(home, "keys"));
+      hook("user-prompt-submit", { prompt: "go" });
+      hook("stop");
+      const done = await interrupt({ messageId: id });
+      expect(done.status).toBe(409);
+      expect(await done.json()).toEqual({ error: `message ${id} is already done`, state: "done" });
+      expect(keys()).toBe("");
+    });
+
+    test("a turn that ended but is not marked yet is done, and gets no Esc", async () => {
+      fakeSession("working");
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const later = (ms: number) => new Date(Date.now() + ms).toISOString();
+      writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
+      const res = await interrupt({ messageId: id });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done" });
+      expect(keys()).toBe("");
+      expect(readMessage("api", id)!.state).toBe("done");
+    });
+
+    test("queued → 409; unknown or malformed id → 404; bad bodies → 400", async () => {
+      fakeSession("working");
+      const id = queueTrackedMessage("api", "not yet");
+      const queued = await interrupt({ messageId: id });
+      expect(queued.status).toBe(409);
+      expect(await queued.json()).toEqual({ error: `message ${id} is not delivered yet`, state: "queued" });
+      const missing = await interrupt({ messageId: "01NOPE" });
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({ error: 'no message "01NOPE" for agent "api"' });
+      expect((await interrupt({ messageId: "a.b" })).status).toBe(404);
+      const both = await interrupt({ messageId: id, text: "hi" });
+      expect(both.status).toBe(400);
+      expect(await both.json()).toEqual({ error: "messageId and text are mutually exclusive" });
+      expect((await interrupt({ messageId: 5 })).status).toBe(400);
+      expect(keys()).toBe("");
+      expect(queueDepth("api")).toBe(1);
+    });
+
+    test("busy while a delivery holds the lock", async () => {
+      fakeSession("working");
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      expect(acquireDeliverLock("api")).toBe(true);
+      fastSleep();
+      let t = Date.now();
+      const clock = spyOn(Date, "now").mockImplementation(() => (t += 20_000));
+      let res: Response;
+      try {
+        res = await interrupt({ messageId: id });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'agent "api" mailbox is busy — retry', state: "delivered" });
+      expect(keys()).toBe("");
+    });
   });
 });

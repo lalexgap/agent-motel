@@ -3,7 +3,7 @@ import { closeSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, readAgent, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueHead, queuePopId } from "./queue";
-import { capturePane, hasSession, sendEnter, sendText, stripFaint, stripSgr, tmux } from "./tmux";
+import { capturePane, hasSession, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
@@ -20,7 +20,17 @@ import {
   releaseProducerLock,
   renewHandoff,
 } from "./mailbox";
-import { cancelQueuedLocked, clearQueuedLocked, deliveryMark, isMessageId, markDelivered, readMessage, type DeliveryMark, type MessageState } from "./messages";
+import {
+  cancelQueuedLocked,
+  clearQueuedLocked,
+  deliveryMark,
+  isMessageId,
+  markDelivered,
+  readMessage,
+  withSettledRecord,
+  type DeliveryMark,
+  type MessageState,
+} from "./messages";
 
 // Keep the lock inode in place: unlinking it would let another process lock a
 // new inode while the current holder is still delivering. The kernel releases
@@ -357,6 +367,43 @@ export async function cancelMessage(name: string, id: string): Promise<CancelRes
       }
     }
     if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry the cancel`, state: "queued" };
+    await Bun.sleep(100);
+  }
+}
+
+export type InterruptResult = { ok: true; state: "delivered" } | { ok: false; error: string; state: MessageState };
+
+function notInterruptible(id: string, state: MessageState): InterruptResult {
+  const error = state === "queued" ? `message ${id} is not delivered yet` : `message ${id} is already ${state}`;
+  return { ok: false, error, state };
+}
+
+// Esc the turn handling a delivered message, and only that turn. The delivery
+// lock keeps the next message from being handed over, and the records lock
+// keeps the Stop hook from marking it done, between the check and the Esc.
+// Null: no such message.
+export async function interruptMessage(name: string, id: string): Promise<InterruptResult | null> {
+  if (!isMessageId(id)) return null;
+  for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
+    const record = readMessage(name, id);
+    if (!record) return null;
+    if (record.state !== "delivered") return notInterruptible(id, record.state);
+    if (acquireDeliverLock(name)) {
+      try {
+        return withSettledRecord(name, id, (current): InterruptResult => {
+          if (current.state !== "delivered") return notInterruptible(id, current.state);
+          const agent = readAgent(name);
+          if (!agent || !hasSession(agent.tmuxSession)) {
+            return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state };
+          }
+          sendEscape(agent.tmuxSession);
+          return { ok: true, state: "delivered" };
+        });
+      } finally {
+        releaseDeliverLock(name);
+      }
+    }
+    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry`, state: record.state };
     await Bun.sleep(100);
   }
 }

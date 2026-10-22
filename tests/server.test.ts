@@ -408,6 +408,35 @@ describe("remote agents api (host:name)", () => {
     ]);
   });
 
+  test("interrupt by messageId forwards to __interrupt", async () => {
+    reply = (call) =>
+      call.args[2] === "01ABC"
+        ? { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01ABC is already done", state: "done" }) }
+        : { exitCode: 0, stdout: JSON.stringify({ ok: true, state: "delivered" }) };
+    const refused = await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC" });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "message 01ABC is already done", state: "done" });
+    const ok = await post("/api/agents/laptop:api/interrupt", { messageId: "01XYZ" });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["__interrupt", "api", "01ABC", "--local", "--exact"],
+      ["__interrupt", "api", "01XYZ", "--local", "--exact"],
+    ]);
+
+    reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" })).status).toBe(404);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__interrupt" — see `am help`' });
+    const old = await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" });
+    expect(old.status).toBe(409);
+    expect(((await old.json()) as any).error).toContain("remote am too old");
+    calls.length = 0;
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "a.b" })).status).toBe(404);
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC", text: "hi" })).status).toBe(400);
+    expect((await post("/api/agents/laptop:api/interrupt", { messageId: 1 })).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
   test("message receipts: unknown id → 404, old am → 409, bad id never reaches ssh", async () => {
     reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
     expect((await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth())).status).toBe(404);

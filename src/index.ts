@@ -48,7 +48,7 @@ import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { summaryCommand } from "./commands/summary";
 import { usageCommand } from "./commands/usage";
-import { cancelMessage, deliverCommand } from "./deliver";
+import { cancelMessage, deliverCommand, interruptMessage } from "./deliver";
 import { readMessage } from "./messages";
 import { runEventsPipe, runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
@@ -857,8 +857,7 @@ async function main(): Promise<void> {
       const name = requirePositional(args, 0, "agent name");
       const detail = agentDetail(name);
       if (!detail) throw new Error(`no local agent "${name}"`);
-      // messageReceipts tells that serve this am returns ids from send --json.
-      console.log(JSON.stringify({ ...detail, messageReceipts: true }));
+      console.log(JSON.stringify(detail));
       break;
     }
     case "__message": {
@@ -877,6 +876,16 @@ async function main(): Promise<void> {
       const id = requirePositional(args, 1, "message id");
       if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
       const result = await cancelMessage(name, id);
+      if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
+      console.log(JSON.stringify(result));
+      break;
+    }
+    case "__interrupt": {
+      // Esc a delivered message's turn; prints the outcome like __cancel.
+      const name = requirePositional(args, 0, "agent name");
+      const id = requirePositional(args, 1, "message id");
+      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
+      const result = await interruptMessage(name, id);
       if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
       console.log(JSON.stringify(result));
       break;

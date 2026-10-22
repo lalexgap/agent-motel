@@ -286,6 +286,25 @@ function settle(name: string, record: MessageRecord): MessageRecord {
   return finishDelivered(name, record.id, agent, undefined) ?? record;
 }
 
+// Runs `fn` under the records lock on a record caught up with any turn end
+// the hooks have yet to mark, so none can land between its check and its
+// action. Null: no such record.
+export function withSettledRecord<T>(name: string, id: string, fn: (record: MessageView) => T): T | null {
+  if (!ID_RE.test(id)) return null;
+  const file = recordFile(name, id);
+  if (!existsSync(file)) return null;
+  return withFileLock(recordsLock(name), () => {
+    let record = readJsonOrNull<MessageRecord>(file);
+    if (!record) return null;
+    const agent = readAgent(name);
+    if (record.state === "delivered" && agent && turnEndedSince(agent, record)) {
+      record = { ...record, state: "done", doneAt: new Date().toISOString() };
+      writeJsonAtomic(file, record, { pretty: false });
+    }
+    return fn(view(record));
+  });
+}
+
 export function readMessage(name: string, id: string): MessageView | null {
   if (!ID_RE.test(id)) return null;
   const record = readJsonOrNull<MessageRecord>(recordFile(name, id));

@@ -14,7 +14,7 @@ import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest } from "./daemon";
-import { cancelMessage, type CancelResult } from "./deliver";
+import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
 import { isMessageId, readMessage } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import { loadConfig, localHostIdentity } from "./config";
@@ -121,6 +121,8 @@ export function agentDetail(name: string) {
     pane: hasSession(agent.tmuxSession)
       ? (capturePane(agent.tmuxSession)?.slice(-PANE_LINES).join("\n") ?? null)
       : null,
+    // Tells a serve on another host that this am returns ids from send --json.
+    messageReceipts: true,
   };
 }
 
@@ -161,6 +163,20 @@ function messageNotFound(name: string, id: string): Response {
 
 function cancelResponse(result: CancelResult): Response {
   return result.ok ? json(result) : json({ error: result.error, state: result.state }, 409);
+}
+
+function interruptResponse(result: InterruptResult): Response {
+  return result.ok ? json({ ok: true }) : json({ error: result.error, state: result.state }, 409);
+}
+
+// {text?, messageId?}: an error response, or what to interrupt with.
+async function interruptBody(req: Request): Promise<Response | { text: string; messageId?: string }> {
+  const body = (await req.json().catch(() => null)) as { text?: unknown; messageId?: unknown } | null;
+  if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  if (body?.messageId != null && typeof body.messageId !== "string") return json({ error: "messageId must be a string" }, 400);
+  if (body?.messageId != null && body.text != null) return json({ error: "messageId and text are mutually exclusive" }, 400);
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  return typeof body?.messageId === "string" ? { text, messageId: body.messageId } : { text };
 }
 
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
@@ -223,9 +239,14 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
 
     if (route === "interrupt" && method === "POST") {
-      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
-      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const body = await interruptBody(req);
+      if (body instanceof Response) return body;
+      const { text, messageId } = body;
+      // Like __cancel: an am without __interrupt fails "unknown command".
+      if (messageId !== undefined) {
+        if (!isMessageId(messageId)) return messageNotFound(name, messageId);
+        return interruptResponse(await runRemoteJson<InterruptResult>(host, ["__interrupt", name, messageId], { timeoutMs: 30_000 }));
+      }
       if (text) await run(["interrupt", name, "-"], { stdin: text });
       else await run(["interrupt", name]);
       return json({ ok: true });
@@ -295,7 +316,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
-    return json({ ok: true, name: "am" });
+    return json({ ok: true, name: "am", messageReceipts: true });
   }
 
   // GET /api/agents — merged local + remote fleet (cached; never blocks on ssh)
@@ -439,13 +460,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       return json(transcriptJson(agent, after));
     }
 
-    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given
+    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given;
+    // {messageId}: Esc only while that message's turn is running
     if (parts.length === 3 && parts[2] === "interrupt" && method === "POST") {
-      const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
-      if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const body = await interruptBody(req);
+      if (body instanceof Response) return body;
+      const { text, messageId } = body;
       const agent = readAgent(name);
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      if (messageId !== undefined) {
+        const result = await interruptMessage(agent.name, messageId);
+        return result ? interruptResponse(result) : messageNotFound(name, messageId);
+      }
       try {
         if (text) await interruptCommand(agent.name, text, { exact: true });
         else await abortTurn(agent.name);
