@@ -28,9 +28,10 @@ export interface MessageView {
   error?: string;
 }
 
-// How the agent got the message: as a new turn's prompt, steered into the
-// running turn, or absorbed into it by a hook. Records without it are prompts.
-export type DeliveryVia = "prompt" | "steer" | "absorbed";
+// How the agent got the message: as a prompt (a new turn's, or one Claude
+// takes in mid-turn, either way firing UserPromptSubmit), or absorbed into the
+// running turn by a hook. Records without it are prompts.
+export type DeliveryVia = "prompt" | "absorbed";
 
 interface MessageRecord extends MessageView {
   // When am began handing the message over.
@@ -158,20 +159,13 @@ export function deliveryMark(name: string, entryId: string): DeliveryMark | null
 
 const after = (at: string | undefined, since: number) => Date.parse(at ?? "") > since;
 
-// Whether a turn ending at `end` is one that handled this message: the agent
-// must have started a turn (or, for a steer, used a tool) since the handover.
+// Whether a turn ending at `end` is one that handled this message: a prompt
+// must have been submitted since the handover.
 function completesAt(r: Pick<MessageRecord, "handedAt" | "via">, agent: AgentState, end: number): boolean {
   if (!r.handedAt) return false;
   const handed = Date.parse(r.handedAt);
   if (!(handed <= end)) return false;
-  switch (r.via ?? "prompt") {
-    case "absorbed":
-      return true;
-    case "steer":
-      return after(agent.promptAt, handed) || after(agent.toolAt, handed);
-    case "prompt":
-      return after(agent.promptAt, handed);
-  }
+  return r.via === "absorbed" || after(agent.promptAt, handed);
 }
 
 function turnEndedSince(agent: AgentState, r: Pick<MessageRecord, "handedAt" | "via">): boolean {

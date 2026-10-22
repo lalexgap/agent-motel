@@ -180,20 +180,18 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id!)!.state).toBe("done");
   });
 
-  test("a --now steer finishes only at a stop after a prompt or tool call that followed it", async () => {
+  test("a --now steer finishes only at a stop after the prompt that took it in", async () => {
     fakeSession("working");
     fastSleep();
-    const first = (await sendCommand("api", "steer one", { now: true, track: true })).id!;
+    const { id } = await sendCommand("api", "steer one", { now: true, track: true });
     hook("stop");
-    expect(readMessage("api", first)!.state).toBe("delivered");
-    hook("user-prompt-submit", { prompt: "next" });
+    expect(readMessage("api", id!)!.state).toBe("delivered");
+    hook("post-tool-use");
     hook("stop");
-    expect(readMessage("api", first)!.state).toBe("done");
-
-    const second = (await sendCommand("api", "steer two", { now: true, track: true })).id!;
-    hook("pre-tool-use");
+    expect(readMessage("api", id!)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "steer one" });
     hook("stop");
-    expect(readMessage("api", second)!.state).toBe("done");
+    expect(readMessage("api", id!)!.state).toBe("done");
   });
 
   test("a stale stop after an interrupt leaves it delivered; the new turn's stop finishes it", async () => {

@@ -396,11 +396,7 @@ export async function hookCommand(event: string): Promise<void> {
 
   const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
   updateAgentStatus(agent, effects.status, effects.reason);
-  if (!fromSubagent) {
-    const now = new Date().toISOString();
-    if (event === "user-prompt-submit") agent.promptAt = now;
-    if (event === "pre-tool-use" || event === "post-tool-use") agent.toolAt = now;
-  }
+  if (event === "user-prompt-submit" && !fromSubagent) agent.promptAt = new Date().toISOString();
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
   // conversation, which `am transcript`, `am search` and the activity reader

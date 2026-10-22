@@ -90,7 +90,7 @@ export async function sendCommand(
       if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
       const mark = track ? immediateMark(agent) : null;
       sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
-      if (mark) id = recordImmediateDelivery(agent.name, mark, "steer");
+      if (mark) id = recordImmediateDelivery(agent.name, mark);
       if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
     }
     finally { releaseDeliverLock(agent.name); }
