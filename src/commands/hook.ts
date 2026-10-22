@@ -11,7 +11,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
-import { claimPrompt, deliveryMark, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
+import { claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -396,7 +396,10 @@ export async function hookCommand(event: string): Promise<void> {
 
   const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
   updateAgentStatus(agent, effects.status, effects.reason);
-  if (event === "user-prompt-submit" && !fromSubagent) agent.promptAt = new Date().toISOString();
+  if (event === "user-prompt-submit" && !fromSubagent) {
+    agent.promptAt = new Date().toISOString();
+    agent.promptKey = typeof payload.prompt === "string" ? promptKey(payload.prompt) : undefined;
+  }
   // Subagent events describe the SUBAGENT, and both providers now give their
   // subagents transcripts of their own — so never let one repoint the parent's
   // conversation, which `am transcript`, `am search` and the activity reader
@@ -434,10 +437,10 @@ export async function hookCommand(event: string): Promise<void> {
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
     if (event === "user-prompt-submit") {
-      if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt);
+      if (typeof payload.prompt === "string") confirmInboxDelivery(name, payload.prompt, agent.promptAt);
       surfaceInbox(name, "UserPromptSubmit");
-      const promptAt = agent.promptAt;
-      if (promptAt) receipt(() => claimPrompt(name, promptAt));
+      const { promptAt, promptKey: key } = agent;
+      if (promptAt && key) receipt(() => claimPrompt(name, promptAt, key));
     }
     else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
   }

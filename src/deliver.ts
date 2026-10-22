@@ -160,10 +160,10 @@ function normalized(text: string): string {
 // UserPromptSubmit: the prompt carrying the in-flight inbox message is the
 // acknowledgement that the turn really started. Lock-free, because the
 // deliverer holds the lock while it waits for exactly this.
-export function confirmInboxDelivery(name: string, prompt: string): void {
+export function confirmInboxDelivery(name: string, prompt: string, promptAt?: string): void {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
   if (pending?.via !== "inbox" || !normalized(prompt).includes(normalized(pending.message))) return;
-  writeJsonAtomic(confirmedPath(name), { id: pending.id });
+  writeJsonAtomic(confirmedPath(name), { id: pending.id, promptAt });
 }
 
 function deliveryConfirmed(name: string, id: string): boolean {
@@ -172,9 +172,10 @@ function deliveryConfirmed(name: string, id: string): boolean {
 
 function finishDelivery(name: string, id: string): void {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
+  const confirmed = readJsonOrNull<{ id?: string; promptAt?: string }>(confirmedPath(name));
   queuePopId(name, id);
   try {
-    markDelivered(name, id, pending?.id === id ? pending.mark : undefined);
+    markDelivered(name, id, pending?.id === id ? pending.mark : undefined, "prompt", confirmed?.id === id ? confirmed.promptAt : undefined);
   } catch {
     // a receipt must not undo a delivery
   }

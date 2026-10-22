@@ -90,7 +90,7 @@ export async function sendCommand(
       if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
       const mark = track ? immediateMark(agent) : null;
       sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
-      if (mark) id = recordImmediateDelivery(agent.name, mark);
+      if (mark) id = recordImmediateDelivery(agent.name, mark, body);
       if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
     }
     finally { releaseDeliverLock(agent.name); }
@@ -135,7 +135,7 @@ export async function interruptCommand(
     await Bun.sleep(400);
     const mark = opts.track || opts.json ? immediateMark(agent) : null;
     sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
-    if (mark) id = recordImmediateDelivery(agent.name, mark);
+    if (mark) id = recordImmediateDelivery(agent.name, mark, att.body);
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });
   } finally { releaseDeliverLock(agent.name); }
   say(opts, `interrupted "${agent.name}" with new message`);

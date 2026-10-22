@@ -16,6 +16,7 @@ import {
   queueTrackedMessage,
   readMessage,
   claimPrompt,
+  promptKey,
   recordImmediateDelivery,
   transcriptLength,
   withSettledRecord,
@@ -150,7 +151,7 @@ describe("delivery receipts", () => {
     const mark = deliveryMark("api", `${id}.json`)!;
     const agent = readAgent("api")!;
     const later = (ms: number) => new Date(Date.parse(mark.handedAt) + ms).toISOString();
-    writeAgent({ ...agent, status: "idle", promptAt: later(20), statusChangedAt: later(50) });
+    writeAgent({ ...agent, status: "idle", promptAt: later(20), promptKey: promptKey("quick one"), statusChangedAt: later(50) });
     expect(acquireDeliverLock("api")).toBe(true);
     queuePopId("api", `${id}.json`);
     markDelivered("api", `${id}.json`, mark);
@@ -224,11 +225,11 @@ describe("delivery receipts", () => {
 
   test("a session that ends before the message's turn finishes fails it", () => {
     fakeSession("working");
-    const handled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const handled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     hook("user-prompt-submit", { prompt: "go" });
     hook("stop");
-    const unhandled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
-    const midTurn = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const unhandled = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+    const midTurn = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     hook("user-prompt-submit", { prompt: "go again" });
     hook("session-end");
     expect(readMessage("api", handled)!.state).toBe("done");
@@ -239,11 +240,11 @@ describe("delivery receipts", () => {
 
   test("a session that ended idle keeps a message its last turn handled", () => {
     fakeSession("working");
-    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     const agent = readAgent("api")!;
     const later = (ms: number) => new Date(Date.now() + ms).toISOString();
     writeAgent({ ...agent, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
+    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
     hook("session-end");
     expect(readMessage("api", id)!.state).toBe("done");
   });
@@ -305,7 +306,7 @@ describe("delivery receipts", () => {
     expect(await cancelMessage("api", id)).toMatchObject({ ok: false, state: "cancelled" });
     expect(await cancelMessage("api", "NOPE")).toBeNull();
 
-    const delivered = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const delivered = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     expect(await cancelMessage("api", delivered)).toMatchObject({ ok: false, state: "delivered" });
   });
 
@@ -347,7 +348,7 @@ describe("delivery receipts", () => {
   test("a session that dies: queued stays queued for a resume, an unfinished delivery fails", async () => {
     fakeSession("working");
     const queued = queueTrackedMessage("api", "after resume");
-    const delivered = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const delivered = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     writeFileSync(join(home, "mode"), "dead");
     expect(readMessage("api", queued)!.state).toBe("queued");
     expect(queueDepth("api")).toBe(1);
@@ -389,10 +390,10 @@ describe("delivery receipts", () => {
   test("finished records older than a week are pruned", () => {
     fakeSession("working");
     const dir = join(home, "queue", "api", ".messages");
-    const old = recordImmediateDelivery("api", { transcriptIndex: 0, handedAt: new Date().toISOString() });
+    const old = recordImmediateDelivery("api", { transcriptIndex: 0, handedAt: new Date().toISOString() }, "go");
     const stale = new Date(Date.now() - 8 * 86_400_000).toISOString();
     writeFileSync(join(dir, `${old}.json`), JSON.stringify({ id: old, state: "done", queuedAt: stale, deliveredAt: stale, doneAt: stale, transcriptIndex: 0 }));
-    const fresh = recordImmediateDelivery("api", { transcriptIndex: 0, handedAt: new Date().toISOString() });
+    const fresh = recordImmediateDelivery("api", { transcriptIndex: 0, handedAt: new Date().toISOString() }, "go");
     expect(existsSync(join(dir, `${old}.json`))).toBe(false);
     expect(existsSync(join(dir, `${fresh}.json`))).toBe(true);
   });
@@ -422,15 +423,15 @@ describe("delivery receipts", () => {
 
   test("Codex-style queue adds start in order: each prompt finishes only its own message", () => {
     fakeSession("working");
-    const deliver = () => {
-      const id = queueTrackedMessage("api", "queued in codex");
+    const deliver = (text: string) => {
+      const id = queueTrackedMessage("api", text);
       const mark = deliveryMark("api", `${id}.json`);
       queuePopId("api", `${id}.json`);
       markDelivered("api", `${id}.json`, mark);
       return id;
     };
-    const first = deliver();
-    const second = deliver();
+    const first = deliver("one");
+    const second = deliver("two");
     hook("stop");
     expect([readMessage("api", first)!.state, readMessage("api", second)!.state]).toEqual(["delivered", "delivered"]);
     hook("user-prompt-submit", { prompt: "one" });
@@ -445,29 +446,73 @@ describe("delivery receipts", () => {
     fakeSession("working");
     const id = queueTrackedMessage("api", "typed");
     const mark = deliveryMark("api", `${id}.json`);
+    // The deliverer holds the lock while it waits for the input box to clear.
+    expect(acquireDeliverLock("api")).toBe(true);
     hook("user-prompt-submit", { prompt: "typed" });
     queuePopId("api", `${id}.json`);
     markDelivered("api", `${id}.json`, mark);
+    releaseDeliverLock("api");
     expect(readMessage("api", id)!.state).toBe("delivered");
     hook("stop");
     expect(readMessage("api", id)!.state).toBe("done");
   });
 
-  test("a repeated UserPromptSubmit (Claude's put-back) starts at most one more message, oldest first", () => {
+  test("a repeated UserPromptSubmit (Claude's put-back) restarts the same message and starts no other", () => {
     fakeSession("working");
-    const ids = [0, 1, 2].map(() => recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }));
-    hook("user-prompt-submit", { prompt: "p" });
-    hook("user-prompt-submit", { prompt: "p" });
-    const raw = ids.map((id) => JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8")));
-    expect(raw.map((r) => typeof r.startedAt)).toEqual(["string", "string", "undefined"]);
-    expect(raw[0].startedAt).not.toBe(raw[1].startedAt);
+    const first = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+    const other = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "other");
+    hook("user-prompt-submit", { prompt: "go" });
+    hook("user-prompt-submit", { prompt: "go" });
+    const raw = (id: string) => JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
+    expect(raw(first).startedAt).toBe(readAgent("api")!.promptAt);
+    expect(raw(other).startedAt).toBeUndefined();
     hook("stop");
-    expect(ids.map((id) => readMessage("api", id)!.state)).toEqual(["done", "done", "delivered"]);
+    expect([readMessage("api", first)!.state, readMessage("api", other)!.state]).toEqual(["done", "delivered"]);
+  });
+
+  test("a prompt with other text ahead of a tracked message doesn't start it; whitespace doesn't matter", () => {
+    fakeSession("working");
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "fix   the\nbuild ");
+    hook("user-prompt-submit", { prompt: "something the operator typed" });
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("delivered");
+    hook("user-prompt-submit", { prompt: "fix the build" });
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
+  });
+
+  test("a typed delivery confirmed after another prompt's UserPromptSubmit stays unstarted", () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "typed");
+    const mark = deliveryMark("api", `${id}.json`);
+    // The deliverer holds the lock while it waits for the input box to clear.
+    expect(acquireDeliverLock("api")).toBe(true);
+    hook("user-prompt-submit", { prompt: "not it" });
+    queuePopId("api", `${id}.json`);
+    markDelivered("api", `${id}.json`, mark);
+    releaseDeliverLock("api");
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("delivered");
+  });
+
+  test("an inbox delivery is started by the prompt that confirmed it", () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "[am · from web] ping");
+    const mark = deliveryMark("api", `${id}.json`);
+    writeFileSync(join(home, "queue", "api", ".delivery.pending"), JSON.stringify({
+      id: `${id}.json`, message: "[am · from web] ping", via: "inbox", sentAt: Date.now(), mark,
+    }));
+    hook("user-prompt-submit", { prompt: "Another Claude session sent a message:\n[am · from web] ping" });
+    const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
+    expect(raw).toMatchObject({ state: "delivered", via: "prompt", startedAt: readAgent("api")!.promptAt });
+    expect(queueDepth("api")).toBe(0);
+    hook("stop");
+    expect(readMessage("api", id)!.state).toBe("done");
   });
 
   test("a record from before prompt claims (no via) still finishes at a later prompt's stop", () => {
     fakeSession("working");
-    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     const file = join(home, "queue", "api", ".messages", `${id}.json`);
     const { via: _via, ...legacy } = JSON.parse(readFileSync(file, "utf8"));
     writeFileSync(file, JSON.stringify(legacy));
@@ -478,10 +523,10 @@ describe("delivery receipts", () => {
 
   test("a turn end the hooks have not marked yet is settled inside the records lock", () => {
     fakeSession("working");
-    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
     const later = (ms: number) => new Date(Date.now() + ms).toISOString();
     writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
+    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
     expect(withSettledRecord("api", id, (r) => r.state)).toBe("done");
     const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
     expect(raw.state).toBe("done");
@@ -491,7 +536,7 @@ describe("delivery receipts", () => {
   test("rename carries the records", async () => {
     const now = new Date().toISOString();
     writeAgent({ name: "alpha", status: "exited", dir: "/tmp", tmuxSession: "agentmgr-alpha", createdAt: now, updatedAt: now });
-    const id = recordImmediateDelivery("alpha", { transcriptIndex: 7, handedAt: now });
+    const id = recordImmediateDelivery("alpha", { transcriptIndex: 7, handedAt: now }, "go");
     await renameAgent("alpha", "omega");
     expect(readMessage("alpha", id)).toBeNull();
     expect(readMessage("omega", id)).toMatchObject({ id, transcriptIndex: 7 });
@@ -565,7 +610,7 @@ describe("messages api", () => {
 
     test("refused before its turn starts; one Esc once started; refused once done", async () => {
       fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
       const early = await interrupt({ messageId: id });
       expect(early.status).toBe(409);
       expect(await early.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered" });
@@ -590,12 +635,22 @@ describe("messages api", () => {
       expect(keys()).toBe("");
     });
 
+    test("an unrelated prompt doesn't make it interruptible", async () => {
+      fakeSession("working");
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "something else" });
+      const res = await interrupt({ messageId: id });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered" });
+      expect(keys()).toBe("");
+    });
+
     test("a turn that ended but is not marked yet is done, and gets no Esc", async () => {
       fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
       const later = (ms: number) => new Date(Date.now() + ms).toISOString();
       writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!)).toBe(id);
+    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
       const res = await interrupt({ messageId: id });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done" });
@@ -623,7 +678,7 @@ describe("messages api", () => {
 
     test("busy while a delivery holds the lock", async () => {
       fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() });
+      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
       expect(acquireDeliverLock("api")).toBe(true);
       fastSleep();
       let t = Date.now();

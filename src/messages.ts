@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { baseDir, ensureDirs, queueDir } from "./paths";
@@ -39,6 +40,7 @@ export interface MessageRecord extends MessageView {
   via?: DeliveryVia;
   // The prompt (UserPromptSubmit) that started its turn; see claimPrompt.
   startedAt?: string;
+  promptKey?: string;
   interruptedAt?: string;
 }
 
@@ -75,7 +77,7 @@ function entryMessageId(entryId: string): string {
 }
 
 function view(record: MessageRecord): MessageView {
-  const { handedAt: _handedAt, via: _via, startedAt: _startedAt, interruptedAt: _interruptedAt, ...rest } = record;
+  const { handedAt: _handedAt, via: _via, startedAt: _startedAt, interruptedAt: _interruptedAt, promptKey: _promptKey, ...rest } = record;
   return rest;
 }
 
@@ -162,17 +164,18 @@ export function deliveryMark(name: string, entryId: string): DeliveryMark | null
 
 const after = (at: string | undefined, since: number) => Date.parse(at ?? "") > since;
 
-type TurnFields = Pick<MessageRecord, "handedAt" | "via" | "startedAt">;
+type TurnFields = Pick<MessageRecord, "handedAt" | "via" | "startedAt" | "promptKey">;
 
 // Whether a turn ending at `end` is one that handled this message: one it
 // was absorbed into, or one its own claimed prompt started. Records from
-// before claims existed (no `via`) take any prompt since the handover.
+// before claims existed (no `via` or `promptKey`) take any prompt since the
+// handover.
 function completesAt(r: TurnFields, agent: AgentState, end: number): boolean {
   if (!r.handedAt) return false;
   const handed = Date.parse(r.handedAt);
   if (!(handed <= end)) return false;
   if (r.via === "absorbed") return true;
-  if (r.via === undefined) return after(agent.promptAt, handed);
+  if (r.via === undefined || r.promptKey === undefined) return after(agent.promptAt, handed);
   return r.startedAt !== undefined && Date.parse(r.startedAt) < end;
 }
 
@@ -181,42 +184,73 @@ function turnEndedSince(agent: AgentState, r: TurnFields): boolean {
   return completesAt(r, agent, Date.parse(agent.statusChangedAt!));
 }
 
-// Each UserPromptSubmit starts the turn of at most one prompt delivery: the
-// oldest delivered one handed over before it and not yet started. A queue of
-// prompts (Codex's thread queue) thus starts in order. Claude can fire
-// UserPromptSubmit twice for one prompt it puts back and resubmits, which
-// starts one more message early; that message then finishes a turn early.
-export function claimPrompt(name: string, promptAt: string): string | null {
+// Matches a UserPromptSubmit to the message it submits without storing the
+// message text.
+export function promptKey(text: string): string {
+  return createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex");
+}
+
+const promptHeld = (records: MessageRecord[], promptAt: string) =>
+  records.some((r) => r.via === "prompt" && r.startedAt === promptAt);
+
+const byHandover = (a: MessageRecord, b: MessageRecord) =>
+  Date.parse(a.handedAt!) - Date.parse(b.handedAt!) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// A UserPromptSubmit whose text is a delivered message's starts that
+// message's turn: a re-submission (Claude puts a prompt back and submits it
+// again) moves the running one's start, otherwise the oldest unstarted one
+// with that text starts. A prompt matching no message starts none.
+export function claimPrompt(name: string, promptAt: string, key: string): string | null {
   if (!existsSync(recordsDir(name))) return null;
   return withFileLock(recordsLock(name), () => {
     const records = listRecords(name);
-    if (records.some((r) => r.via === "prompt" && r.startedAt === promptAt)) return null;
+    if (promptHeld(records, promptAt)) return null;
     const at = Date.parse(promptAt);
-    const next = records
-      .filter((r) => r.state === "delivered" && r.via === "prompt" && !r.startedAt && Date.parse(r.handedAt ?? "") < at)
-      .sort((a, b) => Date.parse(a.handedAt!) - Date.parse(b.handedAt!) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+    const matching = records.filter((r) => r.state === "delivered" && r.via === "prompt" && r.promptKey === key);
+    const running = matching.filter((r) => r.startedAt).sort((a, b) => Date.parse(b.startedAt!) - Date.parse(a.startedAt!))[0];
+    const next = running ?? matching.filter((r) => !r.startedAt && Date.parse(r.handedAt ?? "") < at).sort(byHandover)[0];
     if (!next) return null;
     writeJsonAtomic(recordFile(name, next.id), { ...next, startedAt: promptAt }, { pretty: false });
     return next.id;
   });
 }
 
+function claimFor(name: string, id: string, promptAt: string): void {
+  withFileLock(recordsLock(name), () => {
+    if (promptHeld(listRecords(name), promptAt)) return;
+    const file = recordFile(name, id);
+    const record = readJsonOrNull<MessageRecord>(file);
+    if (record?.state === "delivered" && !record.startedAt) writeJsonAtomic(file, { ...record, startedAt: promptAt }, { pretty: false });
+  });
+}
+
 // A delivery can be confirmed after its UserPromptSubmit already fired, and
 // even after a short turn ended: claim that prompt now, then settle.
-function afterHandover(name: string, id: string): void {
+// `confirmedBy`: the prompt that confirmed an inbox delivery, which wraps the
+// message, so its text doesn't match.
+function afterHandover(name: string, id: string, confirmedBy?: string): void {
   const agent = readAgent(name);
   if (!agent) return;
   const record = readJsonOrNull<MessageRecord>(recordFile(name, id));
   if (record?.state !== "delivered") return;
-  if (record.via === "prompt" && !record.startedAt && agent.promptAt && after(agent.promptAt, Date.parse(record.handedAt ?? ""))) {
-    claimPrompt(name, agent.promptAt);
+  if (record.via === "prompt" && !record.startedAt) {
+    const late = agent.promptAt && record.promptKey && agent.promptKey === record.promptKey
+      && after(agent.promptAt, Date.parse(record.handedAt ?? ""));
+    const by = confirmedBy ?? (late ? agent.promptAt : undefined);
+    if (by) claimFor(name, id, by);
   }
   const now = new Date().toISOString();
   updateRecord(name, id, (cur) => (cur.state === "delivered" && turnEndedSince(agent, cur) ? { ...cur, state: "done", doneAt: now } : null));
 }
 
 // Callers hold the delivery lock and have just popped the entry.
-export function markDelivered(name: string, entryId: string, mark?: DeliveryMark | null, via: DeliveryVia = "prompt"): void {
+export function markDelivered(
+  name: string,
+  entryId: string,
+  mark?: DeliveryMark | null,
+  via: DeliveryVia = "prompt",
+  confirmedBy?: string,
+): void {
   const id = entryMessageId(entryId);
   if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
   const m = mark ?? markNow(readAgent(name));
@@ -235,7 +269,7 @@ export function markDelivered(name: string, entryId: string, mark?: DeliveryMark
           ...(via === "absorbed" ? { startedAt: m.handedAt } : {}),
         },
   );
-  afterHandover(name, id);
+  afterHandover(name, id, confirmedBy);
 }
 
 // Queue a tracked message: the record lands before the entry, under the
@@ -252,6 +286,7 @@ export function queueTrackedMessage(name: string, body: string): string {
       deliveredAt: null,
       doneAt: null,
       transcriptIndex: null,
+      promptKey: promptKey(body),
     });
     try {
       queueAppendLocked(name, body, undefined, `${id}.json`);
@@ -264,7 +299,7 @@ export function queueTrackedMessage(name: string, body: string): string {
 }
 
 // For --now and interrupt sends: take the mark before typing, record after.
-export function recordImmediateDelivery(name: string, mark: DeliveryMark, via: DeliveryVia = "prompt"): string {
+export function recordImmediateDelivery(name: string, mark: DeliveryMark, body: string, via: DeliveryVia = "prompt"): string {
   const id = newMsgId();
   const now = new Date().toISOString();
   createRecord(name, {
@@ -276,6 +311,7 @@ export function recordImmediateDelivery(name: string, mark: DeliveryMark, via: D
     transcriptIndex: mark.transcriptIndex,
     handedAt: mark.handedAt,
     via,
+    promptKey: promptKey(body),
     ...(via === "absorbed" ? { startedAt: mark.handedAt } : {}),
   });
   afterHandover(name, id);

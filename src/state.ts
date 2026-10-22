@@ -61,9 +61,10 @@ export interface AgentState {
   // Set when a turn starts, used to measure the work stint for idle
   // notifications.
   workingSince?: string;
-  // The parent agent's latest prompt hook: delivery receipts use it to tell
-  // which turn received a message.
+  // The parent agent's latest prompt hook, and a hash of its text: delivery
+  // receipts use them to tell which turn received a message.
   promptAt?: string;
+  promptKey?: string;
   // Standing report relationship: this agent keeps `reportTo` posted. Drives
   // the primer briefing and the Stop-hook backstop heads-up.
   reportTo?: string;
