@@ -193,8 +193,10 @@ describe("inbox delivery", () => {
 describe("SessionStart", () => {
   async function sessionStart(env: Record<string, string>, provider: "claude" | "codex" = "claude") {
     writeAgent(agent({ provider, peerInboxSession: "stale" }));
+    // Tests may run inside an am agent whose own launch set AGENTMGR_PEER_INBOX.
+    const { AGENTMGR_PEER_INBOX: _ambient, ...inherited } = process.env;
     const proc = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "index.ts"), "hook", "session-start"], {
-      env: { ...process.env, AGENTMGR_AGENT: "api", ...env },
+      env: { ...inherited, AGENTMGR_AGENT: "api", ...env },
       stdin: new Blob([JSON.stringify({ session_id: "sess-9" })]),
       stdout: "ignore",
       stderr: "ignore",
