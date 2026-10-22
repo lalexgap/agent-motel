@@ -16,13 +16,10 @@ import {
   withMailboxWrite,
 } from "./mailbox";
 
-// Delivery receipts: one record per message a client asked to track (API
-// sends, `am send --json`), so it can follow the message from queued to the
-// end of the turn that handled it without guessing from transcript text.
-// Records live beside the queue (queue/<name>/.messages/<id>.json), so rename,
-// rm and gc carry or collect them with the queue. A queued record's id is
-// also its queue entry's file name (`<id>.json`), which is how the delivery
-// paths find the record for the entry they pop.
+// Delivery receipts for tracked messages (API sends, `am send --json`).
+// Records live in queue/<name>/.messages/, so rename, rm and gc carry them with
+// the queue. A queued record's id is also its queue entry's file name
+// (`<id>.json`), which is how the delivery paths find it.
 
 export type MessageState = "queued" | "delivered" | "done" | "cancelled" | "failed";
 
@@ -70,7 +67,6 @@ function recordsLock(name: string): string {
   return join(baseDir(), "locks", `messages.${name}.lock`);
 }
 
-// The record id for a queue entry id (`<id>.json`, as queueHead returns it).
 function entryMessageId(entryId: string): string {
   return entryId.replace(/\.json$/, "");
 }
@@ -215,8 +211,7 @@ export function queueTrackedMessage(name: string, body: string): string {
   });
 }
 
-// A --now or interrupt send skips the queue: it is delivered the moment it
-// is typed. Take the mark before typing, record after it succeeded.
+// For --now and interrupt sends: take the mark before typing, record after.
 export function recordImmediateDelivery(name: string, mark: DeliveryMark): string {
   const id = newMsgId();
   const now = new Date().toISOString();
@@ -236,8 +231,6 @@ export function immediateMark(agent: AgentState): DeliveryMark {
   return markNow(agent);
 }
 
-// A turn end (stop, the idle notification, session end): every delivered
-// message handed over before it is done.
 export function markTurnEnded(name: string, at: Date = new Date()): void {
   const iso = at.toISOString();
   for (const r of listRecords(name)) {
@@ -246,7 +239,6 @@ export function markTurnEnded(name: string, at: Date = new Date()): void {
   }
 }
 
-// For `am queue --clear`: the entries are about to go, so their receipts say so.
 export function cancelQueuedMessages(name: string): void {
   for (const r of listRecords(name)) {
     if (r.state !== "queued") continue;

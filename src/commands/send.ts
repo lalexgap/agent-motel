@@ -8,8 +8,6 @@ import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
 import { immediateMark, queueTrackedMessage, recordImmediateDelivery } from "../messages";
 
-// `track` asks for a delivery receipt (the API always does; `--json` prints
-// its id instead of the human summary).
 export interface SendResult {
   id: string | null;
 }
