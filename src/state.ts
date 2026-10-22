@@ -225,6 +225,10 @@ export function setExactNamesOnly(value: boolean): void {
   exactNamesOnly = value;
 }
 
+export function isExactNamesOnly(): boolean {
+  return exactNamesOnly;
+}
+
 export function matchAgent(prefix: string): AgentState | null {
   const agents = listAgents();
   const exact = agents.find((agent) => agent.name === prefix);

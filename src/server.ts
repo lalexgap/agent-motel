@@ -21,6 +21,7 @@ import {
   HOST_RE,
   REMOTE_NEW_TIMEOUT_MS,
   RemoteError,
+  ensureExactCapable,
   remoteSpawnDir,
   resolveHost,
   runRemoteAm,
@@ -158,6 +159,10 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
   if (rest.length > 1) return json({ error: "not found" }, 404);
   try {
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
+    if (route === "rename" && method === "POST") {
+      return json({ error: "rename is not supported for remote agents" }, 501);
+    }
+    await ensureExactCapable(host, name);
 
     if (!route && method === "DELETE") {
       await runRemoteAm(host, ["rm", name]);
@@ -202,10 +207,6 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (route === "resume" && method === "POST") {
       await runRemoteAm(host, ["resume", name]);
       return json({ ok: true });
-    }
-
-    if (route === "rename" && method === "POST") {
-      return json({ error: "rename is not supported for remote agents" }, 501);
     }
   } catch (error) {
     return remoteFailure(error);

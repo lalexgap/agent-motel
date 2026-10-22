@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { matchAgent, readAgent, resolveAgent } from "../state";
+import { isExactNamesOnly, matchAgent, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
 import { acquireDeliverLock, deliverNext, enterDelayMs, releaseDeliverLock } from "../deliver";
@@ -50,6 +50,7 @@ export async function sendCommand(
   opts: { now: boolean; from?: string },
 ): Promise<void> {
   const agent = matchAgent(prefix);
+  if (!agent && isExactNamesOnly()) throw new Error(`no agent matches "${prefix}"`);
   if (!agent) return outboxFallback(prefix, message, opts);
   if (!hasSession(agent.tmuxSession)) {
     throw new Error(`agent "${agent.name}" has no live tmux session (status: ${agent.status})`);

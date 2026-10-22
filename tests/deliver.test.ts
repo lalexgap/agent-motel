@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { acquireDeliverLock, beginDeliveryHandoff, deliverNext, endDeliveryHandoff, releaseDeliverLock, __lockPath } from "../src/deliver";
 import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
-import { readAgent, writeAgent } from "../src/state";
+import { readAgent, setExactNamesOnly, writeAgent } from "../src/state";
+import { outboxList } from "../src/outbox";
 import { sendCommand } from "../src/commands/send";
 import { sendsInWindow } from "../src/comms";
 
@@ -256,5 +257,15 @@ describe("delivery verification", () => {
     finally { console.log = log; }
     expect(messages[0]).toStartWith('queued for "api"');
     expect(queueDepth("api")).toBe(1);
+  });
+});
+
+describe("exact names only", () => {
+  afterEach(() => setExactNamesOnly(false));
+
+  test("a send to a missing agent errors instead of queueing in the outbox", async () => {
+    setExactNamesOnly(true);
+    await expect(sendCommand("ghost", "hi", { now: false })).rejects.toThrow(/no agent matches "ghost"/);
+    expect(outboxList().live).toEqual([]);
   });
 });

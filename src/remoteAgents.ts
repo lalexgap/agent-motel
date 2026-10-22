@@ -24,10 +24,12 @@ type ShRunner = (host: string, command: string, opts?: { timeoutMs?: number }) =
 
 let amRunner: AmRunner = sshAmAsync;
 let shRunner: ShRunner = sshRunAsync;
+const exactCapableHosts = new Set<string>();
 
 export function setRemoteRunnersForTests(runners: { am?: AmRunner; sh?: ShRunner } = {}): void {
   amRunner = runners.am ?? sshAmAsync;
   shRunner = runners.sh ?? sshRunAsync;
+  exactCapableHosts.clear();
 }
 
 // null = this machine; a string = a configured remote; undefined = unknown.
@@ -59,6 +61,15 @@ export async function runRemoteAm(
   if (/unknown command/.test(stderr)) throw new RemoteError(`remote am too old on ${host} (${stderr})`, 409);
   if (/no agent matches|no agents exist|no local agent/.test(stderr)) throw new RemoteError(stderr, 404);
   throw new RemoteError(stderr || `am ${args[0]} failed on ${host} (exit ${result.exitCode})`, 409);
+}
+
+// An older remote am silently ignores --local/--exact and would prefix-match
+// (or fleet-forward) the name, so prove `__detail` exists — it ships with
+// --exact — before the first agent operation on each host.
+export async function ensureExactCapable(host: string, name: string): Promise<void> {
+  if (exactCapableHosts.has(host)) return;
+  await runRemoteAm(host, ["__detail", name]);
+  exactCapableHosts.add(host);
 }
 
 export async function runRemoteJson<T>(host: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<T> {

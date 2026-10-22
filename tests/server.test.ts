@@ -358,6 +358,7 @@ describe("remote agents api (host:name)", () => {
     expect(await (await post("/api/agents/laptop:api/messages", { text: "steer", mode: "now" })).json()).toEqual({ ok: true, mode: "now" });
     await post("/api/agents/laptop:api/messages", { text: "stop that", mode: "interrupt" });
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["send", "api", "-", "--local", "--exact"], "hi `there`"],
       [["send", "api", "-", "--now", "--local", "--exact"], "steer"],
       [["interrupt", "api", "-", "--local", "--exact"], "stop that"],
@@ -374,7 +375,8 @@ describe("remote agents api (host:name)", () => {
     const body = (await (await fetch(url("/api/agents/laptop:api/transcript?after=1"), auth())).json()) as any;
     expect(body.total).toBe(3);
     expect(body.entries.map((e: any) => e.index)).toEqual([1, 2]);
-    expect(calls[0]!.args).toEqual(["transcript", "api", "--json", "--local", "--exact"]);
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail", "transcript"]);
+    expect(calls[1]!.args).toEqual(["transcript", "api", "--json", "--local", "--exact"]);
     expect((await fetch(url("/api/agents/laptop:api/transcript?after=-1"), auth())).status).toBe(400);
   });
 
@@ -392,6 +394,7 @@ describe("remote agents api (host:name)", () => {
     await post("/api/agents/laptop:api/resume");
     await fetch(url("/api/agents/laptop:api"), auth({ method: "DELETE" }));
     expect(calls.map((c) => [c.args, c.stdin])).toEqual([
+      [["__detail", "api", "--local", "--exact"], undefined],
       [["interrupt", "api", "--local", "--exact"], undefined],
       [["interrupt", "api", "-", "--local", "--exact"], "new plan"],
       [["stop", "api", "--local", "--exact"], undefined],
@@ -399,6 +402,17 @@ describe("remote agents api (host:name)", () => {
       [["rm", "api", "--local", "--exact"], undefined],
     ]);
     expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);
+  });
+
+  test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 1, stderr: 'am: unknown command "__detail" — see `am help`' }
+        : { exitCode: 0 };
+    const res = await fetch(url("/api/agents/laptop:a"), auth({ method: "DELETE" }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toContain("remote am too old");
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
   });
 
   test("this host's own name and \"local\" stay local", async () => {
