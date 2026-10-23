@@ -58,12 +58,15 @@ function handedOverSinceIdle(agent: AgentState, status: string): boolean {
 }
 
 // Run `act` only on an agent with nothing to do: idle, nothing queued, no
-// delivered message still in its turn. Checked and run under the delivery and
+// delivered message still in its turn. Checked under the delivery and
 // producer locks, so no delivery or enqueue can land in between. A mailbox
 // still busy at the deadline is a delivery in progress, so busy. `act` runs
-// holding both locks, so it must not deliver or enqueue itself.
+// holding the delivery lock, so it must not deliver; it also holds the
+// producer lock, so it must not enqueue, unless `releaseProducer` lets
+// enqueues back in before it runs.
 export async function runIfIdle<T>(
   agent: AgentState,
+  opts: { releaseProducer?: boolean },
   act: (current: AgentState) => T,
 ): Promise<{ ok: true; value: T } | IdleRefusal> {
   const name = agent.name;
@@ -71,6 +74,7 @@ export async function runIfIdle<T>(
     if (acquireDeliverLock(name)) {
       try {
         if (acquireProducerLock(name)) {
+          let producerHeld = true;
           try {
             const current = readAgent(name) ?? agent;
             const status = displayStatus(current);
@@ -86,9 +90,13 @@ export async function runIfIdle<T>(
             if (hasUnfinishedDelivery(name)) {
               return { ok: false, error: `agent "${name}" has a delivered message whose turn has not finished`, reason: "in_turn" };
             }
+            if (opts.releaseProducer) {
+              releaseProducerLock(name);
+              producerHeld = false;
+            }
             return { ok: true, value: act(current) };
           } finally {
-            releaseProducerLock(name);
+            if (producerHeld) releaseProducerLock(name);
           }
         }
       } finally {
@@ -102,7 +110,7 @@ export async function runIfIdle<T>(
 
 export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
   try {
-    const result = await runIfIdle(agent, (current) => stopAgent(current));
+    const result = await runIfIdle(agent, {}, (current) => stopAgent(current));
     return result.ok ? { ok: true } : result;
   } catch (error) {
     return { ok: false, error: (error as Error).message, reason: "busy" };

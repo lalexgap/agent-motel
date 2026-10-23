@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { restartAgent } from "../src/commands/restart";
+import { restartAgent, restartIfIdle } from "../src/commands/restart";
 import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, releaseDeliverLock } from "../src/deliver";
-import { queueAppend, queueClear, queueList, queuePopId } from "../src/queue";
+import { queueAppend, queueAppendForAgent, queueClear, queueList, queuePopId } from "../src/queue";
 import { readAgent, updateAgentStatus, writeAgent, type AgentState } from "../src/state";
 import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
 import { SelectionError } from "../src/catalog";
@@ -219,6 +219,37 @@ describe("restart with a model change", () => {
     expect(existsSync(join(home, "launch"))).toBe(false);
     expect(readAgent("api")).toMatchObject({ model: "gpt-6-luna", status: "working" });
     expect(readAgent("api")!.effort).toBeUndefined();
+  });
+
+  test("a model change made while waiting for the lock is re-checked against the catalog", async () => {
+    useCodex({ model: "gpt-6.1-sol" });
+    const spawn = spawnSpy.getMockImplementation()!;
+    spawnSpy.mockImplementation((cmd: any, opts?: any) => {
+      const result = spawn(cmd, opts);
+      // A concurrent restart lands after the early check: luna has no high effort.
+      if (cmd[1] === "debug") writeAgent({ ...readAgent("api")!, model: "gpt-6-luna" });
+      return result;
+    });
+    await expect(restartAgent("api", { effort: "high" })).rejects.toThrow(/unknown codex effort "high" for gpt-6-luna/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")!.effort).toBeUndefined();
+  });
+
+  test("an enqueue during an ifIdle restart is not refused", async () => {
+    const agent = readAgent("api")!;
+    updateAgentStatus(agent, "idle");
+    writeAgent(agent);
+    const spawn = spawnSpy.getMockImplementation()!;
+    let enqueued: unknown;
+    spawnSpy.mockImplementation((cmd: any, opts?: any) => {
+      if (cmd[1] === "respawn-pane") {
+        try { enqueued = queueAppendForAgent("api", "heads-up"); } catch (error) { enqueued = error; }
+      }
+      return spawn(cmd, opts);
+    });
+    expect(await restartIfIdle("api", { model: "opus" })).toEqual({ ok: true, model: "opus", effort: null });
+    expect(typeof enqueued).toBe("string");
+    expect(queueList("api").map((e) => e.message)).toEqual(["heads-up"]);
   });
 
   test("a queued message survives the restart, receipt still queued", async () => {

@@ -39,11 +39,11 @@ function nextSelection(agent: AgentState, opts: RestartOpts): Selection {
 }
 
 // A change is checked against the provider's catalog as `am new` checks it.
-function validateChange(agent: AgentState, opts: RestartOpts, warn?: (message: string) => void): void {
+function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?: boolean; warn?: (message: string) => void } = {}): void {
   if (opts.model === undefined && opts.effort === undefined) return;
   const provider = agentProvider(agent);
   // Re-probed: a long-lived `am serve` must see a provider upgrade.
-  checkSelection(providerCatalog(provider, { refresh: true }), nextSelection(agent, opts), warn);
+  checkSelection(providerCatalog(provider, { refresh: check.refresh }), nextSelection(agent, opts), check.warn);
 }
 
 // Caller holds the lifecycle and delivery locks.
@@ -53,6 +53,8 @@ function restartLocked(agent: AgentState, opts: RestartOpts): RestartResult {
   const executable = Bun.which(provider, { PATH: process.env.PATH });
   if (!executable) throw new Error(`${provider} executable not found in PATH`);
   if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
+  // Re-checked on the re-read agent: a concurrent restart may have changed the half this one keeps.
+  validateChange(agent, opts);
   if (provider === "codex") ensureCodexHooks();
   const previous = { model: agent.model, effort: agent.effort, status: agent.status, reason: agent.statusReason };
   // Saved on the agent, so every later resume launches with them too.
@@ -93,7 +95,7 @@ function lifecycleBusy(name: string): string {
 export async function restartAgent(prefix: string, opts: RestartOpts = {}): Promise<RestartResult> {
   await ensureDaemon();
   let agent = resolveAgent(prefix);
-  validateChange(agent, opts, (message) => console.error(message));
+  validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
   if (!acquireLifecycleLock(agent.name)) throw new Error(lifecycleBusy(agent.name));
   try {
     agent = currentLifecycleAgent(agent);
@@ -108,15 +110,13 @@ export async function restartAgent(prefix: string, opts: RestartOpts = {}): Prom
   }
 }
 
-// Restart only an agent with nothing to do, under the same checks and locks
-// as `am stop --if-idle`.
+// Restart only an agent with nothing to do, under the same checks as
+// `am stop --if-idle`.
 export async function restartIfIdle(prefix: string, opts: RestartOpts = {}): Promise<({ ok: true } & RestartResult) | IdleRefusal> {
-  // The restart holds the producer lock, so it can't queue a follow-up.
-  if (opts.message) throw new Error("a restart --if-idle can't carry a message (-m)");
   await ensureDaemon();
   const agent = resolveAgent(prefix);
-  validateChange(agent, opts, (message) => console.error(message));
-  const result = await runIfIdle(agent, (current) => {
+  validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
+  const result = await runIfIdle(agent, { releaseProducer: true }, (current) => {
     if (!acquireLifecycleLock(current.name)) return null;
     try {
       return restartLocked(currentLifecycleAgent(current), opts);
