@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentProvider, agentSessionId, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
+import { agentProvider, agentSessionId, noteHandoff, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked } from "./queue";
 import { capturePane, hasSession, sendClearLine, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
@@ -296,6 +296,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       if (pending?.id !== head.id || pending.message !== head.message || !looksUnsubmitted(before, head.message, provider)) {
         return { status: "queued", reason: "composing" };
       }
+      noteHandoff(name);
       sendEnter(agent.tmuxSession);
     } else {
       // Persist before typing so a process crash with the text in the input box
@@ -304,6 +305,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       mark = deliveryMark(name, head.id) ?? undefined;
       writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, mark });
       noteTypedAfterEscape(name, head.message);
+      noteHandoff(name);
       sendText(agent.tmuxSession, head.message, { enterDelayMs: enterDelayMs(agent, head.message) });
       writeJsonAtomic(markerPath, { id: head.id, message: head.message, incarnation, typed: true, mark });
     }
@@ -600,6 +602,7 @@ async function deliverToInbox(
   const markerPath = pendingPath(name);
   const mark = deliveryMark(name, head.id) ?? undefined;
   if (!inbox.confirm) {
+    noteHandoff(name);
     try {
       await inbox.send();
     } catch {
@@ -620,6 +623,7 @@ async function deliverToInbox(
     operatorTag: inbox.operatorTag,
     mark,
   });
+  noteHandoff(name);
   try {
     await inbox.send();
   } catch {

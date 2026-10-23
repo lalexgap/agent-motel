@@ -8,6 +8,7 @@ import { confirmInboxDelivery, deliverNext, finishConfirmedDelivery, pendingDeli
 import { ensureDirs, queueDir } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { stopIfIdle } from "../src/commands/rm";
 import { promptKey, queueTrackedMessage, readMessage, recordImmediateDelivery } from "../src/messages";
 
 let home: string;
@@ -319,6 +320,22 @@ describe("operator inbox receipts", () => {
     expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${id}.json` });
     expect(raw(id).startedAt).toBe(readAgent("api")!.promptAt);
     expect(raw(older).startedAt).toBeUndefined();
+  }, 20_000);
+
+  test("an untracked inbox handover, peer or operator, refuses the stop until the agent's next idle", async () => {
+    const handedOver = { ok: false, reason: "in_turn", error: 'agent "api" was handed a message it has not started on yet' } as const;
+    await listen(true);
+    for (const message of ["[am · from web] ping", "operator note"]) {
+      writeAgent({ ...readAgent("api")!, status: "idle", lastHandoffAt: undefined, statusChangedAt: undefined });
+      const id = queueAppend("api", message);
+      expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+      expect(typed()).toBe(false);
+      expect(await stopIfIdle(readAgent("api")!)).toEqual(handedOver);
+      hook("user-prompt-submit", { prompt: framed(message) });
+      hook("stop");
+      expect(await stopIfIdle(readAgent("api")!)).toEqual({ ok: true });
+      expect(readAgent("api")!.status).toBe("exited");
+    }
   }, 20_000);
 
   test("the typed fallback for an operator message keeps its receipt", async () => {

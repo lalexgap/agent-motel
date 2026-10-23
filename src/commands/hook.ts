@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { agentProvider, agentSessionId, listAgents, matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
+import { agentProvider, agentSessionId, listAgents, matchAgent, noteHandoff, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
 import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
 import {
   acquireDeliverLock,
@@ -232,6 +232,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
+    if (pending.length) noteHandoff(name, true);
     const out = buildInboxOutput(pending, hookEventName, notes);
     if (out) process.stdout.write(out);
   } finally {
@@ -257,6 +258,7 @@ function stopGate(name: string): string | null {
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
+    if (pending.length) noteHandoff(name, true);
     return buildStopGate(pending);
   } finally {
     releaseDeliverLock(name);

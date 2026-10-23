@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { isExactNamesOnly, matchAgent, readAgent, resolveAgent } from "../state";
+import { isExactNamesOnly, matchAgent, noteHandoff, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendText } from "../tmux";
 import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, noteTypedAfterEscape, releaseDeliverLock } from "../deliver";
@@ -96,6 +96,7 @@ export async function sendCommand(
     try {
       if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
       const mark = track ? immediateMark(agent) : null;
+      noteHandoff(agent.name);
       sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
       if (mark) id = recordImmediateDelivery(agent.name, mark, body);
       if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
@@ -139,6 +140,7 @@ export async function interruptCommand(
     await Bun.sleep(400);
     const mark = opts.track || opts.json ? immediateMark(agent) : null;
     noteTypedAfterEscape(agent.name, att.body);
+    noteHandoff(agent.name);
     sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
     if (mark) id = recordImmediateDelivery(agent.name, mark, att.body);
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });

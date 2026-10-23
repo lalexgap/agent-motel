@@ -455,6 +455,28 @@ describe("stop ifIdle", () => {
     expect((await stop("missing", { ifIdle: true })).status).toBe(404);
   });
 
+  test("a handover within the grace before the idle transition still refuses; one before it does not", async () => {
+    const idleAt = Date.now() - 60_000;
+    const at = (ms: number) => new Date(idleAt + ms).toISOString();
+    liveAgent("grace");
+    writeAgent({ ...readAgent("grace")!, promptAt: at(-10_000), lastHandoffAt: at(-1_500), statusChangedAt: at(0) });
+    const res = await stop("grace", { ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'agent "grace" was handed a message it has not started on yet', reason: "in_turn" });
+    expect(live.has("agentmgr-grace")).toBe(true);
+    writeAgent({ ...readAgent("grace")!, lastHandoffAt: at(-2_500) });
+    expect((await stop("grace", { ifIdle: true })).status).toBe(200);
+  });
+
+  test("a turn shorter than the grace, prompted after the handover, does not block the stop", async () => {
+    const handoffAt = Date.now() - 60_000;
+    const at = (ms: number) => new Date(handoffAt + ms).toISOString();
+    liveAgent("short");
+    writeAgent({ ...readAgent("short")!, lastHandoffAt: at(0), promptAt: at(100), statusChangedAt: at(500) });
+    expect((await stop("short", { ifIdle: true })).status).toBe(200);
+    expect(readAgent("short")!.status).toBe("exited");
+  });
+
   test("detail and health advertise stopIfIdle", async () => {
     liveAgent("cap");
     expect(((await (await fetch(url("/api/agents/cap"), auth())).json()) as any).stopIfIdle).toBe(true);
