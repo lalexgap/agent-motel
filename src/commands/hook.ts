@@ -574,7 +574,10 @@ export function retiredPermissions(
     const call = { tool: payload.tool_name, input: payload.tool_input ?? {} };
     const agentId = subagentIdOf(payload);
     const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
-    const ranViaApi = (r: PermissionRecord) => r.state === "applied" && !r.claude?.ranAt;
+    const ranViaApi = (r: PermissionRecord) =>
+      r.state === "applied" &&
+      !r.claude?.ranAt &&
+      (r.decisions[r.optionId ?? ""] as { behavior?: string } | undefined)?.behavior === "allow";
     const candidates = listPermissions().filter(
       (r) =>
         (r.state === "pending" || ranViaApi(r)) &&

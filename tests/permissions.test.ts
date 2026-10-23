@@ -387,12 +387,21 @@ describe("retiring claude requests from other hooks", () => {
   test("an API-allowed call running doesn't retire its identical pending sibling", () => {
     const older = call();
     const allowed = call();
-    updatePermission(allowed.id, (r) => ((r.state = "applied"), true));
+    updatePermission(allowed.id, (r) => ((r.state = "applied"), (r.optionId = "allow"), true));
     expect(post()).toBe(0);
     expect(readPermission(older.id)!.state).toBe("pending");
     expect(readPermission(allowed.id)!.claude?.ranAt).toBeDefined();
     expect(post()).toBe(1);
     expect(readPermission(older.id)!.state).toBe("stale");
+  });
+
+  test("an API-denied call never runs, so it doesn't absorb a later identical call's PostToolUse", () => {
+    const denied = call();
+    updatePermission(denied.id, (r) => ((r.state = "applied"), (r.optionId = "deny"), true));
+    const later = call();
+    expect(post()).toBe(1);
+    expect(readPermission(later.id)!.state).toBe("stale");
+    expect(readPermission(denied.id)!.claude?.ranAt).toBeUndefined();
   });
 
   test("a call that names itself retires only its own request", () => {
