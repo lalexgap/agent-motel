@@ -1,5 +1,16 @@
-import { resolve } from "node:path";
-import { agentProvider, agentSessionId, listAgents, matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
+import { statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import {
+  agentNamesAndAliases,
+  agentProvider,
+  agentSessionId,
+  listAgents,
+  matchAgent,
+  updateAgentStatus,
+  writeAgent,
+  type AgentState,
+  type AgentStatus,
+} from "../state";
 import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
 import {
   acquireDeliverLock,
@@ -22,6 +33,21 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, recordComms, shouldReport } from "../comms";
+import {
+  claimAnswer,
+  claudeDecisionOutput,
+  claudePermissionOptions,
+  claudePermissionSummary,
+  claudeToolCallStates,
+  createPermission,
+  listPermissions,
+  readPermission,
+  resolvePending,
+  sameToolCall,
+  stalePermissions,
+  updatePermission,
+  type PermissionRecord,
+} from "../permissions";
 import {
   closeOpenSubagents,
   isBackgroundSubagent,
@@ -138,13 +164,53 @@ export function formatInbox(messages: string[]): string {
 // its turn to end — both honor hookSpecificOutput.additionalContext.
 export type SurfaceEvent = "UserPromptSubmit" | "PostToolUse";
 
+// One message for the delivery line: who sent it and a one-line preview.
+// The operator marker and verification-note text are stripped, so a display
+// line can never read as am vouching for anything. Pure.
+export function deliveryPreview(message: string, max = 80): string {
+  let sender = "operator";
+  let body = message;
+  const peer = /^\[am · from ([^\]]+)\] /.exec(body);
+  if (peer) {
+    sender = `from ${peer[1]}`;
+    body = body.slice(peer[0].length);
+  } else {
+    body = body.replace(/^\[am · operator message ?[^\]]*\] /, "");
+  }
+  body = body
+    .replace(/\[am · operator message ?[^\]]*\]/g, "")
+    .replaceAll("[am] Verified operator message", "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (body.length > max) body = body.slice(0, max - 1).trimEnd() + "…";
+  // Quoted as JSON, so a quote in the body can't close it and fake an entry.
+  return `${sender}: ${JSON.stringify(body)}`;
+}
+
+// The display-only line Claude Code shows in the pane when a hook hands
+// messages over through context, which the TUI otherwise never renders. Null
+// when nothing was delivered. Pure.
+export function deliveryLine(messages: string[]): string | null {
+  if (messages.length === 0) return null;
+  const n = messages.length;
+  return `am: delivered ${n} message${n === 1 ? "" : "s"} — ${messages.map((m) => deliveryPreview(m)).join("; ")}`;
+}
+
 // The JSON these hooks emit to inject context, or null if there's nothing to
-// surface. Pure, for testing.
-export function buildInboxOutput(messages: string[], hookEventName: SurfaceEvent, notes: string[] = []): string | null {
+// surface. `shown` is everything this hook delivered (the queued messages,
+// plus an inbox delivery that arrived as the prompt itself). Pure, for testing.
+export function buildInboxOutput(
+  messages: string[],
+  hookEventName: SurfaceEvent,
+  notes: string[] = [],
+  shown: string[] = messages,
+): string | null {
   const context = [...notes, ...(messages.length ? [formatInbox(messages)] : [])];
-  if (context.length === 0) return null;
+  const line = deliveryLine(shown);
+  if (context.length === 0 && !line) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName, additionalContext: context.join("\n\n") },
+    ...(line ? { systemMessage: line } : {}),
+    ...(context.length ? { hookSpecificOutput: { hookEventName, additionalContext: context.join("\n\n") } } : {}),
   });
 }
 
@@ -166,14 +232,15 @@ export function forgedOperatorNote(prompt: string, verifiedTag: string | null): 
 // The JSON a Stop hook emits to BLOCK going idle when peer messages are waiting:
 // `{decision:"block", reason}` makes the agent keep going and handle them first,
 // so it never goes idle sitting on unread mail. Null when there's nothing. Pure.
-export function buildStopGate(messages: string[]): string | null {
+export function buildStopGate(messages: string[], display = true): string | null {
   if (messages.length === 0) return null;
   const n = messages.length;
   const reason =
     `[am inbox] Before you finish: you have ${n} message${n === 1 ? "" : "s"} to handle first ` +
     `(arrived while you were busy).\n\n${messages.join("\n")}\n\n` +
     `${SENDER_KEY} Respond or act on these, then you can stop.`;
-  return JSON.stringify({ decision: "block", reason });
+  const line = display ? deliveryLine(messages) : null;
+  return JSON.stringify({ decision: "block", reason, ...(line ? { systemMessage: line } : {}) });
 }
 
 // Receipt bookkeeping must never fail a hook. One drain hands every message
@@ -211,9 +278,19 @@ function drainReceipts(name: string) {
 // after every tool. Drains under the delivery lock so it never races the
 // idle-drain (deliverNext): atomic + lock-guarded means each message is consumed
 // exactly once whether it's surfaced here or typed in on idle.
-function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[] = []): void {
+// `received`: messages that reached the agent some other way this hook
+// (an inbox delivery as the prompt itself), for the pane's delivery line.
+// `display` is false for Codex, which renders systemMessage as a warning.
+function surfaceInbox(
+  name: string,
+  hookEventName: SurfaceEvent,
+  opts: { notes?: string[]; received?: string[]; display: boolean },
+): void {
+  const notes = opts.notes ?? [];
+  const received = opts.display ? (opts.received ?? []) : [];
+  const shown = (pending: string[]) => (opts.display ? [...received, ...pending] : []);
   const emitNotes = () => {
-    const out = buildInboxOutput([], hookEventName, notes);
+    const out = buildInboxOutput([], hookEventName, notes, received);
     if (out) process.stdout.write(out);
   };
   if (queueDepth(name) === 0) return emitNotes(); // nothing pending — avoid lock churn per tool call
@@ -232,7 +309,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
-    const out = buildInboxOutput(pending, hookEventName, notes);
+    const out = buildInboxOutput(pending, hookEventName, notes, shown(pending));
     if (out) process.stdout.write(out);
   } finally {
     releaseDeliverLock(name);
@@ -241,7 +318,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
 
 // At a Stop boundary: drain pending peer messages and return the block JSON, or
 // null if there's nothing (or another delivery is mid-flight — let it handle).
-function stopGate(name: string): string | null {
+function stopGate(name: string, display: boolean): string | null {
   if (!acquireDeliverLock(name)) return null;
   try {
     const pending: string[] = [];
@@ -257,7 +334,7 @@ function stopGate(name: string): string | null {
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
-    return buildStopGate(pending);
+    return buildStopGate(pending, display);
   } finally {
     releaseDeliverLock(name);
   }
@@ -363,6 +440,180 @@ export function resolveDaemonHookAgent(
   );
 }
 
+// --- Claude permission requests ---------------------------------------------
+
+export interface PermissionWaitOptions {
+  waitMs: number;
+  pollMs?: number;
+  write?: (out: string) => void;
+  notify?: (agent: string, event: string) => Promise<unknown>;
+}
+
+// Claude's PermissionRequest hook runs while its own dialog is already on
+// screen, and keeps running if the pane answers first. So: record the
+// request, then wait a bounded time for an `am serve` client to answer it.
+// An answer goes back as Claude's decision; anything else (a pane answer, the
+// turn ending, the deadline) prints nothing, which leaves Claude's normal
+// prompt in charge. Never throws.
+export async function awaitPermissionDecision(
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  opts: PermissionWaitOptions,
+): Promise<void> {
+  const tool = typeof payload.tool_name === "string" ? payload.tool_name : null;
+  if (!tool || !(opts.waitMs > 0)) return;
+  const write = opts.write ?? ((out: string) => process.stdout.write(out));
+  const ping = (event: string) => (opts.notify ?? notifyDaemon)(agent.name, event).catch(() => undefined);
+  const input = payload.tool_input ?? {};
+  const agentId = subagentIdOf(payload);
+  const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
+  const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : undefined;
+  // A subagent's calls go to its own transcript, beside the parent's.
+  const callTranscript =
+    transcriptPath && agentId
+      ? join(dirname(transcriptPath), basename(transcriptPath, ".jsonl"), "subagents", `agent-${agentId}.jsonl`)
+      : transcriptPath;
+  const callStates = () => (callTranscript ? claudeToolCallStates(callTranscript, tool, input) : { uses: [], answered: [] });
+  // Claude writes the tool_use before it asks, so this call is one already
+  // there without a result; an identical call made later is someone else's.
+  const initial = callStates();
+  // Without a tool_use_id, identical pending calls are indistinguishable, so
+  // this one counts as answered only once all of them are.
+  const unanswered = initial.uses.filter((id) => !initial.answered.includes(id));
+  const candidates = new Set(toolUseId && unanswered.includes(toolUseId) ? [toolUseId] : unanswered);
+  const { options, decisions } = claudePermissionOptions(payload.permission_suggestions);
+  const record = createPermission({
+    agent: agent.name,
+    provider: "claude",
+    tool,
+    summary: claudePermissionSummary(tool, input),
+    input,
+    options,
+    decisions,
+    expiresAt: new Date(Date.now() + opts.waitMs).toISOString(),
+    pid: process.pid,
+    claude: {
+      toolInput: input,
+      ...(callTranscript ? { transcriptPath: callTranscript } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(toolUseId ? { toolUseId } : {}),
+    },
+  });
+  await ping("permission-request");
+
+  const stop = () => {
+    try {
+      resolvePending(record.id, "stale", "the hook was stopped");
+    } finally {
+      process.exit(0);
+    }
+  };
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+  for (const signal of signals) process.on(signal, stop);
+  try {
+    let lastSize = -1;
+    for (;;) {
+      const current = readPermission(record.id);
+      if (!current) return;
+      if (current.state === "answered") {
+        const claimed = claimAnswer(record.id);
+        if (claimed?.optionId) {
+          write(claudeDecisionOutput(claimed.decisions[claimed.optionId]));
+          await ping("permission-resolved");
+          return;
+        }
+        continue;
+      }
+      if (current.state !== "pending") return;
+      if (callTranscript && candidates.size > 0) {
+        let size = lastSize;
+        try {
+          size = statSync(callTranscript).size;
+        } catch {
+          // not written yet
+        }
+        if (size !== lastSize) {
+          lastSize = size;
+          const answered = new Set(callStates().answered);
+          if ([...candidates].every((id) => answered.has(id))) {
+            if (resolvePending(record.id, "stale", "answered in the pane")) await ping("permission-resolved");
+            return;
+          }
+        }
+      }
+      if (current.expiresAt && Date.now() >= Date.parse(current.expiresAt)) {
+        if (resolvePending(record.id, "expired", "nobody answered in time")) await ping("permission-resolved");
+        return;
+      }
+      await Bun.sleep(opts.pollMs ?? 250);
+    }
+  } finally {
+    for (const signal of signals) process.off(signal, stop);
+  }
+}
+
+// The subagent a hook fires in; "" for the main agent.
+function subagentIdOf(payload: Record<string, unknown>): string {
+  return typeof payload.agent_id === "string" ? payload.agent_id : "";
+}
+
+// A Claude hook that shows a pending request no longer is: the same call ran
+// (PostToolUse), or the turn it belonged to is over.
+export function retiredPermissions(
+  event: string,
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  effects: HookEffects,
+): number {
+  const names = agentNamesAndAliases(agent);
+  if (event === "post-tool-use" && typeof payload.tool_name === "string") {
+    // One call ran, so one request goes: this exact call's when both name
+    // it, else an identical one in the same (sub)agent — first one the API
+    // allowed that hasn't run yet, then the oldest pending. Other identical
+    // calls may still be waiting on theirs.
+    const call = { tool: payload.tool_name, input: payload.tool_input ?? {} };
+    const agentId = subagentIdOf(payload);
+    const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
+    const ranViaApi = (r: PermissionRecord) =>
+      r.state === "applied" &&
+      !r.claude?.ranAt &&
+      (r.decisions[r.optionId ?? ""] as { behavior?: string } | undefined)?.behavior === "allow";
+    const candidates = listPermissions().filter(
+      (r) =>
+        (r.state === "pending" || ranViaApi(r)) &&
+        r.provider === "claude" &&
+        names.includes(r.agent) &&
+        (r.claude?.agentId ?? "") === agentId &&
+        sameToolCall(call, { tool: r.tool, input: r.claude?.toolInput ?? r.input }),
+    );
+    const exact = toolUseId ? candidates.filter((r) => r.claude?.toolUseId === toolUseId) : [];
+    const matching = exact.length ? exact : candidates.filter((r) => !toolUseId || !r.claude?.toolUseId);
+    const ordered = [...matching.filter(ranViaApi), ...matching.filter((r) => r.state === "pending")];
+    for (const record of ordered) {
+      if (record.state === "applied") {
+        const marked = updatePermission(record.id, (r) => {
+          if (!ranViaApi(r) || !r.claude) return false;
+          r.claude.ranAt = new Date().toISOString();
+          return true;
+        });
+        if (marked?.claude?.ranAt) return 0;
+        continue;
+      }
+      if (resolvePending(record.id, "stale", "answered in the pane")) return 1;
+    }
+    return 0;
+  }
+  if (isTurnBoundary(event, payload, effects)) {
+    // The main agent's turn ending ends its foreground subagents' calls too,
+    // but not a background subagent's, which runs on past it.
+    const sessionBoundary = event === "session-start" || event === "session-end";
+    const outlives = (r: PermissionRecord) =>
+      !sessionBoundary && !!r.claude?.agentId && isBackgroundSubagent(agent, r.claude.agentId);
+    return stalePermissions(names, "the turn ended", (r) => r.provider === "claude" && !outlives(r)).length;
+  }
+  return 0;
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
@@ -391,7 +642,7 @@ export async function hookCommand(event: string): Promise<void> {
   // them into the pane (no Enter-swallow); the idle-drain still covers agents
   // that are already idle when a message arrives.
   if (event === "stop" && !fromSubagent) {
-    const gate = stopGate(name);
+    const gate = stopGate(name, agentProvider(agent) === "claude");
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed
       // in between, so refresh the canonical state before writing.
@@ -450,6 +701,16 @@ export async function hookCommand(event: string): Promise<void> {
   writeAgent(agent);
   if (event === "user-prompt-submit" && !fromSubagent) releaseEscapeHold(name);
 
+  if (agentProvider(agent) === "claude" && event !== "permission-request") {
+    let retired = 0;
+    try {
+      retired = retiredPermissions(event, agent, payload, effects);
+    } catch {
+      // bookkeeping only; the request expires on its own
+    }
+    if (retired > 0) await notifyDaemon(name, "permission-resolved");
+  }
+
   // A turn ended: delivery receipts for messages it took are done. A blocked
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
   // session start. A session end finishes no turn of its own.
@@ -465,10 +726,15 @@ export async function hookCommand(event: string): Promise<void> {
   // its queue and inject them into a conversation the operator can't see or
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
+    const display = agentProvider(agent) === "claude";
     if (event === "user-prompt-submit") {
       const tag = inbox ? confirmInboxDelivery(name, prompt, agent.promptAt) : null;
       const forged = forgedOperatorNote(prompt, tag);
-      surfaceInbox(name, "UserPromptSubmit", [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])]);
+      surfaceInbox(name, "UserPromptSubmit", {
+        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])],
+        received: inbox ? [inbox.content] : [],
+        display,
+      });
       // A confirmed inbox delivery's receipt claims this prompt itself (the
       // deliverer passes promptAt along); claiming here too could start a
       // different record with the same text.
@@ -479,7 +745,7 @@ export async function hookCommand(event: string): Promise<void> {
         });
       }
     }
-    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse", { display });
   }
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
@@ -511,6 +777,16 @@ export async function hookCommand(event: string): Promise<void> {
   }
 
   if (effects.notify) notify(`am: ${name}`, effects.notify);
+
+  // Last, so everything above is recorded before the wait.
+  if (event === "permission-request" && agentProvider(agent) === "claude") {
+    try {
+      await awaitPermissionDecision(agent, payload, { waitMs: loadConfig().permissionWaitSeconds * 1000 });
+    } catch {
+      // no decision: Claude's own prompt carries on
+    }
+    return;
+  }
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);

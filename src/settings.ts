@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { ensureDirs, hookSettingsFile } from "./paths";
 import { writeJsonAtomic } from "./fsutil";
+import { loadConfig } from "./config";
 
 // Claude Code hook event -> `am hook <arg>` subcommand.
 export const HOOK_EVENTS: Record<string, string> = {
@@ -19,10 +20,22 @@ export const HOOK_EVENTS: Record<string, string> = {
   // two events are the only way to see that an agent fanned work out.
   SubagentStart: "subagent-start",
   SubagentStop: "subagent-stop",
+  // Fires the moment Claude asks, alongside its own dialog; the hook relays
+  // the request to `am serve` clients for a bounded wait (see
+  // awaitPermissionDecision), so it needs a timeout past that wait.
+  PermissionRequest: "permission-request",
 };
+
+// Headroom over the wait, so Claude never kills the hook mid-answer.
+const PERMISSION_HOOK_SLACK_SECONDS = 30;
 
 export function cliEntrypoint(): string {
   return join(import.meta.dir, "index.ts");
+}
+
+function hookTimeout(claudeEvent: string): { timeout?: number } {
+  if (claudeEvent !== "PermissionRequest") return {};
+  return { timeout: Math.max(0, Math.ceil(loadConfig().permissionWaitSeconds)) + PERMISSION_HOOK_SLACK_SECONDS };
 }
 
 export function buildHookSettings(): object {
@@ -38,7 +51,7 @@ export function buildHookSettings(): object {
     hooks: Object.fromEntries(
       Object.entries(HOOK_EVENTS).map(([claudeEvent, arg]) => [
         claudeEvent,
-        [{ hooks: [{ type: "command", command: command(arg) }] }],
+        [{ hooks: [{ type: "command", command: command(arg), ...hookTimeout(claudeEvent) }] }],
       ]),
     ),
   };

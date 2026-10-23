@@ -94,6 +94,11 @@ export interface Config {
   // are purged. Per-run override: --agent-days / --trash-days.
   gcAgentDays: number;
   gcTrashDays: number;
+  // How long a Claude permission prompt waits for an `am serve` client to
+  // answer it before the pane's own prompt is the only way left. 0 turns the
+  // relay off. Codex approvals have no deadline: they stay answerable from
+  // either side until one answers.
+  permissionWaitSeconds: number;
 }
 
 const DEFAULTS: Config = {
@@ -115,6 +120,7 @@ const DEFAULTS: Config = {
   showUsage: true,
   gcAgentDays: 7,
   gcTrashDays: 30,
+  permissionWaitSeconds: 120,
 };
 
 export function loadConfig(): Config {
