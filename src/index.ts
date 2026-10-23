@@ -95,7 +95,10 @@ usage:
                               --in-place works in the caller's checkout:
                               am run x --in-place -m "...")
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
-  am restart <name> [-m msg]  reload the provider and resume the same conversation
+  am restart <name> [-m msg] [--model <m>] [--effort <level>]
+                              reload the provider and resume the same conversation;
+                              --model / --effort switch it (and stick for later
+                              resumes), \`default\` returns to the provider default
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -294,6 +297,15 @@ function numberFlag(args: ParsedArgs, key: string): number | undefined {
     throw new Error(`flag --${key} requires a numeric value, got "${raw}"`);
   }
   return n;
+}
+
+// `am restart --model/--effort`: unset keeps the agent's value, `default`
+// returns to the provider's.
+function selectionFlag(args: ParsedArgs, key: "model" | "effort"): string | null | undefined {
+  const raw = args.flags[key];
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !raw.trim()) throw new Error(`flag --${key} requires a value`);
+  return raw.trim() === "default" ? null : raw.trim();
 }
 
 // Remaining positionals after the agent name form the message, so quoting
@@ -598,6 +610,11 @@ async function main(): Promise<void> {
       await restartCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
+        model: selectionFlag(args, "model"),
+        effort: selectionFlag(args, "effort"),
+        // --if-idle and --json are for `am serve` on another host.
+        ifIdle: args.flags["if-idle"] === true,
+        json: !!args.flags.json,
       });
       break;
     case "resume":

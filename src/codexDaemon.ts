@@ -332,21 +332,28 @@ export async function startCodexThread(
 // its dir. Resume overrides only reach a thread the daemon hasn't loaded; a
 // loaded one keeps its old settings (and a TUI resume keeps those), so they
 // are replaced.
+// The same goes for the agent's model and effort.
 export async function resumeCodexThread(
   threadId: string,
-  opts: { bypass: boolean },
+  opts: { bypass: boolean } & CodexModelSettings,
   conn: { socket?: string; timeoutMs?: number } = {},
 ): Promise<void> {
+  const model = {
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.effort ? { effort: opts.effort } : {}),
+  };
   await withCodexAppServer(conn.socket ?? codexDaemonSocket(), conn.timeoutMs ?? 4000, async (call) => {
     const loaded = (await loadedThreadIds(call)).includes(threadId);
     const resumed = await call("thread/resume", {
       threadId,
       excludeTurns: true,
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { config: { model_reasoning_effort: opts.effort } } : {}),
       ...(opts.bypass ? { approvalPolicy: "never", sandbox: "danger-full-access" } : {}),
     });
     if (!loaded) return;
     if (opts.bypass) {
-      await call("thread/settings/update", { threadId, approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+      await call("thread/settings/update", { threadId, ...model, approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
       return;
     }
     // Codex's defaults for the dir, read off a throwaway thread. It runs no
@@ -357,20 +364,28 @@ export async function resumeCodexThread(
     const profile = probe.activePermissionProfile?.id;
     await call("thread/settings/update", {
       threadId,
+      ...model,
       approvalPolicy: probe.approvalPolicy,
       ...(profile ? { permissions: profile } : { sandboxPolicy: probe.sandbox }),
     });
   });
 }
 
+export interface CodexModelSettings {
+  model?: string;
+  effort?: string;
+}
+
 // Resume can't pass permission flags, so the thread is loaded with the
-// current skipPermissions first.
+// current skipPermissions (and the agent's model and effort) first.
 export function codexPreload(
   threadId: string,
   deadline: CodexDeadline,
-  load = (id: string, bypass: boolean) => runDetached("load-thread", [id, bypass ? "bypass" : "default"], deadline),
+  load = (id: string, bypass: boolean, settings: CodexModelSettings) =>
+    runDetached("load-thread", [id, bypass ? "bypass" : "default", settings.model ?? "", settings.effort ?? ""], deadline),
+  settings: CodexModelSettings = {},
 ): boolean {
-  if (load(threadId, loadConfig().skipPermissions)) return true;
+  if (load(threadId, loadConfig().skipPermissions, settings)) return true;
   warnUnavailable(deadline, "could not load the codex thread into the daemon");
   return false;
 }
@@ -498,7 +513,9 @@ if (import.meta.main) {
   const timeoutMs = Math.max(Number(timeout) || 0, 100);
   try {
     if (command === "stop-thread" && arg) await stopCodexThreadTree(arg, args.slice(1), { socket, timeoutMs });
-    else if (command === "load-thread" && arg) await resumeCodexThread(arg, { bypass: args[1] === "bypass" }, { socket, timeoutMs });
+    else if (command === "load-thread" && arg) {
+      await resumeCodexThread(arg, { bypass: args[1] === "bypass", model: args[2] || undefined, effort: args[3] || undefined }, { socket, timeoutMs });
+    }
     else if (command === "trust-dir" && arg) await trustCodexDir(arg, { socket, timeoutMs });
     else if (command === "untrust-dir" && arg) await untrustCodexDir(arg, { socket, timeoutMs });
     else process.exit(2);

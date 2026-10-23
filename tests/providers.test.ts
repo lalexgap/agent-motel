@@ -327,6 +327,15 @@ describe("buildResumeCommand", () => {
     expect(buildResumeCommand("codex", agent({}), {}).command).toContain("--last");
   });
 
+  test("a resume launches with the agent's saved model and effort", () => {
+    expect(buildResumeCommand("codex", agent({ sessionId: "id-1", model: "gpt-6.1-sol", effort: "high" }), {}).command).toEqual([
+      "codex", "--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false",
+      "--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", "resume", "id-1",
+    ]);
+    const claude = buildResumeCommand("claude", agent({ sessionId: "id-1", model: "opus", effort: "max" }), { remote: false }).command;
+    expect(claude.slice(-6)).toEqual(["--model", "opus", "--effort", "max", "--resume", "id-1"]);
+  });
+
   test("claude reads the legacy claudeSessionId field", () => {
     const plan = buildResumeCommand("claude", agent({ claudeSessionId: "legacy-id" }), { remote: false });
     expect(plan.command).toContain("--resume");

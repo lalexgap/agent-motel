@@ -797,7 +797,7 @@ describe("messages api", () => {
 
   test("health and local detail report messageReceipts and stopIfIdle", async () => {
     fakeSession("idle");
-    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true });
+    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true, models: true, restartModel: true });
     expect(((await (await call("/api/agents/api")).json()) as any).messageReceipts).toBe(true);
   });
 

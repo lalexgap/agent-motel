@@ -30,7 +30,7 @@ export function codexResumeDaemon(
   agent: AgentState,
   opts: ResumeOpts,
   deadline: CodexDeadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS),
-  load?: (threadId: string, bypass: boolean) => boolean,
+  load?: Parameters<typeof codexPreload>[2],
 ): boolean {
   if (agentProvider(agent) !== "codex") return false;
   if (opts.remote !== undefined) agent.codexDaemon = opts.remote;
@@ -42,7 +42,7 @@ export function codexResumeDaemon(
   const trusted = launched ? amTrustedCodexDir(agent.dir) : undefined;
   agent.codexTrustedDir = trusted ?? (previous === agent.dir ? previous : undefined);
   if (previous && previous !== agent.codexTrustedDir) releaseCodexTrust(previous, agent.name, deadline);
-  agent.codexDaemonAttached = launched && !!threadId && codexPreload(threadId, deadline, load);
+  agent.codexDaemonAttached = launched && !!threadId && codexPreload(threadId, deadline, load, { model: agent.model, effort: agent.effort });
   return agent.codexDaemonAttached;
 }
 

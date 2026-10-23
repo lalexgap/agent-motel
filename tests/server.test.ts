@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
+import { startApiServer, loadApiToken, createApiToken, resetModelsCacheForTests, type ApiServerHandle } from "../src/server";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth, queuePopId } from "../src/queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "../src/deliver";
@@ -591,6 +591,7 @@ describe("remote agents api (host:name)", () => {
     });
     setFleetFetchForTests(async () => null);
     resetFleetCacheForTests();
+    resetModelsCacheForTests();
   });
 
   afterEach(() => {
@@ -941,12 +942,128 @@ describe("remote agents api (host:name)", () => {
     expect(((await res.json()) as any).error).toBe('agent "far" already exists');
   });
 
+  test("models: forwarded as am models --json, cached per host, refresh=1 bypasses", async () => {
+    const catalogs = [
+      { provider: "codex", models: [{ id: "gpt-6-luna", label: "Luna", efforts: ["low", "high"], defaultEffort: "low" }], efforts: ["low", "high"], modelsExhaustive: true, effortsExhaustive: true },
+    ];
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify(catalogs) });
+    const first = await fetch(url("/api/models?host=laptop"), auth());
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual(catalogs);
+    expect(await (await fetch(url("/api/models?host=laptop"), auth())).json()).toEqual(catalogs);
+    expect(calls).toEqual([{ host: "laptop", args: ["models", "--json", "--local", "--exact"], stdin: undefined, timeoutMs: 15_000 }]);
+    // Another host has its own entry.
+    await fetch(url("/api/models?host=box.example.com"), auth());
+    expect(calls.map((c) => c.host)).toEqual(["laptop", "box.example.com"]);
+    await fetch(url("/api/models?host=laptop&refresh=1"), auth());
+    expect(calls.map((c) => c.host)).toEqual(["laptop", "box.example.com", "laptop"]);
+  });
+
+  test("models: unknown host 404, invalid 400, ssh failure 502 (not cached)", async () => {
+    expect((await fetch(url("/api/models?host=nowhere"), auth())).status).toBe(404);
+    expect((await fetch(url("/api/models?host=a%3Bb"), auth())).status).toBe(400);
+    reply = () => ({ exitCode: 255, stderr: "ssh: connect to host laptop port 22: No route to host" });
+    expect((await fetch(url("/api/models?host=laptop"), auth())).status).toBe(502);
+    reply = () => ({ exitCode: 0, stdout: "[]" });
+    expect((await fetch(url("/api/models?host=laptop"), auth())).status).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("restart: capability-checked, forwarded with --model/--effort/--if-idle --json", async () => {
+    let outcome: unknown = { ok: true, model: "gpt-6.1-sol", effort: "high" };
+    let capable = true;
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", ...(capable ? { restartModel: true } : {}) }) }
+        : { exitCode: 0, stdout: JSON.stringify(outcome) };
+    const ok = await post("/api/agents/laptop:api/restart", { model: "gpt-6.1-sol", effort: "high" });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, model: "gpt-6.1-sol", effort: "high" });
+    expect(calls.map((c) => [c.args, c.timeoutMs])).toEqual([
+      [["__detail", "api", "--local", "--exact"], 20_000],
+      [["restart", "api", "--json", "--model", "gpt-6.1-sol", "--effort", "high", "--local", "--exact"], 60_000],
+    ]);
+    calls.length = 0;
+    outcome = { ok: true, model: null, effort: null };
+    expect(await (await post("/api/agents/laptop:api/restart", { model: null, effort: "", ifIdle: true })).json())
+      .toEqual({ ok: true, model: null, effort: null });
+    expect(calls[1]!.args).toEqual(["restart", "api", "--json", "--model", "default", "--effort", "default", "--if-idle", "--local", "--exact"]);
+    for (const reason of ["busy", "queued", "in_turn"]) {
+      outcome = { ok: false, error: `nope (${reason})`, reason };
+      const res = await post("/api/agents/laptop:api/restart", { ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: `nope (${reason})`, reason });
+    }
+    // A rejected model on the remote is a 400 there too.
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", restartModel: true }) }
+        : { exitCode: 1, stderr: 'am: unknown codex model "gpt-nope" — known models: gpt-6-luna (see `am models`)' };
+    const bad = await post("/api/agents/laptop:api/restart", { model: "gpt-nope" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as any).error).toContain('unknown codex model "gpt-nope"');
+    // An older am would restart on the old model: never sent.
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "api" }) });
+    capable = false;
+    calls.length = 0;
+    const old = await post("/api/agents/laptop:api/restart", { model: "opus" });
+    expect(old.status).toBe(409);
+    expect(await old.json()).toEqual({ error: "remote am too old on laptop (no restart --model)", reason: "remote_too_old" });
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
+    expect((await post("/api/agents/laptop:api/restart", { model: 1 })).status).toBe(400);
+    reply = () => ({ exitCode: 1, stderr: 'am: no local agent "api"' });
+    expect((await post("/api/agents/laptop:api/restart", { model: "opus" })).status).toBe(404);
+  });
+
   test("GET /api/hosts lists this host and the configured remotes", async () => {
     const res = await fetch(url("/api/hosts"), auth());
     const body = (await res.json()) as any;
     expect(body.local).toBe(localHostIdentity());
     expect(body.hosts.map((h: any) => h.name)).toEqual(["laptop", "box.example.com"]);
     expect(body.hosts.every((h: any) => typeof h.reachable === "boolean")).toBe(true);
+  });
+});
+
+describe("models api (this host)", () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+  let oldPath: string | undefined;
+
+  beforeEach(() => {
+    resetModelsCacheForTests();
+    oldPath = process.env.PATH;
+    // A fake codex that counts its probes, and a claude whose probe fails.
+    process.env.PATH = `${home}:/usr/bin:/bin`;
+    const catalog = JSON.stringify({ models: [{ slug: "gpt-6-luna", supported_reasoning_levels: [{ effort: "low" }] }] });
+    writeFileSync(join(home, "codex"), `#!/bin/sh\necho probe >> "$AGENTMGR_HOME/probes"\nprintf '%s' '${catalog}'\n`);
+    chmodSync(join(home, "codex"), 0o755);
+    writeFileSync(join(home, "claude"), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(home, "claude"), 0o755);
+    const spawn = Bun.spawnSync.bind(Bun);
+    spawnSpy = spyOn(Bun, "spawnSync").mockImplementation((cmd: any, opts?: any) => spawn(cmd, { ...opts, env: { ...process.env, ...opts?.env } }));
+  });
+
+  afterEach(() => {
+    spawnSpy.mockRestore();
+    process.env.PATH = oldPath;
+  });
+
+  const probes = () => (existsSync(join(home, "probes")) ? readFileSync(join(home, "probes"), "utf8").trim().split("\n").length : 0);
+
+  test("returns the am models --json shape, cached until refresh=1", async () => {
+    const res = await fetch(url("/api/models"), auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { provider: "codex", models: [{ id: "gpt-6-luna", efforts: ["low"] }], efforts: ["low"], modelsExhaustive: true, effortsExhaustive: true },
+    ]);
+    await fetch(url("/api/models"), auth());
+    await fetch(url(`/api/models?host=${localHostIdentity()}`), auth());
+    expect(probes()).toBe(1);
+    await fetch(url("/api/models?refresh=1"), auth());
+    expect(probes()).toBe(2);
+  });
+
+  test("health advertises models", async () => {
+    expect(((await (await fetch(url("/api/health"), auth())).json()) as any).models).toBe(true);
   });
 });
 

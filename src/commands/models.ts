@@ -4,8 +4,8 @@ import type { Provider } from "../state";
 
 const PROVIDERS: Provider[] = ["claude", "codex"];
 
-export function localCatalogs(): ProviderCatalog[] {
-  return PROVIDERS.map((provider) => providerCatalog(provider)).filter((c): c is ProviderCatalog => !!c);
+export function localCatalogs(opts: { refresh?: boolean } = {}): ProviderCatalog[] {
+  return PROVIDERS.map((provider) => providerCatalog(provider, opts)).filter((c): c is ProviderCatalog => !!c);
 }
 
 // The create form asks the machine the agent will actually run on — a remote
