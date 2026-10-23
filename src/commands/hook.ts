@@ -1,5 +1,16 @@
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { agentProvider, agentSessionId, listAgents, matchAgent, updateAgentStatus, writeAgent, type AgentState, type AgentStatus } from "../state";
+import {
+  agentNamesAndAliases,
+  agentProvider,
+  agentSessionId,
+  listAgents,
+  matchAgent,
+  updateAgentStatus,
+  writeAgent,
+  type AgentState,
+  type AgentStatus,
+} from "../state";
 import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
 import {
   acquireDeliverLock,
@@ -22,6 +33,18 @@ import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
 import { capturePane, hasAttachedClient, hasSession } from "../tmux";
 import { attribute, hasMessagedSince, recordComms, shouldReport } from "../comms";
+import {
+  claimAnswer,
+  claudeDecisionOutput,
+  claudePermissionOptions,
+  claudePermissionSummary,
+  claudeToolCallStates,
+  createPermission,
+  readPermission,
+  resolvePending,
+  sameToolCall,
+  stalePermissions,
+} from "../permissions";
 import {
   closeOpenSubagents,
   isBackgroundSubagent,
@@ -413,6 +436,120 @@ export function resolveDaemonHookAgent(
   );
 }
 
+// --- Claude permission requests ---------------------------------------------
+
+export interface PermissionWaitOptions {
+  waitMs: number;
+  pollMs?: number;
+  write?: (out: string) => void;
+  notify?: (agent: string, event: string) => Promise<unknown>;
+}
+
+// Claude's PermissionRequest hook runs while its own dialog is already on
+// screen, and keeps running if the pane answers first. So: record the
+// request, then wait a bounded time for an `am serve` client to answer it.
+// An answer goes back as Claude's decision; anything else (a pane answer, the
+// turn ending, the deadline) prints nothing, which leaves Claude's normal
+// prompt in charge. Never throws.
+export async function awaitPermissionDecision(
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  opts: PermissionWaitOptions,
+): Promise<void> {
+  const tool = typeof payload.tool_name === "string" ? payload.tool_name : null;
+  if (!tool || !(opts.waitMs > 0)) return;
+  const write = opts.write ?? ((out: string) => process.stdout.write(out));
+  const ping = (event: string) => (opts.notify ?? notifyDaemon)(agent.name, event).catch(() => undefined);
+  const input = payload.tool_input ?? {};
+  const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : undefined;
+  const callStates = () => (transcriptPath ? claudeToolCallStates(transcriptPath, tool, input) : { uses: [], answered: [] });
+  const baseline = new Set(callStates().answered);
+  const { options, decisions } = claudePermissionOptions(payload.permission_suggestions);
+  const record = createPermission({
+    agent: agent.name,
+    provider: "claude",
+    tool,
+    summary: claudePermissionSummary(tool, input),
+    input,
+    options,
+    decisions,
+    expiresAt: new Date(Date.now() + opts.waitMs).toISOString(),
+    pid: process.pid,
+    claude: { toolInput: input, ...(transcriptPath ? { transcriptPath } : {}) },
+  });
+  await ping("permission-request");
+
+  const stop = () => {
+    try {
+      resolvePending(record.id, "stale", "the hook was stopped");
+    } finally {
+      process.exit(0);
+    }
+  };
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+  for (const signal of signals) process.on(signal, stop);
+  try {
+    let lastSize = -1;
+    for (;;) {
+      const current = readPermission(record.id);
+      if (!current) return;
+      if (current.state === "answered") {
+        const claimed = claimAnswer(record.id);
+        if (claimed?.optionId) {
+          write(claudeDecisionOutput(claimed.decisions[claimed.optionId]));
+          await ping("permission-resolved");
+          return;
+        }
+        continue;
+      }
+      if (current.state !== "pending") return;
+      if (transcriptPath) {
+        let size = lastSize;
+        try {
+          size = statSync(transcriptPath).size;
+        } catch {
+          // not written yet
+        }
+        if (size !== lastSize) {
+          lastSize = size;
+          if (callStates().answered.some((id) => !baseline.has(id))) {
+            if (resolvePending(record.id, "stale", "answered in the pane")) await ping("permission-resolved");
+            return;
+          }
+        }
+      }
+      if (current.expiresAt && Date.now() >= Date.parse(current.expiresAt)) {
+        if (resolvePending(record.id, "expired", "nobody answered in time")) await ping("permission-resolved");
+        return;
+      }
+      await Bun.sleep(opts.pollMs ?? 250);
+    }
+  } finally {
+    for (const signal of signals) process.off(signal, stop);
+  }
+}
+
+// A Claude hook that shows a pending request no longer is: the same call ran
+// (PostToolUse), or the turn it belonged to is over.
+export function retiredPermissions(
+  event: string,
+  agent: AgentState,
+  payload: Record<string, unknown>,
+  effects: HookEffects,
+): number {
+  const names = agentNamesAndAliases(agent);
+  if (event === "post-tool-use" && typeof payload.tool_name === "string") {
+    const call = { tool: payload.tool_name, input: payload.tool_input ?? {} };
+    return stalePermissions(names, "answered in the pane", (r) =>
+      r.provider === "claude" && sameToolCall(call, { tool: r.tool, input: r.claude?.toolInput ?? r.input }),
+    ).length;
+  }
+  if (isTurnBoundary(event, payload, effects)) {
+    return stalePermissions(names, "the turn ended", (r) => r.provider === "claude").length;
+  }
+  return 0;
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
@@ -500,6 +637,16 @@ export async function hookCommand(event: string): Promise<void> {
   writeAgent(agent);
   if (event === "user-prompt-submit" && !fromSubagent) releaseEscapeHold(name);
 
+  if (agentProvider(agent) === "claude" && event !== "permission-request") {
+    let retired = 0;
+    try {
+      retired = retiredPermissions(event, agent, payload, effects);
+    } catch {
+      // bookkeeping only; the request expires on its own
+    }
+    if (retired > 0) await notifyDaemon(name, "permission-resolved");
+  }
+
   // A turn ended: delivery receipts for messages it took are done. A blocked
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
   // session start. A session end finishes no turn of its own.
@@ -566,6 +713,16 @@ export async function hookCommand(event: string): Promise<void> {
   }
 
   if (effects.notify) notify(`am: ${name}`, effects.notify);
+
+  // Last, so everything above is recorded before the wait.
+  if (event === "permission-request" && agentProvider(agent) === "claude") {
+    try {
+      await awaitPermissionDecision(agent, payload, { waitMs: loadConfig().permissionWaitSeconds * 1000 });
+    } catch {
+      // no decision: Claude's own prompt carries on
+    }
+    return;
+  }
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);

@@ -10,6 +10,7 @@ import { addRole } from "../src/roles";
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
 import { localHostIdentity } from "../src/config";
 import { resetFleetCacheForTests, setFleetFetchForTests } from "../src/fleet";
+import { claimAnswer, claudePermissionOptions, createPermission, listPermissions, readPermission } from "../src/permissions";
 
 let home: string;
 let server: ApiServerHandle;
@@ -207,6 +208,84 @@ describe("agents api", () => {
     } finally {
       daemon.stop();
     }
+  });
+});
+
+describe("permissions api", () => {
+  const seedPermission = (over: Record<string, unknown> = {}) => {
+    const { options, decisions } = claudePermissionOptions([
+      { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "ls" }], behavior: "allow", destination: "localSettings" },
+    ]);
+    return createPermission({
+      agent: "api", provider: "claude", tool: "Bash", summary: "Bash: ls", input: { command: "ls" },
+      options, decisions, expiresAt: new Date(Date.now() + 60_000).toISOString(), pid: process.pid,
+      claude: { toolInput: { command: "ls" }, transcriptPath: "/nowhere" }, ...over,
+    });
+  };
+  const post = (path: string, body?: unknown) =>
+    fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+
+  test("GET lists pending requests in the public shape; detail flags the capability and count", async () => {
+    seedAgent("api");
+    const record = seedPermission();
+    seedPermission({ agent: "web" });
+    const res = await fetch(url("/api/agents/api/permissions"), auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      requests: [{
+        id: record.id, provider: "claude", tool: "Bash", summary: "Bash: ls", input: { command: "ls" },
+        options: [
+          { id: "allow", label: "Yes", kind: "allow" },
+          { id: "suggestion-0", label: "Yes, and always allow Bash(ls) (saved to .claude/settings.local.json)", kind: "allow_always" },
+          { id: "deny", label: "No", kind: "deny" },
+        ],
+        createdAt: record.createdAt, expiresAt: record.expiresAt,
+      }],
+    });
+    const detail = (await (await fetch(url("/api/agents/api"), auth())).json()) as any;
+    expect(detail.permissionRequests).toBe(true);
+    expect(detail.pendingPermissions).toBe(1);
+    expect((await fetch(url("/api/agents/ghost/permissions"), auth())).status).toBe(404);
+  });
+
+  test("POST applies a decision once; then 409 already_resolved", async () => {
+    seedAgent("api");
+    const record = seedPermission();
+    const taker = setInterval(() => claimAnswer(record.id), 20);
+    try {
+      const res = await post(`/api/agents/api/permissions/${record.id}`, { optionId: "suggestion-0" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, id: record.id, optionId: "suggestion-0" });
+    } finally {
+      clearInterval(taker);
+    }
+    expect(readPermission(record.id)!.state).toBe("applied");
+    const again = await post(`/api/agents/api/permissions/${record.id}`, { optionId: "allow" });
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as any).reason).toBe("already_resolved");
+    const list = (await (await fetch(url("/api/agents/api/permissions"), auth())).json()) as any;
+    expect(list.requests).toEqual([]);
+  });
+
+  test("POST errors: expired 409, not_pending 409, unknown id 404, bad option 400", async () => {
+    seedAgent("api");
+    const expired = seedPermission({ expiresAt: new Date(Date.now() - 1).toISOString() });
+    const res = await post(`/api/agents/api/permissions/${expired.id}`, { optionId: "allow" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ reason: "expired" });
+    const orphan = seedPermission({ pid: 999_999_999 });
+    expect(await (await post(`/api/agents/api/permissions/${orphan.id}`, { optionId: "allow" })).json()).toMatchObject({ reason: "not_pending" });
+    expect((await post("/api/agents/api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "allow" })).status).toBe(404);
+    expect((await post("/api/agents/api/permissions/..%2Fx", { optionId: "allow" })).status).toBe(404);
+    const live = seedPermission();
+    expect((await post(`/api/agents/api/permissions/${live.id}`, { optionId: "always-yes" })).status).toBe(400);
+    expect((await post(`/api/agents/api/permissions/${live.id}`, { optionId: "../x" })).status).toBe(400);
+    expect((await post(`/api/agents/api/permissions/${live.id}`, {})).status).toBe(400);
+    // Another agent's request isn't reachable through this one.
+    seedAgent("web");
+    expect((await post(`/api/agents/web/permissions/${live.id}`, { optionId: "allow" })).status).toBe(404);
+    expect(readPermission(live.id)!.state).toBe("pending");
+    expect(listPermissions().filter((r) => r.state === "answered")).toEqual([]);
   });
 });
 
@@ -551,6 +630,45 @@ describe("remote agents api (host:name)", () => {
     seedAgent("mine");
     expect((await fetch(url(`/api/agents/${localHostIdentity()}:mine`), auth())).status).toBe(200);
     expect((await fetch(url("/api/agents/local:mine"), auth())).status).toBe(200);
+    expect(calls).toEqual([]);
+  });
+
+  test("permissions forward to __permissions / __permission", async () => {
+    const list = { requests: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", provider: "codex", tool: "Bash" }] };
+    reply = (call) => {
+      if (call.args[0] === "__permissions") return { exitCode: 0, stdout: JSON.stringify(list) };
+      if (call.args[3] === "accept") return { exitCode: 0, stdout: JSON.stringify({ ok: true, id: call.args[2], optionId: "accept" }) };
+      return { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "permission request expired", reason: "expired" }) };
+    };
+    const got = await fetch(url("/api/agents/laptop:api/permissions"), auth());
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual(list);
+    const ok = await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "accept" });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", optionId: "accept" });
+    const late = await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "decline" });
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({ error: "permission request expired", reason: "expired" });
+    expect(calls.map((c) => [c.args, c.timeoutMs])).toEqual([
+      [["__permissions", "api", "--local", "--exact"], 20_000],
+      [["__permission", "api", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "accept", "--local", "--exact"], 30_000],
+      [["__permission", "api", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "decline", "--local", "--exact"], 30_000],
+    ]);
+  });
+
+  test("permissions: unknown id 404, bad option 400, old am 409, bad input never reaches ssh", async () => {
+    reply = () => ({ exitCode: 1, stderr: 'am: no permission request "01ARZ3NDEKTSV4RRFFQ69G5FAV" for agent "api"' });
+    expect((await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "accept" })).status).toBe(404);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown permission option "nope" for request 01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    expect((await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "nope" })).status).toBe(400);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__permissions" — see `am help`' });
+    const old = await fetch(url("/api/agents/laptop:api/permissions"), auth());
+    expect(old.status).toBe(409);
+    expect(await old.json()).toMatchObject({ reason: "remote_too_old" });
+    calls.length = 0;
+    expect((await post("/api/agents/laptop:api/permissions/a.b", { optionId: "accept" })).status).toBe(404);
+    expect((await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: "a b" })).status).toBe(400);
+    expect((await post("/api/agents/laptop:api/permissions/01ARZ3NDEKTSV4RRFFQ69G5FAV", { optionId: 3 })).status).toBe(400);
     expect(calls).toEqual([]);
   });
 
