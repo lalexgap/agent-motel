@@ -29,6 +29,7 @@ import {
   type CodexThreadOpts,
 } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
+import { claudeTrustKey, pretrustClaudeDir, releaseClaudeTrust } from "../claudeTrust";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
@@ -300,6 +301,10 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     codexDaemonDir: codexDaemonAttached ? dir : undefined,
   });
 
+  const claudeTrustedDir = provider === "claude" && loadConfig().pretrustClaudeDirs
+    ? pretrustClaudeDir(claudeTrustKey(dir))
+    : undefined;
+
   const now = new Date().toISOString();
   const state: AgentState = {
     name,
@@ -312,6 +317,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     codexDaemon,
     codexDaemonAttached,
     codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,
+    claudeTrustedDir,
     sessionId: codexThreadId,
     worktreePath,
     worktreeBranch,
@@ -336,6 +342,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   } catch (error) {
     removeAgent(name);
     queueClear(name);
+    if (claudeTrustedDir) releaseClaudeTrust(claudeTrustedDir, name);
     throw error;
   }
 

@@ -8,6 +8,7 @@ import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
 import { hasSession, killSession } from "../tmux";
+import { releaseClaudeTrust } from "../claudeTrust";
 import { CODEX_STOP_BUDGET_MS, codexDeadline, releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 
@@ -132,6 +133,7 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   removeSubagents(current.name);
   removeAgent(current.name);
   if (current.codexTrustedDir) releaseCodexTrust(current.codexTrustedDir, current.name, deadline);
+  if (current.claudeTrustedDir) releaseClaudeTrust(current.claudeTrustedDir, current.name);
 }
 
 export function destroyAgent(agent: AgentState, opts: { clean: boolean; lifecycleLocked?: boolean }): void {

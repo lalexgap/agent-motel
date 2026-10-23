@@ -16,6 +16,8 @@ import {
   type CodexDeadline,
 } from "../codexDaemon";
 import { agentEnv } from "./new";
+import { loadConfig } from "../config";
+import { claudeTrustKey, pretrustClaudeDir, releaseClaudeTrust } from "../claudeTrust";
 
 export interface ResumeOpts {
   message?: string;
@@ -45,6 +47,17 @@ export function codexResumeDaemon(
   return agent.codexDaemonAttached;
 }
 
+// After `am cd` (or a restore), the old key is released once the new one is
+// in place. Mutates agent.claudeTrustedDir; the caller writes it.
+export function claudeResumeTrust(agent: AgentState): void {
+  if (agentProvider(agent) !== "claude") return;
+  const previous = agent.claudeTrustedDir;
+  const key = claudeTrustKey(agent.dir);
+  const trusted = loadConfig().pretrustClaudeDirs ? pretrustClaudeDir(key) : undefined;
+  agent.claudeTrustedDir = trusted ?? (previous === key ? previous : undefined);
+  if (previous && previous !== agent.claudeTrustedDir) releaseClaudeTrust(previous, agent.name);
+}
+
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
 export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Promise<void> {
@@ -54,6 +67,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   const provider = agentProvider(agent);
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
+  claudeResumeTrust(agent);
 
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.

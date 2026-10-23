@@ -7,6 +7,7 @@ import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
 import { describeRunning, reconcileOpenSubagents, subagentSummary, type SubagentSummary } from "../subagents";
+import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -173,11 +174,32 @@ export function waitingInfo(agent: AgentState): WaitingInfo {
   return info;
 }
 
+const trustPromptCache = new Map<string, { shown: boolean; at: number }>();
+
+// A Claude agent still at the folder-trust prompt fires no hooks, so it
+// would read as "starting" forever.
+export function atClaudeTrustPrompt(agent: AgentState): boolean {
+  if (agent.status !== "starting" || agentProvider(agent) !== "claude") return false;
+  const cached = trustPromptCache.get(agent.tmuxSession);
+  if (cached && Date.now() - cached.at < WAITING_CACHE_MS) return cached.shown;
+  const pane = capturePane(agent.tmuxSession);
+  const shown = !!pane && paneShowsClaudeTrustPrompt(pane.map(stripSgr));
+  trustPromptCache.set(agent.tmuxSession, { shown, at: Date.now() });
+  return shown;
+}
+
 // State files can outlive their tmux session (machine reboot, manual kill).
 export function displayStatus(agent: AgentState): DisplayStatus {
   if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) return "dead";
   if (agent.status === "idle" && waitingInfo(agent).waiting) return "waiting";
+  if (atClaudeTrustPrompt(agent)) return "needs-attention";
   return agent.status;
+}
+
+// The reason to show beside a display status that differs from the stored one.
+export function displayStatusReason(agent: AgentState, status: DisplayStatus): string | undefined {
+  if (status === "needs-attention" && agent.status === "starting") return CLAUDE_TRUST_PROMPT_REASON;
+  return agent.statusReason;
 }
 
 export function relativeTime(iso: string): string {
@@ -326,6 +348,7 @@ export function agentRows(): AgentRow[] {
     return {
       ...visible,
       status,
+      statusReason: displayStatusReason(a, status),
       provider: agentProvider(a),
       role: roleForAgent(a),
       queued: queueDepth(a.name),

@@ -38,6 +38,8 @@ export interface AgentState {
   codexDaemonAttached?: boolean;
   // Codex only: the dir whose config.toml trust entry am wrote for this agent.
   codexTrustedDir?: string;
+  // Claude only: the ~/.claude.json project key whose folder trust am wrote.
+  claudeTrustedDir?: string;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;
   worktreeBranch?: string;
