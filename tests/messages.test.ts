@@ -6,7 +6,7 @@ import { acquireDeliverLock, cancelMessage, releaseDeliverLock } from "../src/de
 import { acquireProducerLock, releaseProducerLock } from "../src/mailbox";
 import { ensureDirs } from "../src/paths";
 import { queueDepth, queuePopId } from "../src/queue";
-import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { noteHandoff, readAgent, writeAgent, type AgentState } from "../src/state";
 import { abortTurn, interruptCommand, sendCommand } from "../src/commands/send";
 import { queueCommand } from "../src/commands/queue";
 import { renameAgent } from "../src/commands/rename";
@@ -21,6 +21,8 @@ import {
   recordImmediateDelivery,
   transcriptLength,
   withSettledRecord,
+  awaitTurnReply,
+  markTurnEnded,
 } from "../src/messages";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 
@@ -571,6 +573,124 @@ describe("delivery receipts", () => {
   });
 });
 
+describe("done waits for the reply on disk", () => {
+  // A message delivered at index 3 whose turn has started; returns its id.
+  async function turnRunning(): Promise<string> {
+    fakeSession("idle");
+    fastSleep();
+    const { id } = await sendCommand("api", "check it", { now: false, track: true });
+    sleepSpy?.mockRestore();
+    sleepSpy = undefined;
+    hook("user-prompt-submit", { prompt: "check it" });
+    say("user", "check it");
+    return id!;
+  }
+
+  test("a reply already flushed: done at once, transcriptComplete true", async () => {
+    const id = await turnRunning();
+    say("assistant", "All   done:\nit works.");
+    const started = Date.now();
+    hook("stop", { last_assistant_message: "All done: it works." });
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(readMessage("api", id)).toMatchObject({ state: "done", transcriptComplete: true });
+  });
+
+  test("a reply of several text blocks matches their run", async () => {
+    const id = await turnRunning();
+    say("assistant", "Part one.");
+    say("assistant", "Part two.");
+    expect(await awaitTurnReply("api", readAgent("api")!, "Part one.\n\nPart two.", new Date(), { capMs: 0 })).toBe(true);
+    expect(readMessage("api", id)!.state).toBe("delivered");
+  });
+
+  test("a reply flushed after 500ms: done after it lands", async () => {
+    await turnRunning();
+    const started = Date.now();
+    setTimeout(() => say("assistant", "Found it."), 500);
+    const complete = await awaitTurnReply("api", readAgent("api")!, "Found it.");
+    const waited = Date.now() - started;
+    expect(complete).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(450);
+    expect(waited).toBeLessThan(1500);
+  });
+
+  test("a reply never flushed: done after the cap, transcriptComplete false", async () => {
+    const id = await turnRunning();
+    const started = Date.now();
+    hook("stop", { last_assistant_message: "This never reaches disk." });
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(2900);
+    expect(waited).toBeLessThan(6000);
+    const done = readMessage("api", id)!;
+    expect(done).toMatchObject({ state: "done", transcriptComplete: false });
+    expect(readAgent("api")!.status).toBe("idle");
+  }, 15_000);
+
+  test("an earlier entry of the same turn does not satisfy the match", async () => {
+    await turnRunning();
+    say("assistant", "Let me check…");
+    const started = Date.now();
+    const complete = await awaitTurnReply("api", readAgent("api")!, "The answer is 42.", new Date(), { capMs: 400 });
+    expect(complete).toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(350);
+  });
+
+  test("the reply before the receipt's transcriptIndex does not count", async () => {
+    await turnRunning();
+    expect(await awaitTurnReply("api", readAgent("api")!, "one", new Date(), { capMs: 0 })).toBe(false);
+  });
+
+  test("no reply text (an interrupt, a tool-only turn) skips the wait and leaves the field off", async () => {
+    const id = await turnRunning();
+    const started = Date.now();
+    expect(await awaitTurnReply("api", readAgent("api")!, undefined)).toBeUndefined();
+    expect(await awaitTurnReply("api", readAgent("api")!, "  ")).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(100);
+    markTurnEnded("api", readAgent("api")!, new Date(), true);
+    const done = readMessage("api", id)!;
+    expect(done).toMatchObject({ state: "done", interrupted: true });
+    expect(done.transcriptComplete).toBeUndefined();
+  });
+
+  test("a stop without a reply in its payload goes done at once, without the field", async () => {
+    const id = await turnRunning();
+    hook("stop");
+    const done = readMessage("api", id)!;
+    expect(done.state).toBe("done");
+    expect(done.transcriptComplete).toBeUndefined();
+  });
+
+  test("the reply must be past every finishing receipt's transcriptIndex", async () => {
+    const first = await turnRunning();
+    say("assistant", "Same.");
+    const { id: second } = await sendCommand("api", "one more", { now: false, track: true });
+    expect(hook("post-tool-use")).toContain("one more");
+    expect(readMessage("api", second!)).toMatchObject({ state: "delivered", transcriptIndex: 5 });
+    expect(readMessage("api", first)!.transcriptIndex).toBe(3);
+    expect(await awaitTurnReply("api", readAgent("api")!, "Same.", new Date(), { capMs: 0 })).toBe(false);
+    say("assistant", "Same.");
+    expect(await awaitTurnReply("api", readAgent("api")!, "Same.", new Date(), { capMs: 0 })).toBe(true);
+  });
+
+  test("a handoff during the wait still refuses stop ifIdle afterwards", async () => {
+    await turnRunning();
+    const stop = Bun.spawn([process.execPath, CLI, "hook", "stop"], {
+      env: { ...process.env, AGENTMGR_AGENT: "api" },
+      stdin: Buffer.from(JSON.stringify({ last_assistant_message: "Not on disk yet." })),
+    });
+    await Bun.sleep(800);
+    noteHandoff("api");
+    expect(await stop.exited).toBe(0);
+    expect(readAgent("api")!.status).toBe("idle");
+    expect(await stopIfIdle(readAgent("api")!)).toMatchObject({ ok: false, reason: "in_turn" });
+  }, 15_000);
+
+  test("no receipt finishing: no wait, no transcript parse", async () => {
+    fakeSession("working");
+    expect(await awaitTurnReply("api", readAgent("api")!, "anything")).toBeUndefined();
+  });
+});
+
 describe("stop ifIdle after an untracked handover", () => {
   const handedOver = { ok: false, reason: "in_turn", error: 'agent "api" was handed a message it has not started on yet' } as const;
   const stop = () => stopIfIdle(readAgent("api")!);
@@ -737,6 +857,7 @@ describe("messages api", () => {
       const interrupted = (await (await call(`/api/agents/api/messages/${id}`)).json()) as any;
       expect(interrupted).toMatchObject({ id, state: "done", interrupted: true });
       expect(interrupted.doneAt).not.toBeNull();
+      expect(interrupted.transcriptComplete).toBeUndefined();
       const agent = readAgent("api")!;
       expect(agent.status).toBe("idle");
       expect(agent.workingSince).toBeUndefined();

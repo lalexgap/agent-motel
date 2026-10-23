@@ -27,7 +27,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
-import { claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
+import { awaitTurnReply, claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -659,6 +659,28 @@ export async function hookCommand(event: string): Promise<void> {
     }
   }
 
+  // Before the agent shows idle (which also lets a receipt read settle it to
+  // done), give the turn's reply time to reach its session file, so a client
+  // reading the transcript on done finds it. Bounded, and immediate once it
+  // is there.
+  // The turn ended when the Stop fired, not when the wait ends: idle and the
+  // receipts it settles are stamped then, so a handoff or prompt during the
+  // wait stays newer than this turn's end.
+  let transcriptComplete: boolean | undefined;
+  let turnEndedAt: Date | undefined;
+  if (event === "stop" && !fromSubagent) {
+    turnEndedAt = new Date();
+    const reply = typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined;
+    try {
+      transcriptComplete = await awaitTurnReply(name, agent, reply, turnEndedAt);
+    } catch {
+      // the receipt goes done without the check
+    }
+    // A rename may have landed during the wait.
+    agent = matchAgent(inheritedName) ?? agent;
+    name = agent.name;
+  }
+
   const effects = hookEffects(event, payload);
 
   // In-session subagents (Claude Code's Task tool, Codex's subagents) are
@@ -673,7 +695,7 @@ export async function hookCommand(event: string): Promise<void> {
     : 0;
 
   const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
-  updateAgentStatus(agent, effects.status, effects.reason);
+  updateAgentStatus(agent, effects.status, effects.reason, turnEndedAt?.toISOString());
   const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
   // An inbox delivery reaches the hook inside Claude's cross-session framing;
   // key the prompt by the text am sent, so it matches the message's record.
@@ -718,7 +740,7 @@ export async function hookCommand(event: string): Promise<void> {
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
   // session start. A session end finishes no turn of its own.
   if (!fromSubagent && event !== "session-start") {
-    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent));
+    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent, turnEndedAt, false, transcriptComplete));
     else if (effects.status === "exited") receipt(() => markSessionEnded(name, agent, lastIdleAt));
   }
 
