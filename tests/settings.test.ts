@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildHookSettings, HOOK_EVENTS, writeHookSettings } from "../src/settings";
@@ -32,6 +32,17 @@ describe("hook settings", () => {
     expect(stop.command).toContain(process.execPath);
     expect(stop.command).toContain("src/index.ts");
     expect(stop.command).toEndWith("hook stop");
+  });
+
+  test("PermissionRequest relays to am, with a timeout past the configured wait", () => {
+    type Hook = { command: string; timeout?: number };
+    const hooks = () => (buildHookSettings() as { hooks: Record<string, [{ hooks: [Hook] }]> }).hooks;
+    const permission = hooks().PermissionRequest![0].hooks[0];
+    expect(permission.command).toEndWith("hook permission-request");
+    expect(permission.timeout).toBe(150);
+    expect(hooks().Stop![0].hooks[0].timeout).toBeUndefined();
+    writeFileSync(join(home, "config.json"), JSON.stringify({ permissionWaitSeconds: 10 }));
+    expect(hooks().PermissionRequest![0].hooks[0].timeout).toBe(40);
   });
 
   test("writeHookSettings writes valid JSON into AGENTMGR_HOME", () => {

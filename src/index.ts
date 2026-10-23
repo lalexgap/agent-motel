@@ -7,7 +7,7 @@ import { newCommand } from "./commands/new";
 import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
-import { agentDetail } from "./server";
+import { agentDetail, agentPermissions, answerAgentPermission } from "./server";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { shareCommand } from "./commands/share";
@@ -894,6 +894,25 @@ async function main(): Promise<void> {
       if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
       const result = await interruptMessage(name, id);
       if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
+      console.log(JSON.stringify(result));
+      break;
+    }
+    case "__permissions": {
+      // Pending permission prompts, for `am serve` on another host.
+      const name = requirePositional(args, 0, "agent name");
+      const permissions = agentPermissions(name);
+      if (!permissions) throw new Error(`no local agent "${name}"`);
+      console.log(JSON.stringify(permissions));
+      break;
+    }
+    case "__permission": {
+      // Answer one; prints the outcome either way, like __cancel.
+      const name = requirePositional(args, 0, "agent name");
+      const id = requirePositional(args, 1, "permission request id");
+      const optionId = requirePositional(args, 2, "option id");
+      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
+      const result = await answerAgentPermission(name, id, optionId);
+      if (!result) throw new Error(`no permission request "${id}" for agent "${name}"`);
       console.log(JSON.stringify(result));
       break;
     }

@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
-import { type Provider, agentProvider, readAgent, resolveAgent } from "./state";
+import { type Provider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
@@ -13,10 +13,19 @@ import { newCommand } from "./commands/new";
 import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
-import { daemonRequest } from "./daemon";
+import { daemonRequest, notifyDaemon } from "./daemon";
 import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
 import { alreadyReason, conflictReason, isMessageId, readMessage, type Conflict, type ConflictReason } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
+import {
+  OPTION_ID_RE,
+  PermissionOptionError,
+  answerPermission,
+  isPermissionId,
+  pendingPermissions,
+  publicPermission,
+  type AnswerResult,
+} from "./permissions";
 import { loadConfig, localHostIdentity } from "./config";
 import {
   AGENT_NAME_RE,
@@ -125,7 +134,42 @@ export function agentDetail(name: string) {
     messageReceipts: true,
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
+    permissionRequests: true,
+    pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
   };
+}
+
+// --- permission requests ---------------------------------------------------
+
+export function agentPermissions(name: string): { requests: ReturnType<typeof publicPermission>[] } | null {
+  const agent = readAgent(name);
+  if (!agent) return null;
+  return { requests: pendingPermissions(agentNamesAndAliases(agent)).map(publicPermission) };
+}
+
+// Answer for a local agent. Null: no such agent or request.
+export async function answerAgentPermission(name: string, id: string, optionId: string): Promise<AnswerResult | null> {
+  const agent = readAgent(name);
+  if (!agent || !isPermissionId(id)) return null;
+  const result = await answerPermission(agentNamesAndAliases(agent), id, optionId);
+  if (result) await notifyDaemon(agent.name, "permission-resolved");
+  return result;
+}
+
+function permissionNotFound(name: string, id: string): Response {
+  return json({ error: `no permission request "${id}" for agent "${name}"` }, 404);
+}
+
+function permissionResponse(result: AnswerResult): Response {
+  return result.ok ? json(result) : json({ error: result.error, reason: result.reason }, 409);
+}
+
+async function permissionAnswerBody(req: Request): Promise<Response | { optionId: string }> {
+  const body = (await req.json().catch(() => null)) as { optionId?: unknown } | null;
+  if (typeof body?.optionId !== "string" || !OPTION_ID_RE.test(body.optionId)) {
+    return json({ error: "optionId must be one of the request's option ids" }, 400);
+  }
+  return { optionId: body.optionId };
 }
 
 // --- remote agents ---------------------------------------------------------
@@ -225,6 +269,18 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       if (!isMessageId(id)) return messageNotFound(name, id);
       if (method === "GET") return json(await runRemoteJson(host, ["__message", name, id]));
       return cancelResponse(await runRemoteJson<CancelResult>(host, ["__cancel", name, id], { timeoutMs: 30_000 }));
+    }
+    // Like receipts: __permissions/__permission ship after --exact, and an
+    // older am fails "unknown command".
+    if (route === "permissions" && rest.length === 1 && method === "GET") {
+      return json(await runRemoteJson(host, ["__permissions", name]));
+    }
+    if (route === "permissions" && rest.length === 2 && method === "POST") {
+      const id = rest[1]!;
+      const body = await permissionAnswerBody(req);
+      if (body instanceof Response) return body;
+      if (!isPermissionId(id)) return permissionNotFound(name, id);
+      return permissionResponse(await runRemoteJson<AnswerResult>(host, ["__permission", name, id, body.optionId], { timeoutMs: 30_000 }));
     }
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
@@ -495,6 +551,28 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
       const result = await cancelMessage(name, id);
       return result ? cancelResponse(result) : messageNotFound(name, id);
+    }
+
+    // GET /api/agents/:name/permissions — prompts waiting on an answer
+    if (parts.length === 3 && parts[2] === "permissions" && method === "GET") {
+      const permissions = agentPermissions(name);
+      return permissions ? json(permissions) : json({ error: `no local agent "${name}"` }, 404);
+    }
+
+    // POST /api/agents/:name/permissions/:id — {optionId}: answer with one
+    // of the request's own options
+    if (parts.length === 4 && parts[2] === "permissions" && method === "POST") {
+      const id = parts[3]!;
+      const body = await permissionAnswerBody(req);
+      if (body instanceof Response) return body;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      try {
+        const result = await answerAgentPermission(name, id, body.optionId);
+        return result ? permissionResponse(result) : permissionNotFound(name, id);
+      } catch (error) {
+        if (error instanceof PermissionOptionError) return json({ error: error.message }, 400);
+        throw error;
+      }
     }
 
     // GET /api/agents/:name/transcript?after=n — see transcriptJson

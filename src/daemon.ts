@@ -15,6 +15,8 @@ import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
 import { mailboxHandoffActive } from "./mailbox";
 import { settleMessages } from "./messages";
+import { startCodexApprovalWatcher } from "./codexApprovals";
+import { readPermission, refreshPermissions } from "./permissions";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -232,6 +234,10 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     watch(dir, { recursive: true }, scheduleFileEvent),
   );
 
+  // Codex approvals reach the daemon's own app-server connection; it records
+  // them for `am serve` clients and replies with their answers.
+  const codexApprovals = startCodexApprovalWatcher({ publish, log });
+
   const server = Bun.serve({
     unix: socketPath,
     async fetch(req) {
@@ -298,6 +304,13 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       }
     } catch {
       // no log yet
+    }
+    // A permission request whose holder died, or whose wait ran out, would
+    // otherwise linger in clients until someone asked.
+    try {
+      for (const id of refreshPermissions()) publish("permission-resolved", readPermission(id)?.agent);
+    } catch (error) {
+      log(`permission sweep failed: ${error}`);
     }
     const waiting = new Set<string>();
     for (const agent of listAgents()) {
@@ -367,6 +380,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       stopped = true;
       clearInterval(reconciler);
       clearInterval(keepalive);
+      codexApprovals.stop();
       if (fileEventTimer) clearTimeout(fileEventTimer);
       for (const watcher of fileWatchers) watcher.close();
       for (const subscriber of subscribers) {

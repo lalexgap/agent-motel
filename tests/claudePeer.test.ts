@@ -305,6 +305,9 @@ describe("operator inbox receipts", () => {
     expect(await deliverNext("api")).toEqual({ status: "submitted", id: `${id}.json` });
     expect(typed()).toBe(false);
     expect(outputs.join("")).toContain("[am] Verified operator message");
+    // The pane shows a display-only line, which never reads as verification.
+    const shown = JSON.parse(outputs[0]!).systemMessage as string;
+    expect(shown).toBe('am: delivered 1 message — operator: "operator note"');
     const promptAt = readAgent("api")!.promptAt;
     expect(raw(id)).toMatchObject({ state: "delivered", via: "prompt", transcriptIndex: 2, startedAt: promptAt });
     // Keyed by the message am sent, not Claude's framing or the marker.
