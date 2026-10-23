@@ -8,6 +8,7 @@ import { queueAppend, queueDepth, queuePopId } from "../src/queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "../src/deliver";
 import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
 import { daemonRequest, startDaemonServer } from "../src/daemon";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { addRole } from "../src/roles";
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
 import { localHostIdentity } from "../src/config";
@@ -409,6 +410,30 @@ describe("stop ifIdle", () => {
     releaseDeliverLock("race");
     queueAppend("race", "after");
     expect(queueDepth("race")).toBe(1);
+  });
+
+  test("a dead or exited agent counts as idle, even with messages queued", async () => {
+    seedAgent("gone");
+    queueAppend("gone", "for resume");
+    const dead = await stop("gone", { ifIdle: true });
+    expect(dead.status).toBe(200);
+    expect(readAgent("gone")!.status).toBe("exited");
+    expect(queueDepth("gone")).toBe(1);
+    const again = await stop("gone", { ifIdle: true });
+    expect(again.status).toBe(200);
+  });
+
+  test("a stop that cannot take the lifecycle lock is refused as busy", async () => {
+    liveAgent("held");
+    expect(acquireLifecycleLock("held")).toBe(true);
+    try {
+      const res = await stop("held", { ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as any).reason).toBe("busy");
+      expect(readAgent("held")!.status).toBe("idle");
+    } finally {
+      releaseLifecycleLock("held");
+    }
   });
 
   test("waits out a delivery in progress, then checks", async () => {

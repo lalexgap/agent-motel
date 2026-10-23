@@ -551,7 +551,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         try {
           return stopIfIdleResponse(await stopIfIdle(agent));
         } catch (error) {
-          return json({ error: (error as Error).message }, 409);
+          return thrownConflict(error);
         }
       }
       try {
@@ -588,6 +588,9 @@ export interface ApiServerHandle {
 export function startApiServer(opts: { port?: number; hostname?: string; token: string }): ApiServerHandle {
   const { token } = opts;
   const server = Bun.serve({
+    // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
+    // and remote routes run ssh with up to 30s timeouts.
+    idleTimeout: 120,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
     async fetch(req) {

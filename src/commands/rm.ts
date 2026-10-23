@@ -55,12 +55,17 @@ export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
             if (status === "working" || status === "starting" || status === "waiting" || status === "needs-attention") {
               return { ok: false, error: `agent "${name}" is ${status}`, reason: "busy" };
             }
-            const queued = queueDepth(name);
+            // Nothing can drain a dead or exited agent's queue, and the stop keeps it for resume.
+            const queued = status === "dead" || status === "exited" ? 0 : queueDepth(name);
             if (queued > 0) return { ok: false, error: `agent "${name}" has ${queued} queued message(s)`, reason: "queued" };
             if (hasUnfinishedDelivery(name)) {
               return { ok: false, error: `agent "${name}" has a delivered message whose turn has not finished`, reason: "in_turn" };
             }
-            stopAgent(current);
+            try {
+              stopAgent(current);
+            } catch (error) {
+              return { ok: false, error: (error as Error).message, reason: "busy" };
+            }
             return { ok: true };
           } finally {
             releaseProducerLock(name);
