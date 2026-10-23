@@ -24,6 +24,7 @@ export interface PermissionOption {
 // pending → answered (an API client chose) → applied (the provider got it).
 // pending → stale (answered in the pane, the turn ended, the waiter went
 // away) or expired (nobody answered in time; the pane prompt carries on).
+// answered → stale when the decision couldn't reach the provider.
 export type PermissionState = "pending" | "answered" | "applied" | "stale" | "expired";
 
 export interface PermissionRecord {
@@ -47,8 +48,11 @@ export interface PermissionRecord {
   decisions: Record<string, unknown>;
   // The process holding the request open: the hook, or the daemon.
   pid: number;
-  claude?: { toolInput: unknown; transcriptPath?: string };
-  codex?: { threadId: string; requestId: string | number; method: string; turnId?: string };
+  // agentId: the subagent the call runs in (absent for the main agent).
+  claude?: { toolInput: unknown; transcriptPath?: string; agentId?: string; toolUseId?: string };
+  // connection: which of the daemon's app-server connections received the
+  // request; its requestId means nothing on any other.
+  codex?: { threadId: string; requestId: string | number; method: string; turnId?: string; connection?: number };
 }
 
 export type PublicPermission = Pick<
@@ -82,8 +86,11 @@ function recordFile(id: string): string {
   return join(permissionsDir(), `${id}.json`);
 }
 
+// Records carry tool input (commands, file contents): owner-only.
+const RECORD_MODE = 0o600;
+
 function withLock<T>(fn: () => T): T {
-  mkdirSync(permissionsDir(), { recursive: true });
+  mkdirSync(permissionsDir(), { recursive: true, mode: 0o700 });
   return withFileLock(join(permissionsDir(), ".lock"), fn);
 }
 
@@ -128,7 +135,7 @@ export function createPermission(
       state: "pending",
       createdAt: fields.createdAt ?? new Date(now).toISOString(),
     };
-    writeJsonAtomic(recordFile(record.id), record);
+    writeJsonAtomic(recordFile(record.id), record, { mode: RECORD_MODE });
     return record;
   });
 }
@@ -139,7 +146,7 @@ export function updatePermission(id: string, fn: (record: PermissionRecord) => b
     const record = readPermission(id);
     if (!record) return null;
     if (!fn(record)) return record;
-    writeJsonAtomic(recordFile(id), record);
+    writeJsonAtomic(recordFile(id), record, { mode: RECORD_MODE });
     return record;
   });
 }
@@ -150,11 +157,17 @@ function settle(record: PermissionRecord, state: "stale" | "expired" | "applied"
   record.resolution = resolution;
 }
 
-// End a request that is still pending. Returns whether it was.
-export function resolvePending(id: string, state: "stale" | "expired", resolution: string): boolean {
+// End a request that is still pending (or, with `from`, in one of those
+// states). Returns whether it was.
+export function resolvePending(
+  id: string,
+  state: "stale" | "expired",
+  resolution: string,
+  from: PermissionState[] = ["pending"],
+): boolean {
   let changed = false;
   updatePermission(id, (record) => {
-    if (record.state !== "pending") return false;
+    if (!from.includes(record.state)) return false;
     settle(record, state, resolution);
     changed = true;
     return true;
@@ -163,11 +176,20 @@ export function resolvePending(id: string, state: "stale" | "expired", resolutio
 }
 
 // The answerer took the decision: called by whoever holds the provider's
-// request, under the lock, so a pane answer can't slip in between.
-export function claimAnswer(id: string): PermissionRecord | null {
+// request, under the lock, so a pane answer can't slip in between. `deliver`
+// hands it to the provider inside the claim: only a delivery that didn't
+// throw counts as applied; one that did ends the request stale, so the
+// answerer hears it failed. Null unless it was applied.
+export function claimAnswer(id: string, deliver?: (record: PermissionRecord) => void): PermissionRecord | null {
   let claimed: PermissionRecord | null = null;
   updatePermission(id, (record) => {
     if (record.state !== "answered") return false;
+    try {
+      deliver?.(record);
+    } catch {
+      settle(record, "stale", "delivering the decision to the provider failed");
+      return true;
+    }
     settle(record, "applied", "answered through am");
     claimed = record;
     return true;
@@ -270,6 +292,8 @@ export async function answerPermission(
   for (;;) {
     const current = readPermission(id);
     if (current?.state === "applied") return { ok: true, id, optionId };
+    // Withdrawn under it (delivery failed, the connection went): say why.
+    if (current && current.state !== "answered") return conflictFor(current);
     if (Date.now() >= deadline) break;
     await Bun.sleep(opts.pollMs ?? 100);
   }

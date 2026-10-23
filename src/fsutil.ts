@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Shared file primitives for am's on-disk state. Several processes (hooks,
@@ -19,9 +19,15 @@ export function readJsonOrNull<T>(file: string): T | null {
 // Unique tmp + rename: a reader never sees a torn write, and two concurrent
 // writers can't interleave into invalid JSON — last rename wins with a
 // complete document either way.
-export function writeJsonAtomic(file: string, value: unknown, opts: { pretty?: boolean } = {}): void {
+// `mode` sets the file's permissions (the default leaves them to the umask).
+export function writeJsonAtomic(file: string, value: unknown, opts: { pretty?: boolean; mode?: number } = {}): void {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, opts.pretty === false ? undefined : 2) + "\n");
+  const text = JSON.stringify(value, null, opts.pretty === false ? undefined : 2) + "\n";
+  if (opts.mode === undefined) writeFileSync(tmp, text);
+  else {
+    writeFileSync(tmp, text, { mode: opts.mode });
+    chmodSync(tmp, opts.mode); // a leftover tmp keeps its old mode
+  }
   renameSync(tmp, file);
 }
 

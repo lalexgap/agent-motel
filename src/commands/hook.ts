@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   agentNamesAndAliases,
   agentProvider,
@@ -40,10 +40,12 @@ import {
   claudePermissionSummary,
   claudeToolCallStates,
   createPermission,
+  listPermissions,
   readPermission,
   resolvePending,
   sameToolCall,
   stalePermissions,
+  type PermissionRecord,
 } from "../permissions";
 import {
   closeOpenSubagents,
@@ -180,7 +182,8 @@ export function deliveryPreview(message: string, max = 80): string {
     .replace(/\s+/g, " ")
     .trim();
   if (body.length > max) body = body.slice(0, max - 1).trimEnd() + "…";
-  return `${sender}: "${body}"`;
+  // Quoted as JSON, so a quote in the body can't close it and fake an entry.
+  return `${sender}: ${JSON.stringify(body)}`;
 }
 
 // The display-only line Claude Code shows in the pane when a hook hands
@@ -461,9 +464,19 @@ export async function awaitPermissionDecision(
   const write = opts.write ?? ((out: string) => process.stdout.write(out));
   const ping = (event: string) => (opts.notify ?? notifyDaemon)(agent.name, event).catch(() => undefined);
   const input = payload.tool_input ?? {};
+  const agentId = subagentIdOf(payload);
+  const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
   const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : undefined;
-  const callStates = () => (transcriptPath ? claudeToolCallStates(transcriptPath, tool, input) : { uses: [], answered: [] });
-  const baseline = new Set(callStates().answered);
+  // A subagent's calls go to its own transcript, beside the parent's.
+  const callTranscript =
+    transcriptPath && agentId
+      ? join(dirname(transcriptPath), basename(transcriptPath, ".jsonl"), "subagents", `agent-${agentId}.jsonl`)
+      : transcriptPath;
+  const callStates = () => (callTranscript ? claudeToolCallStates(callTranscript, tool, input) : { uses: [], answered: [] });
+  // Claude writes the tool_use before it asks, so this call is one already
+  // there without a result; an identical call made later is someone else's.
+  const initial = callStates();
+  const candidates = new Set(initial.uses.filter((id) => !initial.answered.includes(id)));
   const { options, decisions } = claudePermissionOptions(payload.permission_suggestions);
   const record = createPermission({
     agent: agent.name,
@@ -475,7 +488,12 @@ export async function awaitPermissionDecision(
     decisions,
     expiresAt: new Date(Date.now() + opts.waitMs).toISOString(),
     pid: process.pid,
-    claude: { toolInput: input, ...(transcriptPath ? { transcriptPath } : {}) },
+    claude: {
+      toolInput: input,
+      ...(callTranscript ? { transcriptPath: callTranscript } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(toolUseId ? { toolUseId } : {}),
+    },
   });
   await ping("permission-request");
 
@@ -503,16 +521,16 @@ export async function awaitPermissionDecision(
         continue;
       }
       if (current.state !== "pending") return;
-      if (transcriptPath) {
+      if (callTranscript && candidates.size > 0) {
         let size = lastSize;
         try {
-          size = statSync(transcriptPath).size;
+          size = statSync(callTranscript).size;
         } catch {
           // not written yet
         }
         if (size !== lastSize) {
           lastSize = size;
-          if (callStates().answered.some((id) => !baseline.has(id))) {
+          if (callStates().answered.some((id) => candidates.has(id))) {
             if (resolvePending(record.id, "stale", "answered in the pane")) await ping("permission-resolved");
             return;
           }
@@ -529,6 +547,11 @@ export async function awaitPermissionDecision(
   }
 }
 
+// The subagent a hook fires in; "" for the main agent.
+function subagentIdOf(payload: Record<string, unknown>): string {
+  return typeof payload.agent_id === "string" ? payload.agent_id : "";
+}
+
 // A Claude hook that shows a pending request no longer is: the same call ran
 // (PostToolUse), or the turn it belonged to is over.
 export function retiredPermissions(
@@ -539,13 +562,34 @@ export function retiredPermissions(
 ): number {
   const names = agentNamesAndAliases(agent);
   if (event === "post-tool-use" && typeof payload.tool_name === "string") {
+    // One call ran, so one request goes: this exact call's when both name
+    // it, else the oldest identical one in the same (sub)agent. Other
+    // identical calls may still be waiting on theirs.
     const call = { tool: payload.tool_name, input: payload.tool_input ?? {} };
-    return stalePermissions(names, "answered in the pane", (r) =>
-      r.provider === "claude" && sameToolCall(call, { tool: r.tool, input: r.claude?.toolInput ?? r.input }),
-    ).length;
+    const agentId = subagentIdOf(payload);
+    const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
+    const candidates = listPermissions().filter(
+      (r) =>
+        r.state === "pending" &&
+        r.provider === "claude" &&
+        names.includes(r.agent) &&
+        (r.claude?.agentId ?? "") === agentId &&
+        sameToolCall(call, { tool: r.tool, input: r.claude?.toolInput ?? r.input }),
+    );
+    const exact = toolUseId ? candidates.filter((r) => r.claude?.toolUseId === toolUseId) : [];
+    const ordered = exact.length ? exact : candidates.filter((r) => !toolUseId || !r.claude?.toolUseId);
+    for (const record of ordered) {
+      if (resolvePending(record.id, "stale", "answered in the pane")) return 1;
+    }
+    return 0;
   }
   if (isTurnBoundary(event, payload, effects)) {
-    return stalePermissions(names, "the turn ended", (r) => r.provider === "claude").length;
+    // The main agent's turn ending ends its foreground subagents' calls too,
+    // but not a background subagent's, which runs on past it.
+    const sessionBoundary = event === "session-start" || event === "session-end";
+    const outlives = (r: PermissionRecord) =>
+      !sessionBoundary && !!r.claude?.agentId && isBackgroundSubagent(agent, r.claude.agentId);
+    return stalePermissions(names, "the turn ended", (r) => r.provider === "claude" && !outlives(r)).length;
   }
   return 0;
 }

@@ -60,9 +60,14 @@ describe("codex decision options", () => {
       { id: "decline", label: "No, continue without it", kind: "deny" },
     ]);
     expect(Object.keys(decisions)).toEqual(["networkPolicy-0", "networkPolicy-1", "decline"]);
+    // Without availableDecisions, only one-off decisions: no standing
+    // approval Codex didn't offer.
     expect(codexApprovalOptions("item/fileChange/requestApproval", {}).options.map((o) => o.id)).toEqual([
-      "accept", "acceptForSession", "decline", "cancel",
+      "accept", "decline", "cancel",
     ]);
+    expect(
+      codexApprovalOptions("item/commandExecution/requestApproval", { proposedExecpolicyAmendment: ["touch", "x"] }).options.map((o) => o.id),
+    ).toEqual(["accept", "decline", "cancel"]);
   });
 
   test("summaries", () => {
@@ -171,6 +176,49 @@ describe("the daemon's app-server connection", () => {
     client!.close();
     await until(() => readPermission(fourth.id)!.state === "stale", "connection loss");
     expect(readPermission(fourth.id)!.resolution).toBe("lost the codex app-server connection");
+  }, 20_000);
+
+  test("an answer is never sent on a later connection, where its request id means another request", async () => {
+    const socket = join(home, "app-server.sock");
+    fakeAppServer(socket);
+    watcher = startCodexApprovalWatcher({
+      publish: () => undefined,
+      socket: () => socket,
+      enabled: () => true,
+      targets: () => [{ agent: "api", threadId: "t1" }],
+      syncMs: 60_000,
+      pollMs: 60_000, // delivery only when the test says
+    });
+    await until(() => received.some((m) => m.method === "thread/resume"), "rejoin");
+    send({ id: 7, method: "item/commandExecution/requestApproval", params: commandParams("t1") });
+    const first = await until(() => listPermissions().find((r) => r.codex?.requestId === 7), "the request");
+    const answer = answerPermission(["api"], first.id, "accept", { ackMs: 5000, pollMs: 20 });
+    await until(() => readPermission(first.id)!.state === "answered", "the answer");
+
+    // The connection drops before the answer goes out; the watcher rejoins.
+    const old = client!;
+    old.close();
+    await until(() => readPermission(first.id)!.state === "stale", "the answer withdrawn");
+    expect(await answer).toMatchObject({ ok: false, reason: "not_pending" });
+    expect(readPermission(first.id)!.resolution).toBe("lost the codex app-server connection");
+    const before = received.length;
+    await watcher.sync();
+    await until(() => client !== old && received.slice(before).some((m) => m.method === "thread/resume"), "the rejoin");
+
+    // Same request id, new connection: a different request.
+    send({ id: 7, method: "item/commandExecution/requestApproval", params: commandParams("t1", { command: "rm -rf /w" }) });
+    const second = await until(() => listPermissions().find((r) => r.codex?.requestId === 7 && r.id !== first.id), "the new request");
+    watcher.deliver();
+    await Bun.sleep(100);
+    expect(received.slice(before).some((m) => m.id === 7 && m.result)).toBe(false);
+    expect(readPermission(second.id)!.state).toBe("pending");
+
+    const answered = answerPermission(["api"], second.id, "cancel", { ackMs: 5000, pollMs: 20 });
+    await until(() => readPermission(second.id)!.state === "answered", "the second answer");
+    watcher.deliver();
+    expect(await answered).toMatchObject({ ok: true });
+    const reply = await until(() => received.slice(before).find((m) => m.id === 7 && m.result), "the reply");
+    expect(reply.result).toEqual({ decision: "cancel" });
   }, 20_000);
 
   test("off while agents run permissionless: never connects", async () => {

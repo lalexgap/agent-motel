@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ensureDirs } from "../src/paths";
-import { writeAgent } from "../src/state";
+import { writeAgent, type AgentState } from "../src/state";
+import { retiredPermissions } from "../src/commands/hook";
 import {
   PermissionOptionError,
   answerPermission,
@@ -14,6 +15,7 @@ import {
   createPermission,
   listPermissions,
   pendingPermissions,
+  permissionsDir,
   readPermission,
   refreshPermissions,
   type PermissionRecord,
@@ -112,6 +114,37 @@ describe("answering", () => {
     expect(readPermission(record.id)).toMatchObject({ state: "applied", optionId: "suggestion-0" });
     expect(pendingPermissions(["api"])).toEqual([]);
     expect(await answerPermission(["api"], record.id, "allow")).toMatchObject({ ok: false, reason: "already_resolved" });
+  });
+
+  test("a delivery that throws is never applied: the answer fails at once, not ok", async () => {
+    const record = seedRecord();
+    const timer = setInterval(() => {
+      for (const r of listPermissions()) {
+        if (r.state === "answered") {
+          expect(claimAnswer(r.id, () => { throw new Error("socket gone"); })).toBeNull();
+        }
+      }
+    }, 20);
+    const started = Date.now();
+    let result;
+    try {
+      result = await answerPermission(["api"], record.id, "allow", { ackMs: 5000, pollMs: 10 });
+    } finally {
+      clearInterval(timer);
+    }
+    expect(result).toMatchObject({ ok: false, reason: "not_pending" });
+    expect((result as { error: string }).error).toContain("delivering the decision to the provider failed");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(readPermission(record.id)).toMatchObject({ state: "stale", resolution: "delivering the decision to the provider failed" });
+  });
+
+  test("records are owner-only: they carry tool input", () => {
+    rmSync(permissionsDir(), { recursive: true, force: true });
+    const record = seedRecord();
+    expect(statSync(permissionsDir()).mode & 0o777).toBe(0o700);
+    expect(statSync(join(permissionsDir(), `${record.id}.json`)).mode & 0o777).toBe(0o600);
+    expect(refreshPermissions(Date.now(), () => false)).toEqual([record.id]); // rewritten
+    expect(statSync(join(permissionsDir(), `${record.id}.json`)).mode & 0o777).toBe(0o600);
   });
 
   test("an answer nobody takes is withdrawn: not_pending", async () => {
@@ -244,6 +277,33 @@ describe("the PermissionRequest hook", () => {
     expect(await new Response(proc.stdout).text()).toContain('"behavior":"allow"');
   }, 20_000);
 
+  test("a later identical call's result doesn't count as this one's answer", async () => {
+    const proc = startHook();
+    const record = await pending();
+    appendFileSync(transcript(), toolUse("toolu_2") + toolResult("toolu_2"));
+    await Bun.sleep(600);
+    expect(readPermission(record.id)!.state).toBe("pending");
+    await answerPermission(["api"], record.id, "allow");
+    await proc.exited;
+    expect(await new Response(proc.stdout).text()).toContain('"behavior":"allow"');
+  }, 20_000);
+
+  test("a subagent's request is recorded as its own and watches its own transcript", async () => {
+    const subTranscript = join(home, "session", "subagents", "agent-sub-1.jsonl");
+    mkdirSync(dirname(subTranscript), { recursive: true });
+    writeFileSync(subTranscript, toolUse("toolu_s"));
+    const proc = startHook("permission-request", { agent_id: "sub-1", tool_use_id: "toolu_s" });
+    const record = await pending();
+    expect(record.claude).toMatchObject({ agentId: "sub-1", toolUseId: "toolu_s", transcriptPath: subTranscript });
+    // The main agent's identical call finishing is not the subagent's.
+    appendFileSync(transcript(), toolResult("toolu_1"));
+    await Bun.sleep(600);
+    expect(readPermission(record.id)!.state).toBe("pending");
+    appendFileSync(subTranscript, toolResult("toolu_s"));
+    expect(await proc.exited).toBe(0);
+    expect(readPermission(record.id)).toMatchObject({ state: "stale", resolution: "answered in the pane" });
+  }, 20_000);
+
   test("the call running (PostToolUse) or the turn ending retires it", async () => {
     const proc = startHook();
     const record = await pending();
@@ -276,6 +336,46 @@ describe("the PermissionRequest hook", () => {
     expect(await proc.exited).toBe(0);
     expect(listPermissions()).toEqual([]);
   }, 20_000);
+});
+
+describe("retiring claude requests from other hooks", () => {
+  const agent = { name: "api", provider: "claude", status: "working", dir: "/w", tmuxSession: "x", createdAt: "", updatedAt: "" } as AgentState;
+  const call = (over: Partial<PermissionRecord["claude"]> = {}) =>
+    seedRecord({ claude: { toolInput: { command: "npm test" }, ...over } });
+  const post = (payload: Record<string, unknown> = {}) =>
+    retiredPermissions("post-tool-use", agent, { tool_name: "Bash", tool_input: { command: "npm test" }, ...payload }, { status: "working" });
+
+  test("one call running retires one identical request, the oldest, in its own (sub)agent", () => {
+    const parentA = call();
+    const parentB = call();
+    const sub = call({ agentId: "sub-1" });
+    expect(post({ agent_id: "sub-2" })).toBe(0);
+    expect(post()).toBe(1);
+    expect(readPermission(parentA.id)!.state).toBe("stale");
+    expect(readPermission(parentB.id)!.state).toBe("pending");
+    expect(readPermission(sub.id)!.state).toBe("pending");
+    expect(post({ agent_id: "sub-1" })).toBe(1);
+    expect(readPermission(sub.id)!.state).toBe("stale");
+    expect(readPermission(parentB.id)!.state).toBe("pending");
+  });
+
+  test("a call that names itself retires only its own request", () => {
+    const a = call({ toolUseId: "toolu_a" });
+    const b = call({ toolUseId: "toolu_b" });
+    expect(post({ tool_use_id: "toolu_b" })).toBe(1);
+    expect(readPermission(a.id)!.state).toBe("pending");
+    expect(readPermission(b.id)!.state).toBe("stale");
+    expect(post({ tool_use_id: "toolu_c" })).toBe(0);
+  });
+
+  test("a subagent's turn boundary retires nothing; the main agent's retires its foreground calls", () => {
+    const parent = call();
+    const sub = call({ agentId: "sub-1" });
+    expect(retiredPermissions("user-prompt-submit", agent, { agent_id: "sub-1" }, { status: "working" })).toBe(0);
+    expect(retiredPermissions("stop", agent, {}, { status: "idle" })).toBe(2);
+    expect(readPermission(parent.id)!.state).toBe("stale");
+    expect(readPermission(sub.id)!.state).toBe("stale");
+  });
 });
 
 describe("the remote end (__permissions / __permission)", () => {

@@ -55,21 +55,16 @@ function decisionOption(decision: Decision, index: number): PermissionOption | n
 }
 
 // The request's own decisions when Codex lists them (availableDecisions),
-// else every decision its method accepts. Each option sends exactly the
-// value Codex offered, so a persisted rule is Codex's own doing.
+// else only the one-off ones: a standing approval Codex didn't offer is never
+// made up. Each option sends exactly the value Codex offered, so a persisted
+// rule is Codex's own doing.
 export function codexApprovalOptions(
-  method: string,
+  _method: string,
   params: Record<string, unknown>,
 ): { options: PermissionOption[]; decisions: Record<string, unknown> } {
-  let available: Decision[];
-  if (Array.isArray(params.availableDecisions)) available = params.availableDecisions as Decision[];
-  else if (method === FILE_CHANGE_APPROVAL) available = ["accept", "acceptForSession", "decline", "cancel"];
-  else {
-    const amendment = Array.isArray(params.proposedExecpolicyAmendment)
-      ? [{ acceptWithExecpolicyAmendment: { execpolicy_amendment: params.proposedExecpolicyAmendment } }]
-      : [];
-    available = ["accept", "acceptForSession", ...amendment, "decline", "cancel"];
-  }
+  const available: Decision[] = Array.isArray(params.availableDecisions)
+    ? (params.availableDecisions as Decision[])
+    : ["accept", "decline", "cancel"];
   const options: PermissionOption[] = [];
   const decisions: Record<string, unknown> = {};
   available.forEach((decision, i) => {
@@ -129,9 +124,16 @@ export interface CodexApprovalWatcher {
   stop(): void;
   // Run one subscription pass now (tests; also the timer's body).
   sync(): Promise<void>;
+  // Hand answered requests back to Codex now (tests; also the poll's body).
+  deliver(): void;
 }
 
+// Numbers each app-server connection, so an answer only ever goes back on the
+// connection whose request it answers.
+let connections = 0;
+
 interface Connection {
+  epoch: number;
   ws: WebSocket;
   call: (method: string, params: unknown) => Promise<any>;
   subscribed: Map<string, string>; // threadId → agent
@@ -153,10 +155,12 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
 
   const mine = (r: PermissionRecord) => r.provider === "codex" && r.pid === process.pid && !!r.codex;
 
+  // Ends answers not yet handed back too: once Codex dropped the request (or
+  // the connection it came on), nothing can deliver them.
   const staleWhere = (resolution: string, match: (r: PermissionRecord) => boolean) => {
     for (const record of listPermissions()) {
-      if (record.state !== "pending" || !mine(record) || !match(record)) continue;
-      if (resolvePending(record.id, "stale", resolution)) opts.publish("permission-resolved", record.agent);
+      if ((record.state !== "pending" && record.state !== "answered") || !mine(record) || !match(record)) continue;
+      if (resolvePending(record.id, "stale", resolution, ["pending", "answered"])) opts.publish("permission-resolved", record.agent);
     }
   };
 
@@ -187,6 +191,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
           requestId: msg.id,
           method: msg.method,
           ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+          connection: c.epoch,
         },
       });
       opts.publish("permission-request", agent);
@@ -195,7 +200,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
     }
   };
 
-  const onNotification = (msg: { method: string; params?: Record<string, any> }) => {
+  const onNotification = (c: Connection, msg: { method: string; params?: Record<string, any> }) => {
     const p = msg.params ?? {};
     if (msg.method === "item/started" && p.item?.type === "fileChange" && typeof p.item.id === "string") {
       const changes = Array.isArray(p.item.changes) ? p.item.changes : [];
@@ -203,7 +208,10 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
     } else if (msg.method === "item/completed" && typeof p.item?.id === "string") {
       fileChanges.delete(p.item.id);
     } else if (msg.method === "serverRequest/resolved") {
-      staleWhere("answered in the pane", (r) => r.codex!.threadId === p.threadId && r.codex!.requestId === p.requestId);
+      staleWhere(
+        "answered in the pane",
+        (r) => r.codex!.connection === c.epoch && r.codex!.threadId === p.threadId && r.codex!.requestId === p.requestId,
+      );
     } else if (msg.method === "turn/completed") {
       staleWhere("the turn ended", (r) => r.codex!.threadId === p.threadId);
     }
@@ -215,6 +223,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
       const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
       let nextId = 1;
       const c: Connection = {
+        epoch: ++connections,
         ws,
         subscribed: new Map(),
         skipped: new Map(),
@@ -239,7 +248,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
         }
         if (msg && typeof msg.method === "string") {
           if (msg.id !== undefined && msg.id !== null) onRequest(c, msg);
-          else onNotification(msg);
+          else onNotification(c, msg);
           return;
         }
         const p = typeof msg?.id === "number" ? pending.get(msg.id) : undefined;
@@ -252,7 +261,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
         for (const p of pending.values()) p.reject(new Error("app-server connection closed"));
         pending.clear();
         if (conn === c) conn = null;
-        staleWhere("lost the codex app-server connection", () => true);
+        staleWhere("lost the codex app-server connection", (r) => r.codex!.connection === c.epoch);
       };
       try {
         await new Promise<void>((resolve, reject) => {
@@ -353,19 +362,24 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
   };
 
   // Hand each answered request back to Codex on the connection that saw it.
+  // The send happens inside the claim, so a failed one is never "applied".
   const deliver = () => {
     const c = conn;
-    if (!c) return;
+    if (!c || c.ws.readyState !== WebSocket.OPEN) return;
     for (const record of listPermissions()) {
-      if (record.state !== "answered" || !mine(record) || !c.subscribed.has(record.codex!.threadId)) continue;
-      const claimed = claimAnswer(record.id);
-      if (!claimed?.optionId) continue;
-      try {
-        c.ws.send(JSON.stringify({ id: claimed.codex!.requestId, result: { decision: claimed.decisions[claimed.optionId] } }));
-      } catch (error) {
-        log(`codex approvals: answering ${claimed.agent} failed: ${error}`);
-      }
-      opts.publish("permission-resolved", claimed.agent);
+      if (record.state !== "answered" || !mine(record) || record.codex!.connection !== c.epoch) continue;
+      if (!c.subscribed.has(record.codex!.threadId)) continue;
+      let attempted = false;
+      claimAnswer(record.id, (r) => {
+        attempted = true;
+        try {
+          c.ws.send(JSON.stringify({ id: r.codex!.requestId, result: { decision: r.decisions[r.optionId!] } }));
+        } catch (error) {
+          log(`codex approvals: answering ${r.agent} failed: ${error}`);
+          throw error;
+        }
+      });
+      if (attempted) opts.publish("permission-resolved", record.agent);
     }
   };
 
@@ -381,6 +395,7 @@ export function startCodexApprovalWatcher(opts: CodexApprovalWatcherOptions): Co
 
   return {
     sync,
+    deliver,
     stop() {
       stopped = true;
       clearInterval(syncTimer);
