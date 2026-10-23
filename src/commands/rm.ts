@@ -35,7 +35,8 @@ export function stopAgent(agent: AgentState, opts: { lifecycleLocked?: boolean }
 }
 
 export type StopIfIdleReason = "busy" | "queued" | "in_turn";
-export type StopIfIdleResult = { ok: true } | { ok: false; error: string; reason: StopIfIdleReason };
+export type IdleRefusal = { ok: false; error: string; reason: StopIfIdleReason };
+export type StopIfIdleResult = { ok: true } | IdleRefusal;
 
 const STOP_IF_IDLE_WAIT_MS = 10_000;
 // A handover this close before the idle transition may be one the turn that
@@ -56,11 +57,15 @@ function handedOverSinceIdle(agent: AgentState, status: string): boolean {
   return handoffAt > idleAt - (agent.lastHandoffInTurn ? 0 : HANDOFF_GRACE_MS);
 }
 
-// Stop only an agent with nothing to do: idle, nothing queued, no delivered
-// message still in its turn. Checked and stopped under the delivery and
+// Run `act` only on an agent with nothing to do: idle, nothing queued, no
+// delivered message still in its turn. Checked and run under the delivery and
 // producer locks, so no delivery or enqueue can land in between. A mailbox
-// still busy at the deadline is a delivery in progress, so busy.
-export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
+// still busy at the deadline is a delivery in progress, so busy. `act` runs
+// holding both locks, so it must not deliver or enqueue itself.
+export async function runIfIdle<T>(
+  agent: AgentState,
+  act: (current: AgentState) => T,
+): Promise<{ ok: true; value: T } | IdleRefusal> {
   const name = agent.name;
   for (const deadline = Date.now() + STOP_IF_IDLE_WAIT_MS; ;) {
     if (acquireDeliverLock(name)) {
@@ -81,12 +86,7 @@ export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
             if (hasUnfinishedDelivery(name)) {
               return { ok: false, error: `agent "${name}" has a delivered message whose turn has not finished`, reason: "in_turn" };
             }
-            try {
-              stopAgent(current);
-            } catch (error) {
-              return { ok: false, error: (error as Error).message, reason: "busy" };
-            }
-            return { ok: true };
+            return { ok: true, value: act(current) };
           } finally {
             releaseProducerLock(name);
           }
@@ -97,6 +97,15 @@ export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
     }
     if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy`, reason: "busy" };
     await Bun.sleep(100);
+  }
+}
+
+export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
+  try {
+    const result = await runIfIdle(agent, (current) => stopAgent(current));
+    return result.ok ? { ok: true } : result;
+  } catch (error) {
+    return { ok: false, error: (error as Error).message, reason: "busy" };
   }
 }
 

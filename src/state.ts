@@ -32,6 +32,10 @@ export interface AgentState {
   tmuxSession: string;
   // Absent in state files written before multi-provider support → claude.
   provider?: Provider;
+  // Explicit model and reasoning effort; absent = the provider default. Set by
+  // `am new` and `am restart --model/--effort`, reused by every resume.
+  model?: string;
+  effort?: string;
   // Codex only: attached to the app-server daemon; reused on resume/restart/move.
   codexDaemon?: boolean;
   // Whether the current launch actually attached (codexDaemon may have fallen back to in-process).

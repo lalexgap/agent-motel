@@ -284,3 +284,18 @@ export function validateSelection(
   }
   return complaints;
 }
+
+// A rejected --model / --effort: the API answers 400 rather than 409.
+export class SelectionError extends Error {}
+
+// Throws on a fatal complaint; a warning goes to `warn` (unset = dropped).
+export function checkSelection(
+  catalog: ProviderCatalog | null,
+  selection: { model?: string; effort?: string },
+  warn?: (message: string) => void,
+): void {
+  for (const complaint of validateSelection(catalog, selection)) {
+    if (complaint.fatal) throw new SelectionError(`${complaint.message} (see \`am models\`)`);
+    warn?.(`warning: ${complaint.message}`);
+  }
+}

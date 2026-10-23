@@ -5,8 +5,12 @@ import { tmpdir } from "node:os";
 import { restartAgent } from "../src/commands/restart";
 import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, releaseDeliverLock } from "../src/deliver";
-import { queueAppend, queueList } from "../src/queue";
-import { readAgent, writeAgent } from "../src/state";
+import { queueAppend, queueClear, queueList, queuePopId } from "../src/queue";
+import { readAgent, updateAgentStatus, writeAgent, type AgentState } from "../src/state";
+import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
+import { SelectionError } from "../src/catalog";
+import { startApiServer, type ApiServerHandle } from "../src/server";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
 
 let home: string;
@@ -172,5 +176,150 @@ esac
     writeFileSync(join(home, "continue"), "");
     expect(await child.exited).toBe(0);
     expect(readAgent("api")?.status).toBe("starting");
+  });
+});
+
+describe("restart with a model change", () => {
+  const launch = () => readFileSync(join(home, "launch"), "utf8");
+  const codexCatalog = JSON.stringify({
+    models: [
+      { slug: "gpt-6-luna", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] },
+      { slug: "gpt-6.1-sol", supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }] },
+    ],
+  });
+  function useCodex(extra: Partial<AgentState> = {}) {
+    writeFileSync(join(home, "codex"), `#!/bin/sh\nif [ "$1" = debug ]; then printf '%s' '${codexCatalog}'; fi\nexit 0\n`);
+    writeAgent({ ...readAgent("api")!, provider: "codex", ...extra });
+  }
+
+  test("claude: launches with the new model and effort and keeps them for later restarts", async () => {
+    expect(await restartAgent("api", { model: "opus", effort: "high" })).toEqual({ model: "opus", effort: "high" });
+    expect(launch()).toContain("'--model' 'opus' '--effort' 'high' '--resume' 'conversation-123'");
+    expect(readAgent("api")).toMatchObject({ model: "opus", effort: "high", sessionId: "conversation-123" });
+    await restartAgent("api");
+    expect(launch()).toContain("'--model' 'opus' '--effort' 'high' '--resume' 'conversation-123'");
+    // null goes back to the provider default.
+    expect(await restartAgent("api", { model: null })).toEqual({ model: null, effort: "high" });
+    expect(launch()).not.toContain("'--model'");
+    expect(readAgent("api")!.model).toBeUndefined();
+  });
+
+  test("codex: passes --model and the effort override ahead of resume and persists them", async () => {
+    useCodex({ model: "gpt-6-luna" });
+    expect(await restartAgent("api", { model: "gpt-6.1-sol", effort: "high" })).toEqual({ model: "gpt-6.1-sol", effort: "high" });
+    expect(launch()).toContain("'--model' 'gpt-6.1-sol' '-c' 'model_reasoning_effort=high' 'resume' 'conversation-123'");
+    expect(readAgent("api")).toMatchObject({ model: "gpt-6.1-sol", effort: "high" });
+  });
+
+  test("an invalid model or effort is rejected before the pane is touched", async () => {
+    useCodex({ model: "gpt-6-luna" });
+    await expect(restartAgent("api", { model: "gpt-nope" })).rejects.toThrow(SelectionError);
+    // luna has no high effort.
+    await expect(restartAgent("api", { effort: "high" })).rejects.toThrow(/unknown codex effort "high" for gpt-6-luna/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({ model: "gpt-6-luna", status: "working" });
+    expect(readAgent("api")!.effort).toBeUndefined();
+  });
+
+  test("a queued message survives the restart, receipt still queued", async () => {
+    const id = queueTrackedMessage("api", "after the restart");
+    await restartAgent("api", { model: "opus" });
+    expect(queueList("api").map((e) => e.message)).toEqual(["after the restart"]);
+    expect(readMessage("api", id)).toMatchObject({ state: "queued", deliveredAt: null });
+  });
+});
+
+describe("POST /api/agents/:name/restart", () => {
+  let server: ApiServerHandle;
+  const TOKEN = "restart-token";
+  beforeEach(() => {
+    server = startApiServer({ port: 0, hostname: "127.0.0.1", token: TOKEN });
+  });
+  afterEach(() => server.stop());
+  const restart = (name: string, body?: unknown) =>
+    fetch(`${server.url}/api/agents/${name}/restart`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const setStatus = (status: AgentState["status"]) => {
+    const agent = readAgent("api")!;
+    updateAgentStatus(agent, status);
+    writeAgent(agent);
+  };
+
+  test("restarts on the new model and answers with what it now runs", async () => {
+    const res = await restart("api", { model: "sonnet", effort: "low" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, model: "sonnet", effort: "low" });
+    expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'sonnet' '--effort' 'low' '--resume' 'conversation-123'");
+    // "" and null both mean the provider default; omitted keeps the value.
+    expect(await (await restart("api", { effort: "" })).json()).toEqual({ ok: true, model: "sonnet", effort: null });
+    expect(await (await restart("api")).json()).toEqual({ ok: true, model: "sonnet", effort: null });
+  });
+
+  test("ifIdle refuses busy, queued and in_turn agents without touching the pane", async () => {
+    let res = await restart("api", { model: "opus", ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'agent "api" is working', reason: "busy" });
+
+    setStatus("idle");
+    queueAppend("api", "later");
+    res = await restart("api", { model: "opus", ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).reason).toBe("queued");
+
+    queueClear("api");
+    const id = queueTrackedMessage("api", "now");
+    queuePopId("api", `${id}.json`);
+    markDelivered("api", `${id}.json`);
+    res = await restart("api", { model: "opus", ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).reason).toBe("in_turn");
+
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")!.model).toBeUndefined();
+  });
+
+  test("ifIdle restarts an idle agent; a held lifecycle lock is busy", async () => {
+    setStatus("idle");
+    expect(acquireLifecycleLock("api")).toBe(true);
+    try {
+      const res = await restart("api", { model: "opus", ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as any).reason).toBe("busy");
+    } finally {
+      releaseLifecycleLock("api");
+    }
+    const res = await restart("api", { model: "opus", ifIdle: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, model: "opus", effort: null });
+    expect(readAgent("api")).toMatchObject({ model: "opus", status: "starting" });
+    // Both mailbox locks are free again.
+    expect(acquireDeliverLock("api")).toBe(true);
+    releaseDeliverLock("api");
+    queueAppend("api", "after");
+  });
+
+  test("400 on an invalid model or body, 404 for an unknown agent", async () => {
+    writeFileSync(join(home, "claude"), `#!/bin/sh
+if [ "$1" = --help ]; then printf '  --effort <level>  Effort level (low, medium, high)\\n  --model <model>  Model\\n  -x\\n'; fi
+exit 0
+`);
+    const bad = await restart("api", { effort: "ultra" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as any).error).toContain('unknown claude effort "ultra"');
+    expect((await restart("api", { model: 5 })).status).toBe(400);
+    expect((await restart("api", { model: "a b" })).status).toBe(400);
+    expect((await restart("api", { ifIdle: "yes" })).status).toBe(400);
+    expect((await restart("nobody", { model: "opus" })).status).toBe(404);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+  });
+
+  test("detail reports the model, effort and the restartModel capability", async () => {
+    const detail = async () => (await (await fetch(`${server.url}/api/agents/api`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as any;
+    expect(await detail()).toMatchObject({ model: null, effort: null, restartModel: true });
+    await restart("api", { model: "opus", effort: "high" });
+    expect(await detail()).toMatchObject({ model: "opus", effort: "high", restartModel: true });
   });
 });

@@ -125,6 +125,14 @@ export interface LaunchOpts extends ConversationOpts {
   codexDaemonDir?: string;
 }
 
+// Codex has no --effort flag; reasoning effort is a config override.
+function codexModelArgs(opts: { model?: string; effort?: string }): string[] {
+  return [
+    ...(opts.model ? ["--model", opts.model] : []),
+    ...(opts.effort ? ["-c", `model_reasoning_effort=${opts.effort}`] : []),
+  ];
+}
+
 export interface LaunchPlan {
   command: string[];
   // --remote-control greedily consumes a following positional as the remote
@@ -161,9 +169,7 @@ export function buildLaunchCommand(provider: Provider, name: string, opts: Launc
       ...codexPermissionArgs(!!opts.codexDaemonDir && conversation.length > 0),
       ...CODEX_LAUNCH_OVERRIDES,
     ];
-    if (opts.model) command.push("--model", opts.model);
-    // Codex has no --effort flag; reasoning effort is a config override.
-    if (opts.effort) command.push("-c", `model_reasoning_effort=${opts.effort}`);
+    command.push(...codexModelArgs(opts));
     command.push(...conversation);
     if (opts.codexDaemonDir) command.push(...codexDaemonArgs(opts.codexDaemonDir));
     if (opts.message) command.push(`${agentSystemPrompt(name, opts)}\n\n# Your task\n\n${opts.message}`);
@@ -188,7 +194,14 @@ export function buildResumeCommand(
   if (provider === "codex") {
     // Old state files may predate session-id capture; --last picks up the
     // most recent conversation instead.
-    const command = ["codex", ...codexPermissionArgs(!!opts.codexDaemon), ...CODEX_LAUNCH_OVERRIDES, "resume", ...(sessionId ? [sessionId] : ["--last"])];
+    const command = [
+      "codex",
+      ...codexPermissionArgs(!!opts.codexDaemon),
+      ...CODEX_LAUNCH_OVERRIDES,
+      ...codexModelArgs(agent),
+      "resume",
+      ...(sessionId ? [sessionId] : ["--last"]),
+    ];
     if (opts.codexDaemon) command.push(...codexDaemonArgs(agent.dir));
     if (opts.message) command.push(opts.message);
     return { command };
@@ -196,6 +209,8 @@ export function buildResumeCommand(
   const role = roleForAgent(agent);
   return claudeCommand(agent.name, sessionId ? ["--resume", sessionId] : ["--continue"], {
     ...opts,
+    model: agent.model,
+    effort: agent.effort,
     reportTo: agent.reportTo,
     role,
     roleInstructions: agent.roleInstructions ?? (role ? getRole(role)?.instructions : undefined),

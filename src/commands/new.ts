@@ -280,7 +280,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
   const codexDaemonRequested = codexDaemonWanted(!!codexDaemon, !!opts.continue || opts.resume === true);
   const codexDaemonLaunched = provider === "codex" ? codexDaemonLaunch(codexDaemonRequested, dir, deadline) : undefined;
-  let codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume, deadline) : codexDaemonLaunched;
+  let codexDaemonAttached = codexDaemonLaunched && typeof opts.resume === "string" ? codexPreload(opts.resume, deadline, undefined, { model, effort: opts.effort }) : codexDaemonLaunched;
   const codexThreadId = codexDaemonAttached && !opts.resume && !opts.continue
     ? await createCodexThread({ cwd: dir, name, model, effort: opts.effort, bypass: loadConfig().skipPermissions }, deadline, opts.quiet)
     : undefined;
@@ -312,6 +312,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     dir,
     tmuxSession: session,
     provider,
+    model,
+    effort: opts.effort,
     codexDaemon,
     codexDaemonAttached,
     codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,

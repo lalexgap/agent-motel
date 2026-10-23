@@ -12,6 +12,9 @@ import { transcriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
+import { restartAgent, restartIfIdle, type RestartOpts, type RestartResult } from "./commands/restart";
+import { localCatalogs } from "./commands/models";
+import { SelectionError, parseCatalogs, type ProviderCatalog } from "./catalog";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest, notifyDaemon } from "./daemon";
 import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
@@ -120,6 +123,9 @@ export function agentDetail(name: string) {
         : displayStatusReason(agent, status) ?? null,
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
+    // null = the provider default.
+    model: agent.model ?? null,
+    effort: agent.effort ?? null,
     role: roleForAgent(agent) ?? null,
     dir: agent.dir,
     task: agent.task ?? null,
@@ -135,6 +141,8 @@ export function agentDetail(name: string) {
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
     permissionRequests: true,
+    // ...and that `am restart` takes --model/--effort/--if-idle/--json.
+    restartModel: true,
     pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
   };
 }
@@ -240,6 +248,55 @@ async function stopBody(req: Request): Promise<Response | { ifIdle: boolean }> {
   const body = (await req.json().catch(() => null)) as { ifIdle?: unknown } | null;
   if (body?.ifIdle != null && typeof body.ifIdle !== "boolean") return json({ error: "ifIdle must be a boolean" }, 400);
   return { ifIdle: body?.ifIdle === true };
+}
+
+// {model?, effort?, ifIdle?}: model/effort null or "" = the provider default.
+type RestartBody = Pick<RestartOpts, "model" | "effort"> & { ifIdle: boolean };
+
+async function restartBody(req: Request): Promise<Response | RestartBody> {
+  const body = (await req.json().catch(() => null)) as { model?: unknown; effort?: unknown; ifIdle?: unknown } | null;
+  if (body?.ifIdle != null && typeof body.ifIdle !== "boolean") return json({ error: "ifIdle must be a boolean" }, 400);
+  const parsed: RestartBody = { ifIdle: body?.ifIdle === true };
+  for (const field of ["model", "effort"] as const) {
+    const value = body?.[field];
+    if (value === undefined) continue;
+    if (value !== null && typeof value !== "string") return json({ error: `${field} must be a string or null` }, 400);
+    const trimmed = value?.trim() || null;
+    // Shipped to a remote am as a flag, where `default` means null.
+    if (trimmed !== null && (trimmed === "default" || !/^[A-Za-z0-9._:\[\]\/-]+$/.test(trimmed))) {
+      return json({ error: `invalid ${field} "${trimmed}"` }, 400);
+    }
+    parsed[field] = trimmed;
+  }
+  return parsed;
+}
+
+type RestartOutcome = ({ ok: true } & RestartResult) | { ok: false; error: string; reason?: string };
+
+function restartResponse(result: RestartOutcome): Response {
+  if (!result.ok) return json({ error: result.error, reason: result.reason }, 409);
+  return json({ ok: true, model: result.model ?? null, effort: result.effort ?? null });
+}
+
+// --- models ------------------------------------------------------------------
+
+const MODELS_TTL_MS = 10 * 60_000;
+const modelsCache = new Map<string, { at: number; catalogs: ProviderCatalog[] }>();
+
+export function resetModelsCacheForTests(): void {
+  modelsCache.clear();
+}
+
+// `am models --json` here or on a fleet host, cached per host.
+async function hostCatalogs(host: string | null, refresh: boolean): Promise<ProviderCatalog[]> {
+  const key = host ?? "";
+  const cached = modelsCache.get(key);
+  if (!refresh && cached && Date.now() - cached.at < MODELS_TTL_MS) return cached.catalogs;
+  const catalogs = host
+    ? parseCatalogs(await runRemoteAm(host, ["models", "--json"], { timeoutMs: 15_000 }))
+    : localCatalogs({ refresh: true });
+  modelsCache.set(key, { at: Date.now(), catalogs });
+  return catalogs;
 }
 
 function interruptResponse(result: InterruptResult): Response {
@@ -364,6 +421,25 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       await run(["resume", name]);
       return json({ ok: true });
     }
+
+    if (route === "restart" && method === "POST") {
+      const body = await restartBody(req);
+      if (body instanceof Response) return body;
+      // An older am would ignore the flags and restart on the old model (or
+      // regardless of ifIdle), so the __detail precheck doubles as the
+      // capability check.
+      const detail = await runRemoteJson<{ restartModel?: boolean }>(host, ["__detail", name]);
+      if (detail?.restartModel !== true) {
+        return json({ error: `remote am too old on ${host} (no restart --model)`, reason: "remote_too_old" }, 409);
+      }
+      const args = ["restart", name, "--json"];
+      if (body.model !== undefined) args.push("--model", body.model ?? "default");
+      if (body.effort !== undefined) args.push("--effort", body.effort ?? "default");
+      if (body.ifIdle) args.push("--if-idle");
+      const result = await runRemoteJson<RestartOutcome>(host, args, { timeoutMs: 60_000 });
+      if (typeof result?.ok !== "boolean") return json({ error: `am restart on ${host} returned no outcome` }, 502);
+      return restartResponse(result);
+    }
   } catch (error) {
     return remoteFailure(error, fallback);
   }
@@ -419,7 +495,26 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
-    return json({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true });
+    return json({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true, models: true, restartModel: true });
+  }
+
+  // GET /api/models[?host=h][&refresh=1] — `am models --json` for this
+  // machine or a fleet host, cached ~10 minutes per host.
+  if (parts.length === 1 && parts[0] === "models" && method === "GET") {
+    const params = new URL(req.url).searchParams;
+    const raw = params.get("host");
+    let host: string | null = null;
+    if (raw) {
+      if (!HOST_RE.test(raw)) return json({ error: `invalid host "${raw}"` }, 400);
+      const resolved = resolveHost(raw);
+      if (resolved === undefined) return json({ error: `unknown host "${raw}" (not in config.remotes)` }, 404);
+      host = resolved;
+    }
+    try {
+      return json(await hostCatalogs(host, params.get("refresh") === "1"));
+    } catch (error) {
+      return remoteFailure(error);
+    }
   }
 
   // GET /api/agents — merged local + remote fleet (cached; never blocks on ssh)
@@ -637,6 +732,22 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         return json({ ok: true });
       } catch (error) {
         return json({ error: (error as Error).message }, 404);
+      }
+    }
+
+    // POST /api/agents/:name/restart — {model?, effort?, ifIdle?}: reload
+    // the provider on the same conversation, switching model/effort; with
+    // ifIdle, refuse (409 busy | queued | in_turn) as stop {ifIdle} does
+    if (parts.length === 3 && parts[2] === "restart" && method === "POST") {
+      const body = await restartBody(req);
+      if (body instanceof Response) return body;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      const { ifIdle, ...opts } = body;
+      try {
+        return restartResponse(ifIdle ? await restartIfIdle(name, opts) : { ok: true, ...(await restartAgent(name, opts)) });
+      } catch (error) {
+        if (error instanceof SelectionError) return json({ error: error.message }, 400);
+        return json({ error: (error as Error).message }, 409);
       }
     }
 

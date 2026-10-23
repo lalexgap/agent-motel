@@ -250,6 +250,28 @@ describe("resumeCodexThread", () => {
     ]);
   });
 
+  test("carries the agent's model and effort to an unloaded thread and onto a loaded one", async () => {
+    const unloaded = loadedServer([]);
+    await resumeCodexThread("thread-9", { bypass: true, model: "gpt-6.1-sol", effort: "high" }, { socket: unloaded.socket });
+    expect(unloaded.calls.slice(3)).toEqual([
+      ["thread/resume", {
+        threadId: "thread-9",
+        excludeTurns: true,
+        model: "gpt-6.1-sol",
+        config: { model_reasoning_effort: "high" },
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }],
+    ]);
+    server?.stop(true);
+    const loaded = loadedServer(["thread-9"]);
+    await resumeCodexThread("thread-9", { bypass: true, model: "gpt-6.1-sol", effort: "high" }, { socket: loaded.socket });
+    expect(loaded.calls.at(-1)).toEqual([
+      "thread/settings/update",
+      { threadId: "thread-9", model: "gpt-6.1-sol", effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } },
+    ]);
+  });
+
   test("falls back to the sandbox policy when no profile is reported", async () => {
     const { socket, calls } = loadedServer(["thread-9"], { approvalPolicy: "untrusted", sandbox: { type: "readOnly", networkAccess: false } });
     await resumeCodexThread("thread-9", { bypass: false }, { socket });
@@ -398,6 +420,19 @@ describe("codex trust ledger", () => {
       writeFileSync(join(home, "config.json"), JSON.stringify({ skipPermissions: false }));
       expect(codexPreload("thread-3", soon(), load(true))).toBe(true);
       expect(loaded).toEqual([["thread-1", true], ["thread-2", true], ["thread-3", false]]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a resume preloads the thread with the agent's saved model and effort", () => {
+    const loaded: unknown[] = [];
+    const agent = codexAgent("picky", { codexDaemon: true, sessionId: "thread-7", model: "gpt-6.1-sol", effort: "high" });
+    writeFileSync(join(home, "config.json"), JSON.stringify({ skipPermissions: true }));
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      codexPreload("thread-7", soon(), (id, bypass, settings) => (loaded.push([id, bypass, settings]), true), { model: agent.model, effort: agent.effort });
+      expect(loaded).toEqual([["thread-7", true, { model: "gpt-6.1-sol", effort: "high" }]]);
     } finally {
       errors.mockRestore();
     }
