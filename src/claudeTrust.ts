@@ -1,16 +1,16 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { baseDir } from "./paths";
 import { withFileLock } from "./filelock";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { listAgents } from "./state";
 
 // Claude Code records folder trust as projects[<key>].hasTrustDialogAccepted
 // in its global config, keyed by the canonical git root (the main checkout,
-// even from a linked worktree) or the dir itself outside git. Declining the
-// prompt writes nothing, so an explicit false is a choice am leaves alone.
+// even from a linked worktree) or the dir itself outside git. Claude's default
+// project entry carries an explicit false, so am leaves any false alone rather
+// than guess whether the user declined.
 
 // Same resolution as Claude Code: CLAUDE_CONFIG_DIR or ~, with the legacy
 // ~/.claude/.config.json winning when it is a non-empty file.
@@ -44,8 +44,9 @@ export function claudeTrustKey(dir: string): string {
   return git(real, "rev-parse", "--show-toplevel") ?? real;
 }
 
-// Trust entries am wrote (key -> when), so cleanup never removes trust the
-// user granted.
+// Trust entries am wrote (key -> when). Only gc removes them, and only once the
+// folder is gone: the user may rely on trust am granted, and a worktree agent's
+// key is the user's main checkout.
 export function claudeTrustLedgerFile(): string {
   return join(baseDir(), "claude-trusted-dirs.json");
 }
@@ -103,20 +104,21 @@ function withClaudeConfigLock<T>(file: string, fn: () => T): T | undefined {
 }
 
 // Re-reads under the lock and rewrites the file only when fn changed it.
-// Undefined when the config is missing, unparseable, a symlink (Claude Code
-// refuses to write through one too) or the lock is held past LOCK_WAIT_MS.
+// Undefined when the config is missing, unparseable, a symlink, owned by
+// someone else, or the lock is held past LOCK_WAIT_MS. Claude Code's
+// exit-time flushes write without the lock, so a write landing in the same
+// few milliseconds can still be lost either way; Claude's own sessions race
+// each other the same way.
 function editClaudeConfig<T>(fn: (config: Record<string, any>) => { result: T; changed: boolean }): T | undefined {
   const file = claudeGlobalConfigFile();
-  try {
-    if (lstatSync(file).isSymbolicLink()) return undefined;
-  } catch {
-    return undefined;
-  }
+  if (!existsSync(file)) return undefined;
   return withClaudeConfigLock(file, () => {
     let config: Record<string, any>;
     let mode: number;
     try {
-      mode = statSync(file).mode & 0o777;
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.uid !== process.getuid?.()) return undefined;
+      mode = stat.mode & 0o777;
       config = JSON.parse(readFileSync(file, "utf8"));
     } catch {
       return undefined;
@@ -126,8 +128,14 @@ function editClaudeConfig<T>(fn: (config: Record<string, any>) => { result: T; c
     if (!changed) return result;
     const tmp = `${file}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
     try {
-      writeFileSync(tmp, JSON.stringify(config, null, 2), { mode });
-      chmodSync(tmp, mode);
+      const fd = openSync(tmp, "wx", mode);
+      try {
+        fchmodSync(fd, mode);
+        writeFileSync(fd, JSON.stringify(config, null, 2));
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
       renameSync(tmp, file);
     } catch {
       rmSync(tmp, { force: true });
@@ -154,23 +162,20 @@ const DEFAULT_PROJECT = {
   hasClaudeMdExternalIncludesWarningShown: false,
 };
 
-// Trusts key unless the user already decided. Returns key when the trust is
-// am's to clean up (written now or by an earlier launch), else undefined.
-export function pretrustClaudeDir(key: string): string | undefined {
-  return withLedger((ledger) => {
-    const outcome = editClaudeConfig((config) => {
-      const entry = projectEntry(config, key);
-      if (entry?.hasTrustDialogAccepted === true) return { result: "trusted" as const, changed: false };
+// Trusts key unless it already has an answer, recording it when am wrote it.
+export function pretrustClaudeDir(key: string): void {
+  withLedger((ledger) => {
+    const written = editClaudeConfig((config) => {
       const projects = config.projects;
-      const malformed = projects !== undefined && (!projects || typeof projects !== "object" || Array.isArray(projects));
-      if (malformed || (entry && "hasTrustDialogAccepted" in entry)) return { result: "left" as const, changed: false };
+      if (projects !== undefined && (!projects || typeof projects !== "object" || Array.isArray(projects))) {
+        return { result: false, changed: false };
+      }
+      const entry = projectEntry(config, key);
+      if (entry && "hasTrustDialogAccepted" in entry) return { result: false, changed: false };
       config.projects = { ...projects, [key]: { ...(entry ?? DEFAULT_PROJECT), hasTrustDialogAccepted: true } };
-      return { result: "written" as const, changed: true };
+      return { result: true, changed: true };
     });
-    if (outcome === "written") ledger[key] = new Date().toISOString();
-    // Unknown (lock busy) still claims an entry am wrote earlier, so another
-    // agent's rm can't pull it out from under this one.
-    return outcome !== "left" && ledger[key] ? key : undefined;
+    if (written) ledger[key] = new Date().toISOString();
   });
 }
 
@@ -188,13 +193,6 @@ export function forgetClaudeTrust(key: string): boolean {
     delete ledger[key];
     return true;
   });
-}
-
-// On rm: release the agent's trusted key unless another agent still uses it.
-export function releaseClaudeTrust(key: string, owner: string): void {
-  if (!readClaudeTrustLedger()[key]) return;
-  if (listAgents().some((a) => a.name !== owner && a.claudeTrustedDir === key)) return;
-  forgetClaudeTrust(key);
 }
 
 const TRUST_PROMPT_PATTERNS = [

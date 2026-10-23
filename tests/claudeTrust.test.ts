@@ -9,12 +9,11 @@ import {
   paneShowsClaudeTrustPrompt,
   pretrustClaudeDir,
   readClaudeTrustLedger,
-  releaseClaudeTrust,
 } from "../src/claudeTrust";
 import { displayStatusReason } from "../src/commands/ls";
 import { claudeResumeTrust } from "../src/commands/resume";
 import { applyGc, planGc } from "../src/gc";
-import { writeAgent, type AgentState } from "../src/state";
+import { type AgentState } from "../src/state";
 
 let home: string;
 let file: string;
@@ -69,7 +68,7 @@ describe("claudeTrustKey", () => {
 describe("pretrustClaudeDir", () => {
   test("writes only the new project's trust, keeping every other field and the file mode", () => {
     writeConfig({ userID: "u", oauthAccount: { a: 1 }, projects: { "/work/other": { hasTrustDialogAccepted: false, lastCost: 3 } } });
-    expect(pretrustClaudeDir("/work/a")).toBe("/work/a");
+    pretrustClaudeDir("/work/a");
     const config = readConfig();
     expect(config.userID).toBe("u");
     expect(config.oauthAccount).toEqual({ a: 1 });
@@ -83,36 +82,41 @@ describe("pretrustClaudeDir", () => {
 
   test("an entry without an answer keeps its fields", () => {
     writeConfig({ projects: { "/work/a": { lastSessionId: "s" } } });
-    expect(pretrustClaudeDir("/work/a")).toBe("/work/a");
+    pretrustClaudeDir("/work/a");
     expect(readConfig().projects["/work/a"]).toEqual({ lastSessionId: "s", hasTrustDialogAccepted: true });
   });
 
   test("leaves trust the user granted or withheld, and records neither", () => {
     writeConfig({ projects: { "/work/user": { hasTrustDialogAccepted: true }, "/work/no": { hasTrustDialogAccepted: false } } });
     const before = readFileSync(file, "utf8");
-    expect(pretrustClaudeDir("/work/user")).toBeUndefined();
-    expect(pretrustClaudeDir("/work/no")).toBeUndefined();
+    pretrustClaudeDir("/work/user");
+    pretrustClaudeDir("/work/no");
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(readClaudeTrustLedger()).toEqual({});
   });
 
-  test("a second agent in the same dir shares am's entry", () => {
+  test("a second launch in the same dir changes nothing", () => {
     writeConfig({});
-    expect(pretrustClaudeDir("/work/a")).toBe("/work/a");
-    expect(pretrustClaudeDir("/work/a")).toBe("/work/a");
+    pretrustClaudeDir("/work/a");
+    const before = readFileSync(file, "utf8");
+    const ledger = readClaudeTrustLedger();
+    pretrustClaudeDir("/work/a");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readClaudeTrustLedger()).toEqual(ledger);
   });
 
   test("never creates, repairs or writes through the config", () => {
-    expect(pretrustClaudeDir("/work/a")).toBeUndefined();
+    pretrustClaudeDir("/work/a");
     expect(existsSync(file)).toBe(false);
+    expect(existsSync(`${file}.lock`)).toBe(false);
     writeFileSync(file, "{ torn");
-    expect(pretrustClaudeDir("/work/a")).toBeUndefined();
+    pretrustClaudeDir("/work/a");
     expect(readFileSync(file, "utf8")).toBe("{ torn");
     const real = join(home, "real.json");
     writeFileSync(real, "{}");
     rmSync(file);
     symlinkSync(real, file);
-    expect(pretrustClaudeDir("/work/a")).toBeUndefined();
+    pretrustClaudeDir("/work/a");
     expect(readFileSync(real, "utf8")).toBe("{}");
     expect(readClaudeTrustLedger()).toEqual({});
   });
@@ -122,14 +126,15 @@ describe("pretrustClaudeDir", () => {
     mkdirSync(`${file}.lock`);
     const old = new Date(Date.now() - 60_000);
     utimesSync(`${file}.lock`, old, old);
-    expect(pretrustClaudeDir("/work/a")).toBe("/work/a");
+    pretrustClaudeDir("/work/a");
+    expect(readConfig().projects["/work/a"].hasTrustDialogAccepted).toBe(true);
     expect(existsSync(`${file}.lock`)).toBe(false);
   });
 
   test("waits on a held lock and gives up without writing", () => {
     writeConfig({});
     mkdirSync(`${file}.lock`);
-    expect(pretrustClaudeDir("/work/a")).toBeUndefined();
+    pretrustClaudeDir("/work/a");
     expect(readConfig()).toEqual({});
     expect(existsSync(`${file}.lock`)).toBe(true);
   });
@@ -160,32 +165,17 @@ describe("forgetClaudeTrust", () => {
     expect(Object.keys(readClaudeTrustLedger())).toEqual(["/work/a"]);
   });
 
-  test("release waits for the last agent using the key", () => {
-    writeConfig({});
-    pretrustClaudeDir("/work/a");
-    writeAgent(claudeAgent("one", { claudeTrustedDir: "/work/a" }));
-    writeAgent(claudeAgent("two", { claudeTrustedDir: "/work/a" }));
-    releaseClaudeTrust("/work/a", "one");
-    expect(readConfig().projects["/work/a"].hasTrustDialogAccepted).toBe(true);
-    rmSync(join(home, "am", "agents", "two.json"));
-    releaseClaudeTrust("/work/a", "one");
-    expect(readConfig().projects["/work/a"].hasTrustDialogAccepted).toBeUndefined();
-    expect(readClaudeTrustLedger()).toEqual({});
-  });
-
-  test("resuming in a new dir trusts it and releases the old key", () => {
+  test("resuming in a new dir trusts it and keeps the old trust", () => {
     writeConfig({});
     const old = join(home, "old");
     const moved = join(home, "new");
     mkdirSync(old);
     mkdirSync(moved);
     pretrustClaudeDir(old);
-    const agent = claudeAgent("mover", { dir: moved, claudeTrustedDir: old });
-    writeAgent(agent);
-    claudeResumeTrust(agent);
-    expect(agent.claudeTrustedDir).toBe(moved);
-    expect(Object.keys(readClaudeTrustLedger())).toEqual([moved]);
-    expect(readConfig().projects[old].hasTrustDialogAccepted).toBeUndefined();
+    claudeResumeTrust(claudeAgent("mover", { dir: moved }));
+    expect(Object.keys(readClaudeTrustLedger()).sort()).toEqual([moved, old].sort());
+    expect(readConfig().projects[old].hasTrustDialogAccepted).toBe(true);
+    expect(readConfig().projects[moved].hasTrustDialogAccepted).toBe(true);
   });
 
   test("gc prunes am's entries for dirs that are gone", () => {

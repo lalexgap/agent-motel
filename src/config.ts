@@ -101,8 +101,8 @@ export interface Config {
   permissionWaitSeconds: number;
   // Mark a new Claude agent's folder as trusted in ~/.claude.json, so it
   // doesn't stall at "Is this a project you created or one you trust?". Only
-  // folders with no recorded answer are written; am removes its entries on
-  // rm/gc. Set false to answer the prompt yourself.
+  // folders with no recorded answer are written; `am gc` removes am's entries
+  // once their folder is gone. Set false to answer the prompt yourself.
   pretrustClaudeDirs: boolean;
 }
 

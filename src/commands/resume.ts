@@ -17,7 +17,7 @@ import {
 } from "../codexDaemon";
 import { agentEnv } from "./new";
 import { loadConfig } from "../config";
-import { claudeTrustKey, pretrustClaudeDir, releaseClaudeTrust } from "../claudeTrust";
+import { claudeTrustKey, pretrustClaudeDir } from "../claudeTrust";
 
 export interface ResumeOpts {
   message?: string;
@@ -47,15 +47,9 @@ export function codexResumeDaemon(
   return agent.codexDaemonAttached;
 }
 
-// After `am cd` (or a restore), the old key is released once the new one is
-// in place. Mutates agent.claudeTrustedDir; the caller writes it.
+// The agent's dir may have changed since launch (`am cd`, a restore).
 export function claudeResumeTrust(agent: AgentState): void {
-  if (agentProvider(agent) !== "claude") return;
-  const previous = agent.claudeTrustedDir;
-  const key = claudeTrustKey(agent.dir);
-  const trusted = loadConfig().pretrustClaudeDirs ? pretrustClaudeDir(key) : undefined;
-  agent.claudeTrustedDir = trusted ?? (previous === key ? previous : undefined);
-  if (previous && previous !== agent.claudeTrustedDir) releaseClaudeTrust(previous, agent.name);
+  if (agentProvider(agent) === "claude" && loadConfig().pretrustClaudeDirs) pretrustClaudeDir(claudeTrustKey(agent.dir));
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
