@@ -6,7 +6,7 @@ import { acquireDeliverLock, cancelMessage, releaseDeliverLock } from "../src/de
 import { acquireProducerLock, releaseProducerLock } from "../src/mailbox";
 import { ensureDirs } from "../src/paths";
 import { queueDepth, queuePopId } from "../src/queue";
-import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { noteHandoff, readAgent, writeAgent, type AgentState } from "../src/state";
 import { abortTurn, interruptCommand, sendCommand } from "../src/commands/send";
 import { queueCommand } from "../src/commands/queue";
 import { renameAgent } from "../src/commands/rename";
@@ -659,6 +659,31 @@ describe("done waits for the reply on disk", () => {
     expect(done.state).toBe("done");
     expect(done.transcriptComplete).toBeUndefined();
   });
+
+  test("the reply must be past every finishing receipt's transcriptIndex", async () => {
+    const first = await turnRunning();
+    say("assistant", "Same.");
+    const { id: second } = await sendCommand("api", "one more", { now: false, track: true });
+    expect(hook("post-tool-use")).toContain("one more");
+    expect(readMessage("api", second!)).toMatchObject({ state: "delivered", transcriptIndex: 5 });
+    expect(readMessage("api", first)!.transcriptIndex).toBe(3);
+    expect(await awaitTurnReply("api", readAgent("api")!, "Same.", new Date(), { capMs: 0 })).toBe(false);
+    say("assistant", "Same.");
+    expect(await awaitTurnReply("api", readAgent("api")!, "Same.", new Date(), { capMs: 0 })).toBe(true);
+  });
+
+  test("a handoff during the wait still refuses stop ifIdle afterwards", async () => {
+    await turnRunning();
+    const stop = Bun.spawn([process.execPath, CLI, "hook", "stop"], {
+      env: { ...process.env, AGENTMGR_AGENT: "api" },
+      stdin: Buffer.from(JSON.stringify({ last_assistant_message: "Not on disk yet." })),
+    });
+    await Bun.sleep(800);
+    noteHandoff("api");
+    expect(await stop.exited).toBe(0);
+    expect(readAgent("api")!.status).toBe("idle");
+    expect(await stopIfIdle(readAgent("api")!)).toMatchObject({ ok: false, reason: "in_turn" });
+  }, 15_000);
 
   test("no receipt finishing: no wait, no transcript parse", async () => {
     fakeSession("working");

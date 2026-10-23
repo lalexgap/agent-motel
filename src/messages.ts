@@ -463,7 +463,7 @@ export interface ReplyWaitOpts {
 // Providers flush their session files in batches, so a turn's final reply can
 // reach disk after its Stop hook runs. Before the receipts a turn ending at
 // `at` finishes go done, wait (bounded) for `reply` to be readable at or past
-// their transcriptIndex. True: it is; false: the cap ran out first.
+// each one's transcriptIndex. True: it is; false: the cap ran out first.
 // Undefined: nothing to wait for (no receipt finishes, or no reply text).
 export async function awaitTurnReply(
   name: string,
@@ -475,7 +475,7 @@ export async function awaitTurnReply(
   if (!reply || !normalized(reply)) return undefined;
   const finishing = listRecords(name).filter((r) => r.state === "delivered" && completesAt(r, agent, at.getTime()));
   if (!finishing.length) return undefined;
-  const from = Math.min(...finishing.map((r) => r.transcriptIndex ?? 0));
+  const from = Math.max(...finishing.map((r) => r.transcriptIndex ?? 0));
   const deadline = Date.now() + capMs;
   for (;;) {
     if (replyOnDisk(agent, from, reply)) return true;
