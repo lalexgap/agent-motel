@@ -292,9 +292,10 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
     resume: codexThreadId ?? opts.resume,
-    // The thread already carries these; a loaded thread ignores them on resume.
-    model: codexThreadId ? undefined : model,
-    effort: codexThreadId ? undefined : opts.effort,
+    // The thread carries these too, but an attached TUI starts each turn
+    // with its own model and effort, so it needs them as well.
+    model,
+    effort: opts.effort,
     reportTo,
     role: role?.name,
     roleInstructions,
