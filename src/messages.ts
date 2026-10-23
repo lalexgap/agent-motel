@@ -6,7 +6,7 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withFileLock } from "./filelock";
 import { newMsgId } from "./msgid";
 import { agentProvider, readAgent, type AgentState } from "./state";
-import { locateTranscript, parseTranscript } from "./transcript";
+import { locateTranscript, parseTranscript, type Turn } from "./transcript";
 import { hasSession } from "./tmux";
 import { queueAppendLocked, queuePopId } from "./queue";
 import { withMailboxWrite } from "./mailbox";
@@ -29,6 +29,11 @@ export interface MessageView {
   error?: string;
   // On a done record: its turn was aborted with Esc rather than finished.
   interrupted?: true;
+  // On a done record from a Stop hook with a reply: whether that reply was on
+  // disk (GET /transcript at transcriptIndex or later) when it went done.
+  // Absent when there was no reply to check: an interrupt, a turn with no
+  // text, or a turn end caught up after the fact.
+  transcriptComplete?: boolean;
 }
 
 // Why a message or interrupt route refused (HTTP 409), for clients to branch
@@ -396,13 +401,87 @@ export function immediateMark(agent: AgentState): DeliveryMark {
   return markNow(agent);
 }
 
-export function markTurnEnded(name: string, agent: AgentState, at: Date = new Date(), interrupted = false): void {
+export function markTurnEnded(
+  name: string,
+  agent: AgentState,
+  at: Date = new Date(),
+  interrupted = false,
+  transcriptComplete?: boolean,
+): void {
   const iso = at.toISOString();
   for (const r of listRecords(name)) {
     if (r.state !== "delivered" || !completesAt(r, agent, at.getTime())) continue;
     updateRecord(name, r.id, (cur) =>
-      cur.state === "delivered" ? { ...cur, state: "done", doneAt: iso, ...(interrupted ? { interrupted: true as const } : {}) } : null,
+      cur.state === "delivered"
+        ? {
+            ...cur,
+            state: "done",
+            doneAt: iso,
+            ...(interrupted ? { interrupted: true as const } : {}),
+            ...(transcriptComplete !== undefined ? { transcriptComplete } : {}),
+          }
+        : null,
     );
+  }
+}
+
+const normalized = (text: string) => text.replace(/\s+/g, " ").trim();
+
+// Whether `reply` is an assistant entry at `from` or later: one entry, or a
+// run of consecutive ones (a reply of several text blocks parses to one entry
+// each).
+export function replyInTurns(turns: Turn[], from: number, reply: string): boolean {
+  const want = normalized(reply);
+  if (!want) return false;
+  for (let i = turns.length - 1; i >= from; i--) {
+    let joined = "";
+    for (let j = i; j >= from; j--) {
+      const turn = turns[j]!;
+      if (turn.kind !== "assistant") break;
+      joined = normalized(`${turn.text} ${joined}`);
+      if (joined === want) return true;
+      if (joined.length > want.length) break;
+    }
+  }
+  return false;
+}
+
+function replyOnDisk(agent: AgentState, from: number, reply: string): boolean {
+  try {
+    const turns = parseTranscript(agentProvider(agent), readFileSync(locateTranscript(agent), "utf8")).turns;
+    return replyInTurns(turns, from, reply);
+  } catch {
+    return false; // not written yet
+  }
+}
+
+export interface ReplyWaitOpts {
+  capMs?: number;
+  pollMs?: number;
+}
+
+// Providers flush their session files in batches, so a turn's final reply can
+// reach disk after its Stop hook runs. Before the receipts a turn ending at
+// `at` finishes go done, wait (bounded) for `reply` to be readable at or past
+// their transcriptIndex. True: it is; false: the cap ran out first.
+// Undefined: nothing to wait for (no receipt finishes, or no reply text).
+export async function awaitTurnReply(
+  name: string,
+  agent: AgentState,
+  reply: string | undefined,
+  at: Date = new Date(),
+  { capMs = 3000, pollMs = 100 }: ReplyWaitOpts = {},
+): Promise<boolean | undefined> {
+  if (!reply || !normalized(reply)) return undefined;
+  const finishing = listRecords(name).filter((r) => r.state === "delivered" && completesAt(r, agent, at.getTime()));
+  if (!finishing.length) return undefined;
+  const from = Math.min(...finishing.map((r) => r.transcriptIndex ?? 0));
+  const deadline = Date.now() + capMs;
+  for (;;) {
+    if (replyOnDisk(agent, from, reply)) return true;
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    await Bun.sleep(Math.min(pollMs, left));
   }
 }
 

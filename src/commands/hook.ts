@@ -27,7 +27,7 @@ import {
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
-import { claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
+import { awaitTurnReply, claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
@@ -659,6 +659,23 @@ export async function hookCommand(event: string): Promise<void> {
     }
   }
 
+  // Before the agent shows idle (which also lets a receipt read settle it to
+  // done), give the turn's reply time to reach its session file, so a client
+  // reading the transcript on done finds it. Bounded, and immediate once it
+  // is there.
+  let transcriptComplete: boolean | undefined;
+  if (event === "stop" && !fromSubagent) {
+    const reply = typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined;
+    try {
+      transcriptComplete = await awaitTurnReply(name, agent, reply);
+    } catch {
+      // the receipt goes done without the check
+    }
+    // A rename may have landed during the wait.
+    agent = matchAgent(inheritedName) ?? agent;
+    name = agent.name;
+  }
+
   const effects = hookEffects(event, payload);
 
   // In-session subagents (Claude Code's Task tool, Codex's subagents) are
@@ -718,7 +735,7 @@ export async function hookCommand(event: string): Promise<void> {
   // stop (the inbox gate above) is not an end, nor is compaction's mid-turn
   // session start. A session end finishes no turn of its own.
   if (!fromSubagent && event !== "session-start") {
-    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent));
+    if (effects.status === "idle") receipt(() => markTurnEnded(name, agent, new Date(), false, transcriptComplete));
     else if (effects.status === "exited") receipt(() => markSessionEnded(name, agent, lastIdleAt));
   }
 
