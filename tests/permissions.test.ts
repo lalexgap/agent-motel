@@ -18,6 +18,7 @@ import {
   permissionsDir,
   readPermission,
   refreshPermissions,
+  updatePermission,
   type PermissionRecord,
 } from "../src/permissions";
 
@@ -381,6 +382,17 @@ describe("retiring claude requests from other hooks", () => {
     expect(post({ agent_id: "sub-1" })).toBe(1);
     expect(readPermission(sub.id)!.state).toBe("stale");
     expect(readPermission(parentB.id)!.state).toBe("pending");
+  });
+
+  test("an API-allowed call running doesn't retire its identical pending sibling", () => {
+    const older = call();
+    const allowed = call();
+    updatePermission(allowed.id, (r) => ((r.state = "applied"), true));
+    expect(post()).toBe(0);
+    expect(readPermission(older.id)!.state).toBe("pending");
+    expect(readPermission(allowed.id)!.claude?.ranAt).toBeDefined();
+    expect(post()).toBe(1);
+    expect(readPermission(older.id)!.state).toBe("stale");
   });
 
   test("a call that names itself retires only its own request", () => {

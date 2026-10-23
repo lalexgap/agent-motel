@@ -49,7 +49,8 @@ export interface PermissionRecord {
   // The process holding the request open: the hook, or the daemon.
   pid: number;
   // agentId: the subagent the call runs in (absent for the main agent).
-  claude?: { toolInput: unknown; transcriptPath?: string; agentId?: string; toolUseId?: string };
+  // ranAt: when an API-allowed call's PostToolUse arrived.
+  claude?: { toolInput: unknown; transcriptPath?: string; agentId?: string; toolUseId?: string; ranAt?: string };
   // connection: which of the daemon's app-server connections received the
   // request; its requestId means nothing on any other.
   codex?: { threadId: string; requestId: string | number; method: string; turnId?: string; connection?: number };

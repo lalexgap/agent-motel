@@ -45,6 +45,7 @@ import {
   resolvePending,
   sameToolCall,
   stalePermissions,
+  updatePermission,
   type PermissionRecord,
 } from "../permissions";
 import {
@@ -567,22 +568,34 @@ export function retiredPermissions(
   const names = agentNamesAndAliases(agent);
   if (event === "post-tool-use" && typeof payload.tool_name === "string") {
     // One call ran, so one request goes: this exact call's when both name
-    // it, else the oldest identical one in the same (sub)agent. Other
-    // identical calls may still be waiting on theirs.
+    // it, else an identical one in the same (sub)agent — first one the API
+    // allowed that hasn't run yet, then the oldest pending. Other identical
+    // calls may still be waiting on theirs.
     const call = { tool: payload.tool_name, input: payload.tool_input ?? {} };
     const agentId = subagentIdOf(payload);
     const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : undefined;
+    const ranViaApi = (r: PermissionRecord) => r.state === "applied" && !r.claude?.ranAt;
     const candidates = listPermissions().filter(
       (r) =>
-        r.state === "pending" &&
+        (r.state === "pending" || ranViaApi(r)) &&
         r.provider === "claude" &&
         names.includes(r.agent) &&
         (r.claude?.agentId ?? "") === agentId &&
         sameToolCall(call, { tool: r.tool, input: r.claude?.toolInput ?? r.input }),
     );
     const exact = toolUseId ? candidates.filter((r) => r.claude?.toolUseId === toolUseId) : [];
-    const ordered = exact.length ? exact : candidates.filter((r) => !toolUseId || !r.claude?.toolUseId);
+    const matching = exact.length ? exact : candidates.filter((r) => !toolUseId || !r.claude?.toolUseId);
+    const ordered = [...matching.filter(ranViaApi), ...matching.filter((r) => r.state === "pending")];
     for (const record of ordered) {
+      if (record.state === "applied") {
+        const marked = updatePermission(record.id, (r) => {
+          if (!ranViaApi(r) || !r.claude) return false;
+          r.claude.ranAt = new Date().toISOString();
+          return true;
+        });
+        if (marked?.claude?.ranAt) return 0;
+        continue;
+      }
       if (resolvePending(record.id, "stale", "answered in the pane")) return 1;
     }
     return 0;
