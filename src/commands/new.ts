@@ -29,6 +29,7 @@ import {
   type CodexThreadOpts,
 } from "../codexDaemon";
 import { ensureSubagentRoles } from "../subagentRoles";
+import { pretrustClaudeAgentDir } from "../claudeTrust";
 import { CONCIERGE_ROLE, modelForRole, providerForRole, requireRole } from "../roles";
 import { providerCatalog, validateSelection } from "../catalog";
 
@@ -299,6 +300,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     roleInstructions,
     codexDaemonDir: codexDaemonAttached ? dir : undefined,
   });
+
+  if (provider === "claude") pretrustClaudeAgentDir(dir);
 
   const now = new Date().toISOString();
   const state: AgentState = {

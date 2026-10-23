@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
 import { type Provider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
-import { displayStatus, waitingInfo } from "./commands/ls";
+import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
@@ -117,7 +117,7 @@ export function agentDetail(name: string) {
       ? waitingInfo(agent).detail ?? null
       : status === "dead"
         ? "tmux session is missing"
-        : agent.statusReason ?? null,
+        : displayStatusReason(agent, status) ?? null,
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
     role: roleForAgent(agent) ?? null,

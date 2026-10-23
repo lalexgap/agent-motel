@@ -16,6 +16,7 @@ import {
   type CodexDeadline,
 } from "../codexDaemon";
 import { agentEnv } from "./new";
+import { pretrustClaudeAgentDir } from "../claudeTrust";
 
 export interface ResumeOpts {
   message?: string;
@@ -45,6 +46,11 @@ export function codexResumeDaemon(
   return agent.codexDaemonAttached;
 }
 
+// The agent's dir may have changed since launch (`am cd`, a restore).
+export function claudeResumeTrust(agent: AgentState): void {
+  if (agentProvider(agent) === "claude") pretrustClaudeAgentDir(agent.dir);
+}
+
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
 export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Promise<void> {
@@ -54,6 +60,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   const provider = agentProvider(agent);
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
+  claudeResumeTrust(agent);
 
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.

@@ -99,6 +99,12 @@ export interface Config {
   // relay off. Codex approvals have no deadline: they stay answerable from
   // either side until one answers.
   permissionWaitSeconds: number;
+  // Mark a new Claude agent's folder as trusted in ~/.claude.json, so it
+  // doesn't stall at "Is this a project you created or one you trust?". Only
+  // folders with no recorded answer are written, never ~ or above, and only
+  // while skipPermissions is on; `am gc` removes am's entries once their
+  // folder is gone. Set false to answer the prompt yourself.
+  pretrustClaudeDirs: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -121,6 +127,7 @@ const DEFAULTS: Config = {
   gcAgentDays: 7,
   gcTrashDays: 30,
   permissionWaitSeconds: 120,
+  pretrustClaudeDirs: true,
 };
 
 export function loadConfig(): Config {

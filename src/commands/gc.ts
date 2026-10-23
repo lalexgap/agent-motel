@@ -42,6 +42,11 @@ function renderPlan(plan: GcPlan, agentDays: number, trashDays: number): string[
     for (const dir of plan.codexTrust) lines.push(`  ${shortenHome(dir)}`);
   }
 
+  if (plan.claudeTrust.length > 0) {
+    lines.push("claude folder trust am wrote for dirs that no longer exist — remove from ~/.claude.json:");
+    for (const dir of plan.claudeTrust) lines.push(`  ${shortenHome(dir)}`);
+  }
+
   return lines;
 }
 

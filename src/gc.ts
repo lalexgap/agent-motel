@@ -11,6 +11,7 @@ import { readJsonOrNull } from "./fsutil";
 import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
 import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
+import { forgetClaudeTrust, readClaudeTrustLedger } from "./claudeTrust";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -23,6 +24,7 @@ import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
 //     when clean AND unclaimed by any live or restorable (trashed) agent; the
 //     branch itself survives in the repo, so committed work is never lost
 //   • codex trust entries am wrote to config.toml for dirs that are gone
+//   • claude folder trust am wrote to ~/.claude.json for dirs that are gone
 
 const DAY_MS = 86_400_000;
 // A just-created stray may belong to an agent mid-registration or mid-move —
@@ -60,6 +62,7 @@ export interface GcPlan {
   // Unreferenced but deliberately not collected — surfaced so the user knows.
   keptWorktrees: KeptWorktree[];
   codexTrust: string[];
+  claudeTrust: string[];
 }
 
 // Missing/garbage timestamps read as infinitely old: gc exists to collect
@@ -245,6 +248,7 @@ export function planGc(opts: GcOptions): GcPlan {
     worktrees: remove,
     keptWorktrees: kept,
     codexTrust: Object.keys(readCodexTrustLedger()).filter((dir) => !existsSync(dir)),
+    claudeTrust: Object.keys(readClaudeTrustLedger()).filter((dir) => !existsSync(dir)),
   };
 }
 
@@ -254,7 +258,8 @@ export function gcIsEmpty(plan: GcPlan): boolean {
     plan.trash.length === 0 &&
     plan.orphans.length === 0 &&
     plan.worktrees.length === 0 &&
-    plan.codexTrust.length === 0
+    plan.codexTrust.length === 0 &&
+    plan.claudeTrust.length === 0
   );
 }
 
@@ -299,6 +304,12 @@ export function applyGc(plan: GcPlan): string[] {
     if (existsSync(dir)) continue;
     if (forgetCodexTrust(dir)) lines.push(`removed codex trust entry for ${dir}`);
     else lines.push(`warning: could not remove codex trust entry for ${dir} (is the codex app-server daemon running?)`);
+  }
+
+  for (const dir of plan.claudeTrust) {
+    if (existsSync(dir)) continue;
+    if (forgetClaudeTrust(dir)) lines.push(`removed claude trust entry for ${dir}`);
+    else lines.push(`warning: could not remove claude trust entry for ${dir} (~/.claude.json unreadable or locked)`);
   }
 
   return lines;
