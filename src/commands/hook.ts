@@ -476,7 +476,10 @@ export async function awaitPermissionDecision(
   // Claude writes the tool_use before it asks, so this call is one already
   // there without a result; an identical call made later is someone else's.
   const initial = callStates();
-  const candidates = new Set(initial.uses.filter((id) => !initial.answered.includes(id)));
+  // Without a tool_use_id, identical pending calls are indistinguishable, so
+  // this one counts as answered only once all of them are.
+  const unanswered = initial.uses.filter((id) => !initial.answered.includes(id));
+  const candidates = new Set(toolUseId && unanswered.includes(toolUseId) ? [toolUseId] : unanswered);
   const { options, decisions } = claudePermissionOptions(payload.permission_suggestions);
   const record = createPermission({
     agent: agent.name,
@@ -530,7 +533,8 @@ export async function awaitPermissionDecision(
         }
         if (size !== lastSize) {
           lastSize = size;
-          if (callStates().answered.some((id) => candidates.has(id))) {
+          const answered = new Set(callStates().answered);
+          if ([...candidates].every((id) => answered.has(id))) {
             if (resolvePending(record.id, "stale", "answered in the pane")) await ping("permission-resolved");
             return;
           }

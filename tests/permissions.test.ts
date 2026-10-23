@@ -277,6 +277,30 @@ describe("the PermissionRequest hook", () => {
     expect(await new Response(proc.stdout).text()).toContain('"behavior":"allow"');
   }, 20_000);
 
+  test("two identical calls pending at once: one result doesn't retire either", async () => {
+    writeFileSync(transcript(), toolUse("toolu_1") + toolUse("toolu_2"));
+    const proc = startHook();
+    const record = await pending();
+    appendFileSync(transcript(), toolResult("toolu_2"));
+    await Bun.sleep(600);
+    expect(readPermission(record.id)!.state).toBe("pending");
+    appendFileSync(transcript(), toolResult("toolu_1"));
+    expect(await proc.exited).toBe(0);
+    expect(readPermission(record.id)).toMatchObject({ state: "stale", resolution: "answered in the pane" });
+  }, 20_000);
+
+  test("with a tool_use_id, only that call's result counts", async () => {
+    writeFileSync(transcript(), toolUse("toolu_1") + toolUse("toolu_2"));
+    const proc = startHook("permission-request", { tool_use_id: "toolu_1" });
+    const record = await pending();
+    appendFileSync(transcript(), toolResult("toolu_2"));
+    await Bun.sleep(600);
+    expect(readPermission(record.id)!.state).toBe("pending");
+    appendFileSync(transcript(), toolResult("toolu_1"));
+    expect(await proc.exited).toBe(0);
+    expect(readPermission(record.id)!.state).toBe("stale");
+  }, 20_000);
+
   test("a later identical call's result doesn't count as this one's answer", async () => {
     const proc = startHook();
     const record = await pending();
