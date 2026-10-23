@@ -10,6 +10,7 @@ import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { abortTurn, interruptCommand, sendCommand } from "../src/commands/send";
 import { queueCommand } from "../src/commands/queue";
 import { renameAgent } from "../src/commands/rename";
+import { stopIfIdle } from "../src/commands/rm";
 import {
   deliveryMark,
   markDelivered,
@@ -570,6 +571,55 @@ describe("delivery receipts", () => {
   });
 });
 
+describe("stop ifIdle after an untracked handover", () => {
+  const handedOver = { ok: false, reason: "in_turn", error: 'agent "api" was handed a message it has not started on yet' } as const;
+  const stop = () => stopIfIdle(readAgent("api")!);
+  const nextTurn = (prompt: string) => {
+    hook("user-prompt-submit", { prompt });
+    hook("stop");
+  };
+
+  test("a --now steer refuses the stop until the agent's next idle", async () => {
+    fakeSession("idle");
+    fastSleep();
+    expect((await sendCommand("api", "steer one", { now: true })).id).toBeNull();
+    expect(await stop()).toEqual(handedOver);
+    nextTurn("steer one");
+    expect(await stop()).toEqual({ ok: true });
+    expect(readAgent("api")!.status).toBe("exited");
+  });
+
+  test("an interrupt refuses the stop until the agent's next idle", async () => {
+    fakeSession("idle");
+    fastSleep();
+    expect((await interruptCommand("api", "change course", { exact: true })).id).toBeNull();
+    expect(await stop()).toEqual(handedOver);
+    nextTurn("change course");
+    expect(await stop()).toEqual({ ok: true });
+  });
+
+  // The hook marks the agent working as it drains, so the stop is refused as
+  // busy until the turn the drain fed ends; that end shows the agent took it.
+  test("a Stop gate drain holds the stop until the turn it fed ends", async () => {
+    fakeSession("working");
+    await sendCommand("api", "while you were busy", { now: false });
+    expect(JSON.parse(hook("stop")).decision).toBe("block");
+    expect(readAgent("api")!.lastHandoffInTurn).toBe(true);
+    expect(await stop()).toMatchObject({ ok: false, reason: "busy" });
+    expect(hook("stop")).toBe("");
+    expect(await stop()).toEqual({ ok: true });
+  });
+
+  test.each(["user-prompt-submit", "post-tool-use"])("a %s inbox drain holds the stop until that turn ends", async (event) => {
+    fakeSession("working");
+    await sendCommand("api", `note for ${event}`, { now: false });
+    expect(hook(event, { prompt: "other" })).toContain(`note for ${event}`);
+    expect(await stop()).toMatchObject({ ok: false, reason: "busy" });
+    hook("stop");
+    expect(await stop()).toEqual({ ok: true });
+  });
+});
+
 describe("messages api", () => {
   let server: ApiServerHandle;
   const TOKEN = "t";
@@ -625,9 +675,9 @@ describe("messages api", () => {
     expect(queueDepth("api")).toBe(1);
   });
 
-  test("health and local detail report messageReceipts", async () => {
+  test("health and local detail report messageReceipts and stopIfIdle", async () => {
     fakeSession("idle");
-    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true });
+    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true });
     expect(((await (await call("/api/agents/api")).json()) as any).messageReceipts).toBe(true);
   });
 

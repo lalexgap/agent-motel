@@ -16,7 +16,7 @@ import { commsCommand } from "./commands/comms";
 import { renameCommand } from "./commands/rename";
 import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
-import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
+import { destroyAgent, rmCommand, stopAgent, stopIfIdle } from "./commands/rm";
 import { restoreCommand } from "./commands/restore";
 import { gcCommand } from "./commands/gc";
 import { waitCommand } from "./commands/wait";
@@ -791,6 +791,12 @@ async function main(): Promise<void> {
       break;
     case "stop": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      if (args.flags["if-idle"] === true) {
+        // Hidden, for `am serve` on another host: prints the outcome either
+        // way; a refusal is {ok: false, error, reason}.
+        console.log(JSON.stringify(await stopIfIdle(agent)));
+        break;
+      }
       stopAgent(agent);
       console.log(`stopped "${agent.name}" — resume with \`am resume ${agent.name}\``);
       break;

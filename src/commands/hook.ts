@@ -6,6 +6,7 @@ import {
   agentSessionId,
   listAgents,
   matchAgent,
+  noteHandoff,
   updateAgentStatus,
   writeAgent,
   type AgentState,
@@ -309,6 +310,7 @@ function surfaceInbox(
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
+    if (pending.length) noteHandoff(name, true);
     const out = buildInboxOutput(pending, hookEventName, notes, shown(pending));
     if (out) process.stdout.write(out);
   } finally {
@@ -334,6 +336,7 @@ function stopGate(name: string, display: boolean): string | null {
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
+    if (pending.length) noteHandoff(name, true);
     return buildStopGate(pending, display);
   } finally {
     releaseDeliverLock(name);

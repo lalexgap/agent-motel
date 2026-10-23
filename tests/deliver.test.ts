@@ -9,6 +9,7 @@ import { readAgent, setExactNamesOnly, writeAgent } from "../src/state";
 import { outboxList } from "../src/outbox";
 import { sendCommand } from "../src/commands/send";
 import { sendsInWindow } from "../src/comms";
+import { stopIfIdle } from "../src/commands/rm";
 
 let home: string;
 let oldPath: string | undefined;
@@ -279,5 +280,42 @@ describe("exact names only", () => {
     setExactNamesOnly(true);
     await expect(sendCommand("ghost", "hi", { now: false })).rejects.toThrow(/no agent matches "ghost"/);
     expect(outboxList().live).toEqual([]);
+  });
+});
+
+describe("stop ifIdle after an untracked typed handover", () => {
+  const handedOver = { ok: false, reason: "in_turn", error: 'agent "api" was handed a message it has not started on yet' } as const;
+  // The prompt hook, then the stop hook, a few ms after the handover.
+  function turn() {
+    Bun.sleepSync(3);
+    const promptAt = new Date().toISOString();
+    Bun.sleepSync(3);
+    writeAgent({ ...readAgent("api")!, status: "idle", promptAt, statusChangedAt: new Date().toISOString() });
+  }
+
+  test("a typed message refuses the stop until the agent's next idle", async () => {
+    fakeSession("submit");
+    const id = queueAppend("api", "message");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(await stopIfIdle(readAgent("api")!)).toEqual(handedOver);
+    turn();
+    expect(await stopIfIdle(readAgent("api")!)).toEqual({ ok: true });
+    expect(readAgent("api")!.status).toBe("exited");
+  });
+
+  test("a re-submitted Enter counts as a handover too", async () => {
+    fakeSession();
+    const sleep = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+    try {
+      const id = queueAppend("api", "hi");
+      expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unverified" });
+      writeAgent({ ...readAgent("api")!, lastHandoffAt: undefined });
+      writeFileSync(join(home, "mode"), "submit");
+      expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+      expect(readFileSync(join(home, "sends"), "utf8").split("\n").filter(line => line === "text")).toHaveLength(1);
+      expect(await stopIfIdle(readAgent("api")!)).toEqual(handedOver);
+      turn();
+      expect(await stopIfIdle(readAgent("api")!)).toEqual({ ok: true });
+    } finally { sleep.mockRestore(); }
   });
 });

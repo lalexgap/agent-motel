@@ -10,6 +10,7 @@ import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { abortTurn } from "../src/commands/send";
 import { readAgent, writeAgent } from "../src/state";
+import { stopIfIdle } from "../src/commands/rm";
 
 let home: string;
 let oldPath: string | undefined;
@@ -450,5 +451,19 @@ describe("codex inbox delivery", () => {
     releaseEscapeHold("api");
     expect(readAgent("api")!.promptAt).toBe(stale.promptAt);
     expect(readAgent("api")!.escReleasedAt).toBeUndefined();
+  });
+});
+
+describe("stop ifIdle after a Codex queue handover", () => {
+  test("an untracked message in the thread queue refuses the stop until the agent's next idle", async () => {
+    fakeCodex("ok");
+    const id = queueAppend("api", "operator note");
+    expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    expect(typed()).toBe(false);
+    expect(await stopIfIdle(readAgent("api")!)).toEqual({ ok: false, reason: "in_turn", error: 'agent "api" was handed a message it has not started on yet' });
+    prompt("operator note");
+    stop();
+    expect(await stopIfIdle(readAgent("api")!)).toEqual({ ok: true });
+    expect(readAgent("api")!.status).toBe("exited");
   });
 });

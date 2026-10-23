@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, type ApiServerHandle } from "../src/server";
-import { readAgent, writeAgent } from "../src/state";
-import { queueAppend } from "../src/queue";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { queueAppend, queueDepth, queuePopId } from "../src/queue";
+import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "../src/deliver";
+import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
 import { daemonRequest, startDaemonServer } from "../src/daemon";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { addRole } from "../src/roles";
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
 import { localHostIdentity } from "../src/config";
@@ -36,7 +39,7 @@ afterEach(() => {
   delete process.env.AM_API_TOKEN;
 });
 
-function seedAgent(name: string, status: "idle" | "working" | "exited" = "idle") {
+function seedAgent(name: string, status: AgentState["status"] = "idle") {
   const now = new Date().toISOString();
   writeAgent({ name, status, dir: "/tmp", tmuxSession: `agentmgr-${name}`, createdAt: now, updatedAt: now });
 }
@@ -387,6 +390,179 @@ describe("transcript + interrupt api", () => {
   });
 });
 
+describe("stop ifIdle", () => {
+  // Fake tmux: sessions in `live` exist, panes are empty, and kill-session
+  // runs `onKill` — while the stop still holds the mailbox locks.
+  let live: Set<string>;
+  let onKill: () => void;
+  let spawnSpy: ReturnType<typeof spyOn> | undefined;
+
+  beforeEach(() => {
+    live = new Set();
+    onKill = () => {};
+    const spawn = Bun.spawnSync.bind(Bun);
+    spawnSpy = spyOn(Bun, "spawnSync").mockImplementation(((cmd: any, opts?: any) => {
+      if (!Array.isArray(cmd) || cmd[0] !== "tmux") return spawn(cmd, opts);
+      const session = String(cmd[3] ?? "").replace(/^=/, "").replace(/:.*$/, "");
+      let exitCode = 0;
+      if (cmd[1] === "has-session") exitCode = live.has(session) ? 0 : 1;
+      if (cmd[1] === "kill-session") {
+        onKill();
+        live.delete(session);
+      }
+      return { exitCode, stdout: Buffer.from(""), stderr: Buffer.from(""), success: exitCode === 0 } as any;
+    }) as any);
+  });
+
+  afterEach(() => spawnSpy?.mockRestore());
+
+  const stop = (name: string, body?: unknown) =>
+    fetch(url(`/api/agents/${name}/stop`), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+
+  function liveAgent(name: string, status: AgentState["status"] = "idle") {
+    seedAgent(name, status);
+    live.add(`agentmgr-${name}`);
+  }
+
+  test("an idle agent with nothing pending is stopped", async () => {
+    liveAgent("calm");
+    const res = await stop("calm", { ifIdle: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(readAgent("calm")!.status).toBe("exited");
+    expect(live.has("agentmgr-calm")).toBe(false);
+  });
+
+  test("a busy agent is refused with reason busy and left running", async () => {
+    for (const status of ["working", "starting", "needs-attention"] as const) {
+      liveAgent(`b-${status}`, status);
+      const res = await stop(`b-${status}`, { ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: `agent "b-${status}" is ${status}`, reason: "busy" });
+      expect(readAgent(`b-${status}`)!.status).toBe(status);
+      expect(live.has(`agentmgr-b-${status}`)).toBe(true);
+    }
+  });
+
+  test("queued messages refuse with reason queued", async () => {
+    liveAgent("q");
+    queueAppend("q", "later");
+    const res = await stop("q", { ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).reason).toBe("queued");
+    expect(readAgent("q")!.status).toBe("idle");
+  });
+
+  test("a delivered message whose turn has not finished refuses with reason in_turn", async () => {
+    liveAgent("t");
+    const id = queueTrackedMessage("t", "do it");
+    queuePopId("t", `${id}.json`);
+    markDelivered("t", `${id}.json`);
+    expect(readMessage("t", id)!.state).toBe("delivered");
+    const res = await stop("t", { ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).reason).toBe("in_turn");
+    expect(readAgent("t")!.status).toBe("idle");
+  });
+
+  test("no delivery or enqueue can start while the stop holds the lock", async () => {
+    liveAgent("race");
+    let delivery: Promise<DeliveryResult> | undefined;
+    let enqueueError: Error | undefined;
+    onKill = () => {
+      // deliverNext takes the delivery lock before its first await.
+      delivery = deliverNext("race");
+      try {
+        queueAppend("race", "slipped in");
+      } catch (error) {
+        enqueueError = error as Error;
+      }
+    };
+    const res = await stop("race", { ifIdle: true });
+    expect(res.status).toBe(200);
+    expect(await delivery).toEqual({ status: "queued", reason: "locked" });
+    expect(enqueueError?.message).toContain("mailbox is busy");
+    expect(queueDepth("race")).toBe(0);
+    expect(readAgent("race")!.status).toBe("exited");
+    // Both locks are free again afterwards.
+    expect(acquireDeliverLock("race")).toBe(true);
+    releaseDeliverLock("race");
+    queueAppend("race", "after");
+    expect(queueDepth("race")).toBe(1);
+  });
+
+  test("a dead or exited agent counts as idle, even with messages queued", async () => {
+    seedAgent("gone");
+    queueAppend("gone", "for resume");
+    const dead = await stop("gone", { ifIdle: true });
+    expect(dead.status).toBe(200);
+    expect(readAgent("gone")!.status).toBe("exited");
+    expect(queueDepth("gone")).toBe(1);
+    const again = await stop("gone", { ifIdle: true });
+    expect(again.status).toBe(200);
+  });
+
+  test("a stop that cannot take the lifecycle lock is refused as busy", async () => {
+    liveAgent("held");
+    expect(acquireLifecycleLock("held")).toBe(true);
+    try {
+      const res = await stop("held", { ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as any).reason).toBe("busy");
+      expect(readAgent("held")!.status).toBe("idle");
+    } finally {
+      releaseLifecycleLock("held");
+    }
+  });
+
+  test("waits out a delivery in progress, then checks", async () => {
+    liveAgent("wait");
+    expect(acquireDeliverLock("wait")).toBe(true);
+    setTimeout(() => releaseDeliverLock("wait"), 300);
+    const res = await stop("wait", { ifIdle: true });
+    expect(res.status).toBe(200);
+    expect(readAgent("wait")!.status).toBe("exited");
+  });
+
+  test("without the flag a busy agent is stopped as before; bad bodies are rejected", async () => {
+    liveAgent("plain", "working");
+    expect((await stop("plain")).status).toBe(200);
+    expect(readAgent("plain")!.status).toBe("exited");
+    liveAgent("plain2", "working");
+    expect((await stop("plain2", { ifIdle: false })).status).toBe(200);
+    expect((await stop("plain2", { ifIdle: "yes" })).status).toBe(400);
+    expect((await stop("missing", { ifIdle: true })).status).toBe(404);
+  });
+
+  test("a handover within the grace before the idle transition still refuses; one before it does not", async () => {
+    const idleAt = Date.now() - 60_000;
+    const at = (ms: number) => new Date(idleAt + ms).toISOString();
+    liveAgent("grace");
+    writeAgent({ ...readAgent("grace")!, promptAt: at(-10_000), lastHandoffAt: at(-1_500), statusChangedAt: at(0) });
+    const res = await stop("grace", { ifIdle: true });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'agent "grace" was handed a message it has not started on yet', reason: "in_turn" });
+    expect(live.has("agentmgr-grace")).toBe(true);
+    writeAgent({ ...readAgent("grace")!, lastHandoffAt: at(-2_500) });
+    expect((await stop("grace", { ifIdle: true })).status).toBe(200);
+  });
+
+  test("a turn shorter than the grace, prompted after the handover, does not block the stop", async () => {
+    const handoffAt = Date.now() - 60_000;
+    const at = (ms: number) => new Date(handoffAt + ms).toISOString();
+    liveAgent("short");
+    writeAgent({ ...readAgent("short")!, lastHandoffAt: at(0), promptAt: at(100), statusChangedAt: at(500) });
+    expect((await stop("short", { ifIdle: true })).status).toBe(200);
+    expect(readAgent("short")!.status).toBe("exited");
+  });
+
+  test("detail and health advertise stopIfIdle", async () => {
+    liveAgent("cap");
+    expect(((await (await fetch(url("/api/agents/cap"), auth())).json()) as any).stopIfIdle).toBe(true);
+    expect(((await (await fetch(url("/api/health"), auth())).json()) as any).stopIfIdle).toBe(true);
+  });
+});
+
 describe("remote agents api (host:name)", () => {
   interface Call {
     host: string;
@@ -613,6 +789,36 @@ describe("remote agents api (host:name)", () => {
       [["rm", "api", "--local", "--exact"], undefined],
     ]);
     expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);
+  });
+
+  test("stop ifIdle: capability-checked, forwarded as stop --if-idle, refusals keep their reason", async () => {
+    let outcome: unknown = { ok: true };
+    let capable = true;
+    reply = (call) =>
+      call.args[0] === "__detail"
+        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", ...(capable ? { stopIfIdle: true } : {}) }) }
+        : { exitCode: 0, stdout: JSON.stringify(outcome) };
+    const ok = await post("/api/agents/laptop:api/stop", { ifIdle: true });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["__detail", "api", "--local", "--exact"],
+      ["stop", "api", "--if-idle", "--local", "--exact"],
+    ]);
+    for (const reason of ["busy", "queued", "in_turn"]) {
+      outcome = { ok: false, error: `nope (${reason})`, reason };
+      const res = await post("/api/agents/laptop:api/stop", { ifIdle: true });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: `nope (${reason})`, reason });
+    }
+    // An older am would ignore --if-idle and stop regardless: never sent.
+    capable = false;
+    calls.length = 0;
+    const old = await post("/api/agents/laptop:api/stop", { ifIdle: true });
+    expect(old.status).toBe(409);
+    expect(await old.json()).toEqual({ error: "remote am too old on laptop (no stop --if-idle)", reason: "remote_too_old" });
+    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
+    expect((await post("/api/agents/laptop:api/stop", { ifIdle: 1 })).status).toBe(400);
   });
 
   test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {

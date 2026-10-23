@@ -10,7 +10,7 @@ import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
 import { transcriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
-import { stopAgent, destroyAgent } from "./commands/rm";
+import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest, notifyDaemon } from "./daemon";
@@ -132,6 +132,8 @@ export function agentDetail(name: string) {
       : null,
     // Tells a serve on another host that this am returns ids from send --json.
     messageReceipts: true,
+    // ...and that `am stop --if-idle` refuses rather than stopping regardless.
+    stopIfIdle: true,
     permissionRequests: true,
     pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
   };
@@ -227,6 +229,17 @@ function messageNotFound(name: string, id: string): Response {
 
 function cancelResponse(result: CancelResult): Response {
   return result.ok ? json(result) : conflict(result.error, resultReason(result), result.state);
+}
+
+function stopIfIdleResponse(result: StopIfIdleResult): Response {
+  return result.ok ? json({ ok: true }) : json({ error: result.error, reason: result.reason }, 409);
+}
+
+// {ifIdle?}: an error response, or whether the stop is conditional.
+async function stopBody(req: Request): Promise<Response | { ifIdle: boolean }> {
+  const body = (await req.json().catch(() => null)) as { ifIdle?: unknown } | null;
+  if (body?.ifIdle != null && typeof body.ifIdle !== "boolean") return json({ error: "ifIdle must be a boolean" }, 400);
+  return { ifIdle: body?.ifIdle === true };
 }
 
 function interruptResponse(result: InterruptResult): Response {
@@ -330,6 +343,19 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
 
     if (route === "stop" && method === "POST") {
+      const body = await stopBody(req);
+      if (body instanceof Response) return body;
+      if (body.ifIdle) {
+        // An older am would ignore --if-idle and stop regardless, so the
+        // __detail precheck doubles as the capability check.
+        const detail = await runRemoteJson<{ stopIfIdle?: boolean }>(host, ["__detail", name]);
+        if (detail?.stopIfIdle !== true) {
+          return json({ error: `remote am too old on ${host} (no stop --if-idle)`, reason: "remote_too_old" }, 409);
+        }
+        const result = await runRemoteJson<StopIfIdleResult>(host, ["stop", name, "--if-idle"], { timeoutMs: 30_000 });
+        if (typeof result?.ok !== "boolean") return json({ error: `am stop --if-idle on ${host} returned no outcome` }, 502);
+        return stopIfIdleResponse(result);
+      }
       await run(["stop", name]);
       return json({ ok: true });
     }
@@ -393,7 +419,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
-    return json({ ok: true, name: "am", messageReceipts: true });
+    return json({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true });
   }
 
   // GET /api/agents — merged local + remote fleet (cached; never blocks on ssh)
@@ -592,8 +618,20 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // POST /api/agents/:name/stop
+    // POST /api/agents/:name/stop — {ifIdle?}: refuse (409 busy | queued |
+    // in_turn) unless the agent has nothing to do
     if (parts.length === 3 && parts[2] === "stop" && method === "POST") {
+      const body = await stopBody(req);
+      if (body instanceof Response) return body;
+      if (body.ifIdle) {
+        const agent = readAgent(name);
+        if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+        try {
+          return stopIfIdleResponse(await stopIfIdle(agent));
+        } catch (error) {
+          return thrownConflict(error);
+        }
+      }
       try {
         stopAgent(resolveAgent(name));
         return json({ ok: true });
@@ -628,6 +666,9 @@ export interface ApiServerHandle {
 export function startApiServer(opts: { port?: number; hostname?: string; token: string }): ApiServerHandle {
   const { token } = opts;
   const server = Bun.serve({
+    // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
+    // and remote routes run ssh with up to 30s timeouts.
+    idleTimeout: 120,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
     async fetch(req) {

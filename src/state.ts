@@ -68,6 +68,13 @@ export interface AgentState {
   // When am last pressed Esc in the pane. Codex stops draining its input
   // queue after an interrupt until a prompt is submitted.
   escapedAt?: string;
+  // When a delivery last handed a message over (typed, steered, sent to an
+  // inbox or Codex's queue, or drained by a hook), receipt or not. Stop
+  // ifIdle refuses until a later idle shows the agent took it.
+  lastHandoffAt?: string;
+  // Set when a hook drained it into the running turn, so that turn's end
+  // already shows the agent took it.
+  lastHandoffInTurn?: boolean;
   // Keys of the prompts that Esc may have aborted, whose hooks can still land
   // after it; what am typed since it (first when, and the keys); and the
   // prompt that showed the agent took input again. See releaseEscapeHold.
@@ -176,6 +183,21 @@ export function updateAgentIf(name: string, fn: (state: AgentState) => boolean):
     writeJsonAtomic(stateFile(name), current);
     return true;
   });
+}
+
+// Noted just before a message goes out, so the prompt that takes it is later.
+// Callers hold the delivery lock. Never throws.
+export function noteHandoff(name: string, inTurn = false): void {
+  try {
+    updateAgentIf(name, (current) => {
+      current.lastHandoffAt = new Date().toISOString();
+      if (inTurn) current.lastHandoffInTurn = true;
+      else delete current.lastHandoffInTurn;
+      return true;
+    });
+  } catch {
+    // only stop ifIdle reads it
+  }
 }
 
 export function updateAgentStatus(
