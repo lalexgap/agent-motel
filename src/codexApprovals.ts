@@ -105,7 +105,6 @@ export interface CodexApprovalTarget {
   threadId: string;
 }
 
-// Daemon-attached codex agents with a live pane and a known thread.
 export function codexApprovalTargets(): CodexApprovalTarget[] {
   return listAgents()
     .filter((a) => agentProvider(a) === "codex" && a.codexDaemonAttached && a.status !== "exited")

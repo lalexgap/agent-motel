@@ -132,7 +132,6 @@ export function agentDetail(name: string) {
       : null,
     // Tells a serve on another host that this am returns ids from send --json.
     messageReceipts: true,
-    // And that it relays permission prompts (GET/POST …/permissions).
     permissionRequests: true,
     pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
   };
