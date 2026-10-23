@@ -473,6 +473,12 @@ export function settleMessages(name: string): void {
   for (const r of listRecords(name)) settle(name, r);
 }
 
+// A message handed over whose turn has not finished, after catching up turn
+// ends the hooks missed.
+export function hasUnfinishedDelivery(name: string): boolean {
+  return listRecords(name).some((r) => settle(name, r).state === "delivered");
+}
+
 // Callers hold the delivery and producer locks.
 export function cancelQueuedLocked(
   name: string,

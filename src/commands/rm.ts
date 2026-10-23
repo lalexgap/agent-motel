@@ -1,5 +1,9 @@
-import { removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
-import { queueClear } from "../queue";
+import { readAgent, removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
+import { queueClear, queueDepth } from "../queue";
+import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
+import { acquireProducerLock, releaseProducerLock } from "../mailbox";
+import { hasUnfinishedDelivery } from "../messages";
+import { displayStatus } from "./ls";
 import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
@@ -27,6 +31,47 @@ export function stopAgent(agent: AgentState, opts: { lifecycleLocked?: boolean }
     stopAgentLocked(agent);
   } finally {
     releaseLifecycleLock(agent.name);
+  }
+}
+
+export type StopIfIdleReason = "busy" | "queued" | "in_turn";
+export type StopIfIdleResult = { ok: true } | { ok: false; error: string; reason: StopIfIdleReason };
+
+const STOP_IF_IDLE_WAIT_MS = 10_000;
+
+// Stop only an agent with nothing to do: idle, nothing queued, no delivered
+// message still in its turn. Checked and stopped under the delivery and
+// producer locks, so no delivery or enqueue can land in between. A mailbox
+// still busy at the deadline is a delivery in progress, so busy.
+export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
+  const name = agent.name;
+  for (const deadline = Date.now() + STOP_IF_IDLE_WAIT_MS; ;) {
+    if (acquireDeliverLock(name)) {
+      try {
+        if (acquireProducerLock(name)) {
+          try {
+            const current = readAgent(name) ?? agent;
+            const status = displayStatus(current);
+            if (status === "working" || status === "starting" || status === "waiting" || status === "needs-attention") {
+              return { ok: false, error: `agent "${name}" is ${status}`, reason: "busy" };
+            }
+            const queued = queueDepth(name);
+            if (queued > 0) return { ok: false, error: `agent "${name}" has ${queued} queued message(s)`, reason: "queued" };
+            if (hasUnfinishedDelivery(name)) {
+              return { ok: false, error: `agent "${name}" has a delivered message whose turn has not finished`, reason: "in_turn" };
+            }
+            stopAgent(current);
+            return { ok: true };
+          } finally {
+            releaseProducerLock(name);
+          }
+        }
+      } finally {
+        releaseDeliverLock(name);
+      }
+    }
+    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy`, reason: "busy" };
+    await Bun.sleep(100);
   }
 }
 
