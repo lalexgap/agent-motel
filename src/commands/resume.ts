@@ -16,8 +16,7 @@ import {
   type CodexDeadline,
 } from "../codexDaemon";
 import { agentEnv } from "./new";
-import { loadConfig } from "../config";
-import { claudeTrustKey, pretrustClaudeDir } from "../claudeTrust";
+import { pretrustClaudeAgentDir } from "../claudeTrust";
 
 export interface ResumeOpts {
   message?: string;
@@ -49,7 +48,7 @@ export function codexResumeDaemon(
 
 // The agent's dir may have changed since launch (`am cd`, a restore).
 export function claudeResumeTrust(agent: AgentState): void {
-  if (agentProvider(agent) === "claude" && loadConfig().pretrustClaudeDirs) pretrustClaudeDir(claudeTrustKey(agent.dir));
+  if (agentProvider(agent) === "claude") pretrustClaudeAgentDir(agent.dir);
 }
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet

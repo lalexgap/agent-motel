@@ -7,6 +7,7 @@ import {
   claudeTrustKey,
   forgetClaudeTrust,
   paneShowsClaudeTrustPrompt,
+  pretrustClaudeAgentDir,
   pretrustClaudeDir,
   readClaudeTrustLedger,
 } from "../src/claudeTrust";
@@ -131,12 +132,50 @@ describe("pretrustClaudeDir", () => {
     expect(existsSync(`${file}.lock`)).toBe(false);
   });
 
+  test("gives up at once on a lock path that is not a directory", () => {
+    writeConfig({});
+    writeFileSync(`${file}.lock`, "");
+    pretrustClaudeDir("/work/a");
+    expect(readConfig()).toEqual({});
+  });
+
   test("waits on a held lock and gives up without writing", () => {
     writeConfig({});
     mkdirSync(`${file}.lock`);
     pretrustClaudeDir("/work/a");
     expect(readConfig()).toEqual({});
     expect(existsSync(`${file}.lock`)).toBe(true);
+  });
+});
+
+describe("pretrustClaudeAgentDir", () => {
+  let savedHome: string | undefined;
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    process.env.HOME = join(home, "user");
+    mkdirSync(join(home, "user", "proj"), { recursive: true });
+    writeConfig({});
+  });
+  afterEach(() => {
+    process.env.HOME = savedHome;
+  });
+
+  test("trusts a folder under home but never home or above", () => {
+    pretrustClaudeAgentDir(join(home, "user"));
+    pretrustClaudeAgentDir(home);
+    pretrustClaudeAgentDir("/");
+    expect(readConfig()).toEqual({});
+    pretrustClaudeAgentDir(join(home, "user", "proj"));
+    expect(Object.keys(readConfig().projects)).toEqual([join(home, "user", "proj")]);
+  });
+
+  test("does nothing with skip-permissions or pre-trust turned off", () => {
+    mkdirSync(join(home, "am"), { recursive: true });
+    for (const off of [{ skipPermissions: false }, { pretrustClaudeDirs: false }]) {
+      writeFileSync(join(home, "am", "config.json"), JSON.stringify(off));
+      pretrustClaudeAgentDir(join(home, "user", "proj"));
+      expect(readConfig()).toEqual({});
+    }
   });
 });
 

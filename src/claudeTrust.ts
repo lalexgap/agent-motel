@@ -1,8 +1,9 @@
 import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { baseDir } from "./paths";
+import { loadConfig } from "./config";
 import { withFileLock } from "./filelock";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 
@@ -81,12 +82,14 @@ function withClaudeConfigLock<T>(file: string, fn: () => T): T | undefined {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
       try {
-        if (statSync(lock).mtimeMs < Date.now() - LOCK_STALE_MS) {
+        const stat = lstatSync(lock);
+        if (!stat.isDirectory()) return undefined;
+        if (stat.mtimeMs < Date.now() - LOCK_STALE_MS) {
           rmdirSync(lock);
           continue;
         }
       } catch {
-        continue; // released between mkdir and stat
+        // released between mkdir and lstat, or a rival broke it first
       }
       if (Date.now() >= giveUp) return undefined;
       Bun.sleepSync(Math.min(20 * 2 ** attempt, 200) * (1 + Math.random()));
@@ -161,6 +164,28 @@ const DEFAULT_PROJECT = {
   hasClaudeMdExternalIncludesApproved: false,
   hasClaudeMdExternalIncludesWarningShown: false,
 };
+
+// Claude Code keeps trust for ~ to the session, and an untrusted folder
+// outside git inherits trust from any ancestor, so ~ and above stay prompted.
+function trustsBeyondFolder(key: string): boolean {
+  let home: string;
+  try {
+    home = realpathSync(process.env.HOME || homedir());
+  } catch {
+    home = resolve(process.env.HOME || homedir());
+  }
+  const rel = relative(key, home);
+  return rel === "" || !rel.startsWith("..") || dirname(key) === key;
+}
+
+// Only with skip-permissions on: with it off, the trust dialog is the user's
+// gate on the folder's hooks and helpers.
+export function pretrustClaudeAgentDir(dir: string): void {
+  const config = loadConfig();
+  if (!config.pretrustClaudeDirs || !config.skipPermissions) return;
+  const key = claudeTrustKey(dir);
+  if (!trustsBeyondFolder(key)) pretrustClaudeDir(key);
+}
 
 // Trusts key unless it already has an answer, recording it when am wrote it.
 export function pretrustClaudeDir(key: string): void {
