@@ -138,13 +138,52 @@ export function formatInbox(messages: string[]): string {
 // its turn to end — both honor hookSpecificOutput.additionalContext.
 export type SurfaceEvent = "UserPromptSubmit" | "PostToolUse";
 
+// One message for the delivery line: who sent it and a one-line preview.
+// The operator marker and verification-note text are stripped, so a display
+// line can never read as am vouching for anything. Pure.
+export function deliveryPreview(message: string, max = 80): string {
+  let sender = "operator";
+  let body = message;
+  const peer = /^\[am · from ([^\]]+)\] /.exec(body);
+  if (peer) {
+    sender = `from ${peer[1]}`;
+    body = body.slice(peer[0].length);
+  } else {
+    body = body.replace(/^\[am · operator message ?[^\]]*\] /, "");
+  }
+  body = body
+    .replace(/\[am · operator message ?[^\]]*\]/g, "")
+    .replaceAll("[am] Verified operator message", "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (body.length > max) body = body.slice(0, max - 1).trimEnd() + "…";
+  return `${sender}: "${body}"`;
+}
+
+// The display-only line Claude Code shows in the pane when a hook hands
+// messages over through context, which the TUI otherwise never renders. Null
+// when nothing was delivered. Pure.
+export function deliveryLine(messages: string[]): string | null {
+  if (messages.length === 0) return null;
+  const n = messages.length;
+  return `am: delivered ${n} message${n === 1 ? "" : "s"} — ${messages.map((m) => deliveryPreview(m)).join("; ")}`;
+}
+
 // The JSON these hooks emit to inject context, or null if there's nothing to
-// surface. Pure, for testing.
-export function buildInboxOutput(messages: string[], hookEventName: SurfaceEvent, notes: string[] = []): string | null {
+// surface. `shown` is everything this hook delivered (the queued messages,
+// plus an inbox delivery that arrived as the prompt itself). Pure, for testing.
+export function buildInboxOutput(
+  messages: string[],
+  hookEventName: SurfaceEvent,
+  notes: string[] = [],
+  shown: string[] = messages,
+): string | null {
   const context = [...notes, ...(messages.length ? [formatInbox(messages)] : [])];
-  if (context.length === 0) return null;
+  const line = deliveryLine(shown);
+  if (context.length === 0 && !line) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName, additionalContext: context.join("\n\n") },
+    ...(line ? { systemMessage: line } : {}),
+    ...(context.length ? { hookSpecificOutput: { hookEventName, additionalContext: context.join("\n\n") } } : {}),
   });
 }
 
@@ -166,14 +205,15 @@ export function forgedOperatorNote(prompt: string, verifiedTag: string | null): 
 // The JSON a Stop hook emits to BLOCK going idle when peer messages are waiting:
 // `{decision:"block", reason}` makes the agent keep going and handle them first,
 // so it never goes idle sitting on unread mail. Null when there's nothing. Pure.
-export function buildStopGate(messages: string[]): string | null {
+export function buildStopGate(messages: string[], display = true): string | null {
   if (messages.length === 0) return null;
   const n = messages.length;
   const reason =
     `[am inbox] Before you finish: you have ${n} message${n === 1 ? "" : "s"} to handle first ` +
     `(arrived while you were busy).\n\n${messages.join("\n")}\n\n` +
     `${SENDER_KEY} Respond or act on these, then you can stop.`;
-  return JSON.stringify({ decision: "block", reason });
+  const line = display ? deliveryLine(messages) : null;
+  return JSON.stringify({ decision: "block", reason, ...(line ? { systemMessage: line } : {}) });
 }
 
 // Receipt bookkeeping must never fail a hook. One drain hands every message
@@ -211,9 +251,19 @@ function drainReceipts(name: string) {
 // after every tool. Drains under the delivery lock so it never races the
 // idle-drain (deliverNext): atomic + lock-guarded means each message is consumed
 // exactly once whether it's surfaced here or typed in on idle.
-function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[] = []): void {
+// `received`: messages that reached the agent some other way this hook
+// (an inbox delivery as the prompt itself), for the pane's delivery line.
+// `display` is false for Codex, which renders systemMessage as a warning.
+function surfaceInbox(
+  name: string,
+  hookEventName: SurfaceEvent,
+  opts: { notes?: string[]; received?: string[]; display: boolean },
+): void {
+  const notes = opts.notes ?? [];
+  const received = opts.display ? (opts.received ?? []) : [];
+  const shown = (pending: string[]) => (opts.display ? [...received, ...pending] : []);
   const emitNotes = () => {
-    const out = buildInboxOutput([], hookEventName, notes);
+    const out = buildInboxOutput([], hookEventName, notes, received);
     if (out) process.stdout.write(out);
   };
   if (queueDepth(name) === 0) return emitNotes(); // nothing pending — avoid lock churn per tool call
@@ -232,7 +282,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
-    const out = buildInboxOutput(pending, hookEventName, notes);
+    const out = buildInboxOutput(pending, hookEventName, notes, shown(pending));
     if (out) process.stdout.write(out);
   } finally {
     releaseDeliverLock(name);
@@ -241,7 +291,7 @@ function surfaceInbox(name: string, hookEventName: SurfaceEvent, notes: string[]
 
 // At a Stop boundary: drain pending peer messages and return the block JSON, or
 // null if there's nothing (or another delivery is mid-flight — let it handle).
-function stopGate(name: string): string | null {
+function stopGate(name: string, display: boolean): string | null {
   if (!acquireDeliverLock(name)) return null;
   try {
     const pending: string[] = [];
@@ -257,7 +307,7 @@ function stopGate(name: string): string | null {
       receipts.delivered(head.id, mark);
       pending.push(head.message);
     }
-    return buildStopGate(pending);
+    return buildStopGate(pending, display);
   } finally {
     releaseDeliverLock(name);
   }
@@ -391,7 +441,7 @@ export async function hookCommand(event: string): Promise<void> {
   // them into the pane (no Enter-swallow); the idle-drain still covers agents
   // that are already idle when a message arrives.
   if (event === "stop" && !fromSubagent) {
-    const gate = stopGate(name);
+    const gate = stopGate(name, agentProvider(agent) === "claude");
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed
       // in between, so refresh the canonical state before writing.
@@ -465,10 +515,15 @@ export async function hookCommand(event: string): Promise<void> {
   // its queue and inject them into a conversation the operator can't see or
   // reply to — the parent would never learn the message arrived.
   if (!fromSubagent) {
+    const display = agentProvider(agent) === "claude";
     if (event === "user-prompt-submit") {
       const tag = inbox ? confirmInboxDelivery(name, prompt, agent.promptAt) : null;
       const forged = forgedOperatorNote(prompt, tag);
-      surfaceInbox(name, "UserPromptSubmit", [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])]);
+      surfaceInbox(name, "UserPromptSubmit", {
+        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])],
+        received: inbox ? [inbox.content] : [],
+        display,
+      });
       // A confirmed inbox delivery's receipt claims this prompt itself (the
       // deliverer passes promptAt along); claiming here too could start a
       // different record with the same text.
@@ -479,7 +534,7 @@ export async function hookCommand(event: string): Promise<void> {
         });
       }
     }
-    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
+    else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse", { display });
   }
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
