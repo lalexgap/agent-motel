@@ -226,6 +226,7 @@ document
     (button) => (button.onclick = () => showOverview(button.dataset.filter)),
   );
 $("search").oninput = renderFleet;
+$("sidebar-search").oninput = renderFleet;
 $("show-stopped-agents").onchange = renderFleet;
 $("sort").onchange = () => {
   state.sort = $("sort").value;
@@ -289,17 +290,23 @@ function renderFleet() {
   $("stat-idle").textContent = rows.filter((r) => r.status === "idle").length;
   const nav = $("agent-nav");
   nav.replaceChildren();
+  const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
   for (const row of rows) {
     if (
       !$("show-stopped-agents").checked &&
       ["exited", "dead"].includes(row.status)
     )
       continue;
+    if (!`${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
+      .toLowerCase().includes(sidebarQuery)) continue;
     const button = el("button", "side-agent");
     button.append(dot(row.status), el("span", "", row.name));
     button.onclick = () => selectAgent(key(row));
     nav.append(button);
   }
+  if (!nav.childNodes.length)
+    nav.append(el("p", "sidebar-empty", sidebarQuery ? "No matching agents." :
+      $("show-stopped-agents").checked ? "No agents." : "No live agents."));
   const query = $("search").value.toLowerCase();
   const visible = rows.filter(
     (row) =>
