@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f6f5f1" />
+    <meta name="theme-color" content="#1e1e1e" />
     <title>Agent Motel · Front desk</title>
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
@@ -12,9 +12,9 @@
     <section id="login" class="login">
       <form id="login-form" class="login-card">
         <div class="mark">am<span>✳</span></div>
-        <p class="eyebrow">YOUR AGENTS. ONE PLACE.</p>
-        <h1>Welcome to the motel.</h1>
-        <p>A quiet place to keep ambitious work moving.</p>
+        <p class="eyebrow">FLEET ACCESS</p>
+        <h1>Agent Motel</h1>
+        <p>Sign in to your agent workspace.</p>
         <label
           >Access key<input
             id="access-key"
@@ -22,7 +22,7 @@
             required
             autocomplete="current-password"
             placeholder="Enter your private access key" /></label
-        ><button class="primary">Unlock front desk →</button>
+        ><button class="primary">Sign in →</button>
         <p id="login-error" role="alert"></p>
         <small
           >Retrieve your access key with <code>am token</code> on your
@@ -59,18 +59,14 @@
           <span
             >Workspace <span class="muted">/</span>
             <b id="breadcrumb">Overview</b></span
-          ><span class="top-note"
-            >A little coordination. A lot of possibility.</span
-          >
+          ><span class="top-note">AGENT CONTROL / LIVE</span>
         </header>
         <div class="page">
           <section class="page-heading">
             <div>
-              <p class="eyebrow">THE FRONT DESK</p>
-              <h1 id="page-title">Room for great work.</h1>
-              <p id="page-subtitle">
-                Your fleet, in focus. Keep things moving from here.
-              </p>
+              <p class="eyebrow">CONTROL PLANE</p>
+              <h1 id="page-title">Fleet monitor</h1>
+              <p id="page-subtitle"></p>
             </div>
             <button id="new-agent" class="primary">+ New agent</button>
           </section>
@@ -79,67 +75,94 @@
             <div class="stats">
               <button data-filter="all">
                 <span>All agents</span><strong id="stat-all">—</strong
-                ><small>Across your fleet</small></button
+                ><small>Total</small></button
               ><button data-filter="working">
-                <span>In motion <i class="dot working"></i></span
+                <span>Working <i class="dot working"></i></span
                 ><strong id="stat-working">—</strong
-                ><small>Making things happen</small></button
+                ><small>Active</small></button
               ><button data-filter="attention">
-                <span>Needs you <i class="dot needs-attention"></i></span
+                <span>Attention <i class="dot needs-attention"></i></span
                 ><strong id="stat-attention">—</strong
-                ><small>A decision or a hand</small></button
+                ><small>Action required</small></button
               ><button data-filter="idle">
                 <span>Available <i class="dot idle"></i></span
-                ><strong id="stat-idle">—</strong
-                ><small>Ready for what’s next</small>
+                ><strong id="stat-idle">—</strong><small>Idle</small>
               </button>
             </div>
-            <section class="concierge-banner">
-              <div class="concierge-symbol">✳</div>
-              <div>
-                <p class="eyebrow">MEET YOUR CONCIERGE</p>
-                <h2>Big idea? Start a conversation.</h2>
-                <p>
-                  Start an agent, find a thread, or ask what needs your
-                  attention.
-                </p>
-                <div class="suggestions">
-                  <button
-                    data-ask="Give me a brief fleet status report and what needs my attention."
+            <div class="overview-layout">
+              <section class="fleet-panel">
+                <div class="section-header">
+                  <h2>Agents <span id="list-count"></span></h2>
+                  <div class="list-controls">
+                    <select id="sort" aria-label="Sort agents">
+                      <option value="status">Status</option>
+                      <option value="repo">Repository</option>
+                      <option value="runtime">Time running</option>
+                      <option value="recent">Recent activity</option>
+                      <option value="name">Name</option></select
+                    ><button
+                      id="sort-direction"
+                      aria-label="Reverse sort direction"
+                      title="Reverse sort direction"
+                    >
+                      ↑</button
+                    ><input
+                      id="search"
+                      type="search"
+                      aria-label="Search agents"
+                      placeholder="Filter…  ⌘K"
+                    />
+                  </div>
+                </div>
+                <div class="filters" aria-label="Filter agents">
+                  <button class="selected" data-filter="all">All agents</button
+                  ><button data-filter="working">Working</button
+                  ><button data-filter="attention">Needs attention</button
+                  ><button data-filter="idle">Available</button
+                  ><button data-filter="exited">Stopped</button>
+                </div>
+                <div class="agent-columns">
+                  <span>AGENT / TASK</span><span>REPOSITORY</span
+                  ><span>STATUS</span
+                  ><span title="Time in the current working state"
+                    >RUNNING</span
                   >
-                    Catch me up ↗</button
+                </div>
+                <div id="agent-grid" class="agent-grid"></div>
+              </section>
+              <aside class="concierge-dock">
+                <div class="dock-heading">
+                  <h2>✳ Concierge</h2>
+                  <span id="dock-status">Codex</span
                   ><button
-                    data-ask="Help me start a new Codex agent. Ask me what I want it to work on and which repository to use."
+                    id="expand-concierge"
+                    aria-label="Expand concierge conversation"
                   >
-                    Start something new ↗
+                    ↗
                   </button>
                 </div>
-              </div>
-              <button
-                id="banner-chat"
-                class="round"
-                aria-label="Open concierge"
-              >
-                ↗
-              </button>
-            </section>
-            <div class="section-header">
-              <h2>Your agents <span id="list-count"></span></h2>
-              <input
-                id="search"
-                type="search"
-                aria-label="Search agents"
-                placeholder="Search agents…  ⌘K"
-              />
+                <div
+                  id="dock-transcript"
+                  tabindex="0"
+                  aria-label="Concierge conversation"
+                >
+                  <p>Send a task or ask about your fleet.</p>
+                </div>
+                <form id="dock-form">
+                  <textarea
+                    id="dock-message"
+                    rows="3"
+                    aria-label="Message concierge"
+                    placeholder="Start an agent, ask for status…"
+                    required
+                    maxlength="100000"
+                  ></textarea>
+                  <div class="dock-footer">
+                    <span>⌘ Enter</span><button class="primary">Send ↗</button>
+                  </div>
+                </form>
+              </aside>
             </div>
-            <div class="filters" aria-label="Filter agents">
-              <button class="selected" data-filter="all">All agents</button
-              ><button data-filter="working">Working</button
-              ><button data-filter="attention">Needs attention</button
-              ><button data-filter="idle">Available</button
-              ><button data-filter="exited">Stopped</button>
-            </div>
-            <div id="agent-grid" class="agent-grid"></div>
           </section>
           <section id="detail" hidden>
             <div class="detail-heading">
@@ -172,7 +195,7 @@
                     id="message"
                     aria-label="Message agent"
                     rows="3"
-                    placeholder="Give direction, ask a question, keep it moving…"
+                    placeholder="Message agent…"
                     required
                     maxlength="100000"
                   ></textarea>
@@ -186,7 +209,7 @@
                 </form>
               </div>
               <aside class="activity">
-                <h3>Room details</h3>
+                <h3>Agent details</h3>
                 <dl id="room-details"></dl>
                 <h3>Queued messages</h3>
                 <div id="queue"></div>
@@ -204,8 +227,8 @@
       <form id="create-form">
         <div class="section-header">
           <div>
-            <p class="eyebrow">MAKE ROOM</p>
-            <h2>Start something good.</h2>
+            <p class="eyebrow">NEW SESSION</p>
+            <h2>Create agent</h2>
           </div>
           <button type="button" id="close-create" aria-label="Close">×</button>
         </div>
@@ -217,10 +240,10 @@
             placeholder="a-clear-purpose"
             required /></label
         ><label
-          >What should it work on?<textarea
+          >Task<textarea
             name="task"
             rows="4"
-            placeholder="Describe the outcome you have in mind…"
+            placeholder="Task instructions…"
             required
           ></textarea></label
         ><label
@@ -259,9 +282,7 @@
         >
         <p id="create-error" role="alert"></p>
         <button class="primary" id="create-submit">Create agent →</button>
-        <p class="muted">
-          A separate worktree keeps each agent’s work in its own room.
-        </p>
+        <p class="muted">Creates an isolated Git worktree.</p>
       </form>
     </dialog>
   </body>

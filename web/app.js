@@ -4,6 +4,10 @@ const state = {
   rows: [],
   selected: null,
   filter: "all",
+  sort: "status",
+  reverse: false,
+  conciergeKey: null,
+  dockBusy: false,
   authenticated: false,
   refreshing: false,
   catalogs: [],
@@ -60,6 +64,10 @@ function lock() {
   state.rows = [];
   state.selected = null;
   state.drafts.clear();
+  state.conciergeKey = null;
+  $("dock-transcript").replaceChildren();
+  $("dock-message").value = "";
+  delete $("dock-transcript").dataset.content;
   $("app").hidden = true;
   $("login").hidden = false;
   for (const id of [
@@ -112,11 +120,8 @@ function showOverview(filter = "all") {
   $("detail").hidden = true;
   $("overview").hidden = false;
   $("page-title").textContent =
-    filter === "attention"
-      ? "A little attention goes a long way."
-      : "Room for great work.";
-  $("page-subtitle").textContent =
-    "Your fleet, in focus. Keep things moving from here.";
+    filter === "attention" ? "Needs attention" : "Fleet monitor";
+  $("page-subtitle").textContent = "";
   $("breadcrumb").textContent =
     filter === "attention" ? "Needs attention" : "Overview";
   $("overview-nav").classList.toggle("active", filter !== "attention");
@@ -132,6 +137,57 @@ document
     (button) => (button.onclick = () => showOverview(button.dataset.filter)),
   );
 $("search").oninput = renderFleet;
+$("sort").onchange = () => {
+  state.sort = $("sort").value;
+  renderFleet();
+};
+$("sort-direction").onclick = () => {
+  state.reverse = !state.reverse;
+  $("sort-direction").textContent = state.reverse ? "↓" : "↑";
+  renderFleet();
+};
+function repoPath(row) {
+  return row.repoRoot || row.dir || "";
+}
+function repoName(row) {
+  return repoPath(row).replace(/\/$/, "").split("/").pop() || "—";
+}
+function runtime(row) {
+  if (row.status !== "working") return -1;
+  const start = Date.parse(row.statusChangedAt || "");
+  return Number.isFinite(start) ? Math.max(0, Date.now() - start) : -1;
+}
+function elapsed(ms) {
+  if (ms < 0) return "—";
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24
+    ? `${hours}h ${minutes % 60}m`
+    : `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+function compareRows(a, b) {
+  const ranks = {
+    "needs-attention": 0,
+    waiting: 1,
+    working: 2,
+    idle: 3,
+    exited: 4,
+    dead: 5,
+  };
+  let order = 0;
+  if (state.sort === "repo")
+    order =
+      repoName(a).localeCompare(repoName(b)) ||
+      repoPath(a).localeCompare(repoPath(b));
+  else if (state.sort === "runtime") order = runtime(b) - runtime(a);
+  else if (state.sort === "recent")
+    order = (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0);
+  else if (state.sort === "name") order = a.name.localeCompare(b.name);
+  else order = (ranks[a.status] ?? 6) - (ranks[b.status] ?? 6);
+  return (order || a.name.localeCompare(b.name)) * (state.reverse ? -1 : 1);
+}
 function renderFleet() {
   const rows = state.rows.filter((row) => row.name !== "concierge");
   $("stat-all").textContent = rows.length;
@@ -162,12 +218,7 @@ function renderFleet() {
         .toLowerCase()
         .includes(query),
   );
-  visible.sort(
-    (a, b) =>
-      Number(attention(b)) - Number(attention(a)) ||
-      Number(b.status === "working") - Number(a.status === "working") ||
-      a.name.localeCompare(b.name),
-  );
+  visible.sort(compareRows);
   $("list-count").textContent = visible.length;
   document
     .querySelectorAll(".filters button")
@@ -183,27 +234,25 @@ function renderFleet() {
         "empty",
         rows.length
           ? "No agents match this view."
-          : "Your next great idea deserves a room. Start with the concierge, or create an agent.",
+          : "No agents. Create one or ask the concierge.",
       ),
     );
   for (const row of visible) {
     const card = el("button", "agent-card");
-    const top = el("div", "card-top");
-    top.append(
-      el("span", "avatar", row.name.slice(0, 1).toUpperCase()),
-      badge(row.status),
+    const identity = el("div", "agent-identity");
+    identity.append(el("h3", "", row.name), el("p", "", row.task || "No task"));
+    const repo = el("div", "agent-repo", repoName(row));
+    repo.title = repoPath(row);
+    repo.append(
+      el(
+        "small",
+        "",
+        `${row.provider || "codex"} · ${row.host || "local"}${row.queued ? ` · ${row.queued} queued` : ""}`,
+      ),
     );
-    const footer = el("div", "card-footer");
-    footer.append(
-      el("span", "", `${row.provider || "codex"} · ${row.host || "local"}`),
-      el("span", "", row.queued ? `${row.queued} queued` : "Open room ↗"),
-    );
-    card.append(
-      top,
-      el("h3", "", row.name),
-      el("p", "", row.task || row.dir || "Ready for a new direction."),
-      footer,
-    );
+    const duration = el("span", "agent-runtime", elapsed(runtime(row)));
+    duration.title = "Elapsed time in the current working state";
+    card.append(identity, repo, badge(row.status), duration);
     card.onclick = () => selectAgent(key(row));
     grid.append(card);
   }
@@ -217,12 +266,8 @@ async function selectAgent(name) {
   state.detailVersion++;
   $("overview").hidden = true;
   $("detail").hidden = false;
-  $("page-title").textContent = name.endsWith("concierge")
-    ? "Your concierge."
-    : name;
-  $("page-subtitle").textContent = name.endsWith("concierge")
-    ? "A conversation is all it takes to get things moving."
-    : "One thread. Everything you need to keep moving.";
+  $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
+  $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
   $("message").value = state.drafts.get(name) || "";
   $("message-status").textContent = "";
@@ -257,7 +302,7 @@ async function openConcierge(question) {
   }
 }
 $("concierge-nav").onclick = () => openConcierge();
-$("banner-chat").onclick = () => openConcierge();
+$("expand-concierge").onclick = () => openConcierge();
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
@@ -453,11 +498,13 @@ async function refresh() {
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
     state.rows = fleet.rows;
+    const concierge = fleet.rows.find((row) => row.name === "concierge");
+    if (concierge) state.conciergeKey = key(concierge);
     renderFleet();
     $("connection").textContent = "● Connected · updated just now";
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "));
-    await refreshDetail();
+    await Promise.all([refreshDetail(), refreshDock()]);
   } catch (error) {
     $("connection").textContent = "○ Connection interrupted · retrying";
     notice(error.message);
@@ -562,3 +609,73 @@ setInterval(() => {
   if (!document.hidden) refresh();
 }, 4000);
 unlock().catch(() => {});
+
+async function refreshDock() {
+  const name = state.conciergeKey;
+  if (!name || state.selected || !state.authenticated) return;
+  const version = state.detailVersion;
+  const transcript = await api(
+    "/api/agents/" + encodeURIComponent(name) + "/transcript",
+  );
+  if (
+    !state.authenticated ||
+    state.conciergeKey !== name ||
+    version !== state.detailVersion
+  )
+    return;
+  const view = $("dock-transcript");
+  const entries = transcript.entries
+    .filter((entry) => entry.kind !== "tool")
+    .slice(-20);
+  const fingerprint = JSON.stringify(entries);
+  if (view.dataset.content === fingerprint) return;
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
+  view.dataset.content = fingerprint;
+  view.replaceChildren();
+  for (const entry of entries) {
+    const turn = el(
+      "article",
+      "turn " + (entry.kind === "user" ? "user" : "assistant"),
+    );
+    turn.append(
+      el("div", "turn-label", entry.kind === "user" ? "You" : "Concierge"),
+      el("div", "turn-text", entry.text),
+    );
+    view.append(turn);
+  }
+  if (!entries.length)
+    view.append(el("p", "", "Send a task or ask about your fleet."));
+  if (atBottom) view.scrollTop = view.scrollHeight;
+}
+$("dock-form").onsubmit = async (event) => {
+  event.preventDefault();
+  if (state.dockBusy || !state.authenticated) return;
+  const text = $("dock-message").value.trim();
+  if (!text) return;
+  state.dockBusy = true;
+  const button = $("dock-form").querySelector("button");
+  button.disabled = true;
+  try {
+    if (!state.conciergeKey)
+      state.conciergeKey = (await api("/api/concierge", {})).key;
+    await api(
+      "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
+      { text, mode: "now" },
+    );
+    if (!state.authenticated) return;
+    $("dock-message").value = "";
+    $("dock-status").textContent = "Message accepted";
+    await refreshDock();
+  } catch (error) {
+    $("dock-status").textContent = error.message;
+  } finally {
+    state.dockBusy = false;
+    button.disabled = false;
+  }
+};
+$("dock-message").onkeydown = (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    $("dock-form").requestSubmit();
+  }
+};
