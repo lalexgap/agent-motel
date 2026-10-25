@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 import { readAgent, writeAgent } from "../src/state";
-import { TerminalConnection, terminalTarget, terminalAttachArgv, type TerminalTarget } from "../src/webTerminal";
+import { createWebTerminal, TerminalConnection, terminalTarget, terminalAttachArgv, type TerminalTarget } from "../src/webTerminal";
 
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
 
@@ -281,4 +281,30 @@ describe("terminal limits and cleanup", () => {
     const b = fixture(); b.congest(); b.output(new Uint8Array(1));
     expect(b.counts().kills).toBe(1);
   });
+});
+
+test("remote socket opens only connection-owned work, without a detached identity lookup", () => {
+  let lookups = 0;
+  setRemoteRunnersForTests({ am: async () => {
+    lookups++;
+    return new Promise(() => {});
+  } });
+  const started: TerminalTarget[] = [];
+  const start = spyOn(TerminalConnection.prototype, "start").mockImplementation(target => { started.push(target); });
+  const handler = createWebTerminal();
+  const target = { host: "laptop", name: "remote", createdAt: "expected", session: "", sessionId: "" };
+  const socket = {
+    data: { target, isValid: () => true, subscribe: () => () => {} },
+    send() { return 1; }, close() {}, getBufferedAmount() { return 0; },
+  };
+  try {
+    handler.websocket.open!(socket as any);
+    expect(lookups).toBe(0);
+    expect(started).toEqual([target]);
+    handler.websocket.close!(socket as any, 1000, "");
+  } finally {
+    start.mockRestore();
+    handler.stop();
+    setRemoteRunnersForTests();
+  }
 });

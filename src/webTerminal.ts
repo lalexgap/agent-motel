@@ -181,13 +181,14 @@ export function createWebTerminal() {
     backpressureLimit: MAX_OUTPUT,
     closeOnBackpressureLimit: true,
     idleTimeout: 120,
-    async open(ws) {
+    open(ws) {
       const connection = new TerminalConnection(ws, ws.data);
       ws.data.connection = connection;
       connections.add(connection);
       try {
         const target = ws.data.target;
-        const current = target.host ? await remoteTerminalTarget(target.host, target.name) : terminalTarget(target.name);
+        // The remote helper checks identity inside the connection-owned SSH process.
+        const current = target.host ? target : terminalTarget(target.name);
         if (current instanceof Response || current.sessionId !== target.sessionId
           || current.createdAt !== target.createdAt || current.session !== target.session) {
           connection.close(1008, "Agent changed before terminal attachment; reconnect");
