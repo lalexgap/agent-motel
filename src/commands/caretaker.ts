@@ -1,15 +1,22 @@
 import { homedir } from "node:os";
 import { loadConfig } from "../config";
-import { readAgent, recordAttached } from "../state";
+import {
+  readAgent,
+  recordAttached,
+  agentSessionId,
+  agentProvider,
+} from "../state";
 import { attachOrSwitch, hasSession } from "../tmux";
 import { CARETAKER_ROLE } from "../roles";
-import { queueDepth } from "../queue";
+import { queueDepth, queueAppendLocked } from "../queue";
 import { tryAcquireFileLock } from "../filelock";
 import { baseDir } from "../paths";
 import { join } from "node:path";
 import { newCommand, type NewOptions } from "./new";
 import { reviveAgent } from "./resume";
 import { sendCommand } from "./send";
+import { runIfIdle } from "./rm";
+import { deliverNext } from "../deliver";
 
 export const CARETAKER_NAME = "caretaker";
 export const CARETAKER_SCAN =
@@ -46,7 +53,10 @@ export async function caretakerCommand(opts: {
   let skipped = false;
   try {
     const existing = readAgent(CARETAKER_NAME);
-    if (existing && existing.role !== CARETAKER_ROLE) {
+    if (
+      existing &&
+      (existing.role !== CARETAKER_ROLE || agentProvider(existing) !== "codex")
+    ) {
       throw new Error(
         'an unrelated agent is named "caretaker"; rename it before opening the caretaker',
       );
@@ -55,12 +65,29 @@ export async function caretakerCommand(opts: {
     if (!existing) {
       await newCommand(caretakerNewOptions(message));
     } else if (!hasSession(existing.tmuxSession)) {
-      await reviveAgent(existing, { message: message ?? CARETAKER_SCAN });
-    } else if (
-      opts.scan &&
-      (existing.status !== "idle" || queueDepth(CARETAKER_NAME) > 0)
-    ) {
-      skipped = true;
+      if (opts.scan && queueDepth(CARETAKER_NAME) > 0) {
+        skipped = true;
+      } else {
+        if (!agentSessionId(existing))
+          throw new Error(
+            "caretaker has no captured session ID; refusing to resume an unrelated conversation. Archive it with am rm caretaker, then reopen it.",
+          );
+        await reviveAgent(existing, { message: message ?? CARETAKER_SCAN });
+      }
+    } else if (opts.scan) {
+      const admitted = await runIfIdle(existing, {}, (current) => {
+        if (
+          current.createdAt !== existing.createdAt ||
+          current.role !== CARETAKER_ROLE ||
+          agentProvider(current) !== "codex" ||
+          !hasSession(current.tmuxSession)
+        )
+          return false;
+        queueAppendLocked(CARETAKER_NAME, CARETAKER_SCAN);
+        return true;
+      });
+      skipped = !admitted.ok || !admitted.value;
+      if (!skipped) await deliverNext(CARETAKER_NAME);
     } else if (message) {
       const result = await sendCommand(CARETAKER_NAME, message, {
         now: false,

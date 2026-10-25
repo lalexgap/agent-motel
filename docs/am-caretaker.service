@@ -4,4 +4,6 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# tmux and the am daemon own their lifecycle beyond this scan submission.
+KillMode=process
 ExecStart=/bin/sh -lc 'am caretaker --scan'

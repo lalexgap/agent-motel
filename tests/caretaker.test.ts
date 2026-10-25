@@ -11,7 +11,8 @@ import { writeAgent } from "../src/state";
 import { configFile } from "../src/paths";
 import * as tmux from "../src/tmux";
 import * as send from "../src/commands/send";
-import { queueAppend } from "../src/queue";
+import * as deliver from "../src/deliver";
+import { queueAppend, queueList } from "../src/queue";
 import { requireRole, addRole, removeRole } from "../src/roles";
 let home: string;
 let spies: { mockRestore(): void }[];
@@ -29,6 +30,7 @@ function seed(status: "idle" | "working", role = "caretaker") {
   writeAgent({
     name: "caretaker",
     role,
+    provider: "codex",
     status,
     dir: "/tmp",
     tmuxSession: "test-caretaker",
@@ -78,18 +80,42 @@ test("busy or queued caretaker skips scheduled scans", async () => {
   await caretakerCommand({ scan: true });
   expect(sent).not.toHaveBeenCalled();
 });
-test("idle scan sends inspection-only brief without steering", async () => {
+test("idle scan is admitted under delivery locks without steering", async () => {
   seed("idle");
   spies.push(spyOn(tmux, "hasSession").mockReturnValue(true));
-  const sent = spyOn(send, "sendCommand").mockResolvedValue({
-    outcome: "queued",
-  } as any);
-  spies.push(sent);
-  await caretakerCommand({ scan: true });
-  expect(sent).toHaveBeenCalledWith("caretaker", CARETAKER_SCAN, {
-    now: false,
-    quiet: true,
+  const delivered = spyOn(deliver, "deliverNext").mockResolvedValue({
+    status: "empty",
   });
+  spies.push(delivered);
+  await caretakerCommand({ scan: true });
+  expect(queueList("caretaker")[0]?.message).toBe(CARETAKER_SCAN);
+  expect(delivered).toHaveBeenCalledWith("caretaker");
+});
+test("in-flight handoff suppresses a scan even while status is idle", async () => {
+  seed("idle");
+  const { readAgent } = await import("../src/state");
+  writeAgent({
+    ...readAgent("caretaker")!,
+    statusChangedAt: new Date(Date.now() - 10000).toISOString(),
+    lastHandoffAt: new Date().toISOString(),
+  });
+  spies.push(spyOn(tmux, "hasSession").mockReturnValue(true));
+  await caretakerCommand({ scan: true });
+  expect(queueList("caretaker")).toHaveLength(0);
+});
+test("revival refuses to select an unrelated last conversation", async () => {
+  seed("idle");
+  spies.push(spyOn(tmux, "hasSession").mockReturnValue(false));
+  await expect(caretakerCommand({ scan: true })).rejects.toThrow(
+    "no captured session ID",
+  );
+});
+test("scheduled revival leaves queued operator work alone", async () => {
+  seed("idle");
+  spies.push(spyOn(tmux, "hasSession").mockReturnValue(false));
+  queueAppend("caretaker", "operator request");
+  await caretakerCommand({ scan: true });
+  expect(queueList("caretaker")).toHaveLength(1);
 });
 test("caretaker is a protected built-in role with approval-first cleanup", () => {
   const role = requireRole("caretaker");
