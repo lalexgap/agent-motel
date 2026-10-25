@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, type ApiServerHandle } from "../src/server";
-import { writeAgent } from "../src/state";
+import { readAgent, writeAgent } from "../src/state";
 import { TerminalConnection, terminalTarget, terminalAttachArgv, type TerminalTarget } from "../src/webTerminal";
 
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
@@ -89,13 +89,18 @@ describe("terminal route security", () => {
     const request = (key: string) => fetch(server.url + `/api/agents/${key}/terminal`, { headers: { cookie, "sec-fetch-site": "same-origin" } });
     expect(await (await request("preflight")).json()).toEqual({ available: true, transport: "local" });
     writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop"] }));
-    let status = "idle", reportedName = "remote";
+    let status = "idle", reportedName = "remote", terminalAttach = 1;
     setRemoteRunnersForTests({ am: async (host, args) => {
       expect(host).toBe("laptop");
       expect(args).toEqual(["__detail", "remote", "--local", "--exact"]);
-      return { exitCode: 0, stdout: JSON.stringify({ name: reportedName, status, createdAt: "now" }), stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ name: reportedName, status, createdAt: "now", terminalAttach }), stderr: "" };
     } });
     expect(await (await request("laptop:remote")).json()).toEqual({ available: true, transport: "ssh" });
+    terminalAttach = 0;
+    const oldRemote = await request("laptop:remote");
+    expect(oldRemote.status).toBe(409);
+    expect((await oldRemote.json() as { error: string }).error).toContain("upgrade");
+    terminalAttach = 1;
     status = "exited";
     expect((await request("laptop:remote")).status).toBe(409);
     status = "idle"; reportedName = "remote-other";
@@ -105,6 +110,50 @@ describe("terminal route security", () => {
     expect(argv).toContain("-tt"); expect(argv).toContain("BatchMode=yes");
     expect(argv.at(-1)).toContain("--exact"); expect(argv.at(-1)).toContain("--local");
     expect(argv.at(-1)).not.toContain("new-session");
+    expect(argv.at(-1)).toContain("__terminal");
+    expect(argv.at(-1)).toContain("now");
+  });
+  test("caps remote preflight concurrency before SSH and releases completed slots", async () => {
+    writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop"] }));
+    let calls = 0;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    setRemoteRunnersForTests({ am: async () => {
+      calls++;
+      await blocked;
+      return { exitCode: 0, stdout: JSON.stringify({ name: "remote", status: "idle", createdAt: "now", terminalAttach: 1 }), stderr: "" };
+    } });
+    const request = () => fetch(server.url + "/api/agents/laptop:remote/terminal", { headers: { cookie, origin } });
+    const pending = Array.from({ length: 16 }, request);
+    try {
+      await until(() => calls === 16);
+      expect((await request()).status).toBe(429);
+      expect(calls).toBe(16);
+    } finally { release(); await Promise.all(pending); }
+    expect((await request()).status).toBe(200);
+  });
+  test("caps SSE streams and releases reservations on cancellation", async () => {
+    const streams: Response[] = [];
+    const controllers: AbortController[] = [];
+    const request = () => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      return fetch(server.url + "/api/web-events", { headers: { cookie, origin }, signal: controller.signal });
+    };
+    try {
+      for (let i = 0; i < 32; i++) {
+        const response = await request();
+        expect(response.status).toBe(200);
+        streams.push(response);
+      }
+      expect((await request()).status).toBe(429);
+      controllers[0]!.abort();
+      await streams.shift()!.body!.cancel().catch(() => {});
+      await delay(50);
+      const admitted = await request();
+      expect(admitted.status).toBe(200);
+      streams.push(admitted);
+    } finally { for (const controller of controllers) controller.abort(); await Promise.all(streams.map(response => response.body!.cancel().catch(() => {}))); }
   });
   test("SSE requires live cookie and origin/Fetch Metadata; logout closes stream", async () => {
     const path = server.url + "/api/web-events";
@@ -148,6 +197,32 @@ describe("real Bun PTY", () => {
     try { await until(() => ws.readyState === WebSocket.CLOSED); }
     finally { Date.now = real; }
   });
+  test("internal attach rejects a same-name replacement and attaches verified identity", async () => {
+    const session = live("identity");
+    const original = readAgent("identity")!;
+    const replacement = { ...original, createdAt: "2099-01-01T00:00:00.000Z" };
+    writeAgent(replacement);
+    const index = new URL("../src/index.ts", import.meta.url).pathname;
+    const rejected = Bun.spawn([process.execPath, index, "__terminal", "identity", original.createdAt, "--local", "--exact"], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+    expect(await rejected.exited).toBe(1);
+    expect(await new Response(rejected.stderr).text()).toContain("identity changed");
+    expect(tmux("list-clients", "-t", `=${session}`).stdout.toString().trim()).toBe("");
+    const target = terminalTarget("identity", replacement.createdAt) as TerminalTarget;
+    expect(terminalAttachArgv(target)).toEqual(["tmux", "attach-session", "-t", target.sessionId]);
+    let output = "";
+    const attached = Bun.spawn([process.execPath, index, "__terminal", "identity", replacement.createdAt, "--local", "--exact"], {
+      env: { ...process.env, TERM: "xterm-256color", TMUX: "" },
+      terminal: { data(_terminal, bytes) { output += new TextDecoder().decode(bytes); } },
+    });
+    try {
+      await until(() => tmux("list-clients", "-t", `=${session}`).stdout.toString().trim() !== "");
+      attached.terminal!.write("verified-helper-input\n");
+      await until(() => output.includes("verified-helper-input"));
+      tmux("detach-client", "-s", session);
+      expect(await attached.exited).toBe(0);
+      expect(tmux("has-session", "-t", `=${session}`).exitCode).toBe(0);
+    } finally { attached.terminal!.close(); attached.kill(); }
+  });
   test("missing tmux session after selection cannot attach replacement by name", () => {
     const session = live("replaced");
     const first = terminalTarget("replaced") as TerminalTarget;
@@ -171,6 +246,21 @@ describe("terminal limits and cleanup", () => {
     });
     return { connection, sent, output: (bytes: Uint8Array) => output(bytes), revoke() { valid = false; invalidate(); }, congest() { buffered = 256 * 1024; }, counts: () => ({ writes, resizes, kills, closes }) };
   }
+  test("retains the latest resize received before asynchronous attachment", async () => {
+    const connection = new TerminalConnection({ send() { return 1; }, close() {}, getBufferedAmount() { return 0; } }, {
+      isValid: () => true, subscribe: () => () => {},
+    });
+    connection.message(JSON.stringify({ type: "resize", cols: 120, rows: 40 }));
+    await delay();
+    connection.message(JSON.stringify({ type: "resize", cols: 94, rows: 31 }));
+    let initialSize: unknown;
+    connection.start({ name: "test", session: "test", sessionId: "$1", createdAt: "now" }, (_target, _data, size) => {
+      initialSize = size;
+      return { terminal: { write() { return 0; }, resize() {}, close() {} }, kill() {}, exited: new Promise(() => {}) };
+    });
+    expect(initialSize).toEqual({ cols: 94, rows: 31 });
+    connection.close();
+  });
   test("logout discards queued input synchronously and cleanup is idempotent", async () => {
     const f = fixture();
     f.connection.message(JSON.stringify({ type: "input", data: "forbidden" }));

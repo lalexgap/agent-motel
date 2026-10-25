@@ -643,9 +643,8 @@ async function refresh() {
   state.refreshing = true;
   state.refreshPending = false;
   try {
-    const [fleet] = await Promise.all([
-      api("/api/agents"), refreshDetail(), refreshDock(), refreshSubagent(),
-    ]);
+    const detailResults = Promise.allSettled([refreshDetail(), refreshDock(), refreshSubagent()]);
+    const fleet = await api("/api/agents");
     if (!state.authenticated) return;
     state.rows = fleet.rows;
 
@@ -654,6 +653,8 @@ async function refresh() {
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "), "refresh");
     else if (state.noticeSource === "refresh") notice("");
+    const failed = (await detailResults).find((result) => result.status === "rejected");
+    if (failed && state.authenticated) notice(failed.reason.message, "refresh");
   } catch (error) {
     $("connection").textContent = "○ Connection interrupted · retrying";
     notice(error.message, "refresh");

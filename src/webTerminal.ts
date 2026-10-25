@@ -2,7 +2,7 @@ import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { readAgent } from "./state";
 import { tmux } from "./tmux";
 import { sshAmStreamArgv } from "./remote";
-import { runRemoteJson } from "./remoteAgents";
+import { AGENT_NAME_RE, runRemoteJson } from "./remoteAgents";
 
 const MAX_INPUT = 16 * 1024;
 const MAX_QUEUE = 64 * 1024;
@@ -17,7 +17,9 @@ export interface TerminalTarget {
 }
 
 export async function remoteTerminalTarget(host: string, name: string): Promise<TerminalTarget | Response> {
-  const detail = await runRemoteJson<{ name: string; status: string; createdAt: string }>(host, ["__detail", name]);
+  const detail = await runRemoteJson<{ name: string; status: string; createdAt: string; terminalAttach?: number }>(host, ["__detail", name]);
+  if (detail.terminalAttach !== 1)
+    return Response.json({ error: "Remote am needs an upgrade for identity-checked terminal attachment" }, { status: 409 });
   if (detail.name !== name || typeof detail.createdAt !== "string")
     return Response.json({ error: "Remote agent identity could not be verified" }, { status: 409 });
   if (detail.status === "exited" || detail.status === "dead")
@@ -27,21 +29,41 @@ export async function remoteTerminalTarget(host: string, name: string): Promise<
 
 export function terminalAttachArgv(target: TerminalTarget): string[] {
   if (!target.host) return ["tmux", "attach-session", "-t", target.sessionId];
-  const [ssh, ...args] = sshAmStreamArgv(target.host, ["j", target.name, "--local", "--exact"]);
+  const [ssh, ...args] = sshAmStreamArgv(target.host, ["__terminal", target.name, target.createdAt, "--local", "--exact"]);
   return [ssh!, "-tt", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-e", "none", ...args];
 }
 
-export function terminalTarget(name: string): TerminalTarget | Response {
+export function terminalTarget(name: string, expectedCreatedAt?: string): TerminalTarget | Response {
+  if (!AGENT_NAME_RE.test(name))
+    return Response.json({ error: "Invalid agent name" }, { status: 400 });
   const agent = readAgent(name);
   if (!agent || agent.name !== name)
     return Response.json({ error: "Agent no longer exists under this name" }, { status: 404 });
   if (agent.status === "exited")
     return Response.json({ error: "Agent is stopped; resume it before attaching" }, { status: 409 });
+  if (expectedCreatedAt !== undefined && agent.createdAt !== expectedCreatedAt)
+    return Response.json({ error: "Agent identity changed; reconnect before attaching" }, { status: 409 });
   const result = tmux("display-message", "-p", "-t", `=${agent.tmuxSession}:`, "#{session_id}");
   const sessionId = result.stdout.trim();
   if (result.exitCode !== 0 || !/^\$\d+$/.test(sessionId))
     return Response.json({ error: "Agent terminal is unavailable (tmux session missing)" }, { status: 409 });
+  const current = readAgent(name);
+  if (!current || current.createdAt !== agent.createdAt || current.tmuxSession !== agent.tmuxSession || current.status === "exited")
+    return Response.json({ error: "Agent changed while resolving its terminal; reconnect" }, { status: 409 });
   return { name, createdAt: agent.createdAt, session: agent.tmuxSession, sessionId };
+}
+
+export async function terminalAttachCommand(name: string, expectedCreatedAt: string): Promise<number> {
+  const target = terminalTarget(name, expectedCreatedAt);
+  if (target instanceof Response) {
+    const body = await target.json() as { error: string };
+    throw new Error(body.error);
+  }
+  const child = Bun.spawn(terminalAttachArgv(target), {
+    env: { ...process.env, TMUX: "", TERM: process.env.TERM || "xterm-256color" },
+    stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  });
+  return child.exited;
 }
 
 export interface TerminalData {
@@ -57,11 +79,11 @@ export interface AttachProcess {
   kill(signal?: number | NodeJS.Signals): void;
   exited: Promise<number>;
 }
-type SpawnAttach = (target: TerminalTarget, data: (bytes: Uint8Array) => void) => AttachProcess;
+type SpawnAttach = (target: TerminalTarget, data: (bytes: Uint8Array) => void, size: { cols: number; rows: number }) => AttachProcess;
 
-const spawnAttach: SpawnAttach = (target, data) => Bun.spawn(terminalAttachArgv(target), {
+const spawnAttach: SpawnAttach = (target, data, size) => Bun.spawn(terminalAttachArgv(target), {
   env: { ...process.env, TMUX: "", TERM: "xterm-256color" },
-  terminal: { cols: 80, rows: 24, data(_terminal, bytes) { data(bytes); } },
+  terminal: { ...size, data(_terminal, bytes) { data(bytes); } },
 });
 
 export class TerminalConnection {
@@ -70,6 +92,7 @@ export class TerminalConnection {
   private unsubscribe?: () => void;
   private timer?: ReturnType<typeof setInterval>;
   private input = Buffer.alloc(0);
+  private size = { cols: 80, rows: 24 };
 
   constructor(private socket: Socket, private auth: Pick<TerminalData, "isValid" | "subscribe">) {
     this.unsubscribe = auth.subscribe(() => this.close(4001, "Session expired or revoked"));
@@ -85,7 +108,7 @@ export class TerminalConnection {
           return;
         }
         if (this.socket.send(bytes) === 0) this.close(1013, "Terminal output unavailable");
-      });
+      }, this.size);
       this.socket.send(JSON.stringify({ type: "ready" }));
       this.timer = setInterval(() => {
         if (!this.allowed()) return;
@@ -131,6 +154,7 @@ export class TerminalConnection {
         this.input = Buffer.concat([this.input, bytes]);
       } else if (message?.type === "resize" && Number.isInteger(message.cols) && Number.isInteger(message.rows)
         && message.cols >= 2 && message.cols <= 500 && message.rows >= 2 && message.rows <= 200) {
+        this.size = { cols: message.cols, rows: message.rows };
         this.process?.terminal?.resize(message.cols, message.rows);
       } else this.close(1008, "Invalid terminal message");
     } catch { this.close(1008, "Invalid terminal message"); }

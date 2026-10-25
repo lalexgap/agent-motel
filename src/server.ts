@@ -144,6 +144,7 @@ export function agentDetail(name: string) {
       : null,
     // Tells a serve on another host that this am returns ids from send --json.
     messageReceipts: true,
+    terminalAttach: 1,
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
     permissionRequests: true,
@@ -810,6 +811,8 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
   const { token } = opts;
   const webAuth = opts.webOrigin ? createWebAuth(opts.webOrigin, token) : null;
   const terminal = createWebTerminal();
+  let eventStreams = 0;
+  let terminalResolutions = 0;
   const server = Bun.serve<TerminalData>({
     websocket: terminal.websocket,
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
@@ -849,10 +852,21 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
           if (req.headers.has("origin") ? !webAuth.sameOrigin(req) : req.headers.get("sec-fetch-site") !== "same-origin")
             return respond(json({ error: "origin rejected" }, 403));
           if (req.method !== "GET") return respond(json({ error: "method not allowed" }, 405));
-          return respond(startWebEvents(req, {
-            isSessionValid: () => webAuth.valid(req),
-            onRevoke: (close) => webAuth.subscribe(req, close),
-          }));
+          if (eventStreams >= 32) return respond(json({ error: "Too many event streams" }, 429));
+          eventStreams++;
+          let released = false;
+          const release = () => { if (!released) { released = true; eventStreams--; } };
+          try {
+            const response = startWebEvents(req, {
+              isSessionValid: () => webAuth.valid(req),
+              onRevoke: (close) => {
+                const unsubscribe = webAuth.subscribe(req, close);
+                return () => { unsubscribe(); release(); };
+              },
+            });
+            if (response.status !== 200) release();
+            return respond(response);
+          } catch (error) { release(); throw error; }
         }
         if (parts.length === 3 && parts[0] === "agents" && parts[2] === "terminal") {
           if (!webAuth) return respond(json({ error: "Web terminal is disabled; configure webOrigin" }, 403));
@@ -866,9 +880,13 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
           if (url.search) return respond(json({ error: "Terminal URL must not contain query parameters" }, 400));
           const target = parseTarget(parts[1]!);
           if (target instanceof Response) return respond(target);
+          if (terminalResolutions >= 16 || (upgrading && server.pendingWebSockets >= 32))
+            return respond(json({ error: "Too many terminal requests" }, 429));
+          terminalResolutions++;
           let resolved;
           try { resolved = target.host ? await remoteTerminalTarget(target.host, target.name) : terminalTarget(target.name); }
           catch (error) { return respond(remoteFailure(error)); }
+          finally { terminalResolutions--; }
           if (resolved instanceof Response) return respond(resolved);
           if (!webAuth.valid(req)) return respond(json({ error: "Session expired or revoked" }, 401));
           if (!upgrading) return respond(json({ available: true, transport: target.host ? "ssh" : "local" }));

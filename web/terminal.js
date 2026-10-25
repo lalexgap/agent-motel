@@ -6,8 +6,12 @@ window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
       socket.send(JSON.stringify(message));
   }
   function input(data) {
-    for (let i = 0; i < data.length; i += 2048)
-      send({ type: "input", data: data.slice(i, i + 2048) });
+    let chunk = "";
+    for (const character of data) {
+      chunk += character;
+      if (chunk.length >= 2048) { send({ type: "input", data: chunk }); chunk = ""; }
+    }
+    if (chunk) send({ type: "input", data: chunk });
   }
   function resize() {
     if (!terminal || !screen.clientWidth || !screen.clientHeight) return;
@@ -48,6 +52,7 @@ window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
       return;
     }
     const ws = new WebSocket(url);
+    let pendingOutput = 0;
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
@@ -60,10 +65,25 @@ window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
     ws.onmessage = (event) => {
       if (socket !== ws) return;
       if (event.data instanceof ArrayBuffer) {
-        terminal.write(new Uint8Array(event.data));
+        const size = event.data.byteLength;
+        pendingOutput += size;
+        if (pendingOutput > 1024 * 1024) {
+          socket = null;
+          ws.close();
+          status.textContent = "Output exceeded rendering capacity · Reconnect to resume";
+          return;
+        }
+        try {
+          terminal.write(new Uint8Array(event.data), () => { pendingOutput -= size; });
+        } catch {
+          socket = null;
+          ws.close();
+          status.textContent = "Terminal rendering failed · Reconnect to resume";
+        }
       } else {
         try {
           const message = JSON.parse(event.data);
+          if (message.type === "ready") resize();
           if (message.type === "error") status.textContent = message.message;
           if (message.type === "exit") status.textContent = "Terminal detached";
         } catch {

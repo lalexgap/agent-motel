@@ -8,7 +8,7 @@ Built-in subagents appear beneath active parents and in agent detail, including 
 
 Opening an agent defaults to its interactive terminal; switch to Chat for the transcript and message composer. The concierge opens in Chat. Terminal output and keystrokes use WebSockets attached to the existing tmux session. Closing a tab, switching views, or signing out disconnects only that terminal client; the agent keeps running. Mobile controls provide Escape, Tab, Ctrl+C, arrow keys and Enter. The sidebar shows live agents by default; “Show stopped” includes exited agents without changing fleet search.
 
-Install locked dependencies with `bun install --frozen-lockfile` when deploying. xterm.js and its fit addon are served locally from `node_modules`; no asset build or CDN is needed. Remote terminals use configured SSH hosts and their existing exact-name `am j` command. Remote chat currently uses polling; local transcript file changes are pushed.
+Install locked dependencies with `bun install --frozen-lockfile` when deploying. xterm.js and its fit addon are served locally from `node_modules`; no asset build or CDN is needed. Remote terminals use configured SSH hosts and an identity-checked `am __terminal` command. Update remote am installations to the same release; older hosts return an upgrade-required message. The remote verifies the expected agent creation timestamp and attaches by immutable tmux session ID. Remote chat currently uses polling; local transcript file changes are pushed.
 
 ## Enable
 
