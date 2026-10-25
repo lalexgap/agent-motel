@@ -1,3 +1,5 @@
+import { createWebAuth, secureWebResponse } from "./webAuth";
+import { ensureConcierge } from "./commands/concierge";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
@@ -492,6 +494,10 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
+  if (parts.length === 1 && parts[0] === "concierge" && method === "POST") {
+    try { const location = await ensureConcierge(undefined, { quiet: true }); return json({ key: location.key }); }
+    catch (error) { return json({ error: (error as Error).message }, 409); }
+  }
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
@@ -774,28 +780,42 @@ export interface ApiServerHandle {
   url: string;
 }
 
-export function startApiServer(opts: { port?: number; hostname?: string; token: string }): ApiServerHandle {
+export function startApiServer(opts: { port?: number; hostname?: string; token: string; webOrigin?: string }): ApiServerHandle {
   const { token } = opts;
+  const webAuth = opts.webOrigin ? createWebAuth(opts.webOrigin, token) : null;
   const server = Bun.serve({
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
     // and remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
+    maxRequestBodySize: 256 * 1024,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
     async fetch(req) {
       const url = new URL(req.url);
       const path = url.pathname;
 
+      const respond = (response: Response) => secureWebResponse(response);
+      if (webAuth) {
+        const authResponse = await webAuth.route(req, path);
+        if (authResponse) return respond(authResponse);
+        const assets: Record<string, string> = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css" };
+        if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
+          return respond(new Response(Bun.file(new URL("../web/" + assets[path], import.meta.url))));
+        }
+      }
       if (path === "/api" || path.startsWith("/api/")) {
         // Bearer header only. The old `?token=` query fallback existed for
         // the PWA's URL bootstrap; with that gone it would just leak the
         // token (an RCE credential) into proxy logs and shell history.
         const supplied = bearer(req);
-        if (!supplied || !tokensMatch(supplied, token)) {
-          return json({ error: "unauthorized" }, 401);
+        const bearerValid = supplied && tokensMatch(supplied, token);
+        if (!bearerValid && !webAuth?.valid(req)) return respond(json({ error: "unauthorized" }, 401));
+        if (!bearerValid && req.method !== "GET" && req.method !== "HEAD" && !webAuth?.sameOrigin(req)) {
+          return respond(json({ error: "origin rejected" }, 403));
         }
         const parts = path.replace(/^\/api\/?/, "").split("/").filter(Boolean);
-        return handleApi(req, parts);
+        try { return respond(await handleApi(req, parts)); }
+        catch { return respond(json({ error: "request failed" }, 500)); }
       }
 
       // PWA tombstones: phones that installed the old web app still hold its

@@ -42,6 +42,10 @@ export interface Config {
   // Provider the fleet concierge runs on. Applies when the concierge is
   // created; to switch an existing one, `am rm concierge` and reopen it.
   conciergeProvider: Provider;
+  conciergeModel?: string;
+  conciergeEffort?: string;
+  conciergeAutoStart?: boolean;
+  webOrigin?: string;
   // Where the fleet concierge lives: "local" or an ssh host alias (usually one
   // of `remotes`). Every machine with the same value routes `am concierge` and
   // the hub's `c` key to that single agent. Unset = adopt an existing

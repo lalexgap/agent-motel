@@ -1,3 +1,4 @@
+import { ensureConcierge } from "./concierge";
 import { loadConfig } from "../config";
 import { apiTokenFile } from "../paths";
 import { createApiToken, loadOrCreateApiToken, startApiServer } from "../server";
@@ -26,11 +27,15 @@ export async function serveCommand(opts: { port?: number; bind?: string }): Prom
     port: opts.port ?? config.apiPort,
     hostname: opts.bind ?? config.apiBind,
     token,
+    webOrigin: config.webOrigin,
   });
 
   console.log(`am serve listening on ${handle.url}`);
   console.log(`  API:   bearer-token gated under ${handle.url}/api`);
-  console.log(`  token: ${token}`);
+  console.log("  access key: run am token locally");
+  if (config.conciergeAutoStart ?? !!config.webOrigin) {
+    void ensureConcierge(undefined, { quiet: true }).catch(error => console.error(`concierge startup failed: ${error.message}`));
+  }
   if (handle.hostname === "127.0.0.1") {
     console.log(
       `  note:  bound to loopback — set config.apiBind to a tailnet IP, or front it with Caddy/tailscale serve (see docs/ios-app-exploration.md §4e)`,

@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f5f1" />
+    <title>Agent Motel · Front desk</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <section id="login" class="login">
+      <form id="login-form" class="login-card">
+        <div class="mark">am<span>✳</span></div>
+        <p class="eyebrow">YOUR AGENTS. ONE PLACE.</p>
+        <h1>Welcome to the motel.</h1>
+        <p>A quiet place to keep ambitious work moving.</p>
+        <label
+          >Access key<input
+            id="access-key"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="Enter your private access key" /></label
+        ><button class="primary">Unlock front desk →</button>
+        <p id="login-error" role="alert"></p>
+        <small
+          >Retrieve your access key with <code>am token</code> on your
+          server.</small
+        >
+      </form>
+    </section>
+    <div id="app" hidden>
+      <aside class="sidebar">
+        <a class="mark" href="/" aria-label="Agent Motel home"
+          >am<span>✳</span></a
+        >
+        <div class="workspace">AGENT MOTEL <span>PERSONAL</span></div>
+        <nav>
+          <button id="overview-nav" class="nav active">
+            ◫ <span>Overview</span></button
+          ><button id="attention-nav" class="nav">
+            ◉ <span>Needs attention</span><b id="attention-count">0</b></button
+          ><button id="concierge-nav" class="nav">
+            ✳ <span>Concierge</span>
+          </button>
+        </nav>
+        <div class="side-heading">
+          YOUR AGENTS <button id="side-new" aria-label="New agent">+</button>
+        </div>
+        <div id="agent-nav"></div>
+        <div class="sidebar-bottom">
+          <span id="connection" role="status">Connecting…</span
+          ><button id="logout">Sign out ↗</button>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <span
+            >Workspace <span class="muted">/</span>
+            <b id="breadcrumb">Overview</b></span
+          ><span class="top-note"
+            >A little coordination. A lot of possibility.</span
+          >
+        </header>
+        <div class="page">
+          <section class="page-heading">
+            <div>
+              <p class="eyebrow">THE FRONT DESK</p>
+              <h1 id="page-title">Room for great work.</h1>
+              <p id="page-subtitle">
+                Your fleet, in focus. Keep things moving from here.
+              </p>
+            </div>
+            <button id="new-agent" class="primary">+ New agent</button>
+          </section>
+          <div id="notice" role="status" hidden></div>
+          <section id="overview">
+            <div class="stats">
+              <button data-filter="all">
+                <span>All agents</span><strong id="stat-all">—</strong
+                ><small>Across your fleet</small></button
+              ><button data-filter="working">
+                <span>In motion <i class="dot working"></i></span
+                ><strong id="stat-working">—</strong
+                ><small>Making things happen</small></button
+              ><button data-filter="attention">
+                <span>Needs you <i class="dot needs-attention"></i></span
+                ><strong id="stat-attention">—</strong
+                ><small>A decision or a hand</small></button
+              ><button data-filter="idle">
+                <span>Available <i class="dot idle"></i></span
+                ><strong id="stat-idle">—</strong
+                ><small>Ready for what’s next</small>
+              </button>
+            </div>
+            <section class="concierge-banner">
+              <div class="concierge-symbol">✳</div>
+              <div>
+                <p class="eyebrow">MEET YOUR CONCIERGE</p>
+                <h2>Big idea? Start a conversation.</h2>
+                <p>
+                  Start an agent, find a thread, or ask what needs your
+                  attention.
+                </p>
+                <div class="suggestions">
+                  <button
+                    data-ask="Give me a brief fleet status report and what needs my attention."
+                  >
+                    Catch me up ↗</button
+                  ><button
+                    data-ask="Help me start a new Codex agent. Ask me what I want it to work on and which repository to use."
+                  >
+                    Start something new ↗
+                  </button>
+                </div>
+              </div>
+              <button
+                id="banner-chat"
+                class="round"
+                aria-label="Open concierge"
+              >
+                ↗
+              </button>
+            </section>
+            <div class="section-header">
+              <h2>Your agents <span id="list-count"></span></h2>
+              <input
+                id="search"
+                type="search"
+                aria-label="Search agents"
+                placeholder="Search agents…  ⌘K"
+              />
+            </div>
+            <div class="filters" aria-label="Filter agents">
+              <button class="selected" data-filter="all">All agents</button
+              ><button data-filter="working">Working</button
+              ><button data-filter="attention">Needs attention</button
+              ><button data-filter="idle">Available</button
+              ><button data-filter="exited">Stopped</button>
+            </div>
+            <div id="agent-grid" class="agent-grid"></div>
+          </section>
+          <section id="detail" hidden>
+            <div class="detail-heading">
+              <div>
+                <span id="detail-status" class="badge"></span>
+                <p id="detail-meta"></p>
+              </div>
+              <div class="actions">
+                <button data-action="resume">Resume</button
+                ><button data-action="restart">Restart</button
+                ><button data-action="interrupt">Interrupt</button
+                ><button data-action="stop">Stop</button
+                ><button data-action="delete" class="danger">Remove</button>
+              </div>
+            </div>
+            <div id="permissions"></div>
+            <div class="conversation-layout">
+              <div class="conversation">
+                <div class="section-header">
+                  <h2>Conversation</h2>
+                  <span id="message-status" role="status"></span>
+                </div>
+                <div
+                  id="transcript"
+                  tabindex="0"
+                  aria-label="Agent conversation"
+                ></div>
+                <form id="message-form">
+                  <textarea
+                    id="message"
+                    aria-label="Message agent"
+                    rows="3"
+                    placeholder="Give direction, ask a question, keep it moving…"
+                    required
+                    maxlength="100000"
+                  ></textarea>
+                  <div class="composer-footer">
+                    <select id="message-mode" aria-label="Delivery mode">
+                      <option value="now">Send now</option>
+                      <option value="queue">Queue for next turn</option></select
+                    ><small>⌘ Enter to send</small
+                    ><button class="primary">Send ↗</button>
+                  </div>
+                </form>
+              </div>
+              <aside class="activity">
+                <h3>Room details</h3>
+                <dl id="room-details"></dl>
+                <h3>Queued messages</h3>
+                <div id="queue"></div>
+                <details>
+                  <summary>Live terminal</summary>
+                  <pre id="pane"></pre>
+                </details>
+              </aside>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <dialog id="create-dialog">
+      <form id="create-form">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">MAKE ROOM</p>
+            <h2>Start something good.</h2>
+          </div>
+          <button type="button" id="close-create" aria-label="Close">×</button>
+        </div>
+        <label
+          >Agent name<input
+            name="name"
+            pattern="[A-Za-z0-9_-]+"
+            maxlength="64"
+            placeholder="a-clear-purpose"
+            required /></label
+        ><label
+          >What should it work on?<textarea
+            name="task"
+            rows="4"
+            placeholder="Describe the outcome you have in mind…"
+            required
+          ></textarea></label
+        ><label
+          >Repository / directory<input
+            name="dir"
+            placeholder="/home/you/code/project"
+            required
+        /></label>
+        <div class="form-row">
+          <label
+            >Host<select name="host" id="create-host">
+              <option value="">This server</option>
+            </select></label
+          ><label
+            >Provider<select name="provider" id="create-provider">
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+            </select></label
+          >
+        </div>
+        <div class="form-row">
+          <label
+            >Model<select name="model" id="create-model">
+              <option value="">Provider default</option>
+            </select></label
+          ><label
+            >Reasoning<select name="effort" id="create-effort">
+              <option value="">Default</option>
+            </select></label
+          >
+        </div>
+        <label
+          >Role<select name="role" id="create-role">
+            <option value="">No preset</option>
+          </select></label
+        >
+        <p id="create-error" role="alert"></p>
+        <button class="primary" id="create-submit">Create agent →</button>
+        <p class="muted">
+          A separate worktree keeps each agent’s work in its own room.
+        </p>
+      </form>
+    </dialog>
+  </body>
+</html>
