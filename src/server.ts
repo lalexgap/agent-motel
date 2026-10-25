@@ -1,3 +1,5 @@
+import { createWebAuth, secureWebResponse } from "./webAuth";
+import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
@@ -8,7 +10,9 @@ import { buildFleetSummary } from "./summary";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
-import { transcriptJson } from "./commands/transcript";
+import { readSubagents, reconcileOpenSubagents } from "./subagents";
+import { jsonRecords } from "./commands/subagents";
+import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
@@ -341,6 +345,10 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
+    if (route === "subagents" && method === "GET") {
+      await ensureExactCapable(host, name);
+      return json({ records: await runRemoteJson(host, ["subagents", name, "--json"]) });
+    }
     if (route === "rename" && method === "POST") {
       return json({ error: "rename is not supported for remote agents" }, 501);
     }
@@ -378,7 +386,9 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       const after = raw === null || raw === "" ? 0 : Number(raw);
       if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
       await ensureExactCapable(host, name);
-      const transcript = await runRemoteJson<TranscriptShape>(host, ["transcript", name, "--json"], { timeoutMs: 30_000 });
+      const subagent = new URL(req.url).searchParams.get("subagent");
+      if (subagent !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(subagent)) return json({ error: "invalid subagent id" }, 400);
+      const transcript = await runRemoteJson<TranscriptShape>(host, ["transcript", name, "--json", ...(subagent ? ["--subagent", subagent] : [])], { timeoutMs: 30_000 });
       if (!Array.isArray(transcript?.entries)) {
         return json({ error: `remote am too old on ${host} (transcript --json has no entries)` }, 409);
       }
@@ -492,6 +502,14 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
+  if (parts.length === 1 && parts[0] === "concierge" && method === "GET") {
+    const host = await resolveConciergeHostAsync();
+    return json({ key: host ? `${host}:concierge` : "concierge" });
+  }
+  if (parts.length === 1 && parts[0] === "concierge" && method === "POST") {
+    try { const location = await ensureConcierge(undefined, { quiet: true }); return json({ key: location.key }); }
+    catch (error) { return json({ error: (error as Error).message }, 409); }
+  }
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
@@ -670,6 +688,15 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
+    if (parts.length === 3 && parts[2] === "subagents" && method === "GET") {
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      const status = displayStatus(agent);
+      const live = status !== "dead" && status !== "exited";
+      if (live) reconcileOpenSubagents(agent);
+      return json({ records: jsonRecords(readSubagents(name), live) });
+    }
+
     // GET /api/agents/:name/transcript?after=n — see transcriptJson
     if (parts.length === 3 && parts[2] === "transcript" && method === "GET") {
       const agent = readAgent(name);
@@ -677,7 +704,10 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       const raw = new URL(req.url).searchParams.get("after");
       const after = raw === null || raw === "" ? 0 : Number(raw);
       if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
-      return json(transcriptJson(agent, after));
+      const subagent = new URL(req.url).searchParams.get("subagent");
+      if (subagent !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(subagent)) return json({ error: "invalid subagent id" }, 400);
+      try { return json(subagent ? subagentTranscriptJson(agent, subagent, after) : transcriptJson(agent, after)); }
+      catch (error) { return json({ error: (error as Error).message }, 409); }
     }
 
     // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given;
@@ -774,28 +804,45 @@ export interface ApiServerHandle {
   url: string;
 }
 
-export function startApiServer(opts: { port?: number; hostname?: string; token: string }): ApiServerHandle {
+export function startApiServer(opts: { port?: number; hostname?: string; token: string; webOrigin?: string }): ApiServerHandle {
   const { token } = opts;
+  const webAuth = opts.webOrigin ? createWebAuth(opts.webOrigin, token) : null;
   const server = Bun.serve({
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
     // and remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
+    maxRequestBodySize: 256 * 1024,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
     async fetch(req) {
       const url = new URL(req.url);
       const path = url.pathname;
 
+      const respond = (response: Response) => secureWebResponse(response);
+      if (webAuth) {
+        const authResponse = await webAuth.route(req, path);
+        if (authResponse) return respond(authResponse);
+        const assets: Record<string, string> = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css" };
+        if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
+          return respond(new Response(Bun.file(new URL("../web/" + assets[path], import.meta.url))));
+        }
+      }
       if (path === "/api" || path.startsWith("/api/")) {
         // Bearer header only. The old `?token=` query fallback existed for
         // the PWA's URL bootstrap; with that gone it would just leak the
         // token (an RCE credential) into proxy logs and shell history.
         const supplied = bearer(req);
-        if (!supplied || !tokensMatch(supplied, token)) {
-          return json({ error: "unauthorized" }, 401);
+        const bearerValid = supplied && tokensMatch(supplied, token);
+        if (!bearerValid && !webAuth?.valid(req)) return respond(json({ error: "unauthorized" }, 401));
+        if (!bearerValid && req.method !== "GET" && req.method !== "HEAD" && !webAuth?.sameOrigin(req)) {
+          return respond(json({ error: "origin rejected" }, 403));
         }
         const parts = path.replace(/^\/api\/?/, "").split("/").filter(Boolean);
-        return handleApi(req, parts);
+        if (!bearerValid && parts.length === 1 && parts[0] === "events") {
+          return respond(json({ error: "event streams require bearer authentication; browser clients use polling" }, 403));
+        }
+        try { return respond(await handleApi(req, parts)); }
+        catch { return respond(json({ error: "request failed" }, 500)); }
       }
 
       // PWA tombstones: phones that installed the old web app still hold its

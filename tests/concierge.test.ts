@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import * as remote from "../src/remote";
+import { ensureConcierge, resolveConciergeHostAsync } from "../src/commands/concierge";
 import { CONCIERGE_NAME } from "../src/providers";
 import { conciergeRow } from "../src/fleet";
 import { conciergeAskFeedback, conciergeNewOptions, resolveConciergeHost } from "../src/commands/concierge";
@@ -136,4 +138,28 @@ describe("conciergeAskFeedback", () => {
   test("a rate-limited drop is an error", () => {
     expect(at("dropped").level).toBe("error");
   });
+});
+
+
+test("remote concierge opening is asynchronous and command-bounded", async () => {
+  writeConfig({ conciergeHost: "server" });
+  let release!: (value: any) => void;
+  const called = spyOn(remote, "sshAmAsync").mockImplementation(() => new Promise(resolve => { release = resolve; }));
+  try {
+    let done = false;
+    const pending = ensureConcierge().then(result => { done = true; return result; });
+    await Bun.sleep(5);
+    expect(done).toBe(false);
+    expect(called).toHaveBeenCalledWith("server", ["concierge", "--no-jump"], {timeoutMs:60000});
+    release({exitCode:0,stdout:"",stderr:""});
+    expect((await pending).key).toBe("server:concierge");
+  } finally { called.mockRestore(); }
+});
+test("async discovery uses bounded remote reads and configured host order", async () => {
+  writeConfig({ remotes: ["first", "second"] });
+  const called = spyOn(remote, "sshAmAsync").mockResolvedValue({exitCode:0,stdout:JSON.stringify([{name:"concierge"}]),stderr:""});
+  try {
+    expect(await resolveConciergeHostAsync()).toBe("first");
+    expect(called).toHaveBeenCalledWith("first", ["ls", "--json", "--local-only"], {timeoutMs:4000});
+  } finally { called.mockRestore(); }
 });

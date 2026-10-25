@@ -4,7 +4,7 @@ import { attachOrSwitch, hasSession } from "../tmux";
 import { CONCIERGE_NAME } from "../providers";
 import { loadConfig } from "../config";
 import { fleetRows } from "../fleet";
-import { sshAm, sshAmInteractive } from "../remote";
+import { sshAmAsync, sshAmInteractive } from "../remote";
 import { newCommand, type NewOptions } from "./new";
 import { reviveAgent } from "./resume";
 import { sendCommand, type SendOutcome } from "./send";
@@ -23,9 +23,13 @@ export function conciergeNewOptions(question?: string): NewOptions {
     concierge: true,
     role: CONCIERGE_ROLE,
     provider: loadConfig().conciergeProvider,
+    model: loadConfig().conciergeModel,
+    effort: loadConfig().conciergeEffort,
     dir: homedir(),
     inPlace: true,
-    message: question ?? "Introduce yourself in a sentence, then give a fleet status report.",
+    message:
+      question ??
+      "Introduce yourself in a sentence, then give a fleet status report.",
     jump: false,
     quiet: true,
   };
@@ -39,10 +43,40 @@ export function conciergeNewOptions(question?: string): NewOptions {
 // rival one; only a fleet with no concierge at all creates one, locally.
 export function resolveConciergeHost(): string | undefined {
   const config = loadConfig();
-  if (config.conciergeHost) return config.conciergeHost === "local" ? undefined : config.conciergeHost;
+  if (config.conciergeHost)
+    return config.conciergeHost === "local" ? undefined : config.conciergeHost;
   if (readAgent(CONCIERGE_NAME)) return undefined;
-  const remote = fleetRows({ timeoutMs: 4000 }).rows.find((row) => row.host && row.name === CONCIERGE_NAME);
+  const remote = fleetRows({ timeoutMs: 4000 }).rows.find(
+    (row) => row.host && row.name === CONCIERGE_NAME,
+  );
   return remote?.host;
+}
+
+export async function resolveConciergeHostAsync(): Promise<string | undefined> {
+  const config = loadConfig();
+  if (config.conciergeHost)
+    return config.conciergeHost === "local" ? undefined : config.conciergeHost;
+  if (readAgent(CONCIERGE_NAME)) return undefined;
+  const hosts = config.remotes ?? [];
+  const found = await Promise.all(
+    hosts.map(async (host) => {
+      try {
+        const result = await sshAmAsync(
+          host,
+          ["ls", "--json", "--local-only"],
+          { timeoutMs: 4000 },
+        );
+        if (result.exitCode !== 0) return false;
+        const rows = JSON.parse(result.stdout);
+        return (
+          Array.isArray(rows) && rows.some((row) => row.name === CONCIERGE_NAME)
+        );
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return hosts.find((_, index) => found[index]);
 }
 
 export interface ConciergeLocation {
@@ -62,61 +96,114 @@ export interface ConciergeLocation {
 // gets it as a normal queued send. On a remote host the whole ensure runs
 // through that machine's own `am concierge --no-jump`, so its reservation and
 // revive logic apply there.
-export async function ensureConcierge(question?: string, opts: { quiet?: boolean } = {}): Promise<ConciergeLocation> {
-  const host = resolveConciergeHost();
+let opening: Promise<ConciergeLocation> | undefined;
+
+export async function ensureConcierge(
+  question?: string,
+  opts: { quiet?: boolean } = {},
+): Promise<ConciergeLocation> {
+  if (question !== undefined) return openConcierge(question, opts);
+  if (!opening)
+    opening = openConcierge(undefined, opts).finally(() => {
+      opening = undefined;
+    });
+  return opening;
+}
+
+async function openConcierge(
+  question?: string,
+  opts: { quiet?: boolean } = {},
+): Promise<ConciergeLocation> {
+  const host = await resolveConciergeHostAsync();
   if (host) {
-    const args = ["concierge", "--no-jump", ...(question ? ["-m", question] : [])];
-    const result = sshAm(host, args);
+    const args = [
+      "concierge",
+      "--no-jump",
+      ...(question ? ["-m", question] : []),
+    ];
+    const result = await sshAmAsync(host, args, { timeoutMs: 60_000 });
     if (result.exitCode !== 0) {
       throw new Error(
         `concierge on ${host} failed: ${result.stderr.trim() || "no output — does its am know `am concierge`?"}`,
       );
     }
-    return { host, key: `${host}:${CONCIERGE_NAME}`, ...(question ? { delivery: "remote" as const } : {}) };
+    return {
+      host,
+      key: `${host}:${CONCIERGE_NAME}`,
+      ...(question ? { delivery: "remote" as const } : {}),
+    };
   }
 
   const existing = readAgent(CONCIERGE_NAME);
   if (!existing) {
     await newCommand(conciergeNewOptions(question));
-    return { key: CONCIERGE_NAME, agent: readAgent(CONCIERGE_NAME)!, ...(question ? { delivery: "created" as const } : {}) };
+    return {
+      key: CONCIERGE_NAME,
+      agent: readAgent(CONCIERGE_NAME)!,
+      ...(question ? { delivery: "created" as const } : {}),
+    };
   }
   let delivery: ConciergeLocation["delivery"];
   if (!hasSession(existing.tmuxSession)) {
     await reviveAgent(existing, question ? { message: question } : {});
     if (question) delivery = "revived";
   } else if (question) {
-    delivery = (await sendCommand(CONCIERGE_NAME, question, { now: false, quiet: opts.quiet })).outcome;
+    delivery = (
+      await sendCommand(CONCIERGE_NAME, question, {
+        now: false,
+        quiet: opts.quiet,
+      })
+    ).outcome;
   }
   return { key: CONCIERGE_NAME, agent: existing, delivery };
 }
 
-export function conciergeAskFeedback(location: ConciergeLocation): FeedbackResult {
+export function conciergeAskFeedback(
+  location: ConciergeLocation,
+): FeedbackResult {
   switch (location.delivery) {
     case "created":
       return { text: "started the concierge with your question", level: "ok" };
     case "revived":
       return { text: "revived the concierge with your question", level: "ok" };
     case "remote":
-      return { text: `queued for the concierge on ${location.host}`, level: "ok" };
+      return {
+        text: `queued for the concierge on ${location.host}`,
+        level: "ok",
+      };
     case "steered":
     case "delivered":
       return { text: "sent to the concierge", level: "ok" };
     case "queued":
-      return { text: "queued for the concierge — delivered when it goes idle", level: "ok" };
+      return {
+        text: "queued for the concierge — delivered when it goes idle",
+        level: "ok",
+      };
     case "outbox":
-      return { text: "concierge not found — question parked in the outbox", level: "warn" };
+      return {
+        text: "concierge not found — question parked in the outbox",
+        level: "warn",
+      };
     case "dropped":
-      return { text: "question dropped — over the message rate limit", level: "error" };
+      return {
+        text: "question dropped — over the message rate limit",
+        level: "error",
+      };
     default:
       return { text: "concierge ready", level: "ok" };
   }
 }
 
-export async function conciergeCommand(opts: { question?: string; jump?: boolean }): Promise<void> {
+export async function conciergeCommand(opts: {
+  question?: string;
+  jump?: boolean;
+}): Promise<void> {
   const location = await ensureConcierge(opts.question);
   const jump = opts.jump ?? (!!process.stdout.isTTY && !!process.stdin.isTTY);
   if (!jump) {
-    console.log(`concierge ready${location.host ? ` on ${location.host}` : ""}${opts.question ? " — your question is queued" : ""}`);
+    console.log(
+      `concierge ready${location.host ? ` on ${location.host}` : ""}${opts.question ? " — your question is queued" : ""}`,
+    );
     console.log(`  jump to it:  am j ${location.key}`);
     return;
   }
