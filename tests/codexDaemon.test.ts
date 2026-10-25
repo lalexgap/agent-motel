@@ -178,7 +178,7 @@ describe("untrustCodexDir", () => {
 });
 
 describe("startCodexThread", () => {
-  test("starts the thread with the launch settings, then names it", async () => {
+  test("persists fresh bypass settings before the TUI reconstructs the named thread", async () => {
     const { socket, calls } = fakeAppServer((method) => (method === "thread/start" ? { thread: { id: "thread-9" } } : {}));
     const id = await startCodexThread({ cwd: "/work/wt", name: "worker", model: "gpt-x", effort: "high", bypass: true }, { socket });
     expect(id).toBe("thread-9");
@@ -194,7 +194,34 @@ describe("startCodexThread", () => {
         },
       ],
       ["thread/name/set", { threadId: "thread-9", name: "worker" }],
+      ["thread/settings/update", { threadId: "thread-9", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } }],
     ]);
+  });
+
+  test("does not persist bypass when skipPermissions is false", async () => {
+    const { socket, calls } = fakeAppServer((method) => (method === "thread/start" ? { thread: { id: "thread-9" } } : {}));
+    await startCodexThread({ cwd: "/work/wt", name: "worker", bypass: false }, { socket });
+    expect(calls.slice(2)).toEqual([
+      ["thread/start", { cwd: "/work/wt" }],
+      ["thread/name/set", { threadId: "thread-9", name: "worker" }],
+    ]);
+  });
+
+  test("does not hand off an unpersisted bypass thread when settings/update fails", async () => {
+    const { socket } = fakeAppServer((method) => {
+      if (method === "thread/start") return { thread: { id: "thread-9" } };
+      if (method === "thread/settings/update") return new Error("unsupported settings update");
+      return {};
+    });
+    await expect(startCodexThread({ cwd: "/work/wt", name: "worker", bypass: true }, { socket })).rejects.toThrow("unsupported settings update");
+  });
+
+  test("bounds settings persistence by the same launch deadline", async () => {
+    const { socket } = fakeAppServer((method) => {
+      if (method === "thread/start") return { thread: { id: "thread-9" } };
+      return method === "thread/settings/update" ? "hang" : {};
+    });
+    await expect(startCodexThread({ cwd: "/work/wt", name: "worker", bypass: true }, { socket, timeoutMs: 100 })).rejects.toThrow(/timed out/);
   });
 
   test("leaves permissions to config without bypass, and fails without a thread id", async () => {

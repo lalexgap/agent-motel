@@ -324,6 +324,11 @@ export async function startCodexThread(
     const threadId = started?.thread?.id;
     if (typeof threadId !== "string" || !threadId) throw new Error("app-server returned no thread id");
     await call("thread/name/set", { threadId, name: opts.name });
+    // A fresh rollout has no turn context. Persist the permissions before the
+    // TUI reconstructs it; thread/start's in-memory settings alone are lost.
+    if (opts.bypass) {
+      await call("thread/settings/update", { threadId, approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+    }
     return threadId;
   });
 }
