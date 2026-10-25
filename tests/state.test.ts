@@ -136,6 +136,29 @@ describe("agent state", () => {
     expect(readAgent("alpha")).toBeNull();
   });
 
+  test("a late Claude hook cannot merge into a recreated Codex agent", () => {
+    writeAgent({ ...makeAgent("concierge"), provider: "claude", createdAt: "old" });
+    const stale = readAgent("concierge")!;
+    removeAgent("concierge");
+    writeAgent({ ...makeAgent("concierge"), provider: "codex", createdAt: "new", sessionId: "codex-thread", codexDaemonAttached: true });
+    const replacement = readAgent("concierge");
+    stale.sessionId = "claude-session";
+    stale.transcriptPath = "/home/me/.claude/projects/work/claude-session.jsonl";
+    updateAgentStatus(stale, "exited");
+    writeAgent(stale);
+    expect(readAgent("concierge")).toEqual(replacement);
+  });
+
+  test("a stale writer cannot update a replacement using the same provider", () => {
+    writeAgent({ ...makeAgent("alpha"), createdAt: "old" });
+    const stale = readAgent("alpha")!;
+    removeAgent("alpha");
+    writeAgent({ ...makeAgent("alpha"), createdAt: "new" });
+    stale.sessionId = "retired-session";
+    writeAgent(stale);
+    expect(readAgent("alpha")?.sessionId).toBeUndefined();
+  });
+
   test("parallel processes preserve each other's changes from a shared snapshot", async () => {
     writeAgent(makeAgent("alpha"));
     const fields = ["sessionId", "task", "role", "reportTo", "transcriptPath", "spawnedBy", "repoRoot", "dir"];

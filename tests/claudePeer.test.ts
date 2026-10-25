@@ -249,6 +249,27 @@ describe("SessionStart", () => {
     return JSON.parse(readFileSync(join(home, "agents", "api.json"), "utf8")).peerInboxSession;
   }
 
+  test("a retired Claude hook cannot overwrite a daemon Codex replacement by name", async () => {
+    writeAgent(agent({ provider: "codex", codexDaemonAttached: true, sessionId: "codex-thread" }));
+    const before = readAgent("api");
+    for (const event of ["session-start", "post-tool-use", "stop", "session-end"]) {
+      const proc = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "index.ts"), "hook", event], {
+        env: { ...process.env, AGENTMGR_AGENT: "api" },
+        stdin: new Blob([JSON.stringify({ session_id: "claude-session", transcript_path: "/home/me/.claude/projects/work/claude-session.jsonl" })]),
+        stdout: "ignore", stderr: "pipe",
+      });
+      expect(await proc.exited).toBe(0);
+      expect(readAgent("api")).toEqual(before);
+    }
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "index.ts"), "hook", "session-start"], {
+      env: { ...process.env, AGENTMGR_AGENT: "api" },
+      stdin: new Blob([JSON.stringify({ session_id: "codex-thread", transcript_path: "/tmp/rollout-codex-thread.jsonl" })]),
+      stdout: "ignore", stderr: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+    expect(readAgent("api")?.transcriptPath).toBe("/tmp/rollout-codex-thread.jsonl");
+  });
+
   test("records the session only when launched with inbound accepted", async () => {
     expect(await sessionStart({ AGENTMGR_PEER_INBOX: "1" })).toBe("sess-9");
     expect(await sessionStart({})).toBeUndefined();

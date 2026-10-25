@@ -637,6 +637,16 @@ export async function hookCommand(event: string): Promise<void> {
   // That keeps the rename race window to the atomic state-write itself.
   let agent = matchAgent(inheritedName);
   if (!agent) return;
+  // Daemon threads already have an identity assigned at launch. A retiring
+  // process can still carry this name after it has been reused.
+  if (agentProvider(agent) === "codex" && agent.codexDaemonAttached && agentSessionId(agent)
+      && payload.session_id !== agentSessionId(agent)) return;
+  const createdAt = agent.createdAt;
+  const provider = agentProvider(agent);
+  const refreshAgent = () => {
+    const current = matchAgent(inheritedName!);
+    return current && current.createdAt === createdAt && agentProvider(current) === provider ? current : null;
+  };
   let name = agent.name;
 
   // Stop gate ("the loop"): if the agent is about to go idle with unread peer
@@ -649,7 +659,9 @@ export async function hookCommand(event: string): Promise<void> {
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed
       // in between, so refresh the canonical state before writing.
-      agent = matchAgent(inheritedName) ?? agent;
+      const current = refreshAgent();
+      if (!current) return;
+      agent = current;
       name = agent.name;
       updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
@@ -677,7 +689,9 @@ export async function hookCommand(event: string): Promise<void> {
       // the receipt goes done without the check
     }
     // A rename may have landed during the wait.
-    agent = matchAgent(inheritedName) ?? agent;
+    const current = refreshAgent();
+    if (!current) return;
+    agent = current;
     name = agent.name;
   }
 

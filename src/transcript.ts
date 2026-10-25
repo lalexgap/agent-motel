@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
 import { codexHome } from "./codexHooks";
+import { readFileTail } from "./fsutil";
 
 // Canonical cross-provider conversation model. Both native stores are
 // append-only JSONL and remain the source of truth — this is rendered on
@@ -305,10 +306,18 @@ function codexEntryFragments(entry: Record<string, any>): Fragment[] {
 }
 
 // Find the agent's native session file. Hook payloads from both providers
-// include transcript_path, so the captured path is authoritative; the
-// fallbacks reconstruct it from the session id.
+// include transcript_path; reject a known wrong-provider file left by a
+// stale hook before falling back to the recorded session id.
 export function locateTranscript(agent: AgentState): string {
-  if (agent.transcriptPath && existsSync(agent.transcriptPath)) return agent.transcriptPath;
+  if (agent.transcriptPath && existsSync(agent.transcriptPath)) {
+    const entries = parseLines(readFileTail(agent.transcriptPath, 64 * 1024) ?? "");
+    const native = entries.find((entry) =>
+      ["session_meta", "response_item", "event_msg", "turn_context", "user", "assistant"].includes(entry.type));
+    const provider = native
+      ? (["user", "assistant"].includes(native.type) ? "claude" : "codex")
+      : undefined;
+    if (!provider || provider === agentProvider(agent)) return agent.transcriptPath;
+  }
 
   const sessionId = agentSessionId(agent);
   if (!sessionId) {
