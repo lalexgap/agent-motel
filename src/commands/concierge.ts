@@ -4,7 +4,7 @@ import { attachOrSwitch, hasSession } from "../tmux";
 import { CONCIERGE_NAME } from "../providers";
 import { loadConfig } from "../config";
 import { fleetRows } from "../fleet";
-import { sshAm, sshAmInteractive } from "../remote";
+import { sshAmAsync, sshAmInteractive } from "../remote";
 import { newCommand, type NewOptions } from "./new";
 import { reviveAgent } from "./resume";
 import { sendCommand, type SendOutcome } from "./send";
@@ -52,6 +52,33 @@ export function resolveConciergeHost(): string | undefined {
   return remote?.host;
 }
 
+export async function resolveConciergeHostAsync(): Promise<string | undefined> {
+  const config = loadConfig();
+  if (config.conciergeHost)
+    return config.conciergeHost === "local" ? undefined : config.conciergeHost;
+  if (readAgent(CONCIERGE_NAME)) return undefined;
+  const hosts = config.remotes ?? [];
+  const found = await Promise.all(
+    hosts.map(async (host) => {
+      try {
+        const result = await sshAmAsync(
+          host,
+          ["ls", "--json", "--local-only"],
+          { timeoutMs: 4000 },
+        );
+        if (result.exitCode !== 0) return false;
+        const rows = JSON.parse(result.stdout);
+        return (
+          Array.isArray(rows) && rows.some((row) => row.name === CONCIERGE_NAME)
+        );
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return hosts.find((_, index) => found[index]);
+}
+
 export interface ConciergeLocation {
   // undefined = local; otherwise the ssh host alias the concierge lives on.
   host?: string;
@@ -87,14 +114,14 @@ async function openConcierge(
   question?: string,
   opts: { quiet?: boolean } = {},
 ): Promise<ConciergeLocation> {
-  const host = resolveConciergeHost();
+  const host = await resolveConciergeHostAsync();
   if (host) {
     const args = [
       "concierge",
       "--no-jump",
       ...(question ? ["-m", question] : []),
     ];
-    const result = sshAm(host, args);
+    const result = await sshAmAsync(host, args, { timeoutMs: 60_000 });
     if (result.exitCode !== 0) {
       throw new Error(
         `concierge on ${host} failed: ${result.stderr.trim() || "no output — does its am know `am concierge`?"}`,

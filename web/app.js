@@ -15,6 +15,10 @@ const state = {
   catalogs: [],
   detailVersion: 0,
   drafts: new Map(),
+  draftRevisions: new Map(),
+  sending: new Map(),
+  dockRevision: 0,
+  noticeSource: null,
 };
 const key = (row) => (row.host ? `${row.host}:${row.name}` : row.name);
 const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
@@ -43,7 +47,8 @@ function badge(status) {
   node.append(dot(status), document.createTextNode(statusName(status)));
   return node;
 }
-function notice(text) {
+function notice(text, source = "action") {
+  state.noticeSource = text ? source : null;
   $("notice").textContent = text;
   $("notice").hidden = !text;
 }
@@ -73,6 +78,9 @@ function lock() {
   state.rows = [];
   state.selected = null;
   state.drafts.clear();
+  state.draftRevisions.clear();
+  state.sending.clear();
+  state.dockRevision++;
   state.conciergeKey = null;
   state.subagent = null;
   $("subagent-dialog").close();
@@ -101,6 +109,8 @@ async function unlock() {
   state.authenticated = true;
   $("login").hidden = true;
   $("app").hidden = false;
+  showOverview();
+  notice("");
   state.conciergeKey = (await api("/api/concierge")).key;
   await refresh();
 }
@@ -311,6 +321,7 @@ async function selectAgent(name) {
   $("breadcrumb").textContent = name;
   $("message").value = state.drafts.get(name) || "";
   $("message-status").textContent = "";
+  $("message-form").querySelector("button").disabled = state.sending.has(name);
   delete $("transcript").dataset.content;
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
   $("permissions").replaceChildren();
@@ -477,11 +488,22 @@ async function refreshDetail() {
     view.scrollTop = atBottom ? view.scrollHeight : scroll;
   }
 }
+$("message").oninput = () => {
+  if (state.selected)
+    state.draftRevisions.set(
+      state.selected,
+      (state.draftRevisions.get(state.selected) || 0) + 1,
+    );
+};
 $("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const name = state.selected,
     text = $("message").value.trim();
-  if (!name || !text) return;
+  if (!name || !text || state.sending.has(name) || !state.authenticated) return;
+  const epoch = state.sessionEpoch;
+  const revision = state.draftRevisions.get(name) || 0;
+  const request = Symbol();
+  state.sending.set(name, request);
   const button = event.submitter || $("message-form").querySelector("button");
   button.disabled = true;
   try {
@@ -489,16 +511,19 @@ $("message-form").onsubmit = async (event) => {
       "/api/agents/" + encodeURIComponent(name) + "/messages",
       { text, mode: $("message-mode").value },
     );
-    state.drafts.delete(name);
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    const unchanged = (state.draftRevisions.get(name) || 0) === revision;
+    if (unchanged) state.drafts.delete(name);
     if (state.selected === name) {
-      $("message").value = "";
+      if (unchanged) $("message").value = "";
       $("message-status").textContent = sent.id ? "Message accepted" : "Sent";
       await refreshDetail();
     }
   } catch (error) {
     notice(error.message);
   } finally {
-    button.disabled = false;
+    if (state.sending.get(name) === request) state.sending.delete(name);
+    if (state.selected === name) button.disabled = state.sending.has(name);
   }
 };
 $("message").onkeydown = (event) => {
@@ -549,11 +574,12 @@ async function refresh() {
     renderFleet();
     $("connection").textContent = "● Connected · updated just now";
     if (fleet.unreachable.length)
-      notice("Unreachable hosts: " + fleet.unreachable.join(", "));
+      notice("Unreachable hosts: " + fleet.unreachable.join(", "), "refresh");
+    else if (state.noticeSource === "refresh") notice("");
     await Promise.all([refreshDetail(), refreshDock(), refreshSubagent()]);
   } catch (error) {
     $("connection").textContent = "○ Connection interrupted · retrying";
-    notice(error.message);
+    notice(error.message, "refresh");
   } finally {
     state.refreshing = false;
   }
@@ -586,7 +612,9 @@ function loadEfforts() {
   );
   const model = catalog?.models.find((m) => m.id === $("create-model").value);
   $("create-effort").replaceChildren(new Option("Default", ""));
-  for (const effort of model?.efforts || catalog?.efforts || [])
+  for (const effort of (model?.efforts?.length
+    ? model.efforts
+    : catalog?.efforts) || [])
     $("create-effort").add(new Option(effort, effort));
 }
 async function createDialog() {
@@ -624,6 +652,10 @@ $("create-model").onchange = loadEfforts;
 $("create-form").onsubmit = async (event) => {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.target));
+  if (body.host && body.dir) {
+    body.remoteDir = body.dir;
+    delete body.dir;
+  }
   for (const field of Object.keys(body)) if (!body[field]) delete body[field];
   $("create-submit").disabled = true;
   $("create-error").textContent = "";
@@ -705,6 +737,7 @@ $("dock-form").onsubmit = async (event) => {
   const text = $("dock-message").value.trim();
   if (!text) return;
   const epoch = state.sessionEpoch;
+  const revision = state.dockRevision;
   state.dockBusy = true;
   const button = $("dock-form").querySelector("button");
   button.disabled = true;
@@ -716,8 +749,8 @@ $("dock-form").onsubmit = async (event) => {
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
       { text, mode: "now" },
     );
-    if (!state.authenticated) return;
-    $("dock-message").value = "";
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    if (state.dockRevision === revision) $("dock-message").value = "";
     $("dock-status").textContent = "Message accepted";
     await refreshDock();
   } catch (error) {
@@ -726,6 +759,9 @@ $("dock-form").onsubmit = async (event) => {
     state.dockBusy = false;
     button.disabled = false;
   }
+};
+$("dock-message").oninput = () => {
+  state.dockRevision++;
 };
 $("dock-message").onkeydown = (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -833,6 +869,7 @@ async function refreshSubagent() {
       view.append(el("p", "", current.message || "No output recorded yet."));
   } catch (error) {
     if (state.subagent !== current || !state.authenticated) return;
+    delete $("subagent-output").dataset.content;
     $("subagent-output").replaceChildren(
       el(
         "p",

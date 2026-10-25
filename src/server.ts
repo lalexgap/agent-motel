@@ -1,5 +1,5 @@
 import { createWebAuth, secureWebResponse } from "./webAuth";
-import { ensureConcierge, resolveConciergeHost } from "./commands/concierge";
+import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { apiTokenFile, ensureDirs } from "./paths";
@@ -503,7 +503,7 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
   if (parts.length === 1 && parts[0] === "concierge" && method === "GET") {
-    const host = resolveConciergeHost();
+    const host = await resolveConciergeHostAsync();
     return json({ key: host ? `${host}:concierge` : "concierge" });
   }
   if (parts.length === 1 && parts[0] === "concierge" && method === "POST") {
