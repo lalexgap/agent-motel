@@ -80,8 +80,14 @@ try {
   if (bypass ? !handoff || !firstTurn : handoff || firstTurn) throw new Error("permission regression");
   console.log("PASS");
 } finally {
-  if (launched) tmux("kill-session", "-t", name);
+  if (launched) {
+    try {
+      tmux("kill-session", "-t", name);
+    } catch {
+      // The TUI may have exited before the canary reached its first snapshot.
+    }
+  }
   if (id) await stopCodexThread(id).catch(e => console.error(`cleanup: ${e.message}`));
-  if (trusted) releaseCodexTrust(cwd, codexDeadline(4000));
+  if (trusted) releaseCodexTrust(cwd, name, codexDeadline(4000));
   rmSync(cwd, { recursive: true, force: true });
 }
