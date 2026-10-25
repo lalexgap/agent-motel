@@ -1,0 +1,7 @@
+[Unit]
+Description=Agent Motel caretaker inspection (never auto-approve cleanup)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'am caretaker --scan'
