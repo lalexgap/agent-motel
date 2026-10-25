@@ -60,6 +60,7 @@
             >Workspace <span class="muted">/</span>
             <b id="breadcrumb">Overview</b></span
           ><span class="top-note">AGENT CONTROL / LIVE</span>
+          <button id="mobile-logout" class="mobile-only">Sign out</button>
         </header>
         <div class="page">
           <section class="page-heading">
@@ -211,6 +212,8 @@
               <aside class="activity">
                 <h3>Agent details</h3>
                 <dl id="room-details"></dl>
+                <h3>Agents &amp; subagents</h3>
+                <div id="related-agents"></div>
                 <h3>Queued messages</h3>
                 <div id="queue"></div>
                 <details>
@@ -223,6 +226,18 @@
         </div>
       </main>
     </div>
+    <dialog id="subagent-dialog">
+      <div class="section-header">
+        <h2 id="subagent-title">Subagent</h2>
+        <button id="close-subagent" aria-label="Close subagent">×</button>
+      </div>
+      <p id="subagent-meta"></p>
+      <div id="subagent-output" tabindex="0"></div>
+      <p class="muted">
+        Built-in subagents run inside the parent session. Message the parent to
+        redirect their work.
+      </p>
+    </dialog>
     <dialog id="create-dialog">
       <form id="create-form">
         <div class="section-header">

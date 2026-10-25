@@ -8,7 +8,9 @@ const state = {
   reverse: false,
   conciergeKey: null,
   dockBusy: false,
+  subagent: null,
   authenticated: false,
+  sessionEpoch: 0,
   refreshing: false,
   catalogs: [],
   detailVersion: 0,
@@ -46,6 +48,7 @@ function notice(text) {
   $("notice").hidden = !text;
 }
 async function api(path, body, method) {
+  const epoch = state.sessionEpoch;
   const response = await fetch(path, {
     method: method || (body === undefined ? "GET" : "POST"),
     credentials: "same-origin",
@@ -53,18 +56,29 @@ async function api(path, body, method) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await response.json();
-  if (response.status === 401 && !path.startsWith("/auth/")) lock();
+  if (
+    response.status === 401 &&
+    !path.startsWith("/auth/") &&
+    epoch === state.sessionEpoch
+  )
+    lock();
   if (!response.ok)
     throw new Error(data.error || `Request failed (${response.status})`);
   return data;
 }
 function lock() {
+  state.sessionEpoch++;
   state.authenticated = false;
   state.detailVersion++;
   state.rows = [];
   state.selected = null;
   state.drafts.clear();
   state.conciergeKey = null;
+  state.subagent = null;
+  $("subagent-dialog").close();
+  $("create-dialog").close();
+  $("related-agents").replaceChildren();
+  $("subagent-output").replaceChildren();
   $("dock-transcript").replaceChildren();
   $("dock-message").value = "";
   delete $("dock-transcript").dataset.content;
@@ -87,6 +101,7 @@ async function unlock() {
   state.authenticated = true;
   $("login").hidden = true;
   $("app").hidden = false;
+  state.conciergeKey = (await api("/api/concierge")).key;
   await refresh();
 }
 $("login-form").onsubmit = async (event) => {
@@ -112,6 +127,7 @@ $("logout").onclick = async () => {
     notice(error.message);
   }
 };
+$("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
   saveDraft();
   state.selected = null;
@@ -253,8 +269,32 @@ function renderFleet() {
     const duration = el("span", "agent-runtime", elapsed(runtime(row)));
     duration.title = "Elapsed time in the current working state";
     card.append(identity, repo, badge(row.status), duration);
+    if (row.spawnedBy)
+      identity.append(el("small", "parent-label", "↳ " + row.spawnedBy));
+    const children = state.rows.filter(
+      (child) => parentKey(child) === key(row),
+    );
+    if (children.length)
+      identity.append(
+        el(
+          "small",
+          "child-count",
+          `${children.length} AM child agent${children.length === 1 ? "" : "s"}`,
+        ),
+      );
     card.onclick = () => selectAgent(key(row));
     grid.append(card);
+    for (const sub of row.subagents?.running || []) {
+      const child = el("button", "subagent-row");
+      child.append(
+        el("span", "", "↳ " + (sub.description || sub.type)),
+        el("small", "", "built-in"),
+        badge("working"),
+      );
+      child.onclick = () =>
+        openSubagent(key(row), sub.id, sub.description || sub.type);
+      grid.append(child);
+    }
   }
 }
 function saveDraft() {
@@ -275,6 +315,7 @@ async function selectAgent(name) {
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
   $("permissions").replaceChildren();
   $("queue").replaceChildren();
+  $("related-agents").replaceChildren();
   $("pane").textContent = "";
   $("room-details").replaceChildren();
   document
@@ -311,10 +352,14 @@ async function refreshDetail() {
     version = state.detailVersion;
   if (!name) return;
   const base = "/api/agents/" + encodeURIComponent(name);
-  const [detail, transcript, permissions] = await Promise.all([
+  const [detail, transcript, permissions, subagents] = await Promise.all([
     api(base),
     api(base + "/transcript"),
     api(base + "/permissions"),
+    api(base + "/subagents").catch((error) => ({
+      records: [],
+      error: error.message,
+    })),
   ]);
   if (
     name !== state.selected ||
@@ -339,6 +384,8 @@ async function refreshDetail() {
     room.append(el("dt", "", title), el("dd", "", String(value)));
   }
   $("pane").textContent = detail.pane || "No active terminal.";
+  renderRelated(name, subagents);
+
   const queue = $("queue");
   queue.replaceChildren();
   if (!detail.queue?.length) queue.append(el("p", "", "Nothing waiting."));
@@ -498,13 +545,12 @@ async function refresh() {
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
     state.rows = fleet.rows;
-    const concierge = fleet.rows.find((row) => row.name === "concierge");
-    if (concierge) state.conciergeKey = key(concierge);
+
     renderFleet();
     $("connection").textContent = "● Connected · updated just now";
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "));
-    await Promise.all([refreshDetail(), refreshDock()]);
+    await Promise.all([refreshDetail(), refreshDock(), refreshSubagent()]);
   } catch (error) {
     $("connection").textContent = "○ Connection interrupted · retrying";
     notice(error.message);
@@ -612,7 +658,13 @@ unlock().catch(() => {});
 
 async function refreshDock() {
   const name = state.conciergeKey;
-  if (!name || state.selected || !state.authenticated) return;
+  if (
+    !name ||
+    state.selected ||
+    !state.authenticated ||
+    !state.rows.some((row) => key(row) === name)
+  )
+    return;
   const version = state.detailVersion;
   const transcript = await api(
     "/api/agents/" + encodeURIComponent(name) + "/transcript",
@@ -652,12 +704,14 @@ $("dock-form").onsubmit = async (event) => {
   if (state.dockBusy || !state.authenticated) return;
   const text = $("dock-message").value.trim();
   if (!text) return;
+  const epoch = state.sessionEpoch;
   state.dockBusy = true;
   const button = $("dock-form").querySelector("button");
   button.disabled = true;
   try {
-    if (!state.conciergeKey)
-      state.conciergeKey = (await api("/api/concierge", {})).key;
+    const target = (await api("/api/concierge", {})).key;
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    state.conciergeKey = target;
     await api(
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
       { text, mode: "now" },
@@ -679,3 +733,114 @@ $("dock-message").onkeydown = (event) => {
     $("dock-form").requestSubmit();
   }
 };
+
+function parentKey(row) {
+  if (!row.spawnedBy) return null;
+  return row.spawnedBy.includes(":") || !row.host
+    ? row.spawnedBy
+    : `${row.host}:${row.spawnedBy}`;
+}
+function renderRelated(name, subagents) {
+  const view = $("related-agents");
+  view.replaceChildren();
+  const row = state.rows.find((row) => key(row) === name);
+  const parent = row && parentKey(row);
+  if (parent) {
+    const link = el("button", "related-link", "↑ Parent: " + parent);
+    link.onclick = () => selectAgent(parent);
+    view.append(link);
+  }
+  for (const child of state.rows.filter((row) => parentKey(row) === name)) {
+    const link = el(
+      "button",
+      "related-link",
+      `↳ ${child.name} · AM · ${statusName(child.status)}`,
+    );
+    link.onclick = () => selectAgent(key(child));
+    view.append(link);
+  }
+  const records = [...(subagents.records || [])].sort(
+    (a, b) =>
+      Number(!!a.endedAt || !!a.stale) - Number(!!b.endedAt || !!b.stale) ||
+      Date.parse(b.startedAt) - Date.parse(a.startedAt),
+  );
+  for (const sub of records) {
+    const label = sub.description || sub.type;
+    const status = sub.stale
+      ? "Session ended"
+      : sub.endedAt
+        ? "Finished"
+        : "Running";
+    const link = el(
+      "button",
+      "related-link",
+      `↳ ${label} · built-in · ${status}`,
+    );
+    link.onclick = () => openSubagent(name, sub.id, label, sub.message, status);
+    view.append(link);
+  }
+  if (subagents.error) view.append(el("p", "", subagents.error));
+  if (!view.childNodes.length)
+    view.append(el("p", "", "No subagents recorded."));
+}
+async function openSubagent(parent, id, label, message, status = "Running") {
+  state.subagent = { parent, id, label, message, status };
+  $("subagent-title").textContent = label;
+  $("subagent-meta").textContent = `${parent} / ${id} · ${status}`;
+  $("subagent-output").replaceChildren(el("p", "", "Loading output…"));
+  delete $("subagent-output").dataset.content;
+  if (!$("subagent-dialog").open) $("subagent-dialog").showModal();
+  await refreshSubagent();
+}
+$("close-subagent").onclick = () => $("subagent-dialog").close();
+$("subagent-dialog").onclose = () => {
+  state.subagent = null;
+};
+async function refreshSubagent() {
+  const current = state.subagent;
+  if (!current || !state.authenticated) return;
+  try {
+    const result = await api(
+      "/api/agents/" +
+        encodeURIComponent(current.parent) +
+        "/transcript?subagent=" +
+        encodeURIComponent(current.id),
+    );
+    if (state.subagent !== current || !state.authenticated) return;
+    const view = $("subagent-output"),
+      fingerprint = JSON.stringify(result.entries);
+    if (view.dataset.content === fingerprint) return;
+    view.dataset.content = fingerprint;
+    view.replaceChildren();
+    for (const entry of result.entries) {
+      const block = el("article", "turn");
+      block.append(
+        el(
+          "div",
+          "turn-label",
+          entry.kind === "tool" ? entry.name : entry.kind,
+        ),
+        el(
+          "div",
+          "turn-text",
+          entry.text ||
+            [entry.input, entry.output].filter(Boolean).join("\n\n"),
+        ),
+      );
+      view.append(block);
+    }
+    if (!result.entries.length)
+      view.append(el("p", "", current.message || "No output recorded yet."));
+  } catch (error) {
+    if (state.subagent !== current || !state.authenticated) return;
+    $("subagent-output").replaceChildren(
+      el(
+        "p",
+        "",
+        current.message ||
+          "Output is not available yet. Running Codex subagents may publish their transcript only when they finish.",
+      ),
+      el("small", "", error.message),
+    );
+  }
+}

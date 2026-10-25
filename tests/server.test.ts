@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSyn
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, resetModelsCacheForTests, type ApiServerHandle } from "../src/server";
+import { recordSubagentStart, recordSubagentStop } from "../src/subagents";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth, queuePopId } from "../src/queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "../src/deliver";
@@ -1078,5 +1079,32 @@ describe("token storage", () => {
     createApiToken();
     process.env.AM_API_TOKEN = "env-wins";
     expect(loadApiToken()).toBe("env-wins");
+  });
+});
+
+
+describe("subagent API", () => {
+  test("lists built-in records without pretending dead-session children are running", async () => {
+    seedAgent("parent");
+    recordSubagentStart("parent", { id: "child-1", type: "reviewer" });
+    const result = await fetch(url("/api/agents/parent/subagents"), auth());
+    expect(result.status).toBe(200);
+    expect((await result.json()).records[0]).toMatchObject({ id: "child-1", stale: true });
+    expect((await fetch(url("/api/agents/missing/subagents"), auth())).status).toBe(404);
+  });
+  test("reads a completed built-in transcript and rejects invalid selectors", async () => {
+    seedAgent("parent");
+    const agent = readAgent("parent")!;
+    writeAgent({ ...agent, provider: "claude" });
+    const file = join(home, "child-transcript.jsonl");
+    writeFileSync(file, JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"Child result"}]}}) + "\n");
+    recordSubagentStart("parent", { id: "child-1", type: "reviewer" });
+    recordSubagentStop("parent", { id: "child-1", transcriptPath: file });
+    const response = await fetch(url("/api/agents/parent/transcript?subagent=child-1"), auth());
+    expect(response.status).toBe(200);
+    expect((await response.json()).entries[0].text).toBe("Child result");
+    expect((await fetch(url("/api/agents/parent/transcript?subagent=../../etc/passwd"), auth())).status).toBe(400);
+    expect((await fetch(url("/api/agents/parent/transcript?subagent=unknown"), auth())).status).toBe(409);
+    expect((await fetch(url("/api/agents/parent/subagents"))).status).toBe(401);
   });
 });

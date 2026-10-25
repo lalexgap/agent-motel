@@ -135,6 +135,9 @@ describe("browser authentication", () => {
         })
       ).status,
     ).toBe(403);
+    expect(
+      (await fetch(server.url + "/api/events", { headers: { cookie } })).status,
+    ).toBe(403);
     expect((await fetch(server.url + "/api/health")).status).toBe(401);
     expect(
       (await fetch(server.url + "/api/health?token=" + token)).status,
