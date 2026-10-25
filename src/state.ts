@@ -145,8 +145,8 @@ export function writeAgent(state: AgentState): void {
     let next = state;
     if (snapshot && snapshot.name === state.name) {
       const current = readAgent(state.name);
-      // A stale hook must not resurrect a removed or renamed agent.
-      if (!current) return;
+      // A stale writer must not update a replacement that reused this name.
+      if (!current || current.createdAt !== snapshot.createdAt || agentProvider(current) !== agentProvider(snapshot)) return;
       next = current;
       const keys = new Set([...Object.keys(snapshot), ...Object.keys(state)]) as Set<keyof AgentState>;
       for (const key of keys) {
