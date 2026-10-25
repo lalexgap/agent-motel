@@ -13,6 +13,11 @@ export function createWebAuth(origin: string, token: string) {
       "webOrigin must be an HTTPS origin without a trailing slash",
     );
   const sessions = new Map<string, number>();
+  const subscribers = new Map<string, Set<() => void>>();
+  function revoke(id: string) {
+    sessions.delete(id);
+    for (const invalidate of [...(subscribers.get(id) ?? [])]) invalidate();
+  }
   let attempts: number[] = [];
   const cookie = (value: string, age: number) =>
     `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${age}`;
@@ -33,6 +38,33 @@ export function createWebAuth(origin: string, token: string) {
   return {
     valid,
     sameOrigin,
+    subscribe(req: Request, onInvalidate: () => void): () => void {
+      const id = session(req);
+      if (!id || !valid(req)) {
+        onInvalidate();
+        return () => {};
+      }
+      let active = true;
+      const cleanup = () => {
+        active = false;
+        clearTimeout(timer);
+        subscribers.get(id)?.delete(invalidate);
+        if (!subscribers.get(id)?.size) subscribers.delete(id);
+      };
+      const invalidate = () => {
+        if (!active) return;
+        cleanup();
+        onInvalidate();
+      };
+      const timer = setTimeout(() => revoke(id), Math.max(0, sessions.get(id)! - Date.now()));
+      timer.unref();
+      if (!subscribers.has(id)) subscribers.set(id, new Set());
+      subscribers.get(id)!.add(invalidate);
+      return cleanup;
+    },
+    dispose() {
+      for (const id of sessions.keys()) revoke(id);
+    },
     async route(req: Request, path: string): Promise<Response | null> {
       if (path !== "/auth/login" && path !== "/auth/logout") return null;
       if (req.method !== "POST")
@@ -41,7 +73,7 @@ export function createWebAuth(origin: string, token: string) {
         return Response.json({ error: "origin rejected" }, { status: 403 });
       if (path === "/auth/logout") {
         const id = session(req);
-        if (id) sessions.delete(id);
+        if (id) revoke(id);
         return Response.json(
           { ok: true },
           { headers: { "set-cookie": cookie("", 0) } },
@@ -55,7 +87,7 @@ export function createWebAuth(origin: string, token: string) {
           { status: 429, headers: { "retry-after": "60" } },
         );
       attempts.push(now);
-      const body = await req.json().catch(() => null);
+      const body = await req.json().catch(() => null) as { token?: unknown } | null;
       const supplied =
         typeof body?.token === "string"
           ? Buffer.from(body.token)
@@ -67,10 +99,10 @@ export function createWebAuth(origin: string, token: string) {
       )
         return Response.json({ error: "Invalid access key" }, { status: 401 });
       for (const [id, expiry] of sessions)
-        if (expiry <= now) sessions.delete(id);
-      if (sessions.size >= 100) sessions.delete(sessions.keys().next().value!);
+        if (expiry <= now) revoke(id);
+      if (sessions.size >= 100) revoke(sessions.keys().next().value!);
       const old = session(req);
-      if (old) sessions.delete(old);
+      if (old) revoke(old);
       const id = randomBytes(32).toString("base64url");
       sessions.set(id, now + TTL);
       return Response.json(
@@ -83,9 +115,10 @@ export function createWebAuth(origin: string, token: string) {
 
 export function secureWebResponse(response: Response): Response {
   response.headers.set("cache-control", "no-store");
+  // xterm generates styles at runtime; script execution remains self-only.
   response.headers.set(
     "content-security-policy",
-    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   );
   response.headers.set("x-content-type-options", "nosniff");
   response.headers.set("referrer-policy", "no-referrer");
