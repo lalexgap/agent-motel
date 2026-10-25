@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sourceTranscript } from "../src/commands/move";
 import {
   locateTranscript,
   claudeProjectSlug,
@@ -259,6 +260,32 @@ describe("claudeProjectSlug", () => {
 
 
 describe("locateTranscript stale provider metadata", () => {
+  test("ignores null and non-object records for discovery and move/export", () => {
+    const root = mkdtempSync(join(tmpdir(), "am-transcript-null-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = root;
+    try {
+      mkdirSync(join(root, "sessions"));
+      const claude = join(root, "claude.jsonl");
+      const codex = join(root, "sessions", "rollout-c-1.jsonl");
+      const prefix = 'null\n42\n"text"\ntrue\n[]\n';
+      writeFileSync(claude, prefix + CLAUDE_JSONL);
+      writeFileSync(codex, prefix + CODEX_JSONL);
+      const agent = { name: "concierge", provider: "codex" as const, status: "idle" as const,
+        dir: root, tmuxSession: "test", createdAt: "now", updatedAt: "now",
+        sessionId: "c-1", transcriptPath: codex };
+      expect(locateTranscript(agent)).toBe(codex);
+      expect(sourceTranscript(agent)).toEqual({ path: codex, codexRelative: "sessions/rollout-c-1.jsonl" });
+      expect(locateTranscript({ ...agent, transcriptPath: claude })).toBe(codex);
+      expect(sourceTranscript({ ...agent, provider: "claude", transcriptPath: claude }))
+        .toEqual({ path: claude, codexRelative: null });
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("ignores a Claude path for Codex and falls back without mutating state", () => {
     const root = mkdtempSync(join(tmpdir(), "am-transcript-provider-"));
     const previousHome = process.env.CODEX_HOME;

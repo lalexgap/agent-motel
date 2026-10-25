@@ -312,6 +312,7 @@ export function locateTranscript(agent: AgentState): string {
   if (agent.transcriptPath && existsSync(agent.transcriptPath)) {
     const entries = parseLines(readFileTail(agent.transcriptPath, 64 * 1024) ?? "");
     const native = entries.find((entry) =>
+      entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
       ["session_meta", "response_item", "event_msg", "turn_context", "user", "assistant"].includes(entry.type));
     const provider = native
       ? (["user", "assistant"].includes(native.type) ? "claude" : "codex")
