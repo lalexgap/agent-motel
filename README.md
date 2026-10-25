@@ -253,3 +253,13 @@ Remote control is enabled by default. Claude agents launch with Claude Code Remo
 ```sh
 bun test
 ```
+
+## Caretaker
+
+`am caretaker` opens a Codex agent dedicated to finding unused worktrees and agents that may be ready to retire. `am caretaker --scan` requests an inspection-only pass without attaching; a busy caretaker skips scheduled scans instead of accumulating a backlog. Use `am -H host caretaker` to inspect another machine. It is one local agent per host, separate from the fleet concierge.
+
+The caretaker reports exact targets, recent activity, queued work, subagents, worktree ownership, dirty files and merge status. It asks before stopping **any** agent or removing **any** workspace. Long runtime or idleness alone is not evidence of abandonment. After specific approval it rechecks the target and uses conditional idle stops or ordinary (non-forced) worktree removal, preserving conversations and branches. It never runs broad garbage collection or force cleanup. These are agent instructions, not an OS sandbox; am's configured provider permissions still apply.
+
+Set `caretakerModel` and `caretakerEffort` in `~/.agent-manager/config.json` for a newly created caretaker (for example, an available fast Codex model with `low` effort). Scheduled scans never carry forward cleanup approval. Review proposals in `am j caretaker`, its web conversation, or `am transcript caretaker`.
+
+For optional daily inspection at roughly 10:00 local time, install [the service](docs/am-caretaker.service) and [timer](docs/am-caretaker.timer) in `~/.config/systemd/user/`, then run `systemctl --user daemon-reload` and `systemctl --user enable --now am-caretaker.timer`. Disable scheduling with `systemctl --user disable --now am-caretaker.timer`; this does not stop the agent or delete its conversation. No timer is installed automatically. The scan service uses `KillMode=process` so ending the submission command does not kill its managed tmux/daemon children; stop those with am, not by stopping the scan unit. Revival requires a captured session ID and never falls back to another home-directory conversation.

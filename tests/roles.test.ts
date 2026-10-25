@@ -89,7 +89,7 @@ describe("role registry", () => {
       description: "Reviews auth",
       instructions: "Inspect trust boundaries.",
     });
-    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "security-reviewer"]);
+    expect(listRoles().map((role) => role.name)).toEqual(["caretaker", "concierge", "security-reviewer"]);
     expect(() => addRole({ name: "security-reviewer", instructions: "new" })).toThrow(/--force/);
     addRole({ name: "security-reviewer", instructions: "New instructions", force: true });
     expect(requireRole("security-reviewer").instructions).toBe("New instructions");
@@ -184,7 +184,7 @@ describe("role model defaults", () => {
     const instructions = requireRole(CONCIERGE_ROLE).instructions;
     setRoleModel(CONCIERGE_ROLE, "codex", "gpt-5.6-luna");
     expect(requireRole(CONCIERGE_ROLE)).toMatchObject({ builtIn: true, instructions, models: { codex: "gpt-5.6-luna" } });
-    expect(listRoles()[0]?.models?.codex).toBe("gpt-5.6-luna");
+    expect(listRoles().find(role => role.name === CONCIERGE_ROLE)?.models?.codex).toBe("gpt-5.6-luna");
     expect(() => removeRole(CONCIERGE_ROLE)).toThrow(/built in/);
   });
 });

@@ -1,0 +1,10 @@
+[Unit]
+Description=Inspect Agent Motel housekeeping candidates daily
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
