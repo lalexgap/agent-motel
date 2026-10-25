@@ -218,6 +218,17 @@ nav {
   width: auto;
   margin: 0;
 }
+.sidebar-search {
+  width: calc(100% - 24px);
+  margin: 0 12px 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.sidebar-empty {
+  margin: 8px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
 .side-agent span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -951,6 +962,7 @@ dialog p.muted {
   .workspace,
   .side-heading,
   .sidebar-filter,
+  .sidebar-search,
   #agent-nav,
   .sidebar-bottom {
     display: none;
