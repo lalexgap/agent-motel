@@ -8,6 +8,7 @@ import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
 import { agentDetail, agentPermissions, answerAgentPermission } from "./server";
+import { terminalAttachCommand } from "./webTerminal";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { shareCommand } from "./commands/share";
@@ -884,6 +885,13 @@ async function main(): Promise<void> {
       const spec = JSON.parse(await Bun.file(requirePositional(args, 0, "spec path")).text()) as PaletteSpec;
       const result = await palettePopupUi(spec);
       if (result) await Bun.write(requirePositional(args, 1, "result path"), JSON.stringify(result));
+      break;
+    }
+    case "__terminal": {
+      process.exitCode = await terminalAttachCommand(
+        requirePositional(args, 0, "agent name"),
+        requirePositional(args, 1, "expected creation timestamp"),
+      );
       break;
     }
     case "__detail": {

@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#1e1e1e" />
     <title>Agent Motel · Front desk</title>
+    <link rel="stylesheet" href="/vendor/xterm.css" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/vendor/xterm.js" defer></script>
+    <script src="/vendor/addon-fit.js" defer></script>
+    <script src="/terminal.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -48,6 +52,9 @@
         <div class="side-heading">
           YOUR AGENTS <button id="side-new" aria-label="New agent">+</button>
         </div>
+        <label class="sidebar-filter">
+          <input id="show-stopped-agents" type="checkbox" /> Show stopped
+        </label>
         <div id="agent-nav"></div>
         <div class="sidebar-bottom">
           <span id="connection" role="status">Connecting…</span
@@ -183,9 +190,29 @@
             <div class="conversation-layout">
               <div class="conversation">
                 <div class="section-header">
-                  <h2>Conversation</h2>
+                  <div class="view-switch" aria-label="Agent view">
+                    <button id="terminal-tab" aria-pressed="true">Terminal</button>
+                    <button id="chat-tab" aria-pressed="false">Chat</button>
+                  </div>
                   <span id="message-status" role="status"></span>
                 </div>
+                <section id="terminal-panel" aria-label="Interactive agent terminal">
+                  <div class="terminal-toolbar">
+                    <span id="terminal-status" role="status">Connecting…</span>
+                    <button id="terminal-reconnect">Reconnect</button>
+                  </div>
+                  <div id="terminal-screen"></div>
+                  <div class="terminal-keys" aria-label="Terminal keys">
+                    <button id="terminal-focus">Keyboard</button>
+                    <button data-terminal-key="escape">Esc</button>
+                    <button data-terminal-key="tab">Tab</button>
+                    <button data-terminal-key="interrupt">Ctrl+C</button>
+                    <button data-terminal-key="up" aria-label="Up arrow">↑</button>
+                    <button data-terminal-key="down" aria-label="Down arrow">↓</button>
+                    <button data-terminal-key="enter">Enter</button>
+                  </div>
+                </section>
+                <div id="chat-panel" hidden>
                 <div
                   id="transcript"
                   tabindex="0"
@@ -208,6 +235,7 @@
                     ><button class="primary">Send ↗</button>
                   </div>
                 </form>
+                </div>
               </div>
               <aside class="activity">
                 <h3>Agent details</h3>

@@ -19,7 +19,63 @@ const state = {
   sending: new Map(),
   dockRevision: 0,
   noticeSource: null,
+  detailMode: "terminal",
+  refreshPending: false,
 };
+const agentTerminal = createAgentTerminal({
+  screen: $("terminal-screen"),
+  status: $("terminal-status"),
+  onUnauthorized: lock,
+});
+let eventStream = null, eventKey = null, eventRefreshTimer = null;
+function stopEvents() {
+  eventStream?.close();
+  eventStream = eventKey = null;
+  clearTimeout(eventRefreshTimer);
+  eventRefreshTimer = null;
+}
+function scheduleRefresh() {
+  if (!state.authenticated || document.hidden) return;
+  if (eventRefreshTimer) return;
+  eventRefreshTimer = setTimeout(() => {
+    eventRefreshTimer = null;
+    refresh();
+  }, 100);
+}
+function connectEvents() {
+  if (!state.authenticated) return;
+  const params = new URLSearchParams();
+  const agent = state.subagent?.parent || state.selected;
+  if (agent) params.set("agent", agent);
+  if (state.subagent) params.set("subagent", state.subagent.id);
+  const next = params.toString();
+  if (eventStream && eventKey === next) return;
+  stopEvents();
+  eventKey = next;
+  eventStream = new EventSource("/api/web-events?" + next);
+  eventStream.addEventListener("ready", scheduleRefresh);
+  eventStream.addEventListener("changed", scheduleRefresh);
+  eventStream.onerror = scheduleRefresh;
+}
+function updateAgentView() {
+  const terminal = state.detailMode === "terminal";
+  $("terminal-tab").setAttribute("aria-pressed", String(terminal));
+  $("chat-tab").setAttribute("aria-pressed", String(!terminal));
+  $("terminal-panel").hidden = !terminal;
+  $("chat-panel").hidden = terminal;
+  if (terminal && state.selected) {
+    const row = state.rows.find((row) => key(row) === state.selected);
+    agentTerminal.open(state.selected, row?.status);
+  } else agentTerminal.close();
+}
+$("terminal-tab").onclick = () => { state.detailMode = "terminal"; updateAgentView(); };
+$("chat-tab").onclick = () => { state.detailMode = "chat"; updateAgentView(); };
+$("terminal-reconnect").onclick = () => agentTerminal.reconnect();
+$("terminal-focus").onclick = () => agentTerminal.focus();
+const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A", down: "\x1b[B", enter: "\r" };
+document.querySelectorAll("[data-terminal-key]").forEach(button => {
+  button.onclick = () => { agentTerminal.input(terminalKeys[button.dataset.terminalKey]); agentTerminal.focus(); };
+});
 const key = (row) => (row.host ? `${row.host}:${row.name}` : row.name);
 const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
 const el = (tag, className, text) => {
@@ -72,6 +128,9 @@ async function api(path, body, method) {
   return data;
 }
 function lock() {
+  agentTerminal.close();
+  stopEvents();
+  state.refreshPending = false;
   state.sessionEpoch++;
   state.authenticated = false;
   state.detailVersion++;
@@ -112,7 +171,9 @@ async function unlock() {
   showOverview();
   notice("");
   state.conciergeKey = (await api("/api/concierge")).key;
+  connectEvents();
   await refresh();
+  await refreshDock();
 }
 $("login-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -140,7 +201,9 @@ $("logout").onclick = async () => {
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
   saveDraft();
+  agentTerminal.close();
   state.selected = null;
+  connectEvents();
   state.detailVersion++;
   state.filter = filter;
   $("detail").hidden = true;
@@ -163,6 +226,7 @@ document
     (button) => (button.onclick = () => showOverview(button.dataset.filter)),
   );
 $("search").oninput = renderFleet;
+$("show-stopped-agents").onchange = renderFleet;
 $("sort").onchange = () => {
   state.sort = $("sort").value;
   renderFleet();
@@ -226,6 +290,11 @@ function renderFleet() {
   const nav = $("agent-nav");
   nav.replaceChildren();
   for (const row of rows) {
+    if (
+      !$("show-stopped-agents").checked &&
+      ["exited", "dead"].includes(row.status)
+    )
+      continue;
     const button = el("button", "side-agent");
     button.append(dot(row.status), el("span", "", row.name));
     button.onclick = () => selectAgent(key(row));
@@ -312,10 +381,14 @@ function saveDraft() {
 }
 async function selectAgent(name) {
   saveDraft();
+  agentTerminal.close();
   state.selected = name;
+  state.detailMode = name.endsWith("concierge") ? "chat" : "terminal";
   state.detailVersion++;
   $("overview").hidden = true;
   $("detail").hidden = false;
+  updateAgentView();
+  connectEvents();
   $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
   $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
@@ -381,6 +454,7 @@ async function refreshDetail() {
   $("detail-status").replaceWith(
     Object.assign(badge(detail.status), { id: "detail-status" }),
   );
+  if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
@@ -564,9 +638,12 @@ document.querySelectorAll("[data-action]").forEach(
     }),
 );
 async function refresh() {
-  if (!state.authenticated || state.refreshing) return;
+  if (!state.authenticated) return;
+  if (state.refreshing) { state.refreshPending = true; return; }
   state.refreshing = true;
+  state.refreshPending = false;
   try {
+    const detailResults = Promise.allSettled([refreshDetail(), refreshDock(), refreshSubagent()]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
     state.rows = fleet.rows;
@@ -576,12 +653,14 @@ async function refresh() {
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "), "refresh");
     else if (state.noticeSource === "refresh") notice("");
-    await Promise.all([refreshDetail(), refreshDock(), refreshSubagent()]);
+    const failed = (await detailResults).find((result) => result.status === "rejected");
+    if (failed && state.authenticated) notice(failed.reason.message, "refresh");
   } catch (error) {
     $("connection").textContent = "○ Connection interrupted · retrying";
     notice(error.message, "refresh");
   } finally {
     state.refreshing = false;
+    if (state.refreshPending) scheduleRefresh();
   }
 }
 async function loadModels() {
@@ -821,6 +900,7 @@ function renderRelated(name, subagents) {
 }
 async function openSubagent(parent, id, label, message, status = "Running") {
   state.subagent = { parent, id, label, message, status };
+  connectEvents();
   $("subagent-title").textContent = label;
   $("subagent-meta").textContent = `${parent} / ${id} · ${status}`;
   $("subagent-output").replaceChildren(el("p", "", "Loading output…"));
@@ -831,6 +911,7 @@ async function openSubagent(parent, id, label, message, status = "Running") {
 $("close-subagent").onclick = () => $("subagent-dialog").close();
 $("subagent-dialog").onclose = () => {
   state.subagent = null;
+  connectEvents();
 };
 async function refreshSubagent() {
   const current = state.subagent;

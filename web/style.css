@@ -205,6 +205,19 @@ nav {
   overflow: hidden;
   padding: 8px 12px;
 }
+.sidebar-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sidebar-filter input {
+  width: auto;
+  margin: 0;
+}
 .side-agent span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -937,6 +950,7 @@ dialog p.muted {
   }
   .workspace,
   .side-heading,
+  .sidebar-filter,
   #agent-nav,
   .sidebar-bottom {
     display: none;
@@ -1179,4 +1193,29 @@ dialog p.muted {
   .filters button {
     min-height: 40px;
   }
+}
+
+.view-switch { display: flex; gap: 4px; }
+.view-switch button { border: 0; background: transparent; color: var(--muted); }
+.view-switch button[aria-pressed="true"] { color: #fff; background: #37373d; }
+.terminal-toolbar, .terminal-keys {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  background: #181818;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.terminal-toolbar { justify-content: space-between; }
+.terminal-toolbar button, .terminal-keys button { padding: 5px 8px; font-size: 11px; }
+#terminal-screen { height: 60vh; min-height: 320px; padding: 0 8px; background: #181818; }
+#terminal-screen .xterm { height: 100%; }
+#terminal-screen .xterm-viewport { overscroll-behavior: contain; }
+@media (max-width: 640px) {
+  #terminal-panel:not([hidden]) { display: flex; flex-direction: column; }
+  .terminal-toolbar { order: -2; }
+  #terminal-screen { height: 58dvh; min-height: 240px; padding: 0 4px; }
+  .terminal-keys { order: -1; gap: 5px; }
+  .terminal-keys button { min-height: 36px; }
 }

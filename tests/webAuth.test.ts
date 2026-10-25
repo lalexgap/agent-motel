@@ -81,6 +81,41 @@ describe("browser authentication", () => {
       Date.now = real;
     }
   });
+  test("subscriptions revoke immediately on logout, replacement, expiry and disposal", async () => {
+    const auth = createWebAuth(origin, token);
+    const response = (await login(auth))!;
+    const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+    const req = request("/auth/logout", {}, { cookie });
+    let called = 0;
+    const off = auth.subscribe(req, () => called++);
+    off();
+    auth.subscribe(req, () => called++);
+    auth.subscribe(req, () => called++);
+    await auth.route(req, "/auth/logout");
+    expect(called).toBe(2);
+    auth.subscribe(req, () => called++);
+    expect(called).toBe(3);
+    const next = (await login(auth))!;
+    const nextCookie = next.headers.get("set-cookie")!.split(";")[0]!;
+    const nextReq = request("/auth/login", { token }, { cookie: nextCookie });
+    auth.subscribe(nextReq, () => called++);
+    await auth.route(nextReq, "/auth/login");
+    expect(called).toBe(4);
+    const expires = (await login(auth))!;
+    const expiryReq = request("/auth/logout", {}, { cookie: expires.headers.get("set-cookie")!.split(";")[0]! });
+    const real = Date.now;
+    Date.now = () => real() + 12 * 60 * 60 * 1000 - 15;
+    try {
+      auth.subscribe(expiryReq, () => called++);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(called).toBe(5);
+      expect(auth.valid(expiryReq)).toBe(false);
+    } finally { Date.now = real; }
+    const last = (await login(auth))!;
+    auth.subscribe(request("/", {}, { cookie: last.headers.get("set-cookie")!.split(";")[0]! }), () => called++);
+    auth.dispose();
+    expect(called).toBe(6);
+  });
   test("limits password guesses globally, independent of spoofed IP headers", async () => {
     const auth = createWebAuth(origin, token);
     for (let i = 0; i < 10; i++)

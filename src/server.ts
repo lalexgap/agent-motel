@@ -1,4 +1,6 @@
 import { createWebAuth, secureWebResponse } from "./webAuth";
+import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
+import { startWebEvents } from "./webEvents";
 import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -142,6 +144,7 @@ export function agentDetail(name: string) {
       : null,
     // Tells a serve on another host that this am returns ids from send --json.
     messageReceipts: true,
+    terminalAttach: 1,
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
     permissionRequests: true,
@@ -807,14 +810,18 @@ export interface ApiServerHandle {
 export function startApiServer(opts: { port?: number; hostname?: string; token: string; webOrigin?: string }): ApiServerHandle {
   const { token } = opts;
   const webAuth = opts.webOrigin ? createWebAuth(opts.webOrigin, token) : null;
-  const server = Bun.serve({
+  const terminal = createWebTerminal();
+  let eventStreams = 0;
+  let terminalResolutions = 0;
+  const server = Bun.serve<TerminalData>({
+    websocket: terminal.websocket,
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
     // and remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
     maxRequestBodySize: 256 * 1024,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
-    async fetch(req) {
+    async fetch(req, server) {
       const url = new URL(req.url);
       const path = url.pathname;
 
@@ -822,9 +829,9 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
-          return respond(new Response(Bun.file(new URL("../web/" + assets[path], import.meta.url))));
+          return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }
       }
       if (path === "/api" || path.startsWith("/api/")) {
@@ -838,6 +845,59 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
           return respond(json({ error: "origin rejected" }, 403));
         }
         const parts = path.replace(/^\/api\/?/, "").split("/").filter(Boolean);
+        if (parts.length === 1 && parts[0] === "web-events") {
+          if (!webAuth?.valid(req)) return respond(json({ error: "Browser session required" }, 401));
+          // Same-origin EventSource GETs may omit Origin; browser-controlled
+          // Fetch Metadata supplies the same-origin check in that case.
+          if (req.headers.has("origin") ? !webAuth.sameOrigin(req) : req.headers.get("sec-fetch-site") !== "same-origin")
+            return respond(json({ error: "origin rejected" }, 403));
+          if (req.method !== "GET") return respond(json({ error: "method not allowed" }, 405));
+          if (eventStreams >= 32) return respond(json({ error: "Too many event streams" }, 429));
+          eventStreams++;
+          let released = false;
+          const release = () => { if (!released) { released = true; eventStreams--; } };
+          try {
+            const response = startWebEvents(req, {
+              isSessionValid: () => webAuth.valid(req),
+              onRevoke: (close) => {
+                const unsubscribe = webAuth.subscribe(req, close);
+                return () => { unsubscribe(); release(); };
+              },
+            });
+            if (response.status !== 200) release();
+            return respond(response);
+          } catch (error) { release(); throw error; }
+        }
+        if (parts.length === 3 && parts[0] === "agents" && parts[2] === "terminal") {
+          if (!webAuth) return respond(json({ error: "Web terminal is disabled; configure webOrigin" }, 403));
+          const upgrading = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+          if (upgrading || req.headers.has("origin") ? !webAuth.sameOrigin(req) : req.headers.get("sec-fetch-site") !== "same-origin")
+            return respond(json({ error: "origin rejected" }, 403));
+          // Terminal connections intentionally require revocable browser sessions,
+          // even when a valid bearer header was also supplied.
+          if (!webAuth.valid(req)) return respond(json({ error: "Web terminal requires a browser session" }, 401));
+          if (req.method !== "GET") return respond(json({ error: "method not allowed" }, 405));
+          if (url.search) return respond(json({ error: "Terminal URL must not contain query parameters" }, 400));
+          const target = parseTarget(parts[1]!);
+          if (target instanceof Response) return respond(target);
+          if (terminalResolutions >= 16 || (upgrading && server.pendingWebSockets >= 32))
+            return respond(json({ error: "Too many terminal requests" }, 429));
+          terminalResolutions++;
+          let resolved;
+          try { resolved = target.host ? await remoteTerminalTarget(target.host, target.name) : terminalTarget(target.name); }
+          catch (error) { return respond(remoteFailure(error)); }
+          finally { terminalResolutions--; }
+          if (resolved instanceof Response) return respond(resolved);
+          if (!webAuth.valid(req)) return respond(json({ error: "Session expired or revoked" }, 401));
+          if (!upgrading) return respond(json({ available: true, transport: target.host ? "ssh" : "local" }));
+          if (server.pendingWebSockets >= 32) return respond(json({ error: "Too many terminal connections" }, 429));
+          if (server.upgrade(req, { data: {
+            target: resolved,
+            isValid: () => webAuth.valid(req),
+            subscribe: (invalidate) => webAuth.subscribe(req, invalidate),
+          } })) return;
+          return respond(json({ error: "WebSocket upgrade required" }, 426));
+        }
         if (!bearerValid && parts.length === 1 && parts[0] === "events") {
           return respond(json({ error: "event streams require bearer authentication; browser clients use polling" }, 403));
         }
@@ -865,7 +925,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
   const hostname = server.hostname ?? opts.hostname ?? "127.0.0.1";
   const port = server.port ?? 0;
   return {
-    stop: () => server.stop(true),
+    stop: () => { terminal.stop(); webAuth?.dispose(); server.stop(true); },
     port,
     hostname,
     url: `http://${hostname}:${port}`,
