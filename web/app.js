@@ -215,6 +215,8 @@ function lock() {
   state.drafts.clear();
   state.draftRevisions.clear();
   state.sending.clear();
+  pendingSent.clear();
+  lastUserTexts.clear();
   state.dockRevision++;
   state.conciergeKey = null;
   state.subagent = null;
@@ -713,6 +715,31 @@ function showWorking(id, status, since) {
     (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
 }
 const transcriptQueue = el("div", "transcript-queue");
+// A message sent mid-turn is held by the agent's TUI and only reaches its log when read,
+// so keep showing it until the log has one more matching user message than at send time.
+const pendingSent = new Map(), lastUserTexts = new Map();
+const normalizeMessage = (text) => String(text || "").replace(/\s+/g, " ").trim();
+function userTextCount(name, text) {
+  const needle = normalizeMessage(text).slice(0, 160);
+  return (lastUserTexts.get(name) || []).filter((seen) => seen.includes(needle)).length;
+}
+function notePending(name, text, id) {
+  const list = pendingSent.get(name) || [];
+  list.push({ text, id, at: Date.now(), baseline: userTextCount(name, text) });
+  pendingSent.set(name, list);
+}
+function pendingFor(name, entries) {
+  lastUserTexts.set(name, entries.filter((entry) => entry.kind === "user").map((entry) => normalizeMessage(entry.text)));
+  const list = (pendingSent.get(name) || []).filter((pending) =>
+    Date.now() - pending.at < 30 * 60000 && userTextCount(name, pending.text) <= pending.baseline);
+  pendingSent.set(name, list);
+  return list;
+}
+function pendingBubble(text, label) {
+  const turn = el("article", "turn user queued");
+  turn.append(el("div", "turn-text", text), el("div", "queued-meta", label));
+  return turn;
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -857,6 +884,9 @@ async function refreshDetail() {
   }
   // Queued messages are not in the transcript until delivered, so show them at the end of the chat.
   transcriptQueue.replaceChildren();
+  const queuedIds = new Set((detail.queue || []).map((item) => item.msgId).filter(Boolean));
+  for (const pending of pendingFor(name, transcript.entries))
+    if (!queuedIds.has(pending.id)) transcriptQueue.append(pendingBubble(pending.text, "Sent · waiting for the agent to read it"));
   for (const item of detail.queue || []) {
     const turn = el("article", "turn user queued");
     const meta = el("div", "queued-meta", "Queued · sends when the agent is free");
@@ -893,9 +923,10 @@ $("message-form").onsubmit = async (event) => {
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
-      { text, mode: $("message-mode").value },
+      { text, mode: "now" },
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    notePending(name, text, sent.id);
     const unchanged = (state.draftRevisions.get(name) || 0) === revision;
     if (unchanged) state.drafts.delete(name);
     if (state.selected === name) {
@@ -1262,7 +1293,8 @@ async function refreshDock() {
   const entries = transcript.entries
     .filter((entry) => entry.kind !== "tool")
     .slice(-20);
-  const fingerprint = JSON.stringify(entries);
+  const pending = pendingFor(name, transcript.entries);
+  const fingerprint = JSON.stringify([entries, pending.map((item) => item.text)]);
   if (view.dataset.content === fingerprint) return;
   const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
   view.dataset.content = fingerprint;
@@ -1278,7 +1310,8 @@ async function refreshDock() {
     );
     view.append(turn);
   }
-  if (!entries.length)
+  for (const item of pending) view.append(pendingBubble(item.text, "Sent · waiting for the concierge to read it"));
+  if (!entries.length && !pending.length)
     view.append(el("p", "", "Send a task or ask about your fleet."));
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
@@ -1296,10 +1329,11 @@ $("dock-form").onsubmit = async (event) => {
     const target = (await api("/api/concierge", {})).key;
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     state.conciergeKey = target;
-    await api(
+    const sent = await api(
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
       { text, mode: "now" },
     );
+    notePending(state.conciergeKey, text, sent.id);
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     if (state.dockRevision === revision) $("dock-message").value = "";
     $("dock-status").textContent = "Message accepted";
