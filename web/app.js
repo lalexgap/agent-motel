@@ -71,6 +71,9 @@ function updateAgentView() {
 $("terminal-tab").onclick = () => { state.detailMode = "terminal"; updateAgentView(); };
 $("chat-tab").onclick = () => { state.detailMode = "chat"; updateAgentView(); };
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
+new MutationObserver(() => {
+  $("terminal-reconnect").hidden = $("terminal-status").textContent.startsWith("●");
+}).observe($("terminal-status"), { childList: true, characterData: true, subtree: true });
 $("terminal-focus").onclick = () => agentTerminal.focus();
 const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A", down: "\x1b[B", enter: "\r" };
 document.querySelectorAll("[data-terminal-key]").forEach(button => {
@@ -372,6 +375,7 @@ function renderFleet() {
   ).length;
   $("stat-attention").textContent = rows.filter(attention).length;
   $("attention-count").textContent = rows.filter(attention).length;
+  $("attention-count").hidden = !rows.some(attention);
   $("stat-idle").textContent = rows.filter((r) => r.status === "idle").length;
   const nav = $("agent-nav");
   nav.replaceChildren();
@@ -654,6 +658,19 @@ async function refreshWorkspace() {
   } finally { request.pending = false; }
 }
 
+function toolGroup() {
+  const group = el("details", "tool-group"), summary = el("summary"), names = new Map();
+  group.append(summary);
+  return Object.assign(group, {
+    add(name, tool) {
+      names.set(name, (names.get(name) || 0) + 1);
+      group.append(tool);
+      const total = group.childElementCount - 1;
+      summary.textContent = `${total} tool call${total === 1 ? "" : "s"} · ` +
+        [...names].map(([tool, count]) => count > 1 ? `${tool} ×${count}` : tool).join(", ");
+    },
+  });
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -689,11 +706,17 @@ async function refreshDetail() {
     ["Provider", detail.provider],
     ["Model", runtimeLabel(detail, "model")],
     ["Reasoning", runtimeLabel(detail, "effort")],
-    ["Role", detail.role?.name || detail.role || "None"],
+    ["Role", detail.role?.name || detail.role],
     ["Directory", detail.dir],
-    ["Branch", detail.worktreeBranch || "—"],
+    ["Branch", detail.worktreeBranch],
   ]) {
-    room.append(el("dt", "", title), el("dd", "", String(value)));
+    if (!value || value === "Unknown") continue;
+    const dd = el("dd");
+    String(value).split("/").forEach((part, index) => {
+      if (index) dd.append("/", el("wbr"));
+      dd.append(part);
+    });
+    room.append(el("dt", "", title), dd);
   }
   window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
@@ -762,6 +785,7 @@ async function refreshDetail() {
       view.append(
         el("p", "", "The conversation starts here. Send a message below."),
       );
+    let tools = null;
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
         const tool = el("details", "tool");
@@ -773,8 +797,10 @@ async function refreshDetail() {
             [entry.input, entry.output].filter(Boolean).join("\n\n"),
           ),
         );
-        view.append(tool);
+        if (!tools) view.append(tools = toolGroup());
+        tools.add(entry.name, tool);
       } else {
+        tools = null;
         const turn = el(
           "article",
           `turn ${entry.kind === "user" ? "user" : "assistant"}`,

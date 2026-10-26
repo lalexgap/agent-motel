@@ -45,12 +45,12 @@
         >
         <div class="workspace">AGENT MOTEL <span>PERSONAL</span></div>
         <nav>
-          <button id="overview-nav" class="nav active">
+          <button id="overview-nav" class="nav active" data-short="Agents">
             ◫ <span>Overview</span></button
-          ><button id="attention-nav" class="nav">
+          ><button id="attention-nav" class="nav" data-short="Attention">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
-          ><button id="search-nav" class="nav">⌕ <span>Search</span></button
-          ><button id="concierge-nav" class="nav">
+          ><button id="search-nav" class="nav" data-short="Search">⌕ <span>Search</span></button
+          ><button id="concierge-nav" class="nav" data-short="Concierge">
             ✳ <span>Concierge</span>
           </button>
         </nav>
@@ -74,7 +74,7 @@
           <span
             >Workspace <span class="muted">/</span>
             <b id="breadcrumb">Overview</b></span
-          ><span class="top-note">AGENT CONTROL / LIVE</span>
+          >
           <button id="mobile-logout" class="mobile-only">Sign out</button>
         </header>
         <div class="page">
@@ -312,13 +312,16 @@
       <button role="menuitem" data-agent-menu="open">Open agent</button>
       <button role="menuitem" data-agent-menu="chat">Open chat</button>
       <button role="menuitem" data-agent-menu="terminal">Open terminal</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="handover">Handover…</button>
       <button role="menuitem" data-agent-menu="rename">Rename…</button>
       <button role="menuitem" data-agent-menu="move">Move to host…</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="resume">Resume</button>
       <button role="menuitem" data-agent-menu="restart">Restart</button>
       <button role="menuitem" data-agent-menu="interrupt">Interrupt</button>
       <button role="menuitem" data-agent-menu="stop">Stop</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="delete" class="danger">Remove…</button>
     </div>
     <dialog id="workspace-diff-dialog" aria-labelledby="workspace-diff-title">
