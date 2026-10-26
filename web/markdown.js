@@ -10,9 +10,10 @@ window.agentMarkdown = {
   maxDepth: 8,
   maxRender: 100000,
   render(node, text = "") {
-    if (String(text).length > this.maxRender) return window.agentLinks.render(node, String(text));
+    text = String(text);
     node.replaceChildren();
-    this.blocks(node, String(text).replace(/\r\n?/g, "\n").split("\n"));
+    if (text.length > this.maxRender) window.agentLinks.append(this.element("p", node), text);
+    else this.blocks(node, text.replace(/\r\n?/g, "\n").split("\n"));
     return node;
   },
   element(tag, parent) {

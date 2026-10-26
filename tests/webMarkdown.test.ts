@@ -93,3 +93,8 @@ test("keeps parentheses inside markdown link destinations", () => {
   expect(body("[w](https://en.wikipedia.org/wiki/Foo_(bar))")).toBe('<p><a href="https://en.wikipedia.org/wiki/Foo_(bar)">w</a></p>');
   expect(body("[w](https://x.dev/(a)b)")).toBe('<p><a href="https://x.dev/(a)b">w</a></p>');
 });
+
+test("renders oversized text as one plain paragraph", () => {
+  const nodes = render("**a**\n" + "x ".repeat(50001)).children;
+  expect(nodes.map(node => node.tag)).toEqual(["p"]);
+});
