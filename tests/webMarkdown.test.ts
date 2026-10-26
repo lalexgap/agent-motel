@@ -1,0 +1,51 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+
+class Node {
+  tag: string; textContent = ""; href = ""; target = ""; rel = ""; className = ""; children: Node[] = []; attrs: Record<string, string> = {};
+  constructor(tag: string) { this.tag = tag; }
+  replaceChildren() { this.children = []; }
+  append(...nodes: Node[]) { this.children.push(...nodes); }
+  setAttribute(name: string, value: string) { this.attrs[name] = value; }
+}
+
+function render(text: string) {
+  const window: any = {};
+  const document = { createElement: (tag: string) => new Node(tag), createTextNode: (text: string) => Object.assign(new Node("text"), { textContent: text }) };
+  for (const file of ["links.js", "markdown.js"])
+    runInNewContext(readFileSync(new URL("../web/" + file, import.meta.url), "utf8"), { window, document, URL });
+  return window.agentMarkdown.render(new Node("div"), text) as Node;
+}
+const html = (node: Node): string => node.tag === "text" ? node.textContent :
+  node.tag === "a" ? `<a href="${node.href}">${node.textContent}</a>` :
+  `<${node.tag}>${node.textContent}${node.children.map(html).join("")}</${node.tag}>`;
+const body = (text: string) => render(text).children.map(html).join("");
+
+test("renders inline emphasis, code and safe links", () => {
+  expect(body("- **Server:** running `e51663c` and *ok*")).toBe("<ul><li><strong>Server:</strong> running <code>e51663c</code> and <em>ok</em></li></ul>");
+  expect(body("see [PR](https://github.com/a/b/pull/1) or https://x.dev/y.")).toBe('<p>see <a href="https://github.com/a/b/pull/1">PR</a> or <a href="https://x.dev/y">https://x.dev/y</a>.</p>');
+  expect(body("[bad](javascript:alert(1))")).toBe("<p>[bad](javascript:alert(1))</p>");
+  expect(body("snake_case_name and 2*3*4")).toBe("<p>snake_case_name and 2*3*4</p>");
+});
+
+test("never creates elements from agent-supplied markup", () => {
+  const tags = new Set<string>();
+  const walk = (node: Node) => { tags.add(node.tag); node.children.forEach(walk); };
+  walk(render('<img src=x onerror="alert(1)"> **<script>x</script>**\n```\n<b>raw</b>\n```'));
+  expect([...tags].sort()).toEqual(["code", "div", "p", "pre", "strong", "text"]);
+});
+
+test("renders blocks: headings, fences, quotes, rules, ordered and nested lists, tables", () => {
+  expect(body("## Title\n\nLine one\nline two")).toBe("<h4>Title</h4><p>Line one\nline two</p>");
+  expect(body("```ts\nconst a = **1**;\n```")).toBe("<pre><code>const a = **1**;</code></pre>");
+  expect(body("> quoted **bit**\n\n---")).toBe("<blockquote><p>quoted <strong>bit</strong></p></blockquote><hr></hr>");
+  expect(body("1. one\n2. two\n   - nested\n3. three")).toBe("<ol><li>one</li><li>two<ul><li>nested</li></ul></li><li>three</li></ol>");
+  expect(body("| a | b |\n|---|:-:|\n| `x` | y |")).toBe("<div><table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td><code>x</code></td><td>y</td></tr></tbody></table></div>");
+});
+
+test("keeps an ordered list's starting number", () => {
+  const list = render("3. three\n4. four").children[0];
+  expect(list.tag).toBe("ol");
+  expect(list.attrs.start).toBe("3");
+});

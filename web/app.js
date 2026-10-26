@@ -134,7 +134,8 @@ const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) {
-    if (className === "turn-text" || tag === "pre") window.agentLinks.render(node, text);
+    if (className === "turn-text") window.agentMarkdown.render(node, text);
+    else if (tag === "pre") window.agentLinks.render(node, text);
     else node.textContent = text;
   }
   return node;
@@ -1292,12 +1293,9 @@ async function refreshSubagent() {
           "turn-label",
           entry.kind === "tool" ? entry.name : entry.kind,
         ),
-        el(
-          "div",
-          "turn-text",
-          entry.text ||
-            [entry.input, entry.output].filter(Boolean).join("\n\n"),
-        ),
+        entry.kind === "tool"
+          ? el("pre", "turn-output", [entry.input, entry.output].filter(Boolean).join("\n\n"))
+          : el("div", "turn-text", entry.text),
       );
       view.append(block);
     }

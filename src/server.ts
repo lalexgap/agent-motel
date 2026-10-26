@@ -937,7 +937,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

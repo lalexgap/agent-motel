@@ -16,6 +16,9 @@ window.agentLinks = {
   },
   render(node, text = "") {
     node.replaceChildren();
+    return this.append(node, text);
+  },
+  append(node, text = "") {
     let offset = 0;
     for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
       let candidate = match[0].replace(/[.,;:!?]+$/, "");
