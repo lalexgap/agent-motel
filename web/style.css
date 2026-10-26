@@ -737,11 +737,20 @@ main {
   font-size: 10px;
 }
 .composer-footer select {
-  font-size: 11px;
-  border: 0;
-  background: none;
-  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
   width: auto;
+  font-size: 11px;
+  color: #d4d4d4;
+  border: 1px solid #4a505a;
+  border-radius: 3px;
+  background: #30343a url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aeb6c0' stroke-width='1.4'/%3E%3C/svg%3E") no-repeat right 9px center;
+  padding: 6px 28px 6px 10px;
+  cursor: pointer;
+}
+.composer-footer select:hover {
+  background-color: #383c43;
+  border-color: #5a616c;
 }
 .composer-footer button {
   padding: 7px 13px;
