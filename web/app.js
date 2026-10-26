@@ -492,7 +492,7 @@ function renderPullRequests() {
     const row = el("article", "fleet-pr");
     const link = window.agentLinks.anchor(`#${pr.number} ${pr.title}`, pr.url);
     link.className = "fleet-pr-title";
-    const status = pr.state === "OPEN" ? pr.isDraft ? "Draft" : "Open" : pr.state === "MERGED" ? "Merged" : "Closed";
+    const status = pr.state === "OPEN" ? pr.isDraft ? "Draft" : "Open" : pr.state === "MERGED" ? "Merged" : pr.state === "CLOSED" ? "Closed" : "Unknown";
     row.append(link, el("p", "muted", pr.repository + " · " + status));
     const agents = el("div", "fleet-pr-agents");
     for (const name of pr.agents) {
