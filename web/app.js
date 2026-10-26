@@ -572,7 +572,7 @@ async function refreshWorkspace() {
     if (!state.authenticated || name !== state.selected || version !== state.detailVersion) return;
     const prs = $("workspace-prs");
     prs.replaceChildren();
-    for (const pr of workspace.pullRequests || []) {
+    for (const pr of (Array.isArray(workspace.pullRequests) ? workspace.pullRequests.slice(0, 10) : [])) {
       // Remote hosts supply metadata; only allow canonical GitHub PR URLs.
       if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(pr.url)) continue;
       const link = el("a", "workspace-pr");
@@ -592,7 +592,7 @@ async function refreshWorkspace() {
     $("workspace-summary").textContent = workspace.error || `${workspace.branch || "Detached HEAD"} · ${scope}`;
     const files = $("workspace-files");
     files.replaceChildren();
-    for (const file of workspace.files || []) {
+    for (const file of (Array.isArray(workspace.files) ? workspace.files.slice(0, 200) : [])) {
       const row = el("button", "workspace-file");
       row.type = "button";
       row.setAttribute("aria-label", "View diff for " + file.path);

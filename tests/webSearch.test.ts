@@ -54,3 +54,32 @@ test("search scans past nonmatching agents and marks missing recorded transcript
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("isolated search enforces the parent deadline even when the worker blocks synchronously", async () => {
+  const { runConversationSearch } = await import("../src/webSearch");
+  const dir = mkdtempSync(join(tmpdir(), "am-search-worker-"));
+  try {
+    const workerPath = join(dir, "blocked.ts");
+    writeFileSync(workerPath, "while (true) {}");
+    let responsive = false;
+    const tick = setTimeout(() => { responsive = true; }, 5);
+    const result = await runConversationSearch("needle", { workerPath, timeoutMs: 30 });
+    clearTimeout(tick);
+    expect(responsive).toBe(true);
+    expect(result).toEqual({ matches: [], partial: true });
+    writeFileSync(workerPath, "console.log('x'.repeat(2 * 1024 * 1024))");
+    expect(await runConversationSearch("needle", { workerPath })).toEqual({ matches: [], partial: true });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("isolated search returns real worker results without exposing query arguments", async () => {
+  const { runConversationSearch } = await import("../src/webSearch");
+  const dir = mkdtempSync(join(tmpdir(), "am-search-empty-"));
+  const previous = process.env.AGENTMGR_HOME;
+  process.env.AGENTMGR_HOME = dir;
+  try { expect(await runConversationSearch("--needle")).toEqual({ matches: [], partial: false }); }
+  finally {
+    if (previous === undefined) delete process.env.AGENTMGR_HOME; else process.env.AGENTMGR_HOME = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

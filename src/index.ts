@@ -773,9 +773,9 @@ async function main(): Promise<void> {
       subagentsCommand(args.positional[0], { json: !!args.flags.json });
       break;
     case "__web-search": {
-      const { searchConversations } = await import("./webSearch");
+      const { runConversationSearch } = await import("./webSearch");
       const query = JSON.parse(await Bun.stdin.text());
-      console.log(JSON.stringify(await searchConversations(query)));
+      console.log(JSON.stringify(await runConversationSearch(query)));
       break;
     }
     case "search":

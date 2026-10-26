@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createReadStream } from "node:fs";
 import { agentProvider, agentSessionId, listAgents, type Provider } from "./state";
 import { entryFragments, locateTranscript, type Fragment } from "./transcript";
@@ -47,10 +49,10 @@ export async function scanConversation(file: string, provider: Provider, query: 
 
 export async function searchConversations(query: string): Promise<ConversationMatches> {
   if (!validSearchQuery(query)) throw new Error("Search must contain 2–256 characters");
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + 7000;
   const maxMatchingAgents = 100;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 7000);
   const result: ConversationMatches = { matches: [], partial: false };
   try {
     for (const agent of listAgents()) {
@@ -68,4 +70,21 @@ export async function searchConversations(query: string): Promise<ConversationMa
     }
     return result;
   } finally { clearTimeout(timer); }
+}
+
+
+export function runConversationSearch(query: string, options: { timeoutMs?: number; workerPath?: string } = {}): Promise<ConversationMatches> {
+  if (!validSearchQuery(query)) return Promise.reject(new Error("Search must contain 2–256 characters"));
+  return new Promise(resolve => {
+    const partial = () => resolve({ matches: [], partial: true });
+    const child = execFile(process.execPath, [options.workerPath ?? fileURLToPath(new URL("./webSearchWorker.ts", import.meta.url))],
+      { maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
+        clearTimeout(timer);
+        if (error) { partial(); return; }
+        try { resolve(JSON.parse(stdout)); } catch { partial(); }
+      });
+    const timer = setTimeout(() => { child.kill("SIGKILL"); partial(); }, options.timeoutMs ?? 8000);
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify(query));
+  });
 }

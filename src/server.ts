@@ -1,8 +1,8 @@
-import { searchConversations, validSearchQuery, type ConversationMatches } from "./webSearch";
+import { runConversationSearch, validSearchQuery, type ConversationMatches } from "./webSearch";
 import { agentRuntimeSettings } from "./runtimeSettings";
 import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
-import { agentWorkspaceDiff, agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
+import { agentWorkspaceDiff, agentWorkspace, validateRemoteWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
@@ -366,7 +366,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "workspace" && method === "GET") {
-      return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(await runRemoteJson<WorkspaceInfo>(host, ["__workspace", name]))));
+      return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(validateRemoteWorkspace(await runRemoteJson(host, ["__workspace", name])))));
     }
     if (route === "diff" && method === "GET") {
       const path = new URL(req.url).searchParams.get("path");
@@ -557,7 +557,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     activeSearches++;
     try {
       const errors: string[] = [];
-      const local = searchConversations(query);
+      const local = runConversationSearch(query);
       const remotes = await Promise.all((loadConfig().remotes || []).map(async host => {
         try {
           const result = await runRemoteJson<ConversationMatches>(host, ["__web-search"], { stdin: JSON.stringify(query), timeoutMs: 10000 });

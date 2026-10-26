@@ -156,3 +156,13 @@ test("untracked diff previews preserve line endings and bound formatted output",
   expect(preview.diff.length).toBeLessThanOrEqual(256 * 1024);
   expect(preview.truncated).toBe(true);
 });
+
+test("remote workspace validation rejects iterable non-arrays, excessive files and unbounded metadata", async () => {
+  const { validateRemoteWorkspace } = await import("../src/workspace");
+  const valid = { available: true, files: [], total: 0, pullRequests: [] };
+  expect(validateRemoteWorkspace(valid).files).toEqual([]);
+  for (const files of ["x".repeat(1000), null, Array(201).fill({}), [{ path: "file", status: "M", additions: "huge", deletions: 0 }]]) {
+    expect(() => validateRemoteWorkspace({ ...valid, files })).toThrow("Invalid remote workspace");
+  }
+  expect(() => validateRemoteWorkspace({ ...valid, branch: "a".repeat(4097) })).toThrow();
+});

@@ -92,6 +92,25 @@ export async function inspectWorkspace(dir: string, includePullRequests = true):
   return includePullRequests ? withPullRequests(result) : result;
 }
 
+
+export function validateRemoteWorkspace(input: unknown): WorkspaceInfo {
+  if (!input || typeof input !== "object") throw new Error("Invalid remote workspace");
+  const value = input as WorkspaceInfo;
+  const count = (n: unknown) => n === null || Number.isSafeInteger(n) && Number(n) >= 0;
+  if (typeof value.available !== "boolean" || !Number.isSafeInteger(value.total) || value.total < 0 ||
+      !Array.isArray(value.files) || value.files.length > MAX_FILES ||
+      !value.files.every(file => file && typeof file.path === "string" && file.path.length <= 4096 &&
+        typeof file.status === "string" && file.status.length <= 8 && count(file.additions) && count(file.deletions)))
+    throw new Error("Invalid remote workspace");
+  for (const field of ["branch", "base", "repository", "error", "pullRequestsError"] as const) {
+    if (value[field] !== undefined && (typeof value[field] !== "string" || value[field]!.length > 4096))
+      throw new Error("Invalid remote workspace");
+  }
+  return { available: value.available, total: value.total, files: value.files.map(file => ({
+    path: file.path, status: file.status, working: file.working === true, additions: file.additions, deletions: file.deletions,
+  })), branch: value.branch, base: value.base, repository: value.repository, error: value.error, pullRequests: [] };
+}
+
 export async function withPullRequests(workspace: WorkspaceInfo): Promise<WorkspaceInfo> {
   const result = { ...workspace, pullRequests: [] as WorkspaceInfo["pullRequests"] };
   if (typeof result.repository === "string" && githubRepository(`https://github.com/${result.repository}`) === result.repository &&
