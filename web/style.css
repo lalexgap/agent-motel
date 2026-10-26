@@ -1276,3 +1276,24 @@ dialog p.muted {
 .agent-context-menu button:hover, .agent-context-menu button:focus-visible { background: #094771; outline: none; }
 
 .turn-text a, .tool pre a, #pane a { color: #75beff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+
+button.workspace-file { width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid #2b2e33; border-radius: 0; }
+button.workspace-file:hover { background: #252a31; }
+#workspace-diff-dialog { width: min(1100px, calc(100vw - 32px)); max-width: calc(100vw - 32px); }
+#workspace-diff-title { min-width: 0; overflow-wrap: anywhere; }
+#workspace-diff-output { max-height: 70vh; overflow: auto; background: #151515; font-size: 12px; line-height: 1.6; tab-size: 4; }
+.diff-line { display: block; min-width: max-content; padding: 0 10px; white-space: pre; }
+.diff-line.added { color: #b4e0ae; background: #17351f; }
+.diff-line.removed { color: #efb2b2; background: #3b1d21; }
+.diff-line.hunk { color: #8ec9ef; background: #172b3d; }
+.diff-line.header { color: #c0c5ce; }
+
+.pr-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.pr-filters input[type="search"] { flex: 1; min-width: 180px; }
+.pr-filters select { width: auto; max-width: 100%; }
+.pr-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.pr-filters input[type="checkbox"] { width: auto; }
+.fleet-pr { padding: 16px 0; border-bottom: 1px solid #333; }
+.fleet-pr-title { color: #75beff; font-size: 15px; overflow-wrap: anywhere; }
+.fleet-pr-agents { display: flex; flex-wrap: wrap; gap: 6px; }
+.fleet-pr-agents button { font-size: 12px; overflow-wrap: anywhere; max-width: 100%; }

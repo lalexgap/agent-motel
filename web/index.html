@@ -47,6 +47,7 @@
             ◫ <span>Overview</span></button
           ><button id="attention-nav" class="nav">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
+          ><button id="pull-requests-nav" class="nav" aria-label="Pull requests">⑂ <span>Pull requests</span></button
           ><button id="concierge-nav" class="nav">
             ✳ <span>Concierge</span>
           </button>
@@ -83,6 +84,16 @@
             <button id="new-agent" class="primary">+ New agent</button>
           </section>
           <div id="notice" role="status" hidden></div>
+          <section id="pull-requests-view" hidden aria-label="Fleet pull requests">
+            <div class="pr-filters">
+              <input id="pr-search" type="search" placeholder="Filter by agent, repository or PR…" aria-label="Filter pull requests" />
+              <select id="pr-repository" aria-label="Repository"><option value="">All repositories</option></select>
+              <label><input id="pr-show-closed" type="checkbox" /> Show merged and closed</label>
+              <button id="refresh-pull-requests">Refresh</button>
+            </div>
+            <p id="pr-load-status" class="muted" role="status"></p>
+            <div id="fleet-pull-requests"></div>
+          </section>
           <section id="overview">
             <div class="stats">
               <button data-filter="all">
@@ -294,6 +305,11 @@
       <button role="menuitem" data-agent-menu="stop">Stop</button>
       <button role="menuitem" data-agent-menu="delete" class="danger">Remove…</button>
     </div>
+    <dialog id="workspace-diff-dialog" aria-labelledby="workspace-diff-title">
+      <div class="section-header"><h2 id="workspace-diff-title"></h2><button type="button" id="close-workspace-diff" aria-label="Close diff">×</button></div>
+      <p id="workspace-diff-meta" class="muted" role="status"></p>
+      <pre id="workspace-diff-output" tabindex="0" aria-label="File diff"></pre>
+    </dialog>
     <dialog id="manage-agent-dialog" aria-labelledby="manage-agent-title">
       <form id="manage-agent-form">
         <div class="section-header"><h2 id="manage-agent-title"></h2><button type="button" id="close-manage-agent" aria-label="Close">×</button></div>

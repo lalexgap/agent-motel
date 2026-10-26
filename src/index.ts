@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { agentWorkspace } from "./workspace";
+import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
@@ -906,6 +906,12 @@ async function main(): Promise<void> {
         requirePositional(args, 0, "agent name"),
         requirePositional(args, 1, "expected creation timestamp"),
       );
+      break;
+    }
+    case "__workspace-diff": {
+      const path = JSON.parse(await Bun.stdin.text());
+      if (typeof path !== "string" || path.length > 4096) throw new Error("invalid file path");
+      console.log(JSON.stringify(await agentWorkspaceDiff(requirePositional(args, 0, "agent name"), path)));
       break;
     }
     case "__workspace": {

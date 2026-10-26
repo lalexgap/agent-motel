@@ -1,6 +1,7 @@
+import { agentRuntimeSettings } from "./runtimeSettings";
 import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
-import { agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
+import { agentWorkspaceDiff, agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
@@ -133,6 +134,7 @@ export function agentDetail(name: string) {
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
     // null = the provider default.
+    runtime: agentRuntimeSettings(agent),
     model: agent.model ?? null,
     effort: agent.effort ?? null,
     role: roleForAgent(agent) ?? null,
@@ -362,6 +364,12 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "workspace" && method === "GET") {
       return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(await runRemoteJson<WorkspaceInfo>(host, ["__workspace", name]))));
+    }
+    if (route === "diff" && method === "GET") {
+      const path = new URL(req.url).searchParams.get("path");
+      if (!path || path.length > 4096 || path.includes("\0")) return json({ error: "file path required" }, 400);
+      const result = await runRemoteJson(host, ["__workspace-diff", name], { stdin: JSON.stringify(path) });
+      return json(result);
     }
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
@@ -677,6 +685,13 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       return detail ? json(detail) : json({ error: `no local agent "${name}"` }, 404);
     }
 
+    if (parts.length === 3 && parts[2] === "diff" && method === "GET") {
+      const path = new URL(req.url).searchParams.get("path");
+      if (!path || path.length > 4096 || path.includes("\0")) return json({ error: "file path required" }, 400);
+      if (!readAgent(name)) return json({ error: "agent not found" }, 404);
+      try { return json(await agentWorkspaceDiff(name, path)); }
+      catch { return json({ error: "Diff unavailable. The file may have changed, be too large, or be an untracked symlink. Refresh changes and try again." }, 409); }
+    }
     if (parts.length === 3 && parts[2] === "workspace" && method === "GET") {
       if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
       try { return json(await agentWorkspace(name)); }

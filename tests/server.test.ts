@@ -664,6 +664,16 @@ describe("remote agents api (host:name)", () => {
   const post = (path: string, body?: unknown) =>
     fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
 
+  test("remote diff sends literal filenames on stdin and handles old hosts", async () => {
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ path: "--strange file", diff: "+new", binary: false, truncated: false }) });
+    const response = await fetch(url("/api/agents/laptop:workspace/diff?path=--strange%20file"), auth());
+    expect(response.status).toBe(200);
+    expect(calls[0]?.args).toEqual(["__workspace-diff", "workspace", "--local", "--exact"]);
+    expect(calls[0]?.stdin).toBe(JSON.stringify("--strange file"));
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__workspace-diff"' });
+    expect((await fetch(url("/api/agents/laptop:workspace/diff?path=file"), auth())).status).toBe(409);
+  });
+
   test("workspace forwards exact remote names and older hosts fail explicitly", async () => {
     const workspace = { available: true, branch: "feature", files: [], total: 0, pullRequests: [] };
     reply = () => ({ exitCode: 0, stdout: JSON.stringify(workspace) });

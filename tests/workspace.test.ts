@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync, chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cachedWorkspace, changedFiles, githubRepository, inspectWorkspace } from "../src/workspace";
+import { cachedWorkspace, changedFiles, githubRepository, inspectWorkspace, inspectWorkspaceDiff } from "../src/workspace";
 
 const dirs: string[] = [];
 function repo() {
@@ -110,4 +110,34 @@ test("workspace paths retain trailing spaces", async () => {
   const info = await inspectWorkspace(dir);
   expect(info.error).toBeUndefined();
   expect(info.files.map(file => file.path)).toEqual(["new-file"]);
+});
+
+
+test("diff previews cover branch, worktree, deleted and literal pathspec files", async () => {
+  const dir = repo();
+  writeFileSync(join(dir, "tracked.txt"), "before\n");
+  writeFileSync(join(dir, "deleted.txt"), "deleted\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "base"); git(dir, "switch", "-c", "feature");
+  writeFileSync(join(dir, "tracked.txt"), "committed\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "change");
+  writeFileSync(join(dir, "tracked.txt"), "after\n");
+  unlinkSync(join(dir, "deleted.txt"));
+  const diff = await inspectWorkspaceDiff(dir, "tracked.txt");
+  expect(diff.diff).toContain("-before"); expect(diff.diff).toContain("+after");
+  expect((await inspectWorkspaceDiff(dir, "deleted.txt")).diff).toContain("-deleted");
+  await expect(inspectWorkspaceDiff(dir, "../secret")).rejects.toThrow("Invalid file path");
+  await expect(inspectWorkspaceDiff(dir, "/etc/passwd")).rejects.toThrow("Invalid file path");
+  await expect(inspectWorkspaceDiff(dir, ":(glob)*")).rejects.toThrow("no longer");
+});
+
+test("untracked previews are bounded and reject symlinks", async () => {
+  const dir = repo();
+  writeFileSync(join(dir, "new.txt"), "new content\n");
+  expect((await inspectWorkspaceDiff(dir, "new.txt")).diff).toContain("+new content");
+  writeFileSync(join(dir, "large.txt"), "a".repeat(300000));
+  expect((await inspectWorkspaceDiff(dir, "large.txt")).truncated).toBe(true);
+  writeFileSync(join(dir, "binary"), Buffer.from([1, 0, 2]));
+  expect((await inspectWorkspaceDiff(dir, "binary")).binary).toBe(true);
+  symlinkSync("/etc/passwd", join(dir, "link"));
+  await expect(inspectWorkspaceDiff(dir, "link")).rejects.toThrow("symlinks");
 });

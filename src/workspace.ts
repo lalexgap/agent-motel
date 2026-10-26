@@ -1,3 +1,6 @@
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readAgent } from "./state";
@@ -125,4 +128,44 @@ export function agentWorkspace(name: string, includePullRequests = true) {
   const agent = readAgent(name);
   if (!agent) throw new Error(`no local agent "${name}"`);
   return cachedWorkspace(`local:${includePullRequests}:${agent.name}:${agent.createdAt}:${agent.dir}`, () => inspectWorkspace(agent.dir, includePullRequests));
+}
+
+export interface WorkspaceDiff { path: string; diff: string; binary: boolean; truncated: boolean }
+const MAX_DIFF = 256 * 1024;
+
+export async function inspectWorkspaceDiff(dir: string, path: string): Promise<WorkspaceDiff> {
+  if (!path || path.includes("\0") || isAbsolute(path) || path.split("/").includes("..")) throw new Error("Invalid file path");
+  const workspace = await inspectWorkspace(dir, false);
+  const file = workspace.files.find(file => file.path === path);
+  if (!file) throw new Error("File is no longer in the changed files list. Refresh changes and try again.");
+  const root = (await git(dir, "rev-parse", "--show-toplevel")).replace(/\n$/, "");
+  let diff = "";
+  if (file.status === "??") {
+    const filename = resolve(root, path), resolved = await realpath(filename), inside = relative(await realpath(root), resolved);
+    if (inside === ".." || inside.startsWith(".." + sep) || isAbsolute(inside) || !(await lstat(filename)).isFile())
+      throw new Error("Diff previews do not follow untracked symlinks or special files");
+    const handle = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error("Not a regular file");
+      const buffer = Buffer.alloc(MAX_DIFF + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (buffer.subarray(0, bytesRead).includes(0)) return { path, diff: "Binary file", binary: true, truncated: false };
+      const content = buffer.subarray(0, Math.min(bytesRead, MAX_DIFF)).toString("utf8");
+      diff = `--- /dev/null\n+++ b/${path}\n` + content.split("\n").map(line => "+" + line).join("\n");
+      return { path, diff, binary: false, truncated: bytesRead > MAX_DIFF };
+    } finally { await handle.close(); }
+  }
+  const base = workspace.base === "New repository" ? null : workspace.base === "HEAD" ? "HEAD" :
+    (await git(root, "merge-base", "HEAD", workspace.base!)).trim();
+  const args = ["--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--unified=3"];
+  if (base) diff = await git(root, "--literal-pathspecs", "diff", ...args, base, "--", path);
+  else diff = (await git(root, "--literal-pathspecs", "diff", "--cached", ...args, "--", path)) +
+    (await git(root, "--literal-pathspecs", "diff", ...args, "--", path));
+  return { path, diff: diff.slice(0, MAX_DIFF), binary: /^Binary files .* differ$/m.test(diff), truncated: diff.length > MAX_DIFF };
+}
+
+export function agentWorkspaceDiff(name: string, path: string): Promise<WorkspaceDiff> {
+  const agent = readAgent(name);
+  if (!agent) throw new Error(`no local agent "${name}"`);
+  return inspectWorkspaceDiff(agent.dir, path);
 }

@@ -151,6 +151,11 @@ function lock() {
   $("handover-dialog").close();
   handoverSource = null;
   manageAgent = null;
+  diffRequest = null;
+  closePullRequests();
+  fleetPullRequests = [];
+  $("fleet-pull-requests").replaceChildren();
+  $("workspace-diff-dialog").close();
   $("manage-agent-dialog").close();
   state.related = null;
   $("related-agents").replaceChildren();
@@ -213,6 +218,7 @@ $("logout").onclick = async () => {
 };
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
+  closePullRequests();
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -410,6 +416,7 @@ function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
 async function selectAgent(name, mode) {
+  closePullRequests();
   saveDraft();
   agentTerminal.close();
   state.selected = name;
@@ -467,6 +474,123 @@ $("expand-concierge").onclick = () => openConcierge();
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
+let prLoad = null, fleetPullRequests = [];
+function closePullRequests() {
+  prLoad = null;
+  $("pull-requests-view").hidden = true;
+  $("pull-requests-nav").classList.remove("active");
+}
+function renderPullRequests() {
+  const query = $("pr-search").value.trim().toLowerCase(), repo = $("pr-repository").value;
+  const showClosed = $("pr-show-closed").checked;
+  const view = $("fleet-pull-requests");
+  view.replaceChildren();
+  for (const pr of fleetPullRequests) {
+    if (!showClosed && pr.state !== "OPEN") continue;
+    if (repo && pr.repository !== repo) continue;
+    if (query && ![pr.repository, pr.title, String(pr.number), ...pr.agents].join(" ").toLowerCase().includes(query)) continue;
+    const row = el("article", "fleet-pr");
+    const link = window.agentLinks.anchor(`#${pr.number} ${pr.title}`, pr.url);
+    link.className = "fleet-pr-title";
+    const status = pr.state === "OPEN" ? pr.isDraft ? "Draft" : "Open" : pr.state === "MERGED" ? "Merged" : "Closed";
+    row.append(link, el("p", "muted", pr.repository + " · " + status));
+    const agents = el("div", "fleet-pr-agents");
+    for (const name of pr.agents) {
+      const button = el("button", "", name);
+      button.onclick = () => selectAgent(name);
+      agents.append(button);
+    }
+    row.append(agents);
+    view.append(row);
+  }
+  if (!view.childNodes.length) view.append(el("p", "workspace-note", prLoad?.pending ? "Looking up pull requests…" : "No matching pull requests."));
+}
+async function showPullRequests() {
+  if (!state.authenticated || prLoad?.pending) return;
+  saveDraft();
+  agentTerminal.close();
+  state.selected = null;
+  state.detailVersion++;
+  connectEvents();
+  $("overview").hidden = $("detail").hidden = true;
+  $("pull-requests-view").hidden = false;
+  $("page-title").textContent = "Pull requests";
+  $("page-subtitle").textContent = "";
+  $("breadcrumb").textContent = "Pull requests";
+  document.querySelectorAll(".nav").forEach(button => button.classList.toggle("active", button.id === "pull-requests-nav"));
+  renderFleet();
+  const request = prLoad = { epoch: state.sessionEpoch, pending: true };
+  fleetPullRequests = [];
+  const rows = [...state.rows], found = new Map();
+  let next = 0, done = 0, errors = 0;
+  const current = () => prLoad === request && state.authenticated && request.epoch === state.sessionEpoch;
+  const update = () => {
+    const selectedRepo = $("pr-repository").value;
+    $("pr-repository").replaceChildren(new Option("All repositories", ""));
+    const repos = [...new Set(fleetPullRequests.map(pr => pr.repository))].sort();
+    for (const repo of repos) $("pr-repository").add(new Option(repo, repo));
+    if (repos.includes(selectedRepo)) $("pr-repository").value = selectedRepo;
+    $("pr-load-status").textContent = `${fleetPullRequests.length} pull requests · ${done}/${rows.length} agents checked${errors ? ` · ${errors} unavailable` : ""}`;
+    renderPullRequests();
+  };
+  update();
+  async function worker() {
+    while (current() && next < rows.length) {
+      const row = rows[next++];
+      try {
+        const workspace = await api("/api/agents/" + encodeURIComponent(key(row)) + "/workspace");
+        if (!current()) return;
+        if (workspace.pullRequestsError || workspace.error && workspace.available) errors++;
+        for (const pr of workspace.pullRequests || []) {
+          const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/[1-9][0-9]*$/.exec(pr.url);
+          if (!match) continue;
+          let item = found.get(pr.url);
+          if (!item) { item = { ...pr, repository: match[1], agents: [] }; found.set(pr.url, item); }
+          if (!item.agents.includes(key(row))) item.agents.push(key(row));
+        }
+      } catch { if (current()) errors++; }
+      if (!current()) return;
+      done++;
+      fleetPullRequests = [...found.values()];
+      update();
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  if (current()) { request.pending = false; update(); }
+}
+$("pull-requests-nav").onclick = showPullRequests;
+$("refresh-pull-requests").onclick = showPullRequests;
+$("pr-search").oninput = renderPullRequests;
+$("pr-repository").onchange = renderPullRequests;
+$("pr-show-closed").onchange = renderPullRequests;
+function runtimeLabel(detail, field) {
+  const value = detail.runtime?.[field] || detail[field];
+  if (!value) return "Unknown";
+  const source = detail.runtime?.[field + "Source"];
+  return value + (source === "session" ? " (last turn)" : " (configured)");
+}
+let diffRequest = null;
+$("close-workspace-diff").onclick = () => $("workspace-diff-dialog").close();
+async function openWorkspaceDiff(name, path) {
+  const request = diffRequest = { name, path, epoch: state.sessionEpoch };
+  $("workspace-diff-title").textContent = path;
+  $("workspace-diff-meta").textContent = name + " · Loading diff…";
+  $("workspace-diff-output").replaceChildren();
+  $("workspace-diff-dialog").showModal();
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(name) + "/diff?path=" + encodeURIComponent(path));
+    if (diffRequest !== request || !state.authenticated || request.epoch !== state.sessionEpoch || !$("workspace-diff-dialog").open) return;
+    if (typeof result.diff !== "string") throw new Error("Invalid diff response");
+    $("workspace-diff-meta").textContent = name + (result.binary ? " · Binary file" : " · Unified diff") + (result.truncated ? " · Preview truncated" : "");
+    for (const line of result.diff.split("\n")) {
+      const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") ? "header" : line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : line.startsWith("@@") ? "hunk" : "context";
+      $("workspace-diff-output").append(el("span", "diff-line " + kind, line || " "));
+    }
+    if (!result.diff) $("workspace-diff-meta").textContent = "No content difference. The change may be a file mode or staged-only change.";
+  } catch (error) {
+    if (diffRequest === request && request.epoch === state.sessionEpoch) $("workspace-diff-meta").textContent = error.message;
+  }
+}
 let workspaceRequest = null;
 async function refreshWorkspace() {
   const name = state.selected, version = state.detailVersion;
@@ -499,7 +623,10 @@ async function refreshWorkspace() {
     const files = $("workspace-files");
     files.replaceChildren();
     for (const file of workspace.files || []) {
-      const row = el("div", "workspace-file");
+      const row = el("button", "workspace-file");
+      row.type = "button";
+      row.setAttribute("aria-label", "View diff for " + file.path);
+      row.onclick = () => openWorkspaceDiff(name, file.path);
       const code = el("span", "workspace-file-status", file.status === "??" ? "U" : file.status);
       code.title = file.working ? "Uncommitted" : "Committed on this branch";
       const path = el("span", "workspace-file-path", file.path);
@@ -552,8 +679,8 @@ async function refreshDetail() {
   room.replaceChildren();
   for (const [title, value] of [
     ["Provider", detail.provider],
-    ["Model", detail.model || "Provider default"],
-    ["Reasoning", detail.effort || "Default"],
+    ["Model", runtimeLabel(detail, "model")],
+    ["Reasoning", runtimeLabel(detail, "effort")],
     ["Role", detail.role?.name || detail.role || "None"],
     ["Directory", detail.dir],
     ["Branch", detail.worktreeBranch || "—"],
