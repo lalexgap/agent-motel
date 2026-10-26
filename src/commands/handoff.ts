@@ -54,10 +54,13 @@ export async function handoffAgent(
     ...(agent.task ? ["", `The original task was: ${agent.task}`] : []),
   ].join("\n");
 
+  const revision = Bun.spawnSync(["git", "-C", agent.dir, "rev-parse", "--verify", "HEAD"], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  const base = revision.exitCode === 0 ? revision.stdout.toString().trim() : undefined;
   await newCommand({
     name,
     message,
     dir: agent.dir,
+    base,
     provider: target,
     role: agent.role,
     roleInstructions: agent.roleInstructions,

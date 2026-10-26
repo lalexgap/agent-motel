@@ -43,3 +43,24 @@ test("invalid provider and empty transcripts do not create agents", async () => 
   await expect(handoffAgent("source-long", { to: "codex", exact: true })).rejects.toThrow();
   expect(spawn).not.toHaveBeenCalled();
 });
+
+test("handover bases the new worktree on the source commit", async () => {
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-C", home, ...args]);
+    if (result.exitCode) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  git("init", "-b", "main"); git("config", "user.email", "test@example.test"); git("config", "user.name", "Test");
+  git("commit", "--allow-empty", "-m", "base"); git("switch", "-c", "feature"); git("commit", "--allow-empty", "-m", "source work");
+  const head = git("rev-parse", "HEAD");
+  await handoffAgent("source-long", { to: "codex", exact: true, quiet: true });
+  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ base: head }));
+});
+
+test("hidden handover CLI consumes and validates --new-name as a string", () => {
+  const run = (name: string) => Bun.spawnSync(["bun", "src/index.ts", "__handoff", "missing", "--to", "codex", "--new-name", name, "--local"], { env: process.env });
+  const valid = run("replacement");
+  expect(valid.stderr.toString()).toContain('no local agent "missing"');
+  expect(valid.stderr.toString()).not.toContain("--new-name must");
+  expect(run("../invalid").stderr.toString()).toContain("--new-name must");
+});

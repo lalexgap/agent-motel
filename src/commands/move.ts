@@ -330,6 +330,18 @@ export async function remoteHome(host: string, sshRun: typeof sshRunAsync = sshR
   return home;
 }
 
+export function remoteWorktreeScript(canonicalRepo: string, wtPath: string, branch: string): string {
+  return [
+    `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
+    `mkdir -p ${shq(dirname(wtPath))}`,
+    `if git -C ${shq(canonicalRepo)} show-ref --verify --quiet ${shq(`refs/heads/${branch}`)}; then ` +
+      `git -C ${shq(canonicalRepo)} worktree add ${shq(wtPath)} ${shq(branch)}; ` +
+      `elif git -C ${shq(canonicalRepo)} show-ref --verify --quiet ${shq(`refs/remotes/origin/${branch}`)}; then ` +
+      `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} ${shq(`origin/${branch}`)}; ` +
+      `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
+  ].join(" && ");
+}
+
 async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
   const sshAm = hooks.sshAmAsync ?? sshAmAsync;
   const sshRun = hooks.sshRunAsync ?? sshRunAsync;
@@ -371,15 +383,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
     const canonicalRepo =
       (await sshRun(host, `realpath ${shq(repoTarget)}`, { timeoutMs: 8000 })).stdout.trim() || repoTarget;
     const wtPath = `${targetHomeDir}/.agent-manager/worktrees/${basename(canonicalRepo)}/${agent.name}`;
-    const addScript = [
-      `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
-      `mkdir -p ${shq(dirname(wtPath))}`,
-      `if git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/heads/${branch}; then ` +
-        `git -C ${shq(canonicalRepo)} worktree add ${shq(wtPath)} ${shq(branch)}; ` +
-        `elif git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/remotes/origin/${branch}; then ` +
-        `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} origin/${branch}; ` +
-        `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
-    ].join(" && ");
+    const addScript = remoteWorktreeScript(canonicalRepo, wtPath, branch);
     const added = await sshRun(host, addScript, { timeoutMs: 30000 });
     if (added.exitCode !== 0) {
       throw new Error(`could not create worktree on ${host}: ${added.stderr.trim()}`);

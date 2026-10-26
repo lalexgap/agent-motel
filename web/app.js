@@ -546,7 +546,7 @@ async function refreshDetail() {
     Object.assign(badge(detail.status), { id: "detail-status" }),
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
-  updateAgentActions(detail);
+  updateAgentActions(detail, document.querySelector(".actions"), name);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
@@ -800,11 +800,11 @@ function actionAvailable(row, action) {
   if (action === "rename") return row.name !== "concierge";
   return true;
 }
-function updateAgentActions(row, container = document.querySelector(".actions")) {
+function updateAgentActions(row, container = document.querySelector(".actions"), agentKey = row ? key(row) : null) {
   for (const button of container.querySelectorAll("[data-action], [data-agent-menu]")) {
     const action = button.dataset.action || button.dataset.agentMenu;
     button.hidden = !actionAvailable(row, action);
-    button.disabled = !!row && pendingActions.has(key(row));
+    button.disabled = !!agentKey && pendingActions.has(agentKey);
   }
 }
 async function runAgentAction(name, action) {
