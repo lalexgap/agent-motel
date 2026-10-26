@@ -229,11 +229,25 @@ nav {
   color: var(--muted);
   font-size: 11px;
 }
-.side-agent span:last-child {
+.side-agent-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.side-agent .dot { flex-shrink: 0; }
+.side-agent-provider {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: #30343a;
+  color: #d4d4d4;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.side-agent-provider[data-provider="codex"] { color: #9cdcfe; background: #213746; }
+.side-agent-provider[data-provider="claude"] { color: #eab99a; background: #40312b; }
 #agent-nav {
   overflow: auto;
 }
