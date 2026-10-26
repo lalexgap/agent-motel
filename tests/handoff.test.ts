@@ -64,3 +64,19 @@ test("hidden handover CLI consumes and validates --new-name as a string", () => 
   expect(valid.stderr.toString()).not.toContain("--new-name must");
   expect(run("../invalid").stderr.toString()).toContain("--new-name must");
 });
+
+test("handover preserves a retained destination branch and chooses a fresh branch", async () => {
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-C", home, ...args]);
+    if (result.exitCode) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  git("init", "-b", "main"); git("config", "user.email", "test@example.test"); git("config", "user.name", "Test");
+  git("commit", "--allow-empty", "-m", "base"); git("branch", "am/replacement");
+  const retained = git("rev-parse", "am/replacement");
+  git("commit", "--allow-empty", "-m", "source work");
+  const head = git("rev-parse", "HEAD");
+  await handoffAgent("source-long", { to: "codex", newName: "replacement", exact: true, quiet: true });
+  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ name: "replacement", base: head, worktree: expect.stringMatching(/^am\/replacement-handoff-/) }));
+  expect(git("rev-parse", "am/replacement")).toBe(retained);
+});

@@ -8,6 +8,7 @@ import {
   importAfterRenew,
   importPayload,
   mapHomeDir,
+  validateRemoteExport,
   moveAgent,
   parseMoveSpec,
   targetTranscriptPath,
@@ -611,4 +612,18 @@ describe("inputBoxText (composing guard)", () => {
     expect(inputBoxText([SEP, '❯ Try "fix lint errors"', SEP, " status"])).toBe("");
     expect(inputBoxText([SEP, "❯ are we sure", SEP, " status"])).toBe("are we sure");
   });
+});
+
+
+test("remote export rejects mismatched identities and escaping transcript paths", () => {
+  const exported = { state: { name: "source", provider: "codex", sessionId: "abc", dir: "/remote/work", tmuxSession: "agentmgr-source" }, home: "/remote", queue: [], transcript: { path: "/remote/.codex/sessions/rollout-abc.jsonl", codexRelative: "sessions/rollout-abc.jsonl" } };
+  expect(() => validateRemoteExport(exported, "source")).not.toThrow();
+  expect(() => validateRemoteExport(exported, "different")).toThrow("malformed");
+  for (const path of ["../../.ssh/authorized_keys", "sessions/../../.ssh/key.jsonl", "/tmp/evil.jsonl", "sessions/./evil.jsonl", "config.toml", "sessions/evil\u0000.jsonl"]) {
+    expect(() => validateRemoteExport({ ...exported, transcript: { ...exported.transcript, codexRelative: path } }, "source")).toThrow();
+  }
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: "../../evil" } }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, queue: [42] }, "source")).toThrow();
+  expect(mapHomeDir("/remote/../../etc", "/remote", "/local")).toBeNull();
+  expect(mapHomeDir("/remote/work/../repo", "/remote", "/local")).toBe("/local/repo");
 });

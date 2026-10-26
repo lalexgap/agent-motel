@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, renameSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   agentProvider,
   agentSessionId,
@@ -95,8 +95,10 @@ export function resolveSourceRemovalFailure(
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
 // (then --dir is required).
 export function mapHomeDir(path: string, fromHome: string, toHome: string): string | null {
-  if (path === fromHome) return toHome;
-  if (path.startsWith(fromHome + "/")) return toHome + path.slice(fromHome.length);
+  if (![path, fromHome, toHome].every(value => typeof value === "string" && isAbsolute(value) && !value.includes("\0"))) return null;
+  const source = resolve(fromHome), target = resolve(toHome), normalized = resolve(path);
+  if (normalized === source) return target;
+  if (normalized.startsWith(source + "/")) return target + normalized.slice(source.length);
   return null;
 }
 
@@ -125,9 +127,17 @@ export function targetTranscriptPath(
   sessionId: string,
   codexRelative: string | null,
 ): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("invalid transcript session id");
   if (provider === "codex") {
     if (!codexRelative) throw new Error("codex agent has no rollout path to migrate");
-    return join(targetHome, ".codex", codexRelative);
+    const parts = codexRelative.split("/");
+    if (!["sessions", "archived_sessions"].includes(parts[0]!) || parts.some(part => !part || part === "." || part === "..") ||
+        codexRelative.includes("\0") || codexRelative.includes("\\") || !codexRelative.endsWith(".jsonl"))
+      throw new Error("invalid codex rollout path");
+    const root = resolve(targetHome, ".codex", parts[0]!);
+    const target = resolve(targetHome, ".codex", codexRelative);
+    if (!target.startsWith(root + "/")) throw new Error("invalid codex rollout path");
+    return target;
   }
   return join(targetHome, ".claude", "projects", claudeProjectSlug(targetDir), `${sessionId}.jsonl`);
 }
@@ -493,6 +503,27 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
   }
 }
 
+export function validateRemoteExport(remote: any, expectedName?: string): void {
+  const state = remote?.state;
+  const absolute = (value: unknown) => typeof value === "string" && isAbsolute(value) && !value.includes("\0");
+  if (!state || typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name) ||
+      expectedName !== undefined && state.name !== expectedName || !absolute(state.dir) || !absolute(remote.home) ||
+      typeof state.tmuxSession !== "string" || !state.tmuxSession ||
+      ![undefined, "codex", "claude"].includes(state.provider) ||
+      !Array.isArray(remote.queue) || !remote.queue.every((message: unknown) => typeof message === "string") ||
+      remote.queueIds !== undefined && (!Array.isArray(remote.queueIds) || !remote.queueIds.every((id: unknown) => id == null || typeof id === "string")) ||
+      remote.receivedMsgIds !== undefined && (!Array.isArray(remote.receivedMsgIds) || !remote.receivedMsgIds.every((id: unknown) => typeof id === "string")) ||
+      state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
+      state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
+    throw new Error("malformed remote move export");
+  if (remote.transcript != null) {
+    const sessionId = agentSessionId(state);
+    if (!absolute(remote.transcript.path) || typeof sessionId !== "string") throw new Error("malformed remote transcript metadata");
+    if (remote.transcript.codexRelative !== null && typeof remote.transcript.codexRelative !== "string") throw new Error("malformed remote rollout path");
+    targetTranscriptPath(agentProvider(state), homedir(), state.dir, sessionId, remote.transcript.codexRelative);
+  }
+}
+
 async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
   const sshAm = hooks.sshAmAsync ?? sshAmAsync;
   const sshRun = hooks.sshRunAsync ?? sshRunAsync;
@@ -517,6 +548,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       transcript: { path: string; codexRelative: string | null } | null;
     };
 
+    validateRemoteExport(remote, opts.exact ? name : undefined);
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
     const renew = async () => {

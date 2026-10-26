@@ -1,3 +1,4 @@
+import { loadConfig } from "../config";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, handoffsDir } from "../paths";
@@ -56,11 +57,20 @@ export async function handoffAgent(
 
   const revision = Bun.spawnSync(["git", "-C", agent.dir, "rev-parse", "--verify", "HEAD"], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
   const base = revision.exitCode === 0 ? revision.stdout.toString().trim() : undefined;
+  let worktree: string | undefined;
+  if (base && loadConfig().worktreeByDefault) {
+    const exists = (branch: string) => Bun.spawnSync(["git", "-C", agent.dir, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { timeout: 5000 }).exitCode === 0;
+    if (exists(`am/${name}`)) {
+      worktree = `am/${name}-handoff-${stamp}`;
+      for (let suffix = 2; exists(worktree); suffix++) worktree = `am/${name}-handoff-${stamp}-${suffix}`;
+    }
+  }
   await newCommand({
     name,
     message,
     dir: agent.dir,
     base,
+    worktree,
     provider: target,
     role: agent.role,
     roleInstructions: agent.roleInstructions,
