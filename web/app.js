@@ -232,6 +232,7 @@ function lock() {
   $("dock-transcript").replaceChildren();
   $("dock-message").value = "";
   delete $("dock-transcript").dataset.content;
+  $("chat-working").hidden = $("dock-working").hidden = true;
   $("app").hidden = true;
   $("login").hidden = false;
   for (const id of [
@@ -702,6 +703,15 @@ function toolGroup() {
     },
   });
 }
+function showWorking(id, status, since) {
+  const box = $(id), busy = status === "working" || status === "starting";
+  box.hidden = !busy;
+  if (!busy) return;
+  const start = Date.parse(since || "");
+  box.lastElementChild.textContent = (status === "starting" ? "Starting" : "Working") +
+    (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
+}
+const transcriptQueue = el("div", "transcript-queue");
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -752,6 +762,14 @@ async function refreshDetail() {
   window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
 
+  const cancelQueued = (item) => async () => {
+    try {
+      await api(base + "/messages/" + encodeURIComponent(item.msgId), undefined, "DELETE");
+      await refreshDetail();
+    } catch (e) {
+      notice(e.message);
+    }
+  };
   const queue = $("queue");
   queue.replaceChildren();
   if (!detail.queue?.length) queue.append(el("p", "", "Nothing waiting."));
@@ -763,18 +781,7 @@ async function refreshDetail() {
     );
     if (item.msgId) {
       const cancel = el("button", "", "Cancel");
-      cancel.onclick = async () => {
-        try {
-          await api(
-            base + "/messages/" + encodeURIComponent(item.msgId),
-            undefined,
-            "DELETE",
-          );
-          await refreshDetail();
-        } catch (e) {
-          notice(e.message);
-        }
-      };
+      cancel.onclick = cancelQueued(item);
       line.append(cancel);
     }
     queue.append(line);
@@ -805,6 +812,7 @@ async function refreshDetail() {
     }
     pending.append(box);
   }
+  showWorking("chat-working", detail.status, detail.statusChangedAt);
   const view = $("transcript"),
     atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 90;
   const fingerprint = JSON.stringify(transcript.entries);
@@ -845,6 +853,22 @@ async function refreshDetail() {
     }
     view.scrollTop = atBottom ? view.scrollHeight : scroll;
   }
+  // Queued messages are not in the transcript until delivered, so show them at the end of the chat.
+  transcriptQueue.replaceChildren();
+  for (const item of detail.queue || []) {
+    const turn = el("article", "turn user queued");
+    const meta = el("div", "queued-meta", "Queued · sends when the agent is free");
+    if (item.msgId) {
+      const cancel = el("button", "text-button", "Cancel");
+      cancel.onclick = cancelQueued(item);
+      meta.append(cancel);
+    }
+    turn.append(el("div", "turn-text", item.text || item.message || "Queued message"), meta);
+    transcriptQueue.append(turn);
+  }
+  if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
+  if (atBottom && transcriptQueue.dataset.count !== String(transcriptQueue.childElementCount)) view.scrollTop = view.scrollHeight;
+  transcriptQueue.dataset.count = String(transcriptQueue.childElementCount);
 }
 $("message").oninput = () => {
   if (state.selected)
@@ -1230,6 +1254,8 @@ async function refreshDock() {
     version !== state.detailVersion
   )
     return;
+  const row = state.rows.find((row) => key(row) === name);
+  showWorking("dock-working", row?.status, row?.statusChangedAt);
   const view = $("dock-transcript");
   const entries = transcript.entries
     .filter((entry) => entry.kind !== "tool")
