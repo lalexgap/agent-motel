@@ -867,8 +867,8 @@ async function refreshDetail() {
     transcriptQueue.append(turn);
   }
   if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
-  if (atBottom && transcriptQueue.dataset.count !== String(transcriptQueue.childElementCount)) view.scrollTop = view.scrollHeight;
-  transcriptQueue.dataset.count = String(transcriptQueue.childElementCount);
+  if (atBottom && transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount)) view.scrollTop = view.scrollHeight;
+  transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
 }
 $("message").oninput = () => {
   if (state.selected)
