@@ -288,6 +288,7 @@ function showOverview(filter = "live") {
   $("new-agent").hidden = false;
   $("page-title").textContent =
     filter === "attention" ? "Needs attention" : "Fleet monitor";
+  $("page-title").classList.remove("agent-title");
   $("page-subtitle").textContent = "";
   $("breadcrumb").textContent =
     filter === "attention" ? "Needs attention" : "Overview";
@@ -502,6 +503,7 @@ async function selectAgent(name, mode) {
   $("detail-meta").classList.remove("expanded");
   updateDetailMetaToggle();
   $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
+  $("page-title").classList.toggle("agent-title", !name.endsWith("concierge"));
   $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
   $("message").value = state.drafts.get(name) || "";

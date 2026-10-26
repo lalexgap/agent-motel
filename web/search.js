@@ -30,6 +30,7 @@ function showSearch() {
   $("search-page").hidden = false;
   $("new-agent").hidden = false;
   $("page-title").textContent = "Search";
+  $("page-title").classList.remove("agent-title");
   $("breadcrumb").textContent = "Search";
   $("page-subtitle").textContent = "";
   document.querySelectorAll(".nav").forEach(button => button.classList.toggle("active", button.id === "search-nav"));
