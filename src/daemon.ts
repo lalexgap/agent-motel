@@ -521,7 +521,10 @@ export function recordedPidMayOwnDaemon(pid: number): boolean {
       process.kill(pid, 0);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      const code = (error as NodeJS.ErrnoException).code;
+      // A daemon and its socket run as this user; EPERM therefore identifies
+      // an unrelated process that cannot own this daemon's files.
+      if (code === "ESRCH" || code === "EPERM") return false;
       throw error;
     }
   };
