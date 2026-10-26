@@ -732,7 +732,7 @@ function pendingFor(name, entries) {
   const claimed = new Set();
   const list = (pendingSent.get(name) || []).filter((pending) => {
     if (Date.now() - pending.at >= 30 * 60000) return false;
-    if (users.length < pending.baseline) pending.baseline = 0; // new session
+    if (users.length && users.length < pending.baseline) pending.baseline = 0; // new session
     const index = users.findIndex((text, i) => i >= pending.baseline && !claimed.has(i) &&
       (text === pending.text || text.startsWith(pending.text)));
     if (index < 0) return true;
