@@ -607,22 +607,6 @@ main {
   margin-left: auto;
   font-size: 10px;
 }
-.composer-footer select {
-  appearance: none;
-  -webkit-appearance: none;
-  width: auto;
-  font-size: 11px;
-  color: var(--fg);
-  border: 1px solid var(--border-strong);
-  border-radius: 3px;
-  background: var(--surface-raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aeb6c0' stroke-width='1.4'/%3E%3C/svg%3E") no-repeat right 9px center;
-  padding: 6px 28px 6px 10px;
-  cursor: pointer;
-}
-.composer-footer select:hover {
-  background-color: var(--surface-hover);
-  border-color: var(--border-strong);
-}
 .composer-footer button {
   padding: 7px 13px;
 }
@@ -1469,3 +1453,36 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .side-agent:hover { background: var(--surface); color: var(--fg); }
 .side-agent.selected { background: var(--surface-raised); color: var(--fg-strong); }
 .workspace, .side-heading { color: var(--fg-subtle); }
+/* Shown under the conversation while the agent is working. */
+.working-indicator {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px max(14px, calc((100% - 760px) / 2)) 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+#dock-working { padding: 4px 16px 8px; }
+.working-dots { display: inline-flex; gap: 4px; }
+.working-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--working);
+  opacity: 0.35;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .working-dots i { animation: working-pulse 1.2s ease-in-out infinite; }
+  .working-dots i:nth-child(2) { animation-delay: 0.15s; }
+  .working-dots i:nth-child(3) { animation-delay: 0.3s; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .working-dots i { opacity: 0.8; }
+}
+@keyframes working-pulse {
+  0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+#transcript .turn.user.queued { opacity: 0.7; border: 1px dashed var(--border-strong); background: transparent; }
+.queued-meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 11px; color: var(--fg-subtle); }
+.queued-meta .text-button { padding: 0; font-size: 11px; }

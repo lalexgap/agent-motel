@@ -154,6 +154,7 @@
                 >
                   <p>Send a task or ask about your fleet.</p>
                 </div>
+                <div id="dock-working" class="working-indicator" role="status" hidden><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Working</span></div>
                 <form id="dock-form">
                   <textarea
                     id="dock-message"
@@ -221,6 +222,7 @@
                   tabindex="0"
                   aria-label="Agent conversation"
                 ></div>
+                <div id="chat-working" class="working-indicator" role="status" hidden><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Working</span></div>
                 <form id="message-form">
                   <textarea
                     id="message"
@@ -231,10 +233,7 @@
                     maxlength="100000"
                   ></textarea>
                   <div class="composer-footer">
-                    <select id="message-mode" aria-label="Delivery mode">
-                      <option value="now">Send now</option>
-                      <option value="queue">Queue for next turn</option></select
-                    ><span id="message-status" role="status"></span
+                    <span id="message-status" role="status"></span
                     ><small>⌘ Enter to send</small
                     ><button class="primary">Send ↗</button>
                   </div>

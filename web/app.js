@@ -68,8 +68,19 @@ function updateAgentView() {
     agentTerminal.open(state.selected, row?.status);
   } else agentTerminal.close();
 }
-$("terminal-tab").onclick = () => { state.detailMode = "terminal"; updateAgentView(); };
-$("chat-tab").onclick = () => { state.detailMode = "chat"; updateAgentView(); };
+// The Terminal/Chat choice is one global preference that persists across agents and reloads.
+// A mode passed to selectAgent (a conversation search hit) applies to that visit only.
+let preferredMode = "terminal";
+try {
+  const saved = localStorage.getItem("am.detailMode");
+  if (saved === "terminal" || saved === "chat") preferredMode = saved;
+} catch {}
+function setDetailMode(mode) {
+  state.detailMode = preferredMode = mode;
+  try { localStorage.setItem("am.detailMode", mode); } catch {}
+}
+$("terminal-tab").onclick = () => { setDetailMode("terminal"); updateAgentView(); };
+$("chat-tab").onclick = () => { setDetailMode("chat"); updateAgentView(); };
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
 new MutationObserver(() => {
   $("terminal-reconnect").hidden = $("terminal-status").textContent.startsWith("●");
@@ -204,6 +215,8 @@ function lock() {
   state.drafts.clear();
   state.draftRevisions.clear();
   state.sending.clear();
+  pendingSent.clear();
+  lastUserTexts.clear();
   state.dockRevision++;
   state.conciergeKey = null;
   state.subagent = null;
@@ -221,6 +234,7 @@ function lock() {
   $("dock-transcript").replaceChildren();
   $("dock-message").value = "";
   delete $("dock-transcript").dataset.content;
+  $("chat-working").hidden = $("dock-working").hidden = true;
   $("app").hidden = true;
   $("login").hidden = false;
   for (const id of [
@@ -502,7 +516,7 @@ async function selectAgent(name, mode) {
   agentTerminal.close();
   state.selected = name;
   renderFleet();
-  state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
+  state.detailMode = mode || preferredMode;
   state.detailVersion++;
   $("workspace-pr-count").textContent = "";
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
@@ -529,6 +543,7 @@ async function selectAgent(name, mode) {
   $("message-form").querySelector("button").disabled = state.sending.has(name);
   delete $("transcript").dataset.content;
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
+  $("chat-working").hidden = true;
   $("permissions").replaceChildren();
   $("queue").replaceChildren();
   $("related-agents").replaceChildren();
@@ -574,7 +589,7 @@ async function openConcierge(question) {
     notice("Opening the front desk…");
     const result = await api("/api/concierge", {});
     notice("");
-    await selectAgent(result.key);
+    await selectAgent(result.key, question ? "chat" : undefined);
     if (question) {
       $("message").value = question;
       $("message").focus();
@@ -691,6 +706,47 @@ function toolGroup() {
     },
   });
 }
+function showWorking(id, status, since) {
+  const box = $(id), busy = status === "working" || status === "starting";
+  box.hidden = !busy;
+  if (!busy) return;
+  const start = Date.parse(since || "");
+  box.lastElementChild.textContent = (status === "starting" ? "Starting" : "Working") +
+    (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
+}
+const transcriptQueue = el("div", "transcript-queue");
+// A message sent mid-turn is held by the agent's TUI until it reads it, so keep
+// showing it until a user turn logged after the send matches it.
+const pendingSent = new Map(), lastUserTexts = new Map();
+const normalizeMessage = (text) =>
+  String(text || "").replace(/<\/?pasted_content id="[^"]*">/g, "").replace(/\s+/g, " ").trim();
+function notePending(name, text, id) {
+  const list = pendingSent.get(name) || [];
+  // Before the first transcript load the baseline is unknown; any matching turn then counts.
+  list.push({ text: normalizeMessage(text), shown: text, id, at: Date.now(), baseline: lastUserTexts.get(name)?.length ?? 0 });
+  pendingSent.set(name, list);
+}
+function pendingFor(name, entries) {
+  const users = entries.filter((entry) => entry.kind === "user").map((entry) => normalizeMessage(entry.text));
+  lastUserTexts.set(name, users);
+  const claimed = new Set();
+  const list = (pendingSent.get(name) || []).filter((pending) => {
+    if (Date.now() - pending.at >= 30 * 60000) return false;
+    if (users.length && users.length < pending.baseline) pending.baseline = 0; // new session
+    const index = users.findIndex((text, i) => i >= pending.baseline && !claimed.has(i) &&
+      (text === pending.text || text.startsWith(pending.text)));
+    if (index < 0) return true;
+    claimed.add(index);
+    return false;
+  });
+  pendingSent.set(name, list);
+  return list;
+}
+function pendingBubble(text, label) {
+  const turn = el("article", "turn user queued");
+  turn.append(el("div", "turn-text", text), el("div", "queued-meta", label));
+  return turn;
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -741,6 +797,14 @@ async function refreshDetail() {
   window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
 
+  const cancelQueued = (item) => async () => {
+    try {
+      await api(base + "/messages/" + encodeURIComponent(item.msgId), undefined, "DELETE");
+      await refreshDetail();
+    } catch (e) {
+      notice(e.message);
+    }
+  };
   const queue = $("queue");
   queue.replaceChildren();
   if (!detail.queue?.length) queue.append(el("p", "", "Nothing waiting."));
@@ -752,18 +816,7 @@ async function refreshDetail() {
     );
     if (item.msgId) {
       const cancel = el("button", "", "Cancel");
-      cancel.onclick = async () => {
-        try {
-          await api(
-            base + "/messages/" + encodeURIComponent(item.msgId),
-            undefined,
-            "DELETE",
-          );
-          await refreshDetail();
-        } catch (e) {
-          notice(e.message);
-        }
-      };
+      cancel.onclick = cancelQueued(item);
       line.append(cancel);
     }
     queue.append(line);
@@ -794,10 +847,12 @@ async function refreshDetail() {
     }
     pending.append(box);
   }
+  showWorking("chat-working", detail.status, detail.statusChangedAt);
   const view = $("transcript"),
     atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 90;
-  const fingerprint = JSON.stringify(transcript.entries);
-  if (view.dataset.content !== fingerprint) {
+  const fingerprint = JSON.stringify(transcript.entries),
+    rerender = view.dataset.content !== fingerprint;
+  if (rerender) {
     view.dataset.content = fingerprint;
     const scroll = view.scrollTop;
     view.replaceChildren();
@@ -834,6 +889,25 @@ async function refreshDetail() {
     }
     view.scrollTop = atBottom ? view.scrollHeight : scroll;
   }
+  // Queued messages are not in the transcript until delivered, so show them at the end of the chat.
+  transcriptQueue.replaceChildren();
+  const queuedIds = new Set((detail.queue || []).map((item) => item.msgId).filter(Boolean));
+  for (const pending of pendingFor(name, transcript.entries))
+    if (!queuedIds.has(pending.id)) transcriptQueue.append(pendingBubble(pending.shown, "Sent · waiting for the agent to read it"));
+  for (const item of detail.queue || []) {
+    const turn = el("article", "turn user queued");
+    const meta = el("div", "queued-meta", "Queued · sends when the agent is free");
+    if (item.msgId) {
+      const cancel = el("button", "text-button", "Cancel");
+      cancel.onclick = cancelQueued(item);
+      meta.append(cancel);
+    }
+    turn.append(el("div", "turn-text", item.text || item.message || "Queued message"), meta);
+    transcriptQueue.append(turn);
+  }
+  if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
+  if (atBottom && (rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount))) view.scrollTop = view.scrollHeight;
+  transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
 }
 $("message").oninput = () => {
   if (state.selected)
@@ -856,9 +930,10 @@ $("message-form").onsubmit = async (event) => {
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
-      { text, mode: $("message-mode").value },
+      { text, mode: "now" },
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    notePending(name, text, sent.id);
     const unchanged = (state.draftRevisions.get(name) || 0) === revision;
     if (unchanged) state.drafts.delete(name);
     if (state.selected === name) {
@@ -908,7 +983,10 @@ $("agent-context-menu").onclick = event => {
   if (action === "handover") openHandover(name);
   else if (["rename", "move"].includes(action)) openManageAgent(name, action);
   else if (["resume", "restart", "interrupt", "stop", "delete"].includes(action)) runAgentAction(name, action);
-  else selectAgent(name, action === "open" ? undefined : action);
+  else {
+    if (action !== "open") setDetailMode(action);
+    selectAgent(name);
+  }
 };
 $("agent-context-menu").onkeydown = event => {
   if (event.key === "Escape" || event.key === "Tab") {
@@ -1199,6 +1277,7 @@ unlock().catch(() => {});
 
 async function refreshDock() {
   const name = state.conciergeKey;
+  if (!state.rows.some((row) => key(row) === name)) $("dock-working").hidden = true;
   if (
     !name ||
     state.selected ||
@@ -1216,11 +1295,14 @@ async function refreshDock() {
     version !== state.detailVersion
   )
     return;
+  const row = state.rows.find((row) => key(row) === name);
+  showWorking("dock-working", row?.status, row?.statusChangedAt);
   const view = $("dock-transcript");
   const entries = transcript.entries
     .filter((entry) => entry.kind !== "tool")
     .slice(-20);
-  const fingerprint = JSON.stringify(entries);
+  const pending = pendingFor(name, transcript.entries);
+  const fingerprint = JSON.stringify([entries, pending.map((item) => item.text)]);
   if (view.dataset.content === fingerprint) return;
   const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
   view.dataset.content = fingerprint;
@@ -1236,7 +1318,8 @@ async function refreshDock() {
     );
     view.append(turn);
   }
-  if (!entries.length)
+  for (const item of pending) view.append(pendingBubble(item.shown, "Sent · waiting for the concierge to read it"));
+  if (!entries.length && !pending.length)
     view.append(el("p", "", "Send a task or ask about your fleet."));
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
@@ -1254,11 +1337,12 @@ $("dock-form").onsubmit = async (event) => {
     const target = (await api("/api/concierge", {})).key;
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     state.conciergeKey = target;
-    await api(
+    const sent = await api(
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
       { text, mode: "now" },
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    notePending(state.conciergeKey, text, sent.id);
     if (state.dockRevision === revision) $("dock-message").value = "";
     $("dock-status").textContent = "Message accepted";
     await refreshDock();
