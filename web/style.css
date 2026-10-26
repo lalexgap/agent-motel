@@ -367,6 +367,9 @@ main {
 .dot.idle {
   border: 1.5px solid var(--idle);
 }
+.dot.starting {
+  border: 1.5px dashed var(--working);
+}
 .overview-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
@@ -1399,13 +1402,14 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .detail-summary p { margin: 0; font-size: 13px; color: var(--fg-muted); }
 .conversation { border: 0; background: none; overflow: visible; }
 #terminal-panel:not([hidden]) {
-  display: block;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-sidebar);
 }
-#terminal-screen { height: calc(100dvh - 300px); }
+@media (min-width: 641px) {
+  #terminal-screen { height: calc(100dvh - 300px); }
+}
 .terminal-toolbar { background: var(--surface); }
 .terminal-keys { background: var(--surface); border-top: 1px solid var(--border); }
 #chat-panel:not([hidden]) { display: flex; flex-direction: column; }

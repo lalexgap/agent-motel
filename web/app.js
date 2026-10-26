@@ -146,7 +146,7 @@ const el = (tag, className, text) => {
 const dot = (status) =>
   el(
     "i",
-    `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited"].includes(status) ? status : ""}`,
+    `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
 const statusName = (status) =>
   ({
@@ -232,6 +232,9 @@ function lock() {
     "room-details",
     "workspace-prs",
     "workspace-files",
+    "detail-name",
+    "detail-status",
+    "detail-meta",
   ])
     $(id).replaceChildren();
   $("pane").textContent = "";
