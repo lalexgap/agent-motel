@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   rows: [],
   selected: null,
-  filter: "all",
+  filter: "live",
   sort: "status",
   reverse: false,
   conciergeKey: null,
@@ -271,7 +271,7 @@ $("logout").onclick = async () => {
   }
 };
 $("mobile-logout").onclick = () => $("logout").click();
-function showOverview(filter = "all") {
+function showOverview(filter = "live") {
   $("search-page").hidden = true;
   $("search-nav").classList.remove("active");
   saveDraft();
@@ -356,7 +356,16 @@ function compareRows(a, b) {
 function renderFleet() {
   if (!$("search-page").hidden) renderAdvancedSearch();
   const rows = state.rows.filter((row) => row.name !== "concierge");
-  $("stat-all").textContent = rows.length;
+  const stopped = (row) => ["exited", "dead"].includes(row.status);
+  const matchesFilter = (row, filter) =>
+    filter === "all" ||
+    (filter === "live" ? !stopped(row) :
+      filter === "attention" ? attention(row) :
+        filter === "exited" ? stopped(row) : row.status === filter);
+  $("stat-all").textContent = rows.filter((row) => !stopped(row)).length;
+  document.querySelectorAll("[data-count]").forEach((count) => {
+    count.textContent = rows.filter((row) => matchesFilter(row, count.dataset.count)).length;
+  });
   $("stat-working").textContent = rows.filter(
     (r) => r.status === "working",
   ).length;
@@ -395,12 +404,7 @@ function renderFleet() {
   const query = $("search").value.toLowerCase();
   const visible = rows.filter(
     (row) =>
-      (state.filter === "all" ||
-        (state.filter === "attention"
-          ? attention(row)
-          : state.filter === "exited"
-            ? ["exited", "dead"].includes(row.status)
-            : row.status === state.filter)) &&
+      matchesFilter(row, state.filter) &&
       `${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
         .toLowerCase()
         .includes(query),
@@ -408,7 +412,7 @@ function renderFleet() {
   visible.sort(compareRows);
   $("list-count").textContent = visible.length;
   document
-    .querySelectorAll(".filters button")
+    .querySelectorAll(".filters button, .stats button")
     .forEach((b) =>
       b.classList.toggle("selected", b.dataset.filter === state.filter),
     );

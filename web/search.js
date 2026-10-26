@@ -46,7 +46,7 @@ function searchOptions(id, values, label) {
   select.dataset.options = signature;
 }
 function searchExcerpt(text, terms, length = 220) {
-  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  const flat = String(text || "").replace(/\*\*|`|(^|\s)#{1,6}(?=\s)/g, "$1").replace(/\s+/g, " ").trim();
   const lower = flat.toLowerCase();
   const hits = terms.map(term => lower.indexOf(term)).filter(index => index >= 0);
   const first = hits.length ? Math.min(...hits) : 0;

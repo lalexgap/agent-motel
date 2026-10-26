@@ -105,9 +105,9 @@
           </section>
           <section id="overview">
             <div class="stats">
-              <button data-filter="all">
-                <span>All agents</span><strong id="stat-all">—</strong
-                ><small>Total</small></button
+              <button data-filter="live">
+                <span>Live agents</span><strong id="stat-all">—</strong
+                ><small>Not stopped</small></button
               ><button data-filter="working">
                 <span>Working <i class="dot working"></i></span
                 ><strong id="stat-working">—</strong
@@ -127,11 +127,11 @@
                   <h2>Agents <span id="list-count"></span></h2>
                   <div class="list-controls">
                     <select id="sort" aria-label="Sort agents">
-                      <option value="status">Status</option>
-                      <option value="repo">Repository</option>
-                      <option value="runtime">Time running</option>
-                      <option value="recent">Recent activity</option>
-                      <option value="name">Name</option></select
+                      <option value="status">Sort: Status</option>
+                      <option value="repo">Sort: Repository</option>
+                      <option value="runtime">Sort: Time running</option>
+                      <option value="recent">Sort: Recent activity</option>
+                      <option value="name">Sort: Name</option></select
                     ><button
                       id="sort-direction"
                       aria-label="Reverse sort direction"
@@ -147,11 +147,12 @@
                   </div>
                 </div>
                 <div class="filters" aria-label="Filter agents">
-                  <button class="selected" data-filter="all">All agents</button
-                  ><button data-filter="working">Working</button
-                  ><button data-filter="attention">Needs attention</button
-                  ><button data-filter="idle">Available</button
-                  ><button data-filter="exited">Stopped</button>
+                  <button class="selected" data-filter="live">Live <span data-count="live"></span></button
+                  ><button data-filter="working">Working <span data-count="working"></span></button
+                  ><button data-filter="attention">Needs attention <span data-count="attention"></span></button
+                  ><button data-filter="idle">Available <span data-count="idle"></span></button
+                  ><button data-filter="exited">Stopped <span data-count="exited"></span></button
+                  ><button data-filter="all">All <span data-count="all"></span></button>
                 </div>
                 <div class="agent-columns">
                   <span>AGENT / TASK</span><span>REPOSITORY</span

@@ -338,6 +338,10 @@ main {
 .stats button:hover {
   background: #2b2e33;
 }
+.stats button.selected {
+  background: #2a3038;
+  box-shadow: inset 0 -2px 0 var(--blue);
+}
 .stats span {
   display: flex;
   align-items: center;
@@ -418,7 +422,19 @@ main {
   gap: 0;
   margin-bottom: 0;
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filters::-webkit-scrollbar {
+  display: none;
+}
+.filters button {
+  flex: none;
+  white-space: nowrap;
+}
+.filters button span {
+  color: #7f8894;
+  margin-left: 3px;
 }
 .filters button {
   background: none;
