@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, renameSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   agentProvider,
   agentSessionId,
@@ -95,8 +95,10 @@ export function resolveSourceRemovalFailure(
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
 // (then --dir is required).
 export function mapHomeDir(path: string, fromHome: string, toHome: string): string | null {
-  if (path === fromHome) return toHome;
-  if (path.startsWith(fromHome + "/")) return toHome + path.slice(fromHome.length);
+  if (![path, fromHome, toHome].every(value => typeof value === "string" && isAbsolute(value) && !value.includes("\0"))) return null;
+  const source = resolve(fromHome), target = resolve(toHome), normalized = resolve(path);
+  if (normalized === source) return target;
+  if (normalized.startsWith(source + "/")) return target + normalized.slice(source.length);
   return null;
 }
 
@@ -125,9 +127,17 @@ export function targetTranscriptPath(
   sessionId: string,
   codexRelative: string | null,
 ): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("invalid transcript session id");
   if (provider === "codex") {
     if (!codexRelative) throw new Error("codex agent has no rollout path to migrate");
-    return join(targetHome, ".codex", codexRelative);
+    const parts = codexRelative.split("/");
+    if (!["sessions", "archived_sessions"].includes(parts[0]!) || parts.some(part => !part || part === "." || part === "..") ||
+        codexRelative.includes("\0") || codexRelative.includes("\\") || !codexRelative.endsWith(".jsonl"))
+      throw new Error("invalid codex rollout path");
+    const root = resolve(targetHome, ".codex", parts[0]!);
+    const target = resolve(targetHome, ".codex", codexRelative);
+    if (!target.startsWith(root + "/")) throw new Error("invalid codex rollout path");
+    return target;
   }
   return join(targetHome, ".claude", "projects", claudeProjectSlug(targetDir), `${sessionId}.jsonl`);
 }
@@ -226,6 +236,7 @@ export function importPayload(raw: string, handoffToken?: string): string {
 }
 
 export interface MoveOptions {
+  exact?: boolean;
   dir?: string;
   copy: boolean;
   start: boolean;
@@ -329,13 +340,27 @@ export async function remoteHome(host: string, sshRun: typeof sshRunAsync = sshR
   return home;
 }
 
+export function remoteWorktreeScript(canonicalRepo: string, wtPath: string, branch: string): string {
+  return [
+    `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
+    `mkdir -p ${shq(dirname(wtPath))}`,
+    `if git -C ${shq(canonicalRepo)} show-ref --verify --quiet ${shq(`refs/heads/${branch}`)}; then ` +
+      `git -C ${shq(canonicalRepo)} worktree add ${shq(wtPath)} ${shq(branch)}; ` +
+      `elif git -C ${shq(canonicalRepo)} show-ref --verify --quiet ${shq(`refs/remotes/origin/${branch}`)}; then ` +
+      `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} ${shq(`origin/${branch}`)}; ` +
+      `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
+  ].join(" && ");
+}
+
 async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
   const sshAm = hooks.sshAmAsync ?? sshAmAsync;
   const sshRun = hooks.sshRunAsync ?? sshRunAsync;
   const run = hooks.runAsync ?? runAsync;
   // Backfill worktree metadata from git so an agent whose dir is a worktree
   // but never recorded it still gets its worktree recreated on the target.
-  let agent = withWorktreeMeta(resolveAgent(name));
+  const source = opts.exact ? readAgent(name) : resolveAgent(name);
+  if (!source) throw new Error(`no local agent "${name}"`);
+  let agent = withWorktreeMeta(source);
 
   const targetHomeDir = await remoteHome(host, sshRun);
   // storedDir is the LOGICAL dir saved in state (portable across machines);
@@ -368,15 +393,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
     const canonicalRepo =
       (await sshRun(host, `realpath ${shq(repoTarget)}`, { timeoutMs: 8000 })).stdout.trim() || repoTarget;
     const wtPath = `${targetHomeDir}/.agent-manager/worktrees/${basename(canonicalRepo)}/${agent.name}`;
-    const addScript = [
-      `git -C ${shq(canonicalRepo)} fetch origin ${shq(branch)} >/dev/null 2>&1 || true`,
-      `mkdir -p ${shq(dirname(wtPath))}`,
-      `if git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/heads/${branch}; then ` +
-        `git -C ${shq(canonicalRepo)} worktree add ${shq(wtPath)} ${shq(branch)}; ` +
-        `elif git -C ${shq(canonicalRepo)} show-ref --verify --quiet refs/remotes/origin/${branch}; then ` +
-        `git -C ${shq(canonicalRepo)} worktree add --track -b ${shq(branch)} ${shq(wtPath)} origin/${branch}; ` +
-        `else git -C ${shq(canonicalRepo)} worktree add -b ${shq(branch)} ${shq(wtPath)}; fi`,
-    ].join(" && ");
+    const addScript = remoteWorktreeScript(canonicalRepo, wtPath, branch);
     const added = await sshRun(host, addScript, { timeoutMs: 30000 });
     if (added.exitCode !== 0) {
       throw new Error(`could not create worktree on ${host}: ${added.stderr.trim()}`);
@@ -486,6 +503,37 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
   }
 }
 
+export function validateRemoteExport(remote: any, expectedName?: string): void {
+  const state = remote?.state;
+  const messageId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+  const absolute = (value: unknown) => typeof value === "string" && isAbsolute(value) && !value.includes("\0");
+  if (!state || typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name) ||
+      expectedName !== undefined && state.name !== expectedName || !absolute(state.dir) || !absolute(remote.home) ||
+      typeof state.tmuxSession !== "string" || !state.tmuxSession ||
+      ![undefined, "codex", "claude"].includes(state.provider) ||
+      !Array.isArray(remote.queue) || !remote.queue.every((message: unknown) => typeof message === "string") ||
+      remote.queueIds !== undefined && (!Array.isArray(remote.queueIds) || !remote.queueIds.every((id: unknown) => id == null || messageId(id))) ||
+      remote.receivedMsgIds !== undefined && (!Array.isArray(remote.receivedMsgIds) || !remote.receivedMsgIds.every(messageId)) ||
+      state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
+      state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
+    throw new Error("malformed remote move export");
+  if (!agentSessionId(state)) throw new Error("cannot move a remote agent without a session id");
+  for (const id of [state.sessionId, state.claudeSessionId]) {
+    if (id !== undefined && (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)))
+      throw new Error("invalid remote session id");
+  }
+  if (state.sessionId !== undefined && state.claudeSessionId !== undefined && state.sessionId !== state.claudeSessionId)
+    throw new Error("conflicting remote session ids");
+  if (state.worktreeBranch !== undefined && Bun.spawnSync(["git", "check-ref-format", "--branch", state.worktreeBranch], { stdout: "pipe", stderr: "pipe", timeout: 5000 }).exitCode !== 0)
+    throw new Error("invalid remote worktree branch");
+  if (remote.transcript != null) {
+    const sessionId = agentSessionId(state);
+    if (!absolute(remote.transcript.path) || typeof sessionId !== "string") throw new Error("malformed remote transcript metadata");
+    if (remote.transcript.codexRelative !== null && typeof remote.transcript.codexRelative !== "string") throw new Error("malformed remote rollout path");
+    targetTranscriptPath(agentProvider(state), homedir(), state.dir, sessionId, remote.transcript.codexRelative);
+  }
+}
+
 async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: MoveHooks): Promise<string> {
   const sshAm = hooks.sshAmAsync ?? sshAmAsync;
   const sshRun = hooks.sshRunAsync ?? sshRunAsync;
@@ -510,6 +558,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       transcript: { path: string; codexRelative: string | null } | null;
     };
 
+    validateRemoteExport(remote, opts.exact ? name : undefined);
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
     const renew = async () => {
@@ -681,6 +730,10 @@ export async function moveAgent(
   hooks: MoveHooks = {},
 ): Promise<string> {
   const spec = parseMoveSpec(first, second);
+  if (opts.exact) {
+    const runner = hooks.sshAmAsync ?? sshAmAsync;
+    hooks = { ...hooks, sshAmAsync: (host, args, options) => runner(host, [...args, "--local", "--exact"], options) };
+  }
   return spec.direction === "push"
     ? pushAgent(spec.name, spec.host, opts, hooks)
     : pullAgent(spec.name, spec.host, opts, hooks);

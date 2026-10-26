@@ -129,9 +129,11 @@ window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
         scrollback: 5000,
         theme: { background: "#181818", foreground: "#d4d4d4", cursor: "#d4d4d4" },
         allowProposedApi: false,
+        linkHandler: { activate: (event, uri) => window.agentLinks.open(event, uri) },
       });
       fit = new FitAddon.FitAddon();
       terminal.loadAddon(fit);
+      terminal.loadAddon(new WebLinksAddon.WebLinksAddon((event, uri) => window.agentLinks.open(event, uri)));
       terminal.open(screen);
       terminal.onData(input);
       observer = new ResizeObserver(resize);

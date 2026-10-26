@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="/style.css" />
     <script src="/vendor/xterm.js" defer></script>
     <script src="/vendor/addon-fit.js" defer></script>
+    <script src="/vendor/addon-web-links.js" defer></script>
+    <script src="/links.js" defer></script>
     <script src="/terminal.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
@@ -181,6 +183,7 @@
                 <p id="detail-meta"></p>
               </div>
               <div class="actions">
+                <button id="handover-agent">Handover</button>
                 <button data-action="resume">Resume</button
                 ><button data-action="restart">Restart</button
                 ><button data-action="interrupt">Interrupt</button
@@ -252,6 +255,7 @@
                 <h3>Agent details</h3>
                 <dl id="room-details"></dl>
                 <h3>Agents &amp; subagents</h3>
+                <label class="related-filter"><input id="show-finished-subagents" type="checkbox"> Show finished</label>
                 <div id="related-agents"></div>
                 <h3>Queued messages</h3>
                 <div id="queue"></div>
@@ -276,6 +280,50 @@
         Built-in subagents run inside the parent session. Message the parent to
         redirect their work.
       </p>
+    </dialog>
+    <div id="agent-context-menu" class="agent-context-menu" role="menu" aria-label="Agent actions" hidden>
+      <button role="menuitem" data-agent-menu="open">Open agent</button>
+      <button role="menuitem" data-agent-menu="chat">Open chat</button>
+      <button role="menuitem" data-agent-menu="terminal">Open terminal</button>
+      <button role="menuitem" data-agent-menu="handover">Handover…</button>
+      <button role="menuitem" data-agent-menu="rename">Rename…</button>
+      <button role="menuitem" data-agent-menu="move">Move to host…</button>
+      <button role="menuitem" data-agent-menu="resume">Resume</button>
+      <button role="menuitem" data-agent-menu="restart">Restart</button>
+      <button role="menuitem" data-agent-menu="interrupt">Interrupt</button>
+      <button role="menuitem" data-agent-menu="stop">Stop</button>
+      <button role="menuitem" data-agent-menu="delete" class="danger">Remove…</button>
+    </div>
+    <dialog id="manage-agent-dialog" aria-labelledby="manage-agent-title">
+      <form id="manage-agent-form">
+        <div class="section-header"><h2 id="manage-agent-title"></h2><button type="button" id="close-manage-agent" aria-label="Close">×</button></div>
+        <p id="manage-agent-source"></p>
+        <label id="rename-agent-field">New name<input id="rename-agent-name" maxlength="64" pattern="[A-Za-z0-9_-]+" /></label>
+        <div id="move-agent-fields">
+          <p class="muted">Moves the conversation and queue, stops the source and resumes on the destination. Workspace files are not copied. Commit and push changes first.</p>
+          <label>Destination host<select id="move-agent-host"></select></label>
+          <label>Destination directory (optional)<input id="move-agent-dir" placeholder="Default mapped directory" /></label>
+        </div>
+        <p id="manage-agent-error" class="error" role="alert"></p>
+        <button id="manage-agent-submit" type="submit">Save</button>
+      </form>
+    </dialog>
+    <dialog id="handover-dialog" aria-labelledby="handover-title">
+      <form id="handover-form">
+        <div class="section-header">
+          <h2 id="handover-title">Hand over agent</h2>
+          <button type="button" id="close-handover" aria-label="Close handover">×</button>
+        </div>
+        <p id="handover-source"></p>
+        <p class="muted">Creates a new agent using this conversation. Starts from the source commit; uncommitted workspace files are not copied. The source agent keeps running.</p>
+        <label>Provider<select id="handover-provider" name="to">
+          <option value="codex">Codex</option><option value="claude">Claude</option>
+        </select></label>
+        <label>New agent name<input id="handover-name" name="newName" maxlength="64" pattern="[A-Za-z0-9_-]+" placeholder="Automatic name"></label>
+        <label class="related-filter"><input id="handover-full" type="checkbox"> Include full tool output</label>
+        <p id="handover-error" class="error" role="alert"></p>
+        <button class="primary" id="handover-submit" type="submit">Create handover agent</button>
+      </form>
     </dialog>
     <dialog id="create-dialog">
       <form id="create-form">

@@ -1,3 +1,4 @@
+import { loadConfig } from "../config";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, handoffsDir } from "../paths";
@@ -25,9 +26,10 @@ function uniqueName(base: string): string {
 // it. The source agent keeps running — stop it yourself if it shouldn't.
 export async function handoffAgent(
   prefix: string,
-  opts: { newName?: string; to?: string; full?: boolean; jump?: boolean; quiet?: boolean },
+  opts: { newName?: string; to?: string; full?: boolean; jump?: boolean; quiet?: boolean; exact?: boolean },
 ): Promise<{ name: string; target: Provider; file: string }> {
-  const agent = resolveAgent(prefix);
+  const agent = opts.exact ? readAgent(prefix) : resolveAgent(prefix);
+  if (!agent) throw new Error(`no local agent "${prefix}"`);
   const source = agentProvider(agent);
   const target = targetProvider(source, opts.to);
 
@@ -41,7 +43,7 @@ export async function handoffAgent(
   ensureDirs();
   const stamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
   const handoffFile = join(handoffsDir(), `${agent.name}-to-${target}-${stamp}.md`);
-  writeFileSync(handoffFile, markdown);
+  writeFileSync(handoffFile, markdown, { mode: 0o600 });
 
   const name = uniqueName(opts.newName ?? `${agent.name}-${target}`);
   const message = [
@@ -53,10 +55,22 @@ export async function handoffAgent(
     ...(agent.task ? ["", `The original task was: ${agent.task}`] : []),
   ].join("\n");
 
+  const revision = Bun.spawnSync(["git", "-C", agent.dir, "rev-parse", "--verify", "HEAD"], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  const base = revision.exitCode === 0 ? revision.stdout.toString().trim() : undefined;
+  let worktree: string | undefined;
+  if (base && loadConfig().worktreeByDefault) {
+    const exists = (branch: string) => Bun.spawnSync(["git", "-C", agent.dir, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { timeout: 5000 }).exitCode === 0;
+    if (exists(`am/${name}`)) {
+      worktree = `am/${name}-handoff-${stamp}`;
+      for (let suffix = 2; exists(worktree); suffix++) worktree = `am/${name}-handoff-${stamp}-${suffix}`;
+    }
+  }
   await newCommand({
     name,
     message,
     dir: agent.dir,
+    base,
+    worktree,
     provider: target,
     role: agent.role,
     roleInstructions: agent.roleInstructions,

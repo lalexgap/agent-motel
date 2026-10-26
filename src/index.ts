@@ -32,7 +32,7 @@ import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./comma
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
 import { searchCommand } from "./commands/search";
-import { handoffCommand } from "./commands/handoff";
+import { handoffAgent, handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./commands/fleetActions";
@@ -259,7 +259,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "new-name", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -783,6 +783,19 @@ async function main(): Promise<void> {
         limit: numberFlag(args, "limit"),
       });
       break;
+    case "__handoff": {
+      const to = args.flags.to;
+      if (to !== "claude" && to !== "codex") throw new Error("--to must be claude or codex");
+      const newName = args.flags["new-name"];
+      if ("new-name" in args.flags && (typeof newName !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(newName)))
+        throw new Error("--new-name must be 1–64 letters, numbers, dashes or underscores");
+      const result = await handoffAgent(requirePositional(args, 0, "agent name"), {
+        to, newName: newName as string | undefined,
+        full: !!args.flags.full, exact: true, jump: false, quiet: true,
+      });
+      console.log(JSON.stringify(result));
+      break;
+    }
     case "handoff":
       await handoffCommand(requirePositional(args, 0, "agent name"), {
         newName: args.positional[1],

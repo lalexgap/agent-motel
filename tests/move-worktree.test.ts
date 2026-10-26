@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inferWorktree, withWorktreeMeta } from "../src/commands/move";
+import { inferWorktree, withWorktreeMeta, remoteWorktreeScript } from "../src/commands/move";
 import type { AgentState } from "../src/state";
 
 function git(dir: string, ...args: string[]): void {
@@ -86,4 +86,18 @@ describe("withWorktreeMeta", () => {
     const plain = agent({ dir: repo });
     expect(withWorktreeMeta(plain)).toEqual(plain);
   });
+});
+
+
+test("remote worktree script treats command substitution in branch names as literal arguments", () => {
+  const marker = join(root, "injected"), log = join(root, "git-args");
+  const branch = `topic/$(touch${"${IFS}"}${marker})`;
+  const script = remoteWorktreeScript(repo, join(root, "destination"), branch);
+  const mock = 'git() { printf "%s\\n" "$@" >> "$AM_TEST_LOG"; return 0; }; export -f git;\n';
+  const result = Bun.spawnSync(["bash", "-c", mock + script], { env: { ...process.env, AM_TEST_LOG: log } });
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(marker)).toBe(false);
+  const args = readFileSync(log, "utf8");
+  expect(args).toContain(`refs/heads/${branch}`);
+  expect(args).toContain(branch);
 });

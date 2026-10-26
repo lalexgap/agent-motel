@@ -8,6 +8,7 @@ import {
   importAfterRenew,
   importPayload,
   mapHomeDir,
+  validateRemoteExport,
   moveAgent,
   parseMoveSpec,
   targetTranscriptPath,
@@ -35,11 +36,29 @@ describe("move lifecycle failures", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  test("missing remote session IDs reject both immediate and delayed resume before effects", async () => {
+    for (const start of [true, false]) {
+      const calls: string[][] = [];
+      const sshAm = async (_host: string, args: string[]) => {
+        calls.push(args);
+        return { exitCode: 0, stderr: "", stdout: JSON.stringify({
+          state: { name: "missing-session", provider: "codex", status: "exited", dir: "/remote/work", tmuxSession: "agentmgr-missing-session" },
+          home: "/remote", queue: ["Untrusted queued message"], transcript: null, handoffToken: args[3],
+        }) };
+      };
+      await expect(moveAgent("remote:missing-session", undefined, { dir: home, start, exact: true }, { sshAmAsync: sshAm }))
+        .rejects.toThrow("without a session id");
+      expect(calls.some(args => ["stop", "rm", "resume", "__import"].includes(args[0]!))).toBe(false);
+      expect(readAgent("missing-session")).toBeNull();
+    }
+  });
+
   test("a failed remote stop aborts pull before import or source removal", async () => {
     const now = new Date().toISOString();
     const exported = {
       state: {
         name: "migrated",
+        claudeSessionId: "session-123",
         status: "exited",
         dir: "/remote/work",
         tmuxSession: "agentmgr-migrated",
@@ -611,4 +630,39 @@ describe("inputBoxText (composing guard)", () => {
     expect(inputBoxText([SEP, '❯ Try "fix lint errors"', SEP, " status"])).toBe("");
     expect(inputBoxText([SEP, "❯ are we sure", SEP, " status"])).toBe("are we sure");
   });
+});
+
+
+test("remote export rejects mismatched identities and escaping transcript paths", () => {
+  const exported = { state: { name: "source", provider: "codex", sessionId: "abc", dir: "/remote/work", tmuxSession: "agentmgr-source" }, home: "/remote", queue: [], transcript: { path: "/remote/.codex/sessions/rollout-abc.jsonl", codexRelative: "sessions/rollout-abc.jsonl" } };
+  expect(() => validateRemoteExport(exported, "source")).not.toThrow();
+  expect(() => validateRemoteExport(exported, "different")).toThrow("malformed");
+  for (const path of ["../../.ssh/authorized_keys", "sessions/../../.ssh/key.jsonl", "/tmp/evil.jsonl", "sessions/./evil.jsonl", "config.toml", "sessions/evil\u0000.jsonl"]) {
+    expect(() => validateRemoteExport({ ...exported, transcript: { ...exported.transcript, codexRelative: path } }, "source")).toThrow();
+  }
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: "../../evil" } }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, queue: [42] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, queueIds: ["bad.id"] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, receivedMsgIds: ["../bad"] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, worktreeBranch: "--upload-pack=touch-marker" } }, "source")).toThrow("invalid remote worktree branch");
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, worktreeBranch: "feature/valid" } }, "source")).not.toThrow();
+  expect(mapHomeDir("/remote/../../etc", "/remote", "/local")).toBeNull();
+  expect(mapHomeDir("/remote/work/../repo", "/remote", "/local")).toBe("/local/repo");
+});
+
+
+test("remote exports validate session IDs without transcripts and bound storage IDs", () => {
+  const exported = { state: { name: "source", provider: "codex", sessionId: "abc-123", dir: "/remote/work", tmuxSession: "agentmgr-source" }, home: "/remote", queue: [], transcript: null };
+  expect(() => validateRemoteExport(exported, "source")).not.toThrow();
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: undefined } })).toThrow("without a session id");
+  for (const id of ["--last", "-x", "", "../escape", "a".repeat(129), 42, null]) {
+    expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: id } })).toThrow();
+    expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: id } })).toThrow();
+  }
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: "different" } })).toThrow("conflicting");
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: "abc-123" } })).not.toThrow();
+  for (const key of ["queueIds", "receivedMsgIds"]) {
+    expect(() => validateRemoteExport({ ...exported, [key]: ["a".repeat(300)] })).toThrow();
+    expect(() => validateRemoteExport({ ...exported, [key]: ["a".repeat(128)] })).not.toThrow();
+  }
 });

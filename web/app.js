@@ -81,7 +81,10 @@ const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (text !== undefined) {
+    if (className === "turn-text" || tag === "pre") window.agentLinks.render(node, text);
+    else node.textContent = text;
+  }
   return node;
 };
 const dot = (status) =>
@@ -129,6 +132,7 @@ async function api(path, body, method) {
 }
 function lock() {
   agentTerminal.close();
+  closeAgentMenu();
   stopEvents();
   state.refreshPending = false;
   state.sessionEpoch++;
@@ -144,6 +148,11 @@ function lock() {
   state.subagent = null;
   $("subagent-dialog").close();
   $("create-dialog").close();
+  $("handover-dialog").close();
+  handoverSource = null;
+  manageAgent = null;
+  $("manage-agent-dialog").close();
+  state.related = null;
   $("related-agents").replaceChildren();
   $("subagent-output").replaceChildren();
   $("dock-transcript").replaceChildren();
@@ -309,6 +318,12 @@ function renderFleet() {
     label.dataset.provider = provider.toLowerCase();
     button.title = `${row.name} · ${provider}`;
     button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    button.dataset.agentKey = key(row);
+    button.setAttribute("aria-haspopup", "menu");
+    button.oncontextmenu = event => openAgentMenu(event, key(row), button);
+    button.onkeydown = event => {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) openAgentMenu(event, key(row), button);
+    };
     button.onclick = () => selectAgent(key(row));
     nav.append(button);
   }
@@ -394,11 +409,11 @@ function renderFleet() {
 function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
-async function selectAgent(name) {
+async function selectAgent(name, mode) {
   saveDraft();
   agentTerminal.close();
   state.selected = name;
-  state.detailMode = name.endsWith("concierge") ? "chat" : "terminal";
+  state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
   $("workspace-files").replaceChildren();
@@ -420,6 +435,7 @@ async function selectAgent(name) {
   $("permissions").replaceChildren();
   $("queue").replaceChildren();
   $("related-agents").replaceChildren();
+  state.related = null;
   $("pane").textContent = "";
   $("room-details").replaceChildren();
   document
@@ -530,6 +546,7 @@ async function refreshDetail() {
     Object.assign(badge(detail.status), { id: "detail-status" }),
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
+  updateAgentActions(detail, document.querySelector(".actions"), name);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
@@ -543,7 +560,7 @@ async function refreshDetail() {
   ]) {
     room.append(el("dt", "", title), el("dd", "", String(value)));
   }
-  $("pane").textContent = detail.pane || "No active terminal.";
+  window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
 
   const queue = $("queue");
@@ -681,37 +698,192 @@ $("message").onkeydown = (event) => {
     $("message-form").requestSubmit();
   }
 };
-document.querySelectorAll("[data-action]").forEach(
-  (button) =>
-    (button.onclick = async () => {
-      const name = state.selected,
-        action = button.dataset.action;
-      if (!name) return;
-      if (
-        action !== "resume" &&
-        !confirm(
-          `${action[0].toUpperCase() + action.slice(1)} ${name}? ${action === "delete" ? "Its session will stop and the agent will be removed. The worktree is kept." : action === "restart" ? "This interrupts its current turn and reopens the conversation." : "This interrupts its current work."}`,
-        )
-      )
-        return;
-      button.disabled = true;
-      try {
-        await api(
-          "/api/agents/" +
-            encodeURIComponent(name) +
-            (action === "delete" ? "" : "/" + action),
-          action === "delete" ? undefined : {},
-          action === "delete" ? "DELETE" : "POST",
-        );
-        if (action === "delete") showOverview();
-        await refresh();
-      } catch (error) {
-        notice(error.message);
-      } finally {
-        button.disabled = false;
-      }
-    }),
-);
+let contextAgent = null;
+function closeAgentMenu(restoreFocus = false) {
+  const target = contextAgent;
+  $("agent-context-menu").hidden = true;
+  contextAgent = null;
+  if (restoreFocus && target) [...document.querySelectorAll(".side-agent")].find(button => button.dataset.agentKey === target)?.focus();
+}
+function openAgentMenu(event, name, button) {
+  event.preventDefault();
+  if (!state.authenticated) return;
+  contextAgent = name;
+  const menu = $("agent-context-menu"), rect = button.getBoundingClientRect();
+  updateAgentActions(state.rows.find(row => key(row) === name), menu);
+  menu.hidden = false;
+  const x = event.clientX || rect.left, y = event.clientY || rect.bottom;
+  menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + "px";
+  menu.querySelector('[data-agent-menu="handover"]').disabled = handoverPending;
+  menu.querySelector("button").focus();
+}
+$("agent-context-menu").onclick = event => {
+  const button = event.target.closest("[data-agent-menu]");
+  if (!button || button.disabled || !contextAgent) return;
+  const name = contextAgent, action = button.dataset.agentMenu;
+  closeAgentMenu(true);
+  if (!state.authenticated) return;
+  if (action === "handover") openHandover(name);
+  else if (["rename", "move"].includes(action)) openManageAgent(name, action);
+  else if (["resume", "restart", "interrupt", "stop", "delete"].includes(action)) runAgentAction(name, action);
+  else selectAgent(name, action === "open" ? undefined : action);
+};
+$("agent-context-menu").onkeydown = event => {
+  if (event.key === "Escape" || event.key === "Tab") {
+    event.preventDefault(); closeAgentMenu(true); return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const buttons = [...$("agent-context-menu").querySelectorAll("button:not(:disabled):not([hidden])")];
+  const index = buttons.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next]?.focus();
+};
+document.addEventListener("pointerdown", event => { if (!$("agent-context-menu").contains(event.target)) closeAgentMenu(); });
+document.addEventListener("scroll", () => closeAgentMenu(), true);
+window.addEventListener("resize", () => closeAgentMenu());
+
+let handoverSource = null, handoverPending = false;
+function openHandover(name) {
+  if (!name || handoverPending || !state.authenticated) return;
+  handoverSource = name;
+  const row = state.rows.find(row => key(row) === handoverSource);
+  $("handover-form").reset();
+  $("handover-source").textContent = "From: " + handoverSource;
+  $("handover-provider").value = row?.provider === "codex" ? "claude" : "codex";
+  $("handover-error").textContent = "";
+  $("handover-dialog").showModal();
+}
+$("handover-agent").onclick = () => openHandover(state.selected);
+$("close-handover").onclick = () => $("handover-dialog").close();
+$("handover-form").onsubmit = async event => {
+  event.preventDefault();
+  if (!handoverSource || handoverPending || !state.authenticated) return;
+  const source = handoverSource, epoch = state.sessionEpoch, version = state.detailVersion, selection = state.selected;
+  const body = { to: $("handover-provider").value, full: $("handover-full").checked };
+  const name = $("handover-name").value.trim();
+  if (name) body.newName = name;
+  handoverPending = true;
+  $("handover-submit").disabled = true;
+  $("handover-agent").disabled = true;
+  $("handover-submit").textContent = "Creating agent…";
+  $("handover-error").textContent = "";
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(source) + "/handoff", body);
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    $("handover-dialog").close();
+    await refresh();
+    if (state.selected === selection && version === state.detailVersion) await selectAgent(result.key);
+    else notice(`Handover created: ${result.key}`);
+  } catch (error) {
+    if (state.authenticated && epoch === state.sessionEpoch) {
+      const message = error.message + " Check the agent list before retrying if the request was interrupted.";
+      if ($("handover-dialog").open) $("handover-error").textContent = message;
+      else notice(message);
+    }
+  } finally {
+    handoverPending = false;
+    $("handover-submit").disabled = false;
+    $("handover-agent").disabled = false;
+    $("handover-submit").textContent = "Create handover agent";
+  }
+};
+
+const pendingActions = new Set();
+function actionAvailable(row, action) {
+  if (!row) return false;
+  const stopped = ["dead", "exited"].includes(row.status);
+  if (action === "resume") return stopped;
+  if (["stop", "restart", "terminal"].includes(action)) return !stopped;
+  if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
+  if (action === "rename") return row.name !== "concierge";
+  return true;
+}
+function updateAgentActions(row, container = document.querySelector(".actions"), agentKey = row ? key(row) : null) {
+  for (const button of container.querySelectorAll("[data-action], [data-agent-menu]")) {
+    const action = button.dataset.action || button.dataset.agentMenu;
+    button.hidden = !actionAvailable(row, action);
+    button.disabled = !!agentKey && pendingActions.has(agentKey);
+  }
+}
+async function runAgentAction(name, action) {
+  if (!state.authenticated || pendingActions.has(name)) return;
+  const row = state.rows.find(row => key(row) === name);
+  if (!actionAvailable(row, action)) { notice("Agent status changed. Refresh and try again."); return; }
+  const label = action === "delete" ? "Remove" : action[0].toUpperCase() + action.slice(1);
+  if (action !== "resume" && !confirm(`${label} ${name}? ${action === "delete" ? "Its session will stop and the agent will be removed. The worktree is kept." : action === "restart" ? "This interrupts its current turn and reopens the conversation." : "This interrupts its current work."}`)) return;
+  const epoch = state.sessionEpoch;
+  pendingActions.add(name);
+  if (state.selected === name) updateAgentActions(row);
+  try {
+    await api("/api/agents/" + encodeURIComponent(name) + (action === "delete" ? "" : "/" + action), action === "delete" ? undefined : {}, action === "delete" ? "DELETE" : "POST");
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    if (action === "delete" && state.selected === name) showOverview();
+    await refresh();
+  } catch (error) { if (epoch === state.sessionEpoch) notice(error.message); }
+  finally {
+    pendingActions.delete(name);
+    if (state.selected === name) updateAgentActions(state.rows.find(row => key(row) === name));
+  }
+}
+document.querySelectorAll("[data-action]").forEach(button => { button.onclick = () => runAgentAction(state.selected, button.dataset.action); });
+let manageAgent = null;
+$("close-manage-agent").onclick = () => $("manage-agent-dialog").close();
+async function openManageAgent(name, action) {
+  if (!state.authenticated || pendingActions.has(name)) return;
+  const context = { name, action, epoch: state.sessionEpoch };
+  manageAgent = context;
+  $("manage-agent-title").textContent = action === "rename" ? "Rename agent" : "Move agent";
+  $("manage-agent-source").textContent = name;
+  $("manage-agent-error").textContent = "";
+  $("rename-agent-field").hidden = action !== "rename";
+  $("rename-agent-name").required = action === "rename";
+  $("rename-agent-name").value = name.split(":").at(-1);
+  $("move-agent-fields").hidden = action !== "move";
+  $("move-agent-dir").value = "";
+  $("manage-agent-submit").textContent = action === "rename" ? "Rename" : "Move agent";
+  $("manage-agent-submit").disabled = action === "move";
+  $("manage-agent-dialog").showModal();
+  if (action === "move") try {
+    const hosts = await api("/api/hosts");
+    if (manageAgent !== context || context.epoch !== state.sessionEpoch) return;
+    const remote = name.includes(":");
+    $("move-agent-host").replaceChildren();
+    if (remote) $("move-agent-host").add(new Option(hosts.local + " (this server)", "local"));
+    else for (const host of hosts.hosts) $("move-agent-host").add(new Option(host.name, host.name));
+    $("manage-agent-submit").disabled = !$("move-agent-host").options.length;
+    if (!$("move-agent-host").options.length) $("manage-agent-error").textContent = "No remote hosts configured.";
+  } catch (error) { if (manageAgent === context) $("manage-agent-error").textContent = error.message; }
+}
+$("manage-agent-form").onsubmit = async event => {
+  event.preventDefault();
+  const context = manageAgent;
+  if (!context || !state.authenticated || pendingActions.has(context.name)) return;
+  const { name, action, epoch } = context, version = state.detailVersion, selected = state.selected;
+  const body = action === "rename" ? { name: $("rename-agent-name").value.trim() } : { host: $("move-agent-host").value, ...($("move-agent-dir").value.trim() ? { dir: $("move-agent-dir").value.trim() } : {}) };
+  if (action === "move" && !confirm(`Move ${name} to ${body.host}? The source will stop; workspace files are not copied.`)) return;
+  pendingActions.add(name);
+  $("manage-agent-submit").disabled = true;
+  $("manage-agent-submit").textContent = action === "move" ? "Moving…" : "Renaming…";
+  $("manage-agent-error").textContent = "";
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(name) + "/" + action, body);
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    if (manageAgent === context) $("manage-agent-dialog").close();
+    await refresh();
+    if (state.selected === selected && state.detailVersion === version) await selectAgent(result.key || result.name);
+  } catch (error) {
+    if (epoch === state.sessionEpoch) {
+      const message = error.message + " Check the agent list before retrying if the connection was interrupted.";
+      if (manageAgent === context && $("manage-agent-dialog").open) $("manage-agent-error").textContent = message;
+      else notice(message);
+    }
+  } finally {
+    pendingActions.delete(name);
+    if (manageAgent === context) { $("manage-agent-submit").disabled = false; $("manage-agent-submit").textContent = action === "move" ? "Move agent" : "Rename"; }
+  }
+};
 async function refresh() {
   refreshWorkspace();
   if (!state.authenticated) return;
@@ -931,7 +1103,13 @@ function parentKey(row) {
     ? row.spawnedBy
     : `${row.host}:${row.spawnedBy}`;
 }
+$("show-finished-subagents").onchange = () => {
+  const snapshot = state.related;
+  if (snapshot?.name === state.selected) renderRelated(snapshot.name, snapshot.subagents);
+};
 function renderRelated(name, subagents) {
+  state.related = { name, subagents };
+  const showFinished = $("show-finished-subagents").checked;
   const view = $("related-agents");
   view.replaceChildren();
   const row = state.rows.find((row) => key(row) === name);
@@ -941,7 +1119,7 @@ function renderRelated(name, subagents) {
     link.onclick = () => selectAgent(parent);
     view.append(link);
   }
-  for (const child of state.rows.filter((row) => parentKey(row) === name)) {
+  for (const child of state.rows.filter((row) => parentKey(row) === name && (showFinished || !["exited", "dead"].includes(row.status)))) {
     const link = el(
       "button",
       "related-link",
@@ -956,6 +1134,7 @@ function renderRelated(name, subagents) {
       Date.parse(b.startedAt) - Date.parse(a.startedAt),
   );
   for (const sub of records) {
+    if (!showFinished && (sub.endedAt || sub.stale)) continue;
     const label = sub.description || sub.type;
     const status = sub.stale
       ? "Session ended"
@@ -972,7 +1151,7 @@ function renderRelated(name, subagents) {
   }
   if (subagents.error) view.append(el("p", "", subagents.error));
   if (!view.childNodes.length)
-    view.append(el("p", "", "No subagents recorded."));
+    view.append(el("p", "", showFinished ? "No subagents recorded." : "No active subagents."));
 }
 async function openSubagent(parent, id, label, message, status = "Running") {
   state.subagent = { parent, id, label, message, status };
