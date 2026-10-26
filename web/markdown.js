@@ -144,7 +144,8 @@ window.agentMarkdown = {
       else if (match[6]) {
         const href = window.agentLinks.url(match[7]);
         if (!href) window.agentLinks.append(parent, match[0]);
-        else parent.append(Object.assign(window.agentLinks.anchor(match[6], href), { title: href }));
+        // Link text that looks like an address shows the real destination, so it cannot disguise it.
+        else parent.append(Object.assign(window.agentLinks.anchor(/^\s*(https?:\/\/|www\.)/i.test(match[6]) ? href : match[6], href), { title: href }));
       } else if (match[10]) window.agentLinks.append(parent, match[0]);
       else this.inline(this.element("em", parent), match[8] || match[9]);
     }

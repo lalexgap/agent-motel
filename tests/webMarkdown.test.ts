@@ -98,3 +98,8 @@ test("renders oversized text as one plain paragraph", () => {
   const nodes = render("**a**\n" + "x ".repeat(50001)).children;
   expect(nodes.map(node => node.tag)).toEqual(["p"]);
 });
+
+test("link text that looks like an address shows the real destination", () => {
+  expect(body("[https://github.com/me](https://evil.example/x)")).toBe('<p><a href="https://evil.example/x">https://evil.example/x</a></p>');
+  expect(body("[PR](https://github.com/a/b/pull/1)")).toBe('<p><a href="https://github.com/a/b/pull/1">PR</a></p>');
+});
