@@ -89,7 +89,8 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
     // Long composers hide the shortcuts row and scroll the message's head away.
     let footer = -1;
     for (let i = 0; i < plain.length; i++) {
-      if (/^\s+\S.*[·•]\s+(?:~?\/|[A-Za-z]:\\)/.test(plain[i]!)) footer = i;
+      // The cwd segment: a path, or a bare "~" when Codex runs in the home folder.
+      if (/^\s+\S.*[·•]\s+(?:~(?:\/|\s|$)|\/|[A-Za-z]:\\)/.test(plain[i]!)) footer = i;
     }
     if (footer < 0) return null;
     let prompt = -1;
@@ -132,6 +133,13 @@ export function turnRunning(pane: string[], provider: Provider = "claude"): bool
   if (seps.length < 2) return false;
   const top = seps[seps.length - 2]!;
   return plain.slice(Math.max(0, top - 3), top).concat(plain.slice(seps[seps.length - 1]! + 1)).some(line => RUNNING_RE.test(line));
+}
+
+// Codex fires SessionStart only at its first turn, so a launched or resumed
+// Codex agent with nothing to do never leaves "starting" on its own. Its
+// composer on screen with no turn running means it is ready and idle.
+export function codexReadyAtPrompt(pane: string[]): boolean {
+  return parsedInputBoxText(pane, "codex") !== null && !turnRunning(pane, "codex");
 }
 
 export function inputBoxText(pane: string[], provider: Provider = "claude"): string {
