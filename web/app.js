@@ -377,7 +377,10 @@ function renderFleet() {
   const nav = $("agent-nav");
   nav.replaceChildren();
   const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
-  for (const row of rows) {
+  const sidebarRank = { "needs-attention": 0, waiting: 0, working: 1, starting: 2, idle: 3 };
+  const sidebarRows = [...rows].sort((a, b) =>
+    (sidebarRank[a.status] ?? 4) - (sidebarRank[b.status] ?? 4) || a.name.localeCompare(b.name));
+  for (const row of sidebarRows) {
     if (
       !$("show-stopped-agents").checked &&
       ["exited", "dead"].includes(row.status)
@@ -387,10 +390,11 @@ function renderFleet() {
       .toLowerCase().includes(sidebarQuery)) continue;
     const button = el("button", "side-agent");
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
-    const label = el("span", "side-agent-provider", provider);
-    label.dataset.provider = provider.toLowerCase();
-    button.title = `${row.name} · ${provider}`;
-    button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    const time = row.status === "working" ? elapsed(runtime(row)) : "";
+    button.title = `${row.name} · ${statusName(row.status)} · ${provider}`;
+    button.append(dot(row.status), el("span", "side-agent-name", row.name), el("span", "side-agent-time", time));
+    button.classList.toggle("selected", key(row) === state.selected);
+    if (key(row) === state.selected) button.setAttribute("aria-current", "page");
     button.dataset.agentKey = key(row);
     button.setAttribute("aria-haspopup", "menu");
     button.oncontextmenu = event => openAgentMenu(event, key(row), button);
@@ -492,6 +496,7 @@ async function selectAgent(name, mode) {
   saveDraft();
   agentTerminal.close();
   state.selected = name;
+  renderFleet();
   state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
   $("workspace-pr-count").textContent = "";

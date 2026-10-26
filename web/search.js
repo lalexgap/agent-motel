@@ -35,7 +35,7 @@ function showSearch() {
   $("breadcrumb").textContent = "Search";
   $("page-subtitle").textContent = "";
   document.querySelectorAll(".nav").forEach(button => button.classList.toggle("active", button.id === "search-nav"));
-  renderAdvancedSearch();
+  renderFleet();
   $("advanced-query").focus();
 }
 function searchOptions(id, values, label) {
