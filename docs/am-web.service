@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Motel authenticated web front desk
+Wants=am-tmux.service am-daemon.service
+After=network-online.target am-tmux.service am-daemon.service
+
+[Service]
+Type=exec
+ExecStart=/bin/sh -lc 'exec am serve --bind 127.0.0.1 --port 8790'
+Environment=AGENTMGR_SYSTEMD=1
+UnsetEnvironment=AGENTMGR_AGENT AGENTMGR_HOME AM_HOST TMUX
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

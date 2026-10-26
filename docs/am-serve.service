@@ -3,7 +3,8 @@
 # agents live on.
 #
 #   mkdir -p ~/.config/systemd/user
-#   cp docs/am-serve.service ~/.config/systemd/user/
+#   See service-lifecycle.md before installing on an existing fleet.
+#   cp docs/am-{tmux,daemon,serve}.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now am-serve
 #   loginctl enable-linger $USER   # user units run without an active login
 #
@@ -18,11 +19,14 @@
 
 [Unit]
 Description=Agent Motel fleet HTTP API
-After=network-online.target
+Wants=am-tmux.service am-daemon.service
+After=network-online.target am-tmux.service am-daemon.service
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -lc 'am serve'
+ExecStart=/bin/sh -lc 'exec am serve'
+Environment=AGENTMGR_SYSTEMD=1
+UnsetEnvironment=AGENTMGR_AGENT AGENTMGR_HOME AM_HOST TMUX
 Restart=on-failure
 
 [Install]
