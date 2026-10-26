@@ -68,8 +68,19 @@ function updateAgentView() {
     agentTerminal.open(state.selected, row?.status);
   } else agentTerminal.close();
 }
-$("terminal-tab").onclick = () => { state.detailMode = "terminal"; updateAgentView(); };
-$("chat-tab").onclick = () => { state.detailMode = "chat"; updateAgentView(); };
+// The Terminal/Chat choice is one global preference that persists across agents and reloads.
+// A mode passed to selectAgent (a conversation search hit) applies to that visit only.
+let preferredMode = "terminal";
+try {
+  const saved = localStorage.getItem("am.detailMode");
+  if (saved === "terminal" || saved === "chat") preferredMode = saved;
+} catch {}
+function setDetailMode(mode) {
+  state.detailMode = preferredMode = mode;
+  try { localStorage.setItem("am.detailMode", mode); } catch {}
+}
+$("terminal-tab").onclick = () => { setDetailMode("terminal"); updateAgentView(); };
+$("chat-tab").onclick = () => { setDetailMode("chat"); updateAgentView(); };
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
 new MutationObserver(() => {
   $("terminal-reconnect").hidden = $("terminal-status").textContent.startsWith("●");
@@ -502,7 +513,7 @@ async function selectAgent(name, mode) {
   agentTerminal.close();
   state.selected = name;
   renderFleet();
-  state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
+  state.detailMode = mode || preferredMode;
   state.detailVersion++;
   $("workspace-pr-count").textContent = "";
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
@@ -574,7 +585,7 @@ async function openConcierge(question) {
     notice("Opening the front desk…");
     const result = await api("/api/concierge", {});
     notice("");
-    await selectAgent(result.key);
+    await selectAgent(result.key, question ? "chat" : undefined);
     if (question) {
       $("message").value = question;
       $("message").focus();
@@ -908,7 +919,10 @@ $("agent-context-menu").onclick = event => {
   if (action === "handover") openHandover(name);
   else if (["rename", "move"].includes(action)) openManageAgent(name, action);
   else if (["resume", "restart", "interrupt", "stop", "delete"].includes(action)) runAgentAction(name, action);
-  else selectAgent(name, action === "open" ? undefined : action);
+  else {
+    if (action !== "open") setDetailMode(action);
+    selectAgent(name);
+  }
 };
 $("agent-context-menu").onkeydown = event => {
   if (event.key === "Escape" || event.key === "Tab") {
