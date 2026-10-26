@@ -49,3 +49,40 @@ test("keeps an ordered list's starting number", () => {
   expect(list.tag).toBe("ol");
   expect(list.attrs.start).toBe("3");
 });
+
+test("strips closing heading hashes and keeps URLs with emphasis markers whole", () => {
+  expect(body("## Title ##")).toBe("<h4>Title</h4>");
+  expect(body("# C# #")).toBe("<h3>C#</h3>");
+  const tests = "https://github.com/o/r/blob/main/src/__tests__/x.test.ts";
+  const init = "https://x.dev/pkg/__init__.py";
+  expect(body(`see ${tests} and ${init}`)).toBe(`<p>see <a href="${tests}">${tests}</a> and <a href="${init}">${init}</a></p>`);
+  expect(body("https://x.dev/a/*b*/c.")).toBe('<p><a href="https://x.dev/a/*b*/c">https://x.dev/a/*b*/c</a>.</p>');
+  expect(body("**https://x.dev** `https://y.dev/__a__`")).toBe('<p><strong><a href="https://x.dev/">https://x.dev</a></strong> <code>https://y.dev/__a__</code></p>');
+  const link = render("[PR](https://x.dev/p)").children[0]!.children.find(node => node.tag === "a") as any;
+  expect([link.tag, link.href, link.title]).toEqual(["a", "https://x.dev/p", "https://x.dev/p"]);
+});
+
+test("keeps balanced trailing brackets and trims unbalanced ones", () => {
+  expect(body("https://en.wikipedia.org/wiki/Foo_(bar)")).toBe('<p><a href="https://en.wikipedia.org/wiki/Foo_(bar)">https://en.wikipedia.org/wiki/Foo_(bar)</a></p>');
+  expect(body("(see https://a.dev/x)")).toBe('<p>(see <a href="https://a.dev/x">https://a.dev/x</a>)</p>');
+  expect(body("[https://a.dev/x])")).toBe('<p>[<a href="https://a.dev/x">https://a.dev/x</a>])</p>');
+});
+
+test("renders pathological input quickly without overflowing the stack", () => {
+  const inputs = [
+    "# a" + " ".repeat(20000) + "b",
+    "para\n# a" + " ".repeat(20000) + "b",
+    "a|b\n" + " ".repeat(80000) + "x",
+    ">".repeat(5000) + " deep",
+    Array.from({ length: 3000 }, (_, i) => " ".repeat(i * 2) + "- x").join("\n"),
+    "**a ".repeat(20000),
+    "http://a" + ")".repeat(40000),
+    "http://a" + ".".repeat(40000) + "x",
+  ];
+  for (const input of inputs) {
+    const start = performance.now();
+    expect(() => render(input)).not.toThrow();
+    expect(performance.now() - start).toBeLessThan(500);
+  }
+  expect(body(">>>> deep")).toBe("<blockquote><blockquote><blockquote><blockquote><p>deep</p></blockquote></blockquote></blockquote></blockquote>");
+});

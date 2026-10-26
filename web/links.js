@@ -21,10 +21,14 @@ window.agentLinks = {
   append(node, text = "") {
     let offset = 0;
     for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
-      let candidate = match[0].replace(/[.,;:!?]+$/, "");
+      let candidate = match[0], end = candidate.length;
+      while (".,;:!?".includes(candidate[end - 1])) end--;
+      candidate = candidate.slice(0, end);
       for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
-        while (candidate.endsWith(close) && candidate.split(close).length > candidate.split(open).length)
-          candidate = candidate.slice(0, -1);
+        let extra = candidate.split(close).length - candidate.split(open).length;
+        end = candidate.length;
+        while (extra-- > 0 && candidate[end - 1] === close) end--;
+        candidate = candidate.slice(0, end);
       }
       const href = this.url(candidate);
       if (!href) continue;
