@@ -1270,6 +1270,7 @@ unlock().catch(() => {});
 
 async function refreshDock() {
   const name = state.conciergeKey;
+  if (!state.rows.some((row) => key(row) === name)) $("dock-working").hidden = true;
   if (
     !name ||
     state.selected ||
@@ -1333,8 +1334,8 @@ $("dock-form").onsubmit = async (event) => {
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
       { text, mode: "now" },
     );
-    notePending(state.conciergeKey, text, sent.id);
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    notePending(state.conciergeKey, text, sent.id);
     if (state.dockRevision === revision) $("dock-message").value = "";
     $("dock-status").textContent = "Message accepted";
     await refreshDock();
