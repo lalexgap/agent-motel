@@ -74,7 +74,9 @@ test("renders pathological input quickly without overflowing the stack", () => {
     "para\n# a" + " ".repeat(20000) + "b",
     "a|b\n" + " ".repeat(80000) + "x",
     ">".repeat(5000) + " deep",
-    Array.from({ length: 3000 }, (_, i) => " ".repeat(i * 2) + "- x").join("\n"),
+    Array.from({ length: 300 }, (_, i) => " ".repeat(i * 2) + "- x").join("\n"),
+    Array.from({ length: 10 }, () => "[a](" + "x".repeat(9990)).join("\n\n"),
+    "**a ".repeat(30000),
     "**a ".repeat(20000),
     "http://a" + ")".repeat(40000),
     "http://a" + ".".repeat(40000) + "x",
@@ -85,4 +87,9 @@ test("renders pathological input quickly without overflowing the stack", () => {
     expect(performance.now() - start).toBeLessThan(500);
   }
   expect(body(">>>> deep")).toBe("<blockquote><blockquote><blockquote><blockquote><p>deep</p></blockquote></blockquote></blockquote></blockquote>");
+});
+
+test("keeps parentheses inside markdown link destinations", () => {
+  expect(body("[w](https://en.wikipedia.org/wiki/Foo_(bar))")).toBe('<p><a href="https://en.wikipedia.org/wiki/Foo_(bar)">w</a></p>');
+  expect(body("[w](https://x.dev/(a)b)")).toBe('<p><a href="https://x.dev/(a)b">w</a></p>');
 });

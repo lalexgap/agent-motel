@@ -8,7 +8,9 @@ window.agentMarkdown = {
   item: /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/,
   tableDivider: /^\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?$/,
   maxDepth: 8,
+  maxRender: 100000,
   render(node, text = "") {
+    if (String(text).length > this.maxRender) return window.agentLinks.render(node, String(text));
     node.replaceChildren();
     this.blocks(node, String(text).replace(/\r\n?/g, "\n").split("\n"));
     return node;
@@ -127,7 +129,7 @@ window.agentMarkdown = {
     }
     return index;
   },
-  inlinePattern: /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\*\*(?=\S)([\s\S]*?\S)\*\*|__(?=\S)([\s\S]*?\S)__(?!\w)|~~(?=\S)([\s\S]*?\S)~~|\[([^\]\n]+)\]\(([^()\s]+(?:\([^()\s]*\))?[^()\s]*)\)|(?<![\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])|(?<![\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])|(https?:\/\/[^\s<>"'`]+)/gi,
+  inlinePattern: /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\*\*(?=\S)([\s\S]*?\S)\*\*|__(?=\S)([\s\S]*?\S)__(?!\w)|~~(?=\S)([\s\S]*?\S)~~|\[([^\]\n]+)\]\(([^()\s]+(?:\([^()\s]*\)[^()\s]*)?)\)|(?<![\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])|(?<![\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])|(https?:\/\/[^\s<>"'`]+)/gi,
   maxInline: 10000,
   inline(parent, text) {
     if (text.length > this.maxInline) return window.agentLinks.append(parent, text);
