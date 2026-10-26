@@ -81,7 +81,10 @@ const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (text !== undefined) {
+    if (className === "turn-text" || tag === "pre") window.agentLinks.render(node, text);
+    else node.textContent = text;
+  }
   return node;
 };
 const dot = (status) =>
@@ -147,6 +150,8 @@ function lock() {
   $("create-dialog").close();
   $("handover-dialog").close();
   handoverSource = null;
+  manageAgent = null;
+  $("manage-agent-dialog").close();
   state.related = null;
   $("related-agents").replaceChildren();
   $("subagent-output").replaceChildren();
@@ -541,6 +546,7 @@ async function refreshDetail() {
     Object.assign(badge(detail.status), { id: "detail-status" }),
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
+  updateAgentActions(detail);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
@@ -554,7 +560,7 @@ async function refreshDetail() {
   ]) {
     room.append(el("dt", "", title), el("dd", "", String(value)));
   }
-  $("pane").textContent = detail.pane || "No active terminal.";
+  window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
 
   const queue = $("queue");
@@ -704,6 +710,7 @@ function openAgentMenu(event, name, button) {
   if (!state.authenticated) return;
   contextAgent = name;
   const menu = $("agent-context-menu"), rect = button.getBoundingClientRect();
+  updateAgentActions(state.rows.find(row => key(row) === name), menu);
   menu.hidden = false;
   const x = event.clientX || rect.left, y = event.clientY || rect.bottom;
   menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + "px";
@@ -718,6 +725,8 @@ $("agent-context-menu").onclick = event => {
   closeAgentMenu(true);
   if (!state.authenticated) return;
   if (action === "handover") openHandover(name);
+  else if (["rename", "move"].includes(action)) openManageAgent(name, action);
+  else if (["resume", "restart", "interrupt", "stop", "delete"].includes(action)) runAgentAction(name, action);
   else selectAgent(name, action === "open" ? undefined : action);
 };
 $("agent-context-menu").onkeydown = event => {
@@ -726,7 +735,7 @@ $("agent-context-menu").onkeydown = event => {
   }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  const buttons = [...$("agent-context-menu").querySelectorAll("button:not(:disabled)")];
+  const buttons = [...$("agent-context-menu").querySelectorAll("button:not(:disabled):not([hidden])")];
   const index = buttons.indexOf(document.activeElement);
   const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
   buttons[next]?.focus();
@@ -781,37 +790,100 @@ $("handover-form").onsubmit = async event => {
   }
 };
 
-document.querySelectorAll("[data-action]").forEach(
-  (button) =>
-    (button.onclick = async () => {
-      const name = state.selected,
-        action = button.dataset.action;
-      if (!name) return;
-      if (
-        action !== "resume" &&
-        !confirm(
-          `${action[0].toUpperCase() + action.slice(1)} ${name}? ${action === "delete" ? "Its session will stop and the agent will be removed. The worktree is kept." : action === "restart" ? "This interrupts its current turn and reopens the conversation." : "This interrupts its current work."}`,
-        )
-      )
-        return;
-      button.disabled = true;
-      try {
-        await api(
-          "/api/agents/" +
-            encodeURIComponent(name) +
-            (action === "delete" ? "" : "/" + action),
-          action === "delete" ? undefined : {},
-          action === "delete" ? "DELETE" : "POST",
-        );
-        if (action === "delete") showOverview();
-        await refresh();
-      } catch (error) {
-        notice(error.message);
-      } finally {
-        button.disabled = false;
-      }
-    }),
-);
+const pendingActions = new Set();
+function actionAvailable(row, action) {
+  if (!row) return false;
+  const stopped = ["dead", "exited"].includes(row.status);
+  if (action === "resume") return stopped;
+  if (["stop", "restart", "terminal"].includes(action)) return !stopped;
+  if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
+  if (action === "rename") return row.name !== "concierge";
+  return true;
+}
+function updateAgentActions(row, container = document.querySelector(".actions")) {
+  for (const button of container.querySelectorAll("[data-action], [data-agent-menu]")) {
+    const action = button.dataset.action || button.dataset.agentMenu;
+    button.hidden = !actionAvailable(row, action);
+    button.disabled = !!row && pendingActions.has(key(row));
+  }
+}
+async function runAgentAction(name, action) {
+  if (!state.authenticated || pendingActions.has(name)) return;
+  const row = state.rows.find(row => key(row) === name);
+  if (!actionAvailable(row, action)) { notice("Agent status changed. Refresh and try again."); return; }
+  const label = action === "delete" ? "Remove" : action[0].toUpperCase() + action.slice(1);
+  if (action !== "resume" && !confirm(`${label} ${name}? ${action === "delete" ? "Its session will stop and the agent will be removed. The worktree is kept." : action === "restart" ? "This interrupts its current turn and reopens the conversation." : "This interrupts its current work."}`)) return;
+  const epoch = state.sessionEpoch;
+  pendingActions.add(name);
+  if (state.selected === name) updateAgentActions(row);
+  try {
+    await api("/api/agents/" + encodeURIComponent(name) + (action === "delete" ? "" : "/" + action), action === "delete" ? undefined : {}, action === "delete" ? "DELETE" : "POST");
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    if (action === "delete" && state.selected === name) showOverview();
+    await refresh();
+  } catch (error) { if (epoch === state.sessionEpoch) notice(error.message); }
+  finally {
+    pendingActions.delete(name);
+    if (state.selected === name) updateAgentActions(state.rows.find(row => key(row) === name));
+  }
+}
+document.querySelectorAll("[data-action]").forEach(button => { button.onclick = () => runAgentAction(state.selected, button.dataset.action); });
+let manageAgent = null;
+$("close-manage-agent").onclick = () => $("manage-agent-dialog").close();
+async function openManageAgent(name, action) {
+  if (!state.authenticated || pendingActions.has(name)) return;
+  const context = { name, action, epoch: state.sessionEpoch };
+  manageAgent = context;
+  $("manage-agent-title").textContent = action === "rename" ? "Rename agent" : "Move agent";
+  $("manage-agent-source").textContent = name;
+  $("manage-agent-error").textContent = "";
+  $("rename-agent-field").hidden = action !== "rename";
+  $("rename-agent-name").required = action === "rename";
+  $("rename-agent-name").value = name.split(":").at(-1);
+  $("move-agent-fields").hidden = action !== "move";
+  $("move-agent-dir").value = "";
+  $("manage-agent-submit").textContent = action === "rename" ? "Rename" : "Move agent";
+  $("manage-agent-submit").disabled = action === "move";
+  $("manage-agent-dialog").showModal();
+  if (action === "move") try {
+    const hosts = await api("/api/hosts");
+    if (manageAgent !== context || context.epoch !== state.sessionEpoch) return;
+    const remote = name.includes(":");
+    $("move-agent-host").replaceChildren();
+    if (remote) $("move-agent-host").add(new Option(hosts.local + " (this server)", "local"));
+    else for (const host of hosts.hosts) $("move-agent-host").add(new Option(host.name, host.name));
+    $("manage-agent-submit").disabled = !$("move-agent-host").options.length;
+    if (!$("move-agent-host").options.length) $("manage-agent-error").textContent = "No remote hosts configured.";
+  } catch (error) { if (manageAgent === context) $("manage-agent-error").textContent = error.message; }
+}
+$("manage-agent-form").onsubmit = async event => {
+  event.preventDefault();
+  const context = manageAgent;
+  if (!context || !state.authenticated || pendingActions.has(context.name)) return;
+  const { name, action, epoch } = context, version = state.detailVersion, selected = state.selected;
+  const body = action === "rename" ? { name: $("rename-agent-name").value.trim() } : { host: $("move-agent-host").value, ...($("move-agent-dir").value.trim() ? { dir: $("move-agent-dir").value.trim() } : {}) };
+  if (action === "move" && !confirm(`Move ${name} to ${body.host}? The source will stop; workspace files are not copied.`)) return;
+  pendingActions.add(name);
+  $("manage-agent-submit").disabled = true;
+  $("manage-agent-submit").textContent = action === "move" ? "Moving…" : "Renaming…";
+  $("manage-agent-error").textContent = "";
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(name) + "/" + action, body);
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    if (manageAgent === context) $("manage-agent-dialog").close();
+    await refresh();
+    if (state.selected === selected && state.detailVersion === version) await selectAgent(result.key || result.name);
+  } catch (error) {
+    if (epoch === state.sessionEpoch) {
+      const message = error.message + " Check the agent list before retrying if the connection was interrupted.";
+      if (manageAgent === context && $("manage-agent-dialog").open) $("manage-agent-error").textContent = message;
+      else notice(message);
+    }
+  } finally {
+    pendingActions.delete(name);
+    if (manageAgent === context) { $("manage-agent-submit").disabled = false; $("manage-agent-submit").textContent = action === "move" ? "Move agent" : "Rename"; }
+  }
+};
 async function refresh() {
   refreshWorkspace();
   if (!state.authenticated) return;

@@ -226,6 +226,7 @@ export function importPayload(raw: string, handoffToken?: string): string {
 }
 
 export interface MoveOptions {
+  exact?: boolean;
   dir?: string;
   copy: boolean;
   start: boolean;
@@ -335,7 +336,9 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
   const run = hooks.runAsync ?? runAsync;
   // Backfill worktree metadata from git so an agent whose dir is a worktree
   // but never recorded it still gets its worktree recreated on the target.
-  let agent = withWorktreeMeta(resolveAgent(name));
+  const source = opts.exact ? readAgent(name) : resolveAgent(name);
+  if (!source) throw new Error(`no local agent "${name}"`);
+  let agent = withWorktreeMeta(source);
 
   const targetHomeDir = await remoteHome(host, sshRun);
   // storedDir is the LOGICAL dir saved in state (portable across machines);
@@ -681,6 +684,10 @@ export async function moveAgent(
   hooks: MoveHooks = {},
 ): Promise<string> {
   const spec = parseMoveSpec(first, second);
+  if (opts.exact) {
+    const runner = hooks.sshAmAsync ?? sshAmAsync;
+    hooks = { ...hooks, sshAmAsync: (host, args, options) => runner(host, [...args, "--local", "--exact"], options) };
+  }
   return spec.direction === "push"
     ? pushAgent(spec.name, spec.host, opts, hooks)
     : pullAgent(spec.name, spec.host, opts, hooks);

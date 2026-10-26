@@ -1274,3 +1274,5 @@ dialog p.muted {
 .agent-context-menu { position: fixed; z-index: 100; min-width: 170px; padding: 5px; border: 1px solid #515151; border-radius: 5px; background: #252526; box-shadow: 0 5px 20px #0008; }
 .agent-context-menu button { display: block; width: 100%; border: 0; background: transparent; text-align: left; font-size: 12px; padding: 7px 10px; }
 .agent-context-menu button:hover, .agent-context-menu button:focus-visible { background: #094771; outline: none; }
+
+.turn-text a, .tool pre a, #pane a { color: #75beff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }

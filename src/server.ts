@@ -1,3 +1,4 @@
+import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
 import { agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
@@ -378,7 +379,12 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       return json({ ok: true, name: result.name, target: result.target, key: `${host}:${result.name}` }, 201);
     }
     if (route === "rename" && method === "POST") {
-      return json({ error: "rename is not supported for remote agents" }, 501);
+      const body = await req.json().catch(() => null);
+      if (typeof body?.name !== "string" || !AGENT_NAME_RE.test(body.name) || body.name.length > 64)
+        return json({ error: "Use a name of 1–64 letters, numbers, dashes or underscores" }, 400);
+      await ensureExactCapable(host, name);
+      await runRemoteAm(host, ["rename", name, body.name]);
+      return json({ ok: true, name: body.name, key: `${host}:${body.name}` });
     }
     const run = async (args: string[], opts?: { stdin?: string }) => {
       await ensureExactCapable(host, name);
@@ -646,6 +652,22 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   if (parts[0] === "agents" && parts.length >= 2) {
     const target = parseTarget(parts[1]!);
     if (target instanceof Response) return target;
+    if (parts.length === 3 && parts[2] === "move" && method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (typeof body?.host !== "string" || !HOST_RE.test(body.host)) return json({ error: "destination host required" }, 400);
+      const destination = resolveHost(body.host);
+      if (destination === undefined) return json({ error: "unknown destination host" }, 404);
+      if (destination === target.host || (destination && target.host)) return json({ error: "Move between this server and one configured remote host" }, 400);
+      if (body.dir !== undefined && (typeof body.dir !== "string" || !body.dir.startsWith("/") || body.dir.includes("\0")))
+        return json({ error: "destination directory must be an absolute path" }, 400);
+      if (!target.host && !readAgent(target.name)) return json({ error: "agent not found" }, 404);
+      try {
+        if (target.host) await ensureExactCapable(target.host, target.name);
+        const message = await moveAgent(target.host ? `${target.host}:${target.name}` : target.name, destination || undefined,
+          { copy: false, start: true, exact: true, ...(body.dir ? { dir: body.dir } : {}) });
+        return json({ ok: true, key: destination ? `${destination}:${target.name}` : target.name, message });
+      } catch (error) { return json({ error: (error as Error).message }, 409); }
+    }
     if (target.host) return handleRemoteAgent(req, target.host, target.name, parts.slice(2));
     const { name } = target;
 
@@ -778,7 +800,8 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     // POST /api/agents/:name/rename — {name}
     if (parts.length === 3 && parts[2] === "rename" && method === "POST") {
       const body = (await req.json().catch(() => null)) as { name?: string } | null;
-      if (!body?.name) return json({ error: "name required" }, 400);
+      if (typeof body?.name !== "string" || !AGENT_NAME_RE.test(body.name) || body.name.length > 64) return json({ error: "valid name required (1–64 characters)" }, 400);
+      if (!readAgent(name)) return json({ error: "agent not found" }, 404);
       try {
         const result = await renameAgent(name, body.name);
         return json({ ok: true, oldName: result.oldName, name: result.newName, live: result.live });
@@ -870,7 +893,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }
@@ -942,7 +965,10 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
         if (!bearerValid && parts.length === 1 && parts[0] === "events") {
           return respond(json({ error: "event streams require bearer authentication; browser clients use polling" }, 403));
         }
-        try { return respond(await handleApi(req, parts)); }
+        try {
+          if (req.method === "POST" && parts.length === 3 && parts[0] === "agents" && parts[2] === "move") server.timeout(req, 0);
+          return respond(await handleApi(req, parts));
+        }
         catch { return respond(json({ error: "request failed" }, 500)); }
       }
 

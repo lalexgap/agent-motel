@@ -1,3 +1,4 @@
+import * as migration from "../src/commands/move";
 import * as handover from "../src/commands/handoff";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,6 +46,31 @@ function seedAgent(name: string, status: AgentState["status"] = "idle") {
   const now = new Date().toISOString();
   writeAgent({ name, status, dir: "/tmp", tmuxSession: `agentmgr-${name}`, createdAt: now, updatedAt: now });
 }
+
+describe("agent move API", () => {
+  test("validates configured destination, exact source, direction and directory before moving", async () => {
+    writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop"] }));
+    seedAgent("source");
+    const move = spyOn(migration, "moveAgent").mockResolvedValue("moved");
+    const post = (key: string, body: unknown) => fetch(url(`/api/agents/${key}/move`), auth({ method: "POST", body: JSON.stringify(body) }));
+    try {
+      expect((await fetch(url("/api/agents/source/move"), { method: "POST", body: "{}" })).status).toBe(401);
+      expect((await post("source", {})).status).toBe(400);
+      expect((await post("source", { host: "unknown" })).status).toBe(404);
+      expect((await post("source", { host: "local" })).status).toBe(400);
+      expect((await post("source", { host: "laptop", dir: "relative" })).status).toBe(400);
+      expect((await post("sour", { host: "laptop" })).status).toBe(404);
+      expect((await post("laptop:source", { host: "laptop" })).status).toBe(400);
+      expect(move).not.toHaveBeenCalled();
+      const response = await post("source", { host: "laptop", dir: "/tmp/destination" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ key: "laptop:source" });
+      expect(move).toHaveBeenCalledWith("source", "laptop", { copy: false, start: true, exact: true, dir: "/tmp/destination" });
+      move.mockRejectedValueOnce(new Error("destination unavailable"));
+      expect((await post("source", { host: "laptop" })).status).toBe(409);
+    } finally { move.mockRestore(); }
+  });
+});
 
 describe("agent workspace", () => {
   test("requires authentication and reports missing agents and non-repository directories", async () => {
@@ -812,6 +838,15 @@ describe("remote agents api (host:name)", () => {
     calls.length = 0;
     expect((await fetch(url("/api/agents/laptop:api/messages/a.b"), auth())).status).toBe(404);
     expect(calls).toEqual([]);
+  });
+
+  test("remote rename validates names and uses exact remote transport", async () => {
+    expect((await post("/api/agents/laptop:api/rename", { name: "../bad" })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+    const response = await post("/api/agents/laptop:api/rename", { name: "new-name" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ key: "laptop:new-name" });
+    expect(calls.map(c => c.args)).toEqual([["__detail", "api", "--local", "--exact"], ["rename", "api", "new-name", "--local", "--exact"]]);
   });
 
   test("transcript slices entries by after", async () => {

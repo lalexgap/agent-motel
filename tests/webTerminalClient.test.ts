@@ -23,7 +23,7 @@ async function client() {
   }
   const window: any = {};
   runInNewContext(readFileSync(new URL("../web/terminal.js", import.meta.url), "utf8"), {
-    window, Terminal, FitAddon: { FitAddon: class { fit() {} } }, WebSocket: Socket,
+    window, Terminal, WebLinksAddon: { WebLinksAddon: class {} }, FitAddon: { FitAddon: class { fit() {} } }, WebSocket: Socket,
     ResizeObserver: class { observe() {} disconnect() {} }, URL, ArrayBuffer, Uint8Array,
     location: { href: "https://am.test/", protocol: "https:" },
     fetch: async () => ({ ok: true, status: 200, json: async () => ({ available: true }) }),
