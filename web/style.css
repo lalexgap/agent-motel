@@ -1310,7 +1310,12 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 @media (max-width: 1100px) { .search-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .search-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-result { padding: 12px; } }
 
-.search-snippet { border-left: 2px solid #569cd6; padding-left: 10px; color: #b9cbd8; font-family: monospace; font-size: 12px; }
+.search-snippet { border-left: 2px solid #4a4f57; padding-left: 10px; color: #b9c0c8; font-size: 12px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.search-snippet-kind { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; margin-right: 8px; }
+.search-result .search-task { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; color: #c8c8c8; }
+.search-result mark { background: #4b3f12; color: #ffe8a3; border-radius: 2px; padding: 0 1px; }
+#advanced-reset { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+#advanced-reset:hover { color: #d4d4d4; }
 
 @media (max-width: 700px) { .search-filters label:first-child { grid-column: 1 / -1; } }
 .turn-text { white-space: normal; }
