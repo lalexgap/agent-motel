@@ -515,6 +515,33 @@ export async function notifyDaemon(agent: string, event: string): Promise<boolea
   return !!res?.ok;
 }
 
+export function recordedPidMayOwnDaemon(pid: number): boolean {
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw error;
+    }
+  };
+  if (!alive()) return false;
+  try {
+    // Legacy daemons have no lock, but are launched with the __daemon argument.
+    if (process.platform === "linux") {
+      const command = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (!command) throw new Error("Process command is unavailable");
+      return command.split("\0").includes("__daemon");
+    }
+    const result = Bun.spawnSync(["ps", "-ww", "-p", String(pid), "-o", "args="]);
+    if (result.exitCode !== 0 || !result.stdout.toString().trim()) throw new Error("Process command is unavailable");
+    return /(?:^|\s)__daemon(?:\s|$)/.test(result.stdout.toString());
+  } catch (error) {
+    if (!alive()) return false;
+    throw new Error(`Cannot verify daemon PID ${pid}; refusing to replace its socket.`, { cause: error });
+  }
+}
+
 export async function runForegroundDaemon(): Promise<void> {
   ensureDirs();
   const release = tryAcquireFileLock(join(baseDir(), "daemon.lock"));
@@ -523,13 +550,8 @@ export async function runForegroundDaemon(): Promise<void> {
   try {
     if (await daemonHealth()) throw new Error("A daemon already owns the socket; stop it explicitly before migrating.");
     const pid = readDaemonPid();
-    if (pid && pid !== process.pid) {
-      try {
-        process.kill(pid, 0);
-        throw new Error(`Daemon PID ${pid} is still alive; refusing to replace its socket.`);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-      }
+    if (pid && pid !== process.pid && recordedPidMayOwnDaemon(pid)) {
+      throw new Error(`Daemon PID ${pid} is still alive; refusing to replace its socket.`);
     }
     handle = startDaemonServer();
   } catch (error) {

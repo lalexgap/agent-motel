@@ -5,7 +5,8 @@ Description=Agent Motel tmux server
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/tmux -D
+# Load the profile PATH for bare claude/codex commands in new and resumed panes.
+ExecStart=/bin/sh -lc 'exec /usr/bin/tmux -D'
 Environment=AGENTMGR_SYSTEMD=1
 UnsetEnvironment=AGENTMGR_AGENT AGENTMGR_HOME AM_HOST TMUX
 Restart=on-failure

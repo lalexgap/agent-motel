@@ -4,7 +4,7 @@
 
 Installing `am-tmux.service` in the standard user unit directory enables managed startup for normal CLI commands on Linux. The supplied units also set `AGENTMGR_SYSTEMD=1`. In this mode startup goes through `systemctl --user start`, concurrent callers share the same unit, and tmux clients use `-N` so they cannot create an unsupervised replacement server. Startup verifies that the socket belongs to the service main PID. The foreground daemon holds an OS file lock for its lifetime and refuses to replace a live daemon's socket.
 
-Without the unit or explicit opt-in, CLI startup remains unchanged on Linux and macOS. `AGENTMGR_SYSTEMD=0` explicitly disables managed startup. Custom `AGENTMGR_HOME` installations do not auto-detect these default units: provide matching customized units and explicit opt-in instead. Do not point a custom home at the stock daemon unit, which uses the default home. Units must use a PATH/login profile that resolves `am` to the intended checkout. Adjust `/usr/bin/tmux` where needed.
+Without the unit or explicit opt-in, CLI startup remains unchanged on Linux and macOS. `AGENTMGR_SYSTEMD=0` explicitly disables managed startup. Custom `AGENTMGR_HOME` installations do not auto-detect these default units: provide matching customized units and explicit opt-in instead. Do not point a custom home at the stock daemon unit, which uses the default home. The supplied units load the login profile; its PATH must resolve `am` to the intended checkout and include `claude`/`codex` for new and resumed tmux panes. Adjust `/usr/bin/tmux` where needed.
 
 ## Existing fleet: schedule migration
 

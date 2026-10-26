@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -139,6 +139,60 @@ test("foreground startup does not unlink a socket owned by an older daemon", asy
     if (child.exitCode === null) child.kill();
     await child.exited;
     server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("foreground startup recovers when daemon.pid was reused by an unrelated live process", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "am-reused-pid-"));
+  const unrelated = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)", "not__daemon"], { stdout: "ignore", stderr: "pipe" });
+  writeFileSync(join(dir, "daemon.pid"), `${unrelated.pid}\n`);
+  // A crashed daemon can leave both an unusable socket path and a stale PID.
+  writeFileSync(join(dir, "daemon.sock"), "stale");
+  const child = await daemonProcess(dir);
+  try {
+    let owner: { pid: number } | null = null;
+    for (let i = 0; i < 100 && !owner; i++) {
+      owner = await health(dir);
+      if (!owner) await Bun.sleep(20);
+    }
+    expect(owner?.pid).toBe(child.pid);
+    expect(readFileSync(join(dir, "daemon.pid"), "utf8").trim()).toBe(String(child.pid));
+    expect(unrelated.exitCode).toBeNull();
+  } finally {
+    if (child.exitCode === null) child.kill();
+    if (unrelated.exitCode === null) unrelated.kill();
+    await Promise.all([child.exited, unrelated.exited]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("foreground startup preserves an unhealthy legacy daemon without a lock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "am-unhealthy-legacy-"));
+  const socket = join(dir, "daemon.sock");
+  const legacy = Bun.spawn([process.execPath, "-e", `
+    import { writeFileSync } from "node:fs";
+    Bun.serve({ unix: ${JSON.stringify(socket)}, fetch: () => new Response("unhealthy", { status: 503 }) });
+    writeFileSync(${JSON.stringify(join(dir, "daemon.pid"))}, String(process.pid) + "\\n");
+    console.log("ready");
+  `, "__daemon"], { stdout: "pipe", stderr: "pipe" });
+  let child: Awaited<ReturnType<typeof daemonProcess>> | undefined;
+  try {
+    const reader = legacy.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+    reader.releaseLock();
+    const inode = statSync(socket).ino;
+    child = await daemonProcess(dir);
+    expect(await child.exited).not.toBe(0);
+    expect(await new Response(child.stderr).text()).toContain(`Daemon PID ${legacy.pid} is still alive`);
+    expect(statSync(socket).ino).toBe(inode);
+    expect(readFileSync(join(dir, "daemon.pid"), "utf8").trim()).toBe(String(legacy.pid));
+    expect((await fetch("http://am/health", { unix: socket, signal: AbortSignal.timeout(100) })).status).toBe(503);
+    expect(legacy.exitCode).toBeNull();
+  } finally {
+    if (child?.exitCode === null) child.kill();
+    if (legacy.exitCode === null) legacy.kill();
+    await Promise.all([child?.exited, legacy.exited]);
     rmSync(dir, { recursive: true, force: true });
   }
 });
