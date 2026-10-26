@@ -45,7 +45,7 @@ test("renders blocks: headings, fences, quotes, rules, ordered and nested lists,
 });
 
 test("keeps an ordered list's starting number", () => {
-  const list = render("3. three\n4. four").children[0];
+  const list = render("3. three\n4. four").children[0]!;
   expect(list.tag).toBe("ol");
   expect(list.attrs.start).toBe("3");
 });
