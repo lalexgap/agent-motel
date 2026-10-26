@@ -199,17 +199,23 @@
           </section>
           <section id="detail" hidden>
             <div class="detail-heading">
-              <div>
+              <div class="detail-summary">
                 <span id="detail-status" class="badge"></span>
                 <p id="detail-meta"></p>
+                <button id="detail-meta-toggle" class="text-button" type="button" aria-controls="detail-meta" aria-expanded="false" hidden>Show full task</button>
               </div>
               <div class="actions">
-                <button id="handover-agent">Handover</button>
                 <button data-action="resume">Resume</button
-                ><button data-action="restart">Restart</button
                 ><button data-action="interrupt">Interrupt</button
-                ><button data-action="stop">Stop</button
-                ><button data-action="delete" class="danger">Remove</button>
+                ><button data-action="restart">Restart</button>
+                <details class="more-actions">
+                  <summary aria-label="More agent actions" title="More actions">⋯</summary>
+                  <div class="more-menu">
+                    <button id="handover-agent">Handover…</button
+                    ><button data-action="stop">Stop</button
+                    ><button data-action="delete" class="danger">Remove…</button>
+                  </div>
+                </details>
               </div>
             </div>
             <div id="permissions"></div>

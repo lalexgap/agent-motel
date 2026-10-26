@@ -282,6 +282,7 @@ function showOverview(filter = "live") {
   state.filter = filter;
   $("detail").hidden = true;
   $("overview").hidden = false;
+  $("new-agent").hidden = false;
   $("page-title").textContent =
     filter === "attention" ? "Needs attention" : "Fleet monitor";
   $("page-subtitle").textContent = "";
@@ -492,6 +493,10 @@ async function selectAgent(name, mode) {
   $("detail").hidden = false;
   updateAgentView();
   connectEvents();
+  $("new-agent").hidden = true;
+  $("detail-meta").textContent = "";
+  $("detail-meta").classList.remove("expanded");
+  updateDetailMetaToggle();
   $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
   $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
@@ -516,6 +521,30 @@ async function selectAgent(name, mode) {
     notice(error.message);
   }
 }
+function updateDetailMetaToggle() {
+  const meta = $("detail-meta"), expanded = meta.classList.contains("expanded");
+  $("detail-meta-toggle").hidden = !expanded && meta.scrollHeight <= meta.clientHeight + 1;
+  $("detail-meta-toggle").textContent = expanded ? "Show less" : "Show full task";
+  $("detail-meta-toggle").setAttribute("aria-expanded", String(expanded));
+}
+$("detail-meta-toggle").onclick = () => {
+  $("detail-meta").classList.toggle("expanded");
+  updateDetailMetaToggle();
+};
+window.addEventListener("resize", updateDetailMetaToggle);
+const moreActions = document.querySelector(".more-actions");
+moreActions.addEventListener("click", (event) => {
+  if (event.target.closest(".more-menu button")) moreActions.open = false;
+});
+document.addEventListener("pointerdown", (event) => {
+  if (moreActions.open && !moreActions.contains(event.target)) moreActions.open = false;
+});
+moreActions.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && moreActions.open) {
+    moreActions.open = false;
+    moreActions.querySelector("summary").focus();
+  }
+});
 async function openConcierge(question) {
   try {
     notice("Opening the front desk…");
@@ -651,7 +680,9 @@ async function refreshDetail() {
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   updateAgentActions(detail, document.querySelector(".actions"), name);
   $("handover-agent").hidden = !actionAvailable(detail, "handover");
+  moreActions.hidden = [...moreActions.querySelectorAll(".more-menu button")].every((button) => button.hidden);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
+  updateDetailMetaToggle();
   const room = $("room-details");
   room.replaceChildren();
   for (const [title, value] of [

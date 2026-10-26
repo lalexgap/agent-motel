@@ -28,6 +28,7 @@ function showSearch() {
   $("overview").hidden = true;
   $("detail").hidden = true;
   $("search-page").hidden = false;
+  $("new-agent").hidden = false;
   $("page-title").textContent = "Search";
   $("breadcrumb").textContent = "Search";
   $("page-subtitle").textContent = "";
