@@ -146,7 +146,7 @@ const el = (tag, className, text) => {
 const dot = (status) =>
   el(
     "i",
-    `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited"].includes(status) ? status : ""}`,
+    `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
 const statusName = (status) =>
   ({
@@ -156,6 +156,7 @@ const statusName = (status) =>
     waiting: "Waiting",
     dead: "Offline",
     exited: "Stopped",
+    starting: "Starting",
   })[status] || status;
 function badge(status) {
   const node = el("span", "badge");
@@ -231,6 +232,9 @@ function lock() {
     "room-details",
     "workspace-prs",
     "workspace-files",
+    "detail-name",
+    "detail-status",
+    "detail-meta",
   ])
     $(id).replaceChildren();
   $("pane").textContent = "";
@@ -285,9 +289,11 @@ function showOverview(filter = "live") {
   state.filter = filter;
   $("detail").hidden = true;
   $("overview").hidden = false;
+  document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
   $("page-title").textContent =
     filter === "attention" ? "Needs attention" : "Fleet monitor";
+  $("page-title").classList.remove("agent-title");
   $("page-subtitle").textContent = "";
   $("breadcrumb").textContent =
     filter === "attention" ? "Needs attention" : "Overview";
@@ -366,21 +372,18 @@ function renderFleet() {
     (filter === "live" ? !stopped(row) :
       filter === "attention" ? attention(row) :
         filter === "exited" ? stopped(row) : row.status === filter);
-  $("stat-all").textContent = rows.filter((row) => !stopped(row)).length;
   document.querySelectorAll("[data-count]").forEach((count) => {
     count.textContent = rows.filter((row) => matchesFilter(row, count.dataset.count)).length;
   });
-  $("stat-working").textContent = rows.filter(
-    (r) => r.status === "working",
-  ).length;
-  $("stat-attention").textContent = rows.filter(attention).length;
   $("attention-count").textContent = rows.filter(attention).length;
   $("attention-count").hidden = !rows.some(attention);
-  $("stat-idle").textContent = rows.filter((r) => r.status === "idle").length;
   const nav = $("agent-nav");
   nav.replaceChildren();
   const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
-  for (const row of rows) {
+  const sidebarRank = { "needs-attention": 0, waiting: 0, working: 1, starting: 2, idle: 3 };
+  const sidebarRows = [...rows].sort((a, b) =>
+    (sidebarRank[a.status] ?? 4) - (sidebarRank[b.status] ?? 4) || a.name.localeCompare(b.name));
+  for (const row of sidebarRows) {
     if (
       !$("show-stopped-agents").checked &&
       ["exited", "dead"].includes(row.status)
@@ -392,8 +395,11 @@ function renderFleet() {
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
-    button.title = `${row.name} · ${provider}`;
+    const time = row.status === "working" ? ` · ${elapsed(runtime(row))}` : "";
+    button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
     button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    button.classList.toggle("selected", key(row) === state.selected);
+    if (key(row) === state.selected) button.setAttribute("aria-current", "page");
     button.dataset.agentKey = key(row);
     button.setAttribute("aria-haspopup", "menu");
     button.oncontextmenu = event => openAgentMenu(event, key(row), button);
@@ -415,9 +421,8 @@ function renderFleet() {
         .includes(query),
   );
   visible.sort(compareRows);
-  $("list-count").textContent = visible.length;
   document
-    .querySelectorAll(".filters button, .stats button")
+    .querySelectorAll(".filters button")
     .forEach((b) =>
       b.classList.toggle("selected", b.dataset.filter === state.filter),
     );
@@ -433,22 +438,19 @@ function renderFleet() {
           : "No agents. Create one or ask the concierge.",
       ),
     );
+  const grouped = state.sort === "status";
+  let group = null;
   for (const row of visible) {
+    if (grouped && statusGroup(row.status) !== group) {
+      group = statusGroup(row.status);
+      const header = el("div", "status-group");
+      header.append(dot(row.status), document.createTextNode(group + " "),
+        el("span", "", String(visible.filter((other) => statusGroup(other.status) === group).length)));
+      grid.append(header);
+    }
     const card = el("button", "agent-card");
     const identity = el("div", "agent-identity");
     identity.append(el("h3", "", row.name), el("p", "", row.task || "No task"));
-    const repo = el("div", "agent-repo", repoName(row));
-    repo.title = repoPath(row);
-    repo.append(
-      el(
-        "small",
-        "",
-        `${row.provider || "codex"} · ${row.host || "local"}${row.queued ? ` · ${row.queued} queued` : ""}`,
-      ),
-    );
-    const duration = el("span", "agent-runtime", elapsed(runtime(row)));
-    duration.title = "Elapsed time in the current working state";
-    card.append(identity, repo, badge(row.status), duration);
     if (row.spawnedBy)
       identity.append(el("small", "parent-label", "↳ " + row.spawnedBy));
     const children = state.rows.filter(
@@ -459,23 +461,37 @@ function renderFleet() {
         el(
           "small",
           "child-count",
-          `${children.length} AM child agent${children.length === 1 ? "" : "s"}`,
+          `${children.length} child agent${children.length === 1 ? "" : "s"}`,
         ),
       );
+    const status = dot(row.status);
+    status.title = statusName(row.status);
+    const tag = el("span", "agent-tag", row.provider || "codex");
+    const repo = el("span", "agent-repo", repoName(row));
+    repo.title = [repoPath(row), row.host || "local", row.queued ? `${row.queued} queued` : ""].filter(Boolean).join(" · ");
+    const duration = el("span", "agent-runtime", elapsed(runtime(row)));
+    duration.title = "Elapsed time in the current working state";
+    card.setAttribute("aria-label", `${row.name}, ${statusName(row.status)}, ${repoName(row)}`);
+    card.append(status, identity, tag, repo, duration);
     card.onclick = () => selectAgent(key(row));
     grid.append(card);
     for (const sub of row.subagents?.running || []) {
       const child = el("button", "subagent-row");
       child.append(
-        el("span", "", "↳ " + (sub.description || sub.type)),
-        el("small", "", "built-in"),
-        badge("working"),
+        el("span"),
+        el("span", "", "↳ " + (sub.description || sub.type) + " · built-in"),
+        el("span"),
+        el("span"),
+        el("span"),
       );
       child.onclick = () =>
         openSubagent(key(row), sub.id, sub.description || sub.type);
       grid.append(child);
     }
   }
+}
+function statusGroup(status) {
+  return attention({ status }) ? "Needs attention" : ["exited", "dead"].includes(status) ? "Stopped" : statusName(status);
 }
 function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
@@ -485,6 +501,7 @@ async function selectAgent(name, mode) {
   saveDraft();
   agentTerminal.close();
   state.selected = name;
+  renderFleet();
   state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
   $("workspace-pr-count").textContent = "";
@@ -502,6 +519,9 @@ async function selectAgent(name, mode) {
   $("detail-meta").classList.remove("expanded");
   updateDetailMetaToggle();
   $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
+  $("detail-name").textContent = name.endsWith("concierge") ? "Concierge" : name;
+  document.querySelector(".page-heading").hidden = true;
+  $("page-title").classList.toggle("agent-title", !name.endsWith("concierge"));
   $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
   $("message").value = state.drafts.get(name) || "";

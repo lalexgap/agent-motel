@@ -28,12 +28,14 @@ function showSearch() {
   $("overview").hidden = true;
   $("detail").hidden = true;
   $("search-page").hidden = false;
+  document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
   $("page-title").textContent = "Search";
+  $("page-title").classList.remove("agent-title");
   $("breadcrumb").textContent = "Search";
   $("page-subtitle").textContent = "";
   document.querySelectorAll(".nav").forEach(button => button.classList.toggle("active", button.id === "search-nav"));
-  renderAdvancedSearch();
+  renderFleet();
   $("advanced-query").focus();
 }
 function searchOptions(id, values, label) {
