@@ -1,6 +1,6 @@
 # Agent Motel for macOS
 
-A small AppKit app hosting `https://am.alexgap.ca` in WKWebView. It uses the live web UI, including agent search, concierge, chat streaming, and interactive terminals. Requires macOS 12 or later and an internet connection.
+A small AppKit app hosting `https://am.alexgap.ca` in WKWebView. It uses the live web UI, including agent search, concierge, chat streaming, and interactive terminals. Requires macOS 12.3 or later (for WebKit dialog support) and an internet connection.
 
 Run `bash macos/build.sh` on a Mac with Xcode Command Line Tools. This runs navigation policy tests and produces `macos/build/Agent Motel.app` and a zip for the build machine’s architecture. Copy the app into `~/Applications` and open it.
 

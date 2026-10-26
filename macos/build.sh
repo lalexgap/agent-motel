@@ -10,7 +10,7 @@ app="$PWD/build/Agent Motel.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" build/AppIcon.iconset
 xcrun swiftc Sources/NavigationPolicy.swift Tests/main.swift -o build/navigation-tests
 build/navigation-tests
-xcrun swiftc -parse-as-library -O -target "$(uname -m)-apple-macosx12.0" Sources/*.swift -o "$app/Contents/MacOS/AgentMotel"
+xcrun swiftc -parse-as-library -O -target "$(uname -m)-apple-macosx12.3" Sources/*.swift -o "$app/Contents/MacOS/AgentMotel"
 xcrun swift icon.swift "$PWD/build/AppIcon.iconset"
 iconutil -c icns build/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
 cp Info.plist "$app/Contents/Info.plist"
