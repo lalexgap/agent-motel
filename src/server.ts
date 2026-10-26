@@ -1,3 +1,4 @@
+import { searchConversations, validSearchQuery, type ConversationMatches } from "./webSearch";
 import { agentRuntimeSettings } from "./runtimeSettings";
 import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
@@ -336,6 +337,8 @@ async function handoffBody(req: Request): Promise<{ to: Provider; newName?: stri
 
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
+
+
   const route = rest[0];
   const fallback = route === "messages" || route === "interrupt" ? "unknown" : undefined;
   try {
@@ -542,8 +545,33 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 
 // --- routing ---------------------------------------------------------------
 
+let activeSearches = 0;
+
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
+  if (parts.length === 1 && parts[0] === "search" && method === "GET") {
+    const query = new URL(req.url).searchParams.get("q");
+    if (!validSearchQuery(query)) return json({ error: "Search must contain 2–256 characters" }, 400);
+    if (activeSearches >= 2) return json({ error: "Search is busy. Try again shortly." }, 429);
+    activeSearches++;
+    try {
+      const errors: string[] = [];
+      const local = searchConversations(query);
+      const remotes = await Promise.all((loadConfig().remotes || []).map(async host => {
+        try {
+          const result = await runRemoteJson<ConversationMatches>(host, ["__web-search"], { stdin: JSON.stringify(query), timeoutMs: 10000 });
+          if (!Array.isArray(result.matches) || result.matches.length > 100) throw new Error("Invalid search response");
+          return { partial: !!result.partial, matches: result.matches.filter(match =>
+            typeof match.name === "string" && AGENT_NAME_RE.test(match.name) && Array.isArray(match.snippets)
+          ).map(match => ({ name: match.name, host, snippets: match.snippets.slice(0, 3).filter(snippet =>
+            ["user", "assistant", "tool"].includes(snippet.kind) && typeof snippet.text === "string"
+          ).map(snippet => ({ kind: snippet.kind, text: snippet.text.slice(0, 600) })) })) };
+        } catch { errors.push(host); return { matches: [], partial: true }; }
+      }));
+      const all = [await local, ...remotes];
+      return json({ matches: all.flatMap(result => result.matches), partial: all.some(result => result.partial), unavailable: errors });
+    } finally { activeSearches--; }
+  }
   if (parts.length === 1 && parts[0] === "concierge" && method === "GET") {
     const host = await resolveConciergeHostAsync();
     return json({ key: host ? `${host}:concierge` : "concierge" });
@@ -908,7 +936,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

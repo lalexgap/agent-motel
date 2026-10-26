@@ -1216,3 +1216,21 @@ describe("subagent API", () => {
     expect((await fetch(url("/api/agents/parent/subagents"))).status).toBe(401);
   });
 });
+
+test("conversation search requires authentication, validates query and federates literal stdin", async () => {
+  expect((await fetch(url("/api/search?q=needle"))).status).toBe(401);
+  expect((await fetch(url("/api/search?q=a"), auth())).status).toBe(400);
+  writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop"] }));
+  const calls: any[] = [];
+  setRemoteRunnersForTests({ am: async (host, args, opts) => {
+    calls.push({ host, args, opts });
+    return { exitCode: 0, stderr: "", stdout: JSON.stringify({ matches: [{ name: "child", snippets: [{ kind: "assistant", text: "--needle <script>literal</script>" }] }], partial: false }) };
+  } });
+  try {
+    const response = await fetch(url("/api/search?q=--needle"), auth());
+    expect(response.status).toBe(200);
+    expect((await response.json()).matches[0]).toMatchObject({ name: "child", host: "laptop" });
+    expect(calls[0].args).toEqual(["__web-search", "--local", "--exact"]);
+    expect(calls[0].opts.stdin).toBe(JSON.stringify("--needle"));
+  } finally { setRemoteRunnersForTests(); }
+});

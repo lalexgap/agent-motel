@@ -12,6 +12,7 @@
     <script src="/vendor/addon-web-links.js" defer></script>
     <script src="/links.js" defer></script>
     <script src="/terminal.js" defer></script>
+    <script src="/search.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -47,6 +48,7 @@
             ◫ <span>Overview</span></button
           ><button id="attention-nav" class="nav">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
+          ><button id="search-nav" class="nav">⌕ <span>Search</span></button
           ><button id="concierge-nav" class="nav">
             ✳ <span>Concierge</span>
           </button>
@@ -84,6 +86,22 @@
             <button id="new-agent" class="primary">+ New agent</button>
           </section>
           <div id="notice" role="status" hidden></div>
+          <section id="search-page" hidden aria-label="Search agents">
+            <form id="advanced-search-form" class="advanced-search-form">
+              <label class="search-query">Search agents<input id="advanced-query" type="search" placeholder="Name, task, repository, branch, or parent…" autocomplete="off" /></label>
+              <div class="search-filters">
+                <label>Search in<select id="advanced-mode"><option value="agents">Agent details</option><option value="conversations">Details + conversations</option></select></label>
+                <label>Repository<select id="advanced-repo"><option value="">All repositories</option></select></label>
+                <label>Status<select id="advanced-status"><option value="">All statuses</option><option value="live">Live</option><option value="finished">Finished</option><option>working</option><option>idle</option><option>waiting</option><option>needs-attention</option><option>starting</option><option>exited</option><option>dead</option></select></label>
+                <label>Provider<select id="advanced-provider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+                <label>Host<select id="advanced-host"><option value="">All hosts</option></select></label>
+                <label>Sort<select id="advanced-sort"><option value="recent">Recent activity</option><option value="runtime">Time running</option><option value="repo">Repository</option><option value="status">Status</option><option value="name">Name</option></select></label>
+                <button type="submit">Search</button><button id="advanced-reset" type="button">Clear filters</button>
+              </div>
+            </form>
+            <p id="advanced-summary" role="status"></p>
+            <div id="advanced-results" class="advanced-results"></div>
+          </section>
           <section id="overview">
             <div class="stats">
               <button data-filter="all">

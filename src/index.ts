@@ -772,6 +772,12 @@ async function main(): Promise<void> {
     case "subagents":
       subagentsCommand(args.positional[0], { json: !!args.flags.json });
       break;
+    case "__web-search": {
+      const { searchConversations } = await import("./webSearch");
+      const query = JSON.parse(await Bun.stdin.text());
+      console.log(JSON.stringify(await searchConversations(query)));
+      break;
+    }
     case "search":
     case "s":
       requirePositional(args, 0, "search query");

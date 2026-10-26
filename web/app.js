@@ -191,6 +191,10 @@ function lock() {
   state.authenticated = false;
   state.detailVersion++;
   state.rows = [];
+  clearConversationSearch();
+  $("advanced-results").replaceChildren();
+  $("advanced-search-form").reset();
+  $("advanced-summary").textContent = "";
   state.selected = null;
   state.drafts.clear();
   state.draftRevisions.clear();
@@ -267,6 +271,8 @@ $("logout").onclick = async () => {
 };
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
+  $("search-page").hidden = true;
+  $("search-nav").classList.remove("active");
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -347,6 +353,7 @@ function compareRows(a, b) {
   return (order || a.name.localeCompare(b.name)) * (state.reverse ? -1 : 1);
 }
 function renderFleet() {
+  if (!$("search-page").hidden) renderAdvancedSearch();
   const rows = state.rows.filter((row) => row.name !== "concierge");
   $("stat-all").textContent = rows.length;
   $("stat-working").textContent = rows.filter(
@@ -464,6 +471,7 @@ function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
 async function selectAgent(name, mode) {
+  $("search-page").hidden = true;
   saveDraft();
   agentTerminal.close();
   state.selected = name;
