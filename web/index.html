@@ -104,30 +104,23 @@
             <div id="advanced-results" class="advanced-results"></div>
           </section>
           <section id="overview">
-            <div class="stats">
-              <button data-filter="live">
-                <span>Live agents</span><strong id="stat-all">—</strong
-                ><small>Not stopped</small></button
-              ><button data-filter="working">
-                <span>Working <i class="dot working"></i></span
-                ><strong id="stat-working">—</strong
-                ><small>Active</small></button
-              ><button data-filter="attention">
-                <span>Attention <i class="dot needs-attention"></i></span
-                ><strong id="stat-attention">—</strong
-                ><small>Action required</small></button
-              ><button data-filter="idle">
-                <span>Available <i class="dot idle"></i></span
-                ><strong id="stat-idle">—</strong><small>Idle</small>
-              </button>
-            </div>
             <div class="overview-layout">
               <section class="fleet-panel">
-                <div class="section-header">
-                  <h2>Agents <span id="list-count"></span></h2>
+                <div class="view-bar">
+                  <div class="filters segmented" aria-label="Filter agents">
+                    <button class="selected" data-filter="live">Live <span data-count="live"></span></button
+                    ><button data-filter="attention">Needs attention <span data-count="attention"></span></button
+                    ><button data-filter="exited">Stopped <span data-count="exited"></span></button
+                    ><button data-filter="all">All <span data-count="all"></span></button>
+                  </div>
                   <div class="list-controls">
-                    <select id="sort" aria-label="Sort agents">
-                      <option value="status">Sort: Status</option>
+                    <input
+                      id="search"
+                      type="search"
+                      aria-label="Filter agents"
+                      placeholder="Filter…  ⌘K"
+                    /><select id="sort" aria-label="Group or sort agents">
+                      <option value="status">Group: Status</option>
                       <option value="repo">Sort: Repository</option>
                       <option value="runtime">Sort: Time running</option>
                       <option value="recent">Sort: Recent activity</option>
@@ -138,28 +131,8 @@
                       title="Reverse sort direction"
                     >
                       ↑</button
-                    ><input
-                      id="search"
-                      type="search"
-                      aria-label="Search agents"
-                      placeholder="Filter…  ⌘K"
-                    />
+                    >
                   </div>
-                </div>
-                <div class="filters" aria-label="Filter agents">
-                  <button class="selected" data-filter="live">Live <span data-count="live"></span></button
-                  ><button data-filter="working">Working <span data-count="working"></span></button
-                  ><button data-filter="attention">Needs attention <span data-count="attention"></span></button
-                  ><button data-filter="idle">Available <span data-count="idle"></span></button
-                  ><button data-filter="exited">Stopped <span data-count="exited"></span></button
-                  ><button data-filter="all">All <span data-count="all"></span></button>
-                </div>
-                <div class="agent-columns">
-                  <span>AGENT / TASK</span><span>REPOSITORY</span
-                  ><span>STATUS</span
-                  ><span title="Time in the current working state"
-                    >RUNNING</span
-                  >
                 </div>
                 <div id="agent-grid" class="agent-grid"></div>
               </section>
