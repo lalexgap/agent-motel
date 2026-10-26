@@ -1,3 +1,4 @@
+import * as handover from "../src/commands/handoff";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -53,6 +54,28 @@ describe("agent workspace", () => {
     const response = await fetch(url("/api/agents/workspace/workspace"), auth());
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ available: false, files: [], pullRequests: [] });
+  });
+});
+
+describe("agent handover API", () => {
+  test("requires authentication and validates the provider, name and transcript option before spawning", async () => {
+    const post = (body: unknown, authenticated = true) => fetch(url("/api/agents/source/handoff"), authenticated ? auth({ method: "POST", body: JSON.stringify(body) }) : { method: "POST", body: JSON.stringify(body) });
+    expect((await post({ to: "codex" }, false)).status).toBe(401);
+    for (const body of [{}, { to: "other" }, { to: "codex", newName: "../bad" }, { to: "codex", newName: "a".repeat(65) }, { to: "codex", full: "yes" }])
+      expect((await post(body)).status).toBe(400);
+    expect((await post({ to: "codex" })).status).toBe(404);
+  });
+
+  test("hands over an exact local agent and returns the new selectable key", async () => {
+    seedAgent("source");
+    const handoff = spyOn(handover, "handoffAgent").mockResolvedValue({ name: "source-codex", target: "codex", file: "/private/transcript.md" });
+    try {
+      const response = await fetch(url("/api/agents/source/handoff"), auth({ method: "POST", body: JSON.stringify({ to: "codex", full: true }) }));
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({ ok: true, name: "source-codex", target: "codex", key: "source-codex" });
+      expect(handoff).toHaveBeenCalledWith("source", { to: "codex", newName: undefined, full: true, exact: true, jump: false, quiet: true });
+      expect(readAgent("source")?.status).toBe("idle");
+    } finally { handoff.mockRestore(); }
   });
 });
 
@@ -625,6 +648,23 @@ describe("remote agents api (host:name)", () => {
     const old = await fetch(url("/api/agents/laptop:old-workspace/workspace"), auth());
     expect(old.status).toBe(409);
     expect((await old.json() as { error: string }).error).toContain("remote am too old");
+  });
+
+  test("handover runs the exact internal helper on the source host", async () => {
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "replacement", target: "codex", file: "/private/transcript.md" }) });
+    const response = await post("/api/agents/laptop:source/handoff", { to: "codex", newName: "replacement", full: true });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ ok: true, name: "replacement", target: "codex", key: "laptop:replacement" });
+    expect(calls[0]).toEqual({ host: "laptop", args: ["__handoff", "source", "--to", "codex", "--new-name", "replacement", "--full", "--local", "--exact"], stdin: undefined, timeoutMs: 90000 });
+  });
+
+  test("handover refuses invalid input, old remotes and unsafe remote results", async () => {
+    expect((await post("/api/agents/laptop:source/handoff", { to: "invalid" })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__handoff"' });
+    expect((await post("/api/agents/laptop:source/handoff", { to: "codex" })).status).toBe(409);
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "other:agent", target: "codex" }) });
+    expect((await post("/api/agents/laptop:source/handoff", { to: "codex" })).status).toBe(502);
   });
 
   test("detail runs am __detail on the host and returns its JSON", async () => {

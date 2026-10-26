@@ -181,6 +181,7 @@
                 <p id="detail-meta"></p>
               </div>
               <div class="actions">
+                <button id="handover-agent">Handover</button>
                 <button data-action="resume">Resume</button
                 ><button data-action="restart">Restart</button
                 ><button data-action="interrupt">Interrupt</button
@@ -252,6 +253,7 @@
                 <h3>Agent details</h3>
                 <dl id="room-details"></dl>
                 <h3>Agents &amp; subagents</h3>
+                <label class="related-filter"><input id="show-finished-subagents" type="checkbox"> Show finished</label>
                 <div id="related-agents"></div>
                 <h3>Queued messages</h3>
                 <div id="queue"></div>
@@ -276,6 +278,29 @@
         Built-in subagents run inside the parent session. Message the parent to
         redirect their work.
       </p>
+    </dialog>
+    <div id="agent-context-menu" class="agent-context-menu" role="menu" aria-label="Agent actions" hidden>
+      <button role="menuitem" data-agent-menu="open">Open agent</button>
+      <button role="menuitem" data-agent-menu="chat">Open chat</button>
+      <button role="menuitem" data-agent-menu="terminal">Open terminal</button>
+      <button role="menuitem" data-agent-menu="handover">Handover…</button>
+    </div>
+    <dialog id="handover-dialog" aria-labelledby="handover-title">
+      <form id="handover-form">
+        <div class="section-header">
+          <h2 id="handover-title">Hand over agent</h2>
+          <button type="button" id="close-handover" aria-label="Close handover">×</button>
+        </div>
+        <p id="handover-source"></p>
+        <p class="muted">Creates a new agent using this conversation. Workspace files are not copied. The source agent keeps running.</p>
+        <label>Provider<select id="handover-provider" name="to">
+          <option value="codex">Codex</option><option value="claude">Claude</option>
+        </select></label>
+        <label>New agent name<input id="handover-name" name="newName" maxlength="64" pattern="[A-Za-z0-9_-]+" placeholder="Automatic name"></label>
+        <label class="related-filter"><input id="handover-full" type="checkbox"> Include full tool output</label>
+        <p id="handover-error" class="error" role="alert"></p>
+        <button class="primary" id="handover-submit" type="submit">Create handover agent</button>
+      </form>
     </dialog>
     <dialog id="create-dialog">
       <form id="create-form">

@@ -1,3 +1,4 @@
+import { handoffAgent } from "./commands/handoff";
 import { agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
@@ -321,6 +322,15 @@ async function interruptBody(req: Request): Promise<Response | { text: string; m
   return typeof body?.messageId === "string" ? { text, messageId: body.messageId } : { text };
 }
 
+async function handoffBody(req: Request): Promise<{ to: Provider; newName?: string; full: boolean } | Response> {
+  const body = await req.json().catch(() => null);
+  if (!body || (body.to !== "claude" && body.to !== "codex")) return json({ error: "to must be claude or codex" }, 400);
+  if (body.newName !== undefined && (typeof body.newName !== "string" || !AGENT_NAME_RE.test(body.newName) || body.newName.length > 64))
+    return json({ error: "newName must be 1–64 letters, numbers, dashes or underscores" }, 400);
+  if (body.full !== undefined && typeof body.full !== "boolean") return json({ error: "full must be a boolean" }, 400);
+  return { to: body.to, newName: body.newName, full: body.full ?? false };
+}
+
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
   const route = rest[0];
@@ -355,6 +365,17 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
       return json({ records: await runRemoteJson(host, ["subagents", name, "--json"]) });
+    }
+    if (route === "handoff" && method === "POST") {
+      const body = await handoffBody(req);
+      if (body instanceof Response) return body;
+      const args = ["__handoff", name, "--to", body.to];
+      if (body.newName) args.push("--new-name", body.newName);
+      if (body.full) args.push("--full");
+      const result = await runRemoteJson<{ name: string; target: Provider }>(host, args, { timeoutMs: REMOTE_NEW_TIMEOUT_MS });
+      if (typeof result?.name !== "string" || !AGENT_NAME_RE.test(result.name) || result.target !== body.to)
+        return json({ error: "Unexpected handover response. Check the agent list before retrying." }, 502);
+      return json({ ok: true, name: result.name, target: result.target, key: `${host}:${result.name}` }, 201);
     }
     if (route === "rename" && method === "POST") {
       return json({ error: "rename is not supported for remote agents" }, 501);
@@ -638,6 +659,16 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
       try { return json(await agentWorkspace(name)); }
       catch { return json({ error: "Workspace inspection unavailable. Try again shortly." }, 503); }
+    }
+
+    if (parts.length === 3 && parts[2] === "handoff" && method === "POST") {
+      const body = await handoffBody(req);
+      if (body instanceof Response) return body;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      try {
+        const result = await handoffAgent(name, { ...body, exact: true, jump: false, quiet: true });
+        return json({ ok: true, name: result.name, target: result.target, key: result.name }, 201);
+      } catch (error) { return json({ error: (error as Error).message }, 409); }
     }
 
     // DELETE /api/agents/:name — kill + forget

@@ -129,6 +129,7 @@ async function api(path, body, method) {
 }
 function lock() {
   agentTerminal.close();
+  closeAgentMenu();
   stopEvents();
   state.refreshPending = false;
   state.sessionEpoch++;
@@ -144,6 +145,9 @@ function lock() {
   state.subagent = null;
   $("subagent-dialog").close();
   $("create-dialog").close();
+  $("handover-dialog").close();
+  handoverSource = null;
+  state.related = null;
   $("related-agents").replaceChildren();
   $("subagent-output").replaceChildren();
   $("dock-transcript").replaceChildren();
@@ -309,6 +313,12 @@ function renderFleet() {
     label.dataset.provider = provider.toLowerCase();
     button.title = `${row.name} · ${provider}`;
     button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    button.dataset.agentKey = key(row);
+    button.setAttribute("aria-haspopup", "menu");
+    button.oncontextmenu = event => openAgentMenu(event, key(row), button);
+    button.onkeydown = event => {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) openAgentMenu(event, key(row), button);
+    };
     button.onclick = () => selectAgent(key(row));
     nav.append(button);
   }
@@ -394,11 +404,11 @@ function renderFleet() {
 function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
-async function selectAgent(name) {
+async function selectAgent(name, mode) {
   saveDraft();
   agentTerminal.close();
   state.selected = name;
-  state.detailMode = name.endsWith("concierge") ? "chat" : "terminal";
+  state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
   $("workspace-files").replaceChildren();
@@ -420,6 +430,7 @@ async function selectAgent(name) {
   $("permissions").replaceChildren();
   $("queue").replaceChildren();
   $("related-agents").replaceChildren();
+  state.related = null;
   $("pane").textContent = "";
   $("room-details").replaceChildren();
   document
@@ -681,6 +692,95 @@ $("message").onkeydown = (event) => {
     $("message-form").requestSubmit();
   }
 };
+let contextAgent = null;
+function closeAgentMenu(restoreFocus = false) {
+  const target = contextAgent;
+  $("agent-context-menu").hidden = true;
+  contextAgent = null;
+  if (restoreFocus && target) [...document.querySelectorAll(".side-agent")].find(button => button.dataset.agentKey === target)?.focus();
+}
+function openAgentMenu(event, name, button) {
+  event.preventDefault();
+  if (!state.authenticated) return;
+  contextAgent = name;
+  const menu = $("agent-context-menu"), rect = button.getBoundingClientRect();
+  menu.hidden = false;
+  const x = event.clientX || rect.left, y = event.clientY || rect.bottom;
+  menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + "px";
+  menu.querySelector('[data-agent-menu="handover"]').disabled = handoverPending;
+  menu.querySelector("button").focus();
+}
+$("agent-context-menu").onclick = event => {
+  const button = event.target.closest("[data-agent-menu]");
+  if (!button || button.disabled || !contextAgent) return;
+  const name = contextAgent, action = button.dataset.agentMenu;
+  closeAgentMenu(true);
+  if (!state.authenticated) return;
+  if (action === "handover") openHandover(name);
+  else selectAgent(name, action === "open" ? undefined : action);
+};
+$("agent-context-menu").onkeydown = event => {
+  if (event.key === "Escape" || event.key === "Tab") {
+    event.preventDefault(); closeAgentMenu(true); return;
+  }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const buttons = [...$("agent-context-menu").querySelectorAll("button:not(:disabled)")];
+  const index = buttons.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next]?.focus();
+};
+document.addEventListener("pointerdown", event => { if (!$("agent-context-menu").contains(event.target)) closeAgentMenu(); });
+document.addEventListener("scroll", () => closeAgentMenu(), true);
+window.addEventListener("resize", () => closeAgentMenu());
+
+let handoverSource = null, handoverPending = false;
+function openHandover(name) {
+  if (!name || handoverPending || !state.authenticated) return;
+  handoverSource = name;
+  const row = state.rows.find(row => key(row) === handoverSource);
+  $("handover-form").reset();
+  $("handover-source").textContent = "From: " + handoverSource;
+  $("handover-provider").value = row?.provider === "codex" ? "claude" : "codex";
+  $("handover-error").textContent = "";
+  $("handover-dialog").showModal();
+}
+$("handover-agent").onclick = () => openHandover(state.selected);
+$("close-handover").onclick = () => $("handover-dialog").close();
+$("handover-form").onsubmit = async event => {
+  event.preventDefault();
+  if (!handoverSource || handoverPending || !state.authenticated) return;
+  const source = handoverSource, epoch = state.sessionEpoch, version = state.detailVersion, selection = state.selected;
+  const body = { to: $("handover-provider").value, full: $("handover-full").checked };
+  const name = $("handover-name").value.trim();
+  if (name) body.newName = name;
+  handoverPending = true;
+  $("handover-submit").disabled = true;
+  $("handover-agent").disabled = true;
+  $("handover-submit").textContent = "Creating agent…";
+  $("handover-error").textContent = "";
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(source) + "/handoff", body);
+    if (!state.authenticated || epoch !== state.sessionEpoch) return;
+    $("handover-dialog").close();
+    await refresh();
+    if (state.selected === selection && version === state.detailVersion) await selectAgent(result.key);
+    else notice(`Handover created: ${result.key}`);
+  } catch (error) {
+    if (state.authenticated && epoch === state.sessionEpoch) {
+      const message = error.message + " Check the agent list before retrying if the request was interrupted.";
+      if ($("handover-dialog").open) $("handover-error").textContent = message;
+      else notice(message);
+    }
+  } finally {
+    handoverPending = false;
+    $("handover-submit").disabled = false;
+    $("handover-agent").disabled = false;
+    $("handover-submit").textContent = "Create handover agent";
+  }
+};
+
 document.querySelectorAll("[data-action]").forEach(
   (button) =>
     (button.onclick = async () => {
@@ -931,7 +1031,13 @@ function parentKey(row) {
     ? row.spawnedBy
     : `${row.host}:${row.spawnedBy}`;
 }
+$("show-finished-subagents").onchange = () => {
+  const snapshot = state.related;
+  if (snapshot?.name === state.selected) renderRelated(snapshot.name, snapshot.subagents);
+};
 function renderRelated(name, subagents) {
+  state.related = { name, subagents };
+  const showFinished = $("show-finished-subagents").checked;
   const view = $("related-agents");
   view.replaceChildren();
   const row = state.rows.find((row) => key(row) === name);
@@ -941,7 +1047,7 @@ function renderRelated(name, subagents) {
     link.onclick = () => selectAgent(parent);
     view.append(link);
   }
-  for (const child of state.rows.filter((row) => parentKey(row) === name)) {
+  for (const child of state.rows.filter((row) => parentKey(row) === name && (showFinished || !["exited", "dead"].includes(row.status)))) {
     const link = el(
       "button",
       "related-link",
@@ -956,6 +1062,7 @@ function renderRelated(name, subagents) {
       Date.parse(b.startedAt) - Date.parse(a.startedAt),
   );
   for (const sub of records) {
+    if (!showFinished && (sub.endedAt || sub.stale)) continue;
     const label = sub.description || sub.type;
     const status = sub.stale
       ? "Session ended"
@@ -972,7 +1079,7 @@ function renderRelated(name, subagents) {
   }
   if (subagents.error) view.append(el("p", "", subagents.error));
   if (!view.childNodes.length)
-    view.append(el("p", "", "No subagents recorded."));
+    view.append(el("p", "", showFinished ? "No subagents recorded." : "No active subagents."));
 }
 async function openSubagent(parent, id, label, message, status = "Running") {
   state.subagent = { parent, id, label, message, status };

@@ -32,7 +32,7 @@ import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./comma
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
 import { searchCommand } from "./commands/search";
-import { handoffCommand } from "./commands/handoff";
+import { handoffAgent, handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler, renameHandler } from "./commands/fleetActions";
@@ -783,6 +783,16 @@ async function main(): Promise<void> {
         limit: numberFlag(args, "limit"),
       });
       break;
+    case "__handoff": {
+      const to = args.flags.to;
+      if (to !== "claude" && to !== "codex") throw new Error("--to must be claude or codex");
+      const result = await handoffAgent(requirePositional(args, 0, "agent name"), {
+        to, newName: args.flags["new-name"] as string | undefined,
+        full: !!args.flags.full, exact: true, jump: false, quiet: true,
+      });
+      console.log(JSON.stringify(result));
+      break;
+    }
     case "handoff":
       await handoffCommand(requirePositional(args, 0, "agent name"), {
         newName: args.positional[1],
