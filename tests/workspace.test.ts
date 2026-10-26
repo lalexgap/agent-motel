@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync, chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cachedWorkspace, changedFiles, githubRepository, inspectWorkspace } from "../src/workspace";
+import { cachedWorkspace, changedFiles, githubRepository, inspectWorkspace, inspectWorkspaceDiff } from "../src/workspace";
 
 const dirs: string[] = [];
 function repo() {
@@ -110,4 +110,59 @@ test("workspace paths retain trailing spaces", async () => {
   const info = await inspectWorkspace(dir);
   expect(info.error).toBeUndefined();
   expect(info.files.map(file => file.path)).toEqual(["new-file"]);
+});
+
+
+test("diff previews cover branch, worktree, deleted and literal pathspec files", async () => {
+  const dir = repo();
+  writeFileSync(join(dir, "tracked.txt"), "before\n");
+  writeFileSync(join(dir, "deleted.txt"), "deleted\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "base"); git(dir, "switch", "-c", "feature");
+  writeFileSync(join(dir, "tracked.txt"), "committed\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "change");
+  writeFileSync(join(dir, "tracked.txt"), "after\n");
+  unlinkSync(join(dir, "deleted.txt"));
+  const diff = await inspectWorkspaceDiff(dir, "tracked.txt");
+  expect(diff.diff).toContain("-before"); expect(diff.diff).toContain("+after");
+  expect((await inspectWorkspaceDiff(dir, "deleted.txt")).diff).toContain("-deleted");
+  await expect(inspectWorkspaceDiff(dir, "../secret")).rejects.toThrow("Invalid file path");
+  await expect(inspectWorkspaceDiff(dir, "/etc/passwd")).rejects.toThrow("Invalid file path");
+  await expect(inspectWorkspaceDiff(dir, ":(glob)*")).rejects.toThrow("no longer");
+});
+
+test("untracked previews are bounded and reject symlinks", async () => {
+  const dir = repo();
+  writeFileSync(join(dir, "new.txt"), "new content\n");
+  expect((await inspectWorkspaceDiff(dir, "new.txt")).diff).toContain("+new content");
+  writeFileSync(join(dir, "large.txt"), "a".repeat(300000));
+  expect((await inspectWorkspaceDiff(dir, "large.txt")).truncated).toBe(true);
+  writeFileSync(join(dir, "binary"), Buffer.from([1, 0, 2]));
+  expect((await inspectWorkspaceDiff(dir, "binary")).binary).toBe(true);
+  symlinkSync("/etc/passwd", join(dir, "link"));
+  await expect(inspectWorkspaceDiff(dir, "link")).rejects.toThrow("symlinks");
+});
+
+test("untracked diff previews preserve line endings and bound formatted output", async () => {
+  const dir = repo();
+  for (const [name, content, expected] of [["terminated", "hello\n", "+hello\n"], ["unterminated", "hello", "+hello\n\\ No newline at end of file\n"], ["empty", "", ""]]) {
+    writeFileSync(join(dir, name!), content!);
+    const preview = await inspectWorkspaceDiff(dir, name!);
+    const body = preview.diff.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++"));
+    expect(body).toEqual(content ? ["+hello"] : []);
+    if (expected) expect(preview.diff.endsWith(expected)).toBe(true);
+  }
+  writeFileSync(join(dir, "many-lines"), "\n".repeat(256 * 1024));
+  const preview = await inspectWorkspaceDiff(dir, "many-lines");
+  expect(preview.diff.length).toBeLessThanOrEqual(256 * 1024);
+  expect(preview.truncated).toBe(true);
+});
+
+test("remote workspace validation rejects iterable non-arrays, excessive files and unbounded metadata", async () => {
+  const { validateRemoteWorkspace } = await import("../src/workspace");
+  const valid = { available: true, files: [], total: 0, pullRequests: [] };
+  expect(validateRemoteWorkspace(valid).files).toEqual([]);
+  for (const files of ["x".repeat(1000), null, Array(201).fill({}), [{ path: "file", status: "M", additions: "huge", deletions: 0 }]]) {
+    expect(() => validateRemoteWorkspace({ ...valid, files })).toThrow("Invalid remote workspace");
+  }
+  expect(() => validateRemoteWorkspace({ ...valid, branch: "a".repeat(4097) })).toThrow();
 });

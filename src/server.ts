@@ -1,6 +1,8 @@
+import { runConversationSearch, validSearchQuery, type ConversationMatches } from "./webSearch";
+import { agentRuntimeSettings } from "./runtimeSettings";
 import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
-import { agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
+import { agentWorkspaceDiff, agentWorkspace, validateRemoteWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
@@ -133,6 +135,7 @@ export function agentDetail(name: string) {
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
     // null = the provider default.
+    runtime: agentRuntimeSettings(agent),
     model: agent.model ?? null,
     effort: agent.effort ?? null,
     role: roleForAgent(agent) ?? null,
@@ -334,6 +337,8 @@ async function handoffBody(req: Request): Promise<{ to: Provider; newName?: stri
 
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
+
+
   const route = rest[0];
   const fallback = route === "messages" || route === "interrupt" ? "unknown" : undefined;
   try {
@@ -361,7 +366,13 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "workspace" && method === "GET") {
-      return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(await runRemoteJson<WorkspaceInfo>(host, ["__workspace", name]))));
+      return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(validateRemoteWorkspace(await runRemoteJson(host, ["__workspace", name])))));
+    }
+    if (route === "diff" && method === "GET") {
+      const path = new URL(req.url).searchParams.get("path");
+      if (!path || path.length > 4096 || path.includes("\0")) return json({ error: "file path required" }, 400);
+      const result = await runRemoteJson(host, ["__workspace-diff", name], { stdin: JSON.stringify(path) });
+      return json(result);
     }
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
@@ -534,8 +545,34 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 
 // --- routing ---------------------------------------------------------------
 
+let activeSearches = 0;
+
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
+  if (parts.length === 1 && parts[0] === "search" && method === "POST") {
+    const body = await req.json().catch(() => null);
+    const query = body?.query;
+    if (!validSearchQuery(query)) return json({ error: "Search must contain 2–256 characters" }, 400);
+    if (activeSearches >= 2) return json({ error: "Search is busy. Try again shortly." }, 429);
+    activeSearches++;
+    try {
+      const errors: string[] = [];
+      const local = runConversationSearch(query);
+      const remotes = await Promise.all((loadConfig().remotes || []).map(async host => {
+        try {
+          const result = await runRemoteJson<ConversationMatches>(host, ["__web-search"], { stdin: JSON.stringify(query), timeoutMs: 10000 });
+          if (!Array.isArray(result.matches) || result.matches.length > 100) throw new Error("Invalid search response");
+          return { partial: !!result.partial, matches: result.matches.filter(match =>
+            typeof match.name === "string" && AGENT_NAME_RE.test(match.name) && Array.isArray(match.snippets)
+          ).map(match => ({ name: match.name, host, snippets: match.snippets.slice(0, 3).filter(snippet =>
+            ["user", "assistant", "tool"].includes(snippet.kind) && typeof snippet.text === "string"
+          ).map(snippet => ({ kind: snippet.kind, text: snippet.text.slice(0, 600) })) })) };
+        } catch { errors.push(host); return { matches: [], partial: true }; }
+      }));
+      const all = [await local, ...remotes];
+      return json({ matches: all.flatMap(result => result.matches), partial: all.some(result => result.partial), unavailable: errors });
+    } finally { activeSearches--; }
+  }
   if (parts.length === 1 && parts[0] === "concierge" && method === "GET") {
     const host = await resolveConciergeHostAsync();
     return json({ key: host ? `${host}:concierge` : "concierge" });
@@ -677,6 +714,13 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       return detail ? json(detail) : json({ error: `no local agent "${name}"` }, 404);
     }
 
+    if (parts.length === 3 && parts[2] === "diff" && method === "GET") {
+      const path = new URL(req.url).searchParams.get("path");
+      if (!path || path.length > 4096 || path.includes("\0")) return json({ error: "file path required" }, 400);
+      if (!readAgent(name)) return json({ error: "agent not found" }, 404);
+      try { return json(await agentWorkspaceDiff(name, path)); }
+      catch { return json({ error: "Diff unavailable. The file may have changed, be too large, or be an untracked symlink. Refresh changes and try again." }, 409); }
+    }
     if (parts.length === 3 && parts[2] === "workspace" && method === "GET") {
       if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
       try { return json(await agentWorkspace(name)); }
@@ -893,7 +937,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

@@ -664,6 +664,16 @@ describe("remote agents api (host:name)", () => {
   const post = (path: string, body?: unknown) =>
     fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
 
+  test("remote diff sends literal filenames on stdin and handles old hosts", async () => {
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ path: "--strange file", diff: "+new", binary: false, truncated: false }) });
+    const response = await fetch(url("/api/agents/laptop:workspace/diff?path=--strange%20file"), auth());
+    expect(response.status).toBe(200);
+    expect(calls[0]?.args).toEqual(["__workspace-diff", "workspace", "--local", "--exact"]);
+    expect(calls[0]?.stdin).toBe(JSON.stringify("--strange file"));
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__workspace-diff"' });
+    expect((await fetch(url("/api/agents/laptop:workspace/diff?path=file"), auth())).status).toBe(409);
+  });
+
   test("workspace forwards exact remote names and older hosts fail explicitly", async () => {
     const workspace = { available: true, branch: "feature", files: [], total: 0, pullRequests: [] };
     reply = () => ({ exitCode: 0, stdout: JSON.stringify(workspace) });
@@ -1205,4 +1215,22 @@ describe("subagent API", () => {
     expect((await fetch(url("/api/agents/parent/transcript?subagent=unknown"), auth())).status).toBe(409);
     expect((await fetch(url("/api/agents/parent/subagents"))).status).toBe(401);
   });
+});
+
+test("conversation search requires authentication, validates query and federates literal stdin", async () => {
+  expect((await fetch(url("/api/search"), { method: "POST", body: JSON.stringify({ query: "needle" }) })).status).toBe(401);
+  expect((await fetch(url("/api/search"), auth({ method: "POST", body: JSON.stringify({ query: "a" }) }))).status).toBe(400);
+  writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop"] }));
+  const calls: any[] = [];
+  setRemoteRunnersForTests({ am: async (host, args, opts) => {
+    calls.push({ host, args, opts });
+    return { exitCode: 0, stderr: "", stdout: JSON.stringify({ matches: [{ name: "child", snippets: [{ kind: "assistant", text: "--needle <script>literal</script>" }] }], partial: false }) };
+  } });
+  try {
+    const response = await fetch(url("/api/search"), auth({ method: "POST", body: JSON.stringify({ query: "--needle" }) }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).matches[0]).toMatchObject({ name: "child", host: "laptop" });
+    expect(calls[0].args).toEqual(["__web-search", "--local", "--exact"]);
+    expect(calls[0].opts.stdin).toBe(JSON.stringify("--needle"));
+  } finally { setRemoteRunnersForTests(); }
 });

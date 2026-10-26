@@ -76,6 +76,58 @@ const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A
 document.querySelectorAll("[data-terminal-key]").forEach(button => {
   button.onclick = () => { agentTerminal.input(terminalKeys[button.dataset.terminalKey]); agentTerminal.focus(); };
 });
+const sidebarDivider = $("sidebar-divider");
+let sidebarWidth = null, sidebarPointer = null;
+try {
+  const saved = Number(localStorage.getItem("am.sidebarWidth"));
+  if (Number.isFinite(saved) && saved >= 175 && saved <= 520) sidebarWidth = saved;
+} catch {}
+const maxSidebarWidth = () => Math.min(520, Math.max(175, innerWidth - 560));
+function applySidebarWidth() {
+  if (sidebarWidth === null) document.documentElement.style.removeProperty("--sidebar-width");
+  else document.documentElement.style.setProperty("--sidebar-width", Math.min(maxSidebarWidth(), Math.max(175, sidebarWidth)) + "px");
+  sidebarDivider.setAttribute("aria-valuemin", "175");
+  sidebarDivider.setAttribute("aria-valuemax", String(maxSidebarWidth()));
+  sidebarDivider.setAttribute("aria-valuenow", String(Math.round(document.querySelector(".sidebar").getBoundingClientRect().width)));
+}
+function saveSidebarWidth() {
+  try {
+    if (sidebarWidth === null) localStorage.removeItem("am.sidebarWidth");
+    else localStorage.setItem("am.sidebarWidth", String(sidebarWidth));
+  } catch {}
+}
+sidebarDivider.onpointerdown = event => {
+  if (event.button !== 0 || innerWidth <= 700) return;
+  event.preventDefault();
+  sidebarPointer = event.pointerId;
+  sidebarDivider.setPointerCapture(event.pointerId);
+  document.body.classList.add("resizing-sidebar");
+};
+sidebarDivider.onpointermove = event => {
+  if (sidebarPointer !== event.pointerId) return;
+  sidebarWidth = Math.min(maxSidebarWidth(), Math.max(175, event.clientX));
+  applySidebarWidth();
+};
+const endSidebarResize = event => {
+  if (sidebarPointer !== event.pointerId) return;
+  sidebarPointer = null;
+  document.body.classList.remove("resizing-sidebar");
+  saveSidebarWidth();
+};
+sidebarDivider.onpointerup = endSidebarResize;
+sidebarDivider.onpointercancel = endSidebarResize;
+sidebarDivider.onlostpointercapture = endSidebarResize;
+sidebarDivider.ondblclick = () => { sidebarWidth = null; applySidebarWidth(); saveSidebarWidth(); };
+sidebarDivider.onkeydown = event => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = document.querySelector(".sidebar").getBoundingClientRect().width;
+  sidebarWidth = event.key === "Home" ? 175 : event.key === "End" ? maxSidebarWidth() :
+    Math.min(maxSidebarWidth(), Math.max(175, current + (event.key === "ArrowRight" ? 1 : -1) * (event.shiftKey ? 50 : 10)));
+  applySidebarWidth(); saveSidebarWidth();
+};
+window.addEventListener("resize", applySidebarWidth);
+applySidebarWidth();
 const key = (row) => (row.host ? `${row.host}:${row.name}` : row.name);
 const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
 const el = (tag, className, text) => {
@@ -139,6 +191,10 @@ function lock() {
   state.authenticated = false;
   state.detailVersion++;
   state.rows = [];
+  clearConversationSearch();
+  $("advanced-results").replaceChildren();
+  $("advanced-search-form").reset();
+  $("advanced-summary").textContent = "";
   state.selected = null;
   state.drafts.clear();
   state.draftRevisions.clear();
@@ -151,6 +207,8 @@ function lock() {
   $("handover-dialog").close();
   handoverSource = null;
   manageAgent = null;
+  diffRequest = null;
+  $("workspace-diff-dialog").close();
   $("manage-agent-dialog").close();
   state.related = null;
   $("related-agents").replaceChildren();
@@ -213,6 +271,8 @@ $("logout").onclick = async () => {
 };
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
+  $("search-page").hidden = true;
+  $("search-nav").classList.remove("active");
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -293,6 +353,7 @@ function compareRows(a, b) {
   return (order || a.name.localeCompare(b.name)) * (state.reverse ? -1 : 1);
 }
 function renderFleet() {
+  if (!$("search-page").hidden) renderAdvancedSearch();
   const rows = state.rows.filter((row) => row.name !== "concierge");
   $("stat-all").textContent = rows.length;
   $("stat-working").textContent = rows.filter(
@@ -410,11 +471,13 @@ function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
 async function selectAgent(name, mode) {
+  $("search-page").hidden = true;
   saveDraft();
   agentTerminal.close();
   state.selected = name;
   state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
+  $("workspace-pr-count").textContent = "";
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
   $("workspace-files").replaceChildren();
   $("workspace-count").textContent = "";
@@ -467,6 +530,36 @@ $("expand-concierge").onclick = () => openConcierge();
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
+function runtimeLabel(detail, field) {
+  const value = detail.runtime?.[field] || detail[field];
+  if (!value) return "Unknown";
+  const source = detail.runtime?.[field + "Source"];
+  return value + (source === "session" ? " (last turn)" : " (configured)");
+}
+let diffRequest = null;
+$("close-workspace-diff").onclick = () => $("workspace-diff-dialog").close();
+async function openWorkspaceDiff(name, path) {
+  const request = diffRequest = { name, path, epoch: state.sessionEpoch };
+  $("workspace-diff-title").textContent = path;
+  $("workspace-diff-meta").textContent = name + " · Loading diff…";
+  $("workspace-diff-output").replaceChildren();
+  $("workspace-diff-dialog").showModal();
+  try {
+    const result = await api("/api/agents/" + encodeURIComponent(name) + "/diff?path=" + encodeURIComponent(path));
+    if (diffRequest !== request || !state.authenticated || request.epoch !== state.sessionEpoch || !$("workspace-diff-dialog").open) return;
+    if (typeof result.diff !== "string") throw new Error("Invalid diff response");
+    const lines = result.diff.slice(0, 256 * 1024).split("\n", 2001);
+    const truncated = result.truncated || result.diff.length > 256 * 1024 || lines.length > 2000;
+    $("workspace-diff-meta").textContent = name + (result.binary ? " · Binary file" : " · Unified diff") + (truncated ? " · Preview truncated" : "");
+    for (const line of lines.slice(0, 2000)) {
+      const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") ? "header" : line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : line.startsWith("@@") ? "hunk" : "context";
+      $("workspace-diff-output").append(el("span", "diff-line " + kind, line || " "));
+    }
+    if (!result.diff) $("workspace-diff-meta").textContent = "No content difference. The change may be a file mode or staged-only change.";
+  } catch (error) {
+    if (diffRequest === request && request.epoch === state.sessionEpoch) $("workspace-diff-meta").textContent = error.message;
+  }
+}
 let workspaceRequest = null;
 async function refreshWorkspace() {
   const name = state.selected, version = state.detailVersion;
@@ -479,7 +572,7 @@ async function refreshWorkspace() {
     if (!state.authenticated || name !== state.selected || version !== state.detailVersion) return;
     const prs = $("workspace-prs");
     prs.replaceChildren();
-    for (const pr of workspace.pullRequests || []) {
+    for (const pr of (Array.isArray(workspace.pullRequests) ? workspace.pullRequests.slice(0, 10) : [])) {
       // Remote hosts supply metadata; only allow canonical GitHub PR URLs.
       if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(pr.url)) continue;
       const link = el("a", "workspace-pr");
@@ -490,6 +583,7 @@ async function refreshWorkspace() {
       link.append(el("span", "", `#${pr.number} · ${label} ↗`), el("strong", "", pr.title));
       prs.append(link);
     }
+    $("workspace-pr-count").textContent = prs.childNodes.length ? `(${prs.childNodes.length})` : "";
     if (!prs.childNodes.length) prs.append(el("p", "workspace-note", workspace.pullRequestsError ||
       (!workspace.available ? "No Git workspace." : !workspace.repository ? "No GitHub origin configured." :
         !workspace.branch ? "Detached HEAD — no branch PR lookup." : "No pull requests for this branch.")));
@@ -498,8 +592,11 @@ async function refreshWorkspace() {
     $("workspace-summary").textContent = workspace.error || `${workspace.branch || "Detached HEAD"} · ${scope}`;
     const files = $("workspace-files");
     files.replaceChildren();
-    for (const file of workspace.files || []) {
-      const row = el("div", "workspace-file");
+    for (const file of (Array.isArray(workspace.files) ? workspace.files.slice(0, 200) : [])) {
+      const row = el("button", "workspace-file");
+      row.type = "button";
+      row.setAttribute("aria-label", "View diff for " + file.path);
+      row.onclick = () => openWorkspaceDiff(name, file.path);
       const code = el("span", "workspace-file-status", file.status === "??" ? "U" : file.status);
       code.title = file.working ? "Uncommitted" : "Committed on this branch";
       const path = el("span", "workspace-file-path", file.path);
@@ -516,6 +613,7 @@ async function refreshWorkspace() {
     if (workspace.total > (workspace.files || []).length) files.append(el("p", "workspace-note", `Showing ${workspace.files.length} of ${workspace.total} files.`));
   } catch (error) {
     if (state.authenticated && name === state.selected && version === state.detailVersion) {
+      $("workspace-pr-count").textContent = "";
       $("workspace-prs").replaceChildren(el("p", "workspace-note", "Workspace unavailable."));
       $("workspace-summary").textContent = error.message;
     }
@@ -547,13 +645,14 @@ async function refreshDetail() {
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   updateAgentActions(detail, document.querySelector(".actions"), name);
+  $("handover-agent").hidden = !actionAvailable(detail, "handover");
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
   for (const [title, value] of [
     ["Provider", detail.provider],
-    ["Model", detail.model || "Provider default"],
-    ["Reasoning", detail.effort || "Default"],
+    ["Model", runtimeLabel(detail, "model")],
+    ["Reasoning", runtimeLabel(detail, "effort")],
     ["Role", detail.role?.name || detail.role || "None"],
     ["Directory", detail.dir],
     ["Branch", detail.worktreeBranch || "—"],
@@ -798,6 +897,7 @@ function actionAvailable(row, action) {
   if (["stop", "restart", "terminal"].includes(action)) return !stopped;
   if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
   if (action === "rename") return row.name !== "concierge";
+  if (action === "handover") return (row.role?.name || row.role) !== "concierge" && row.name !== "concierge";
   return true;
 }
 function updateAgentActions(row, container = document.querySelector(".actions"), agentKey = row ? key(row) : null) {

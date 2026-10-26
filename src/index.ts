@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { agentWorkspace } from "./workspace";
+import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
@@ -772,6 +772,12 @@ async function main(): Promise<void> {
     case "subagents":
       subagentsCommand(args.positional[0], { json: !!args.flags.json });
       break;
+    case "__web-search": {
+      const { runConversationSearch } = await import("./webSearch");
+      const query = JSON.parse(await Bun.stdin.text());
+      console.log(JSON.stringify(await runConversationSearch(query)));
+      break;
+    }
     case "search":
     case "s":
       requirePositional(args, 0, "search query");
@@ -906,6 +912,12 @@ async function main(): Promise<void> {
         requirePositional(args, 0, "agent name"),
         requirePositional(args, 1, "expected creation timestamp"),
       );
+      break;
+    }
+    case "__workspace-diff": {
+      const path = JSON.parse(await Bun.stdin.text());
+      if (typeof path !== "string" || path.length > 4096) throw new Error("invalid file path");
+      console.log(JSON.stringify(await agentWorkspaceDiff(requirePositional(args, 0, "agent name"), path)));
       break;
     }
     case "__workspace": {
