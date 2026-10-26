@@ -466,7 +466,7 @@ async function refreshWorkspace() {
       link.href = pr.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      const label = pr.isDraft ? "Draft" : pr.state === "MERGED" ? "Merged" : pr.state === "CLOSED" ? "Closed" : "Open";
+      const label = pr.state === "MERGED" ? "Merged" : pr.state === "CLOSED" ? "Closed" : pr.isDraft ? "Draft" : "Open";
       link.append(el("span", "", `#${pr.number} · ${label} ↗`), el("strong", "", pr.title));
       prs.append(link);
     }
