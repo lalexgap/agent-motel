@@ -82,6 +82,13 @@ export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Tran
   const keepMeta = opts.sidechain?.ownFile === true;
   for (const entry of entries) {
     if (!keep(entry) || (entry.isMeta && !keepMeta)) continue;
+    // A prompt typed while Claude is mid-turn is logged only as a queued_command attachment.
+    const queued = entry.type === "attachment" ? entry.attachment : null;
+    if (queued?.type === "queued_command" && queued.commandMode === "prompt" &&
+        typeof queued.prompt === "string" && queued.prompt.trim()) {
+      transcript.turns.push({ kind: "user", text: queued.prompt });
+      continue;
+    }
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     transcript.sessionId ??= entry.sessionId;
     transcript.dir ??= entry.cwd;

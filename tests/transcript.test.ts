@@ -90,7 +90,18 @@ describe("parseClaudeTranscript", () => {
     expect(tool.error).toBe(true);
   });
 
-  test("survives a half-written trailing line", () => {
+  test("keeps prompts typed mid-turn, which Claude logs as queued_command attachments", () => {
+    const queued = (prompt: string, extra = {}) => JSON.stringify({ type: "attachment", isSidechain: false, sessionId: "s-1",
+      attachment: { type: "queued_command", prompt, commandMode: "prompt", ...extra } });
+    const parsed = parseClaudeTranscript([CLAUDE_JSONL, queued("also fix the header"), queued("/compact", { commandMode: "bash" }),
+      queued("sidechain", {}).replace('"isSidechain":false', '"isSidechain":true')].join("\n"));
+    const users = parsed.turns.filter((t) => t.kind === "user").map((t: any) => t.text);
+    expect(users.at(-1)).toBe("also fix the header");
+    expect(users).not.toContain("/compact");
+    expect(users).not.toContain("sidechain");
+  });
+
+    test("survives a half-written trailing line", () => {
     const partial = parseClaudeTranscript(CLAUDE_JSONL + '\n{"type":"assist');
     expect(partial.turns.length).toBe(transcript.turns.length);
   });
