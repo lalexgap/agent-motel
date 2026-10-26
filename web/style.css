@@ -1236,14 +1236,18 @@ dialog p.muted {
 .workspace-panel h3 { margin-bottom: 10px; }
 .workspace-panel details { margin: 18px 0 0; }
 .workspace-panel summary { cursor: pointer; color: #c5cedb; }
-.workspace-note { font-size: 11px; line-height: 1.5; color: #9ba6b5; overflow-wrap: anywhere; }
-.workspace-pr { display: block; padding: 9px 10px; margin-bottom: 6px; border: 1px solid #3a3d41; border-radius: 4px; color: #8bc8ff; text-decoration: none; font-size: 11px; }
+.workspace-note { font-size: 12px; line-height: 1.5; color: #9ba6b5; overflow-wrap: anywhere; }
+.workspace-pr { display: block; padding: 9px 10px; margin-bottom: 6px; border: 1px solid #3a3d41; border-radius: 4px; color: #8bc8ff; text-decoration: none; font-size: 12px; }
 .workspace-pr:hover { background: #252a31; border-color: #6b9bc2; }
 .workspace-pr strong { display: block; margin-top: 5px; font-weight: 400; color: #d4d4d4; overflow-wrap: anywhere; }
 #workspace-files { max-height: 300px; overflow: auto; }
-.workspace-file { display: flex; align-items: baseline; gap: 7px; padding: 5px 0; font-size: 10px; border-bottom: 1px solid #2b2e33; }
+.workspace-file { display: flex; align-items: baseline; gap: 7px; padding: 5px 0; font-size: 12px; border-bottom: 1px solid #2b2e33; }
 .workspace-file-status { flex: 0 0 18px; color: #d7ba7d; }
 .workspace-file-path { flex: 1; min-width: 0; overflow-wrap: anywhere; color: #c5cedb; }
 .workspace-file-counts { display: flex; gap: 5px; white-space: nowrap; }
 .workspace-file-counts .added { color: #91c788; }
 .workspace-file-counts .removed { color: #ef9a9a; }
+
+@media (max-width: 700px) {
+  .workspace-file, .workspace-pr, .workspace-note { font-size: 13px; }
+}
