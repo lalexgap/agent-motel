@@ -541,6 +541,7 @@ async function selectAgent(name, mode) {
   $("message-form").querySelector("button").disabled = state.sending.has(name);
   delete $("transcript").dataset.content;
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
+  $("chat-working").hidden = true;
   $("permissions").replaceChildren();
   $("queue").replaceChildren();
   $("related-agents").replaceChildren();
@@ -815,8 +816,9 @@ async function refreshDetail() {
   showWorking("chat-working", detail.status, detail.statusChangedAt);
   const view = $("transcript"),
     atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 90;
-  const fingerprint = JSON.stringify(transcript.entries);
-  if (view.dataset.content !== fingerprint) {
+  const fingerprint = JSON.stringify(transcript.entries),
+    rerender = view.dataset.content !== fingerprint;
+  if (rerender) {
     view.dataset.content = fingerprint;
     const scroll = view.scrollTop;
     view.replaceChildren();
@@ -867,7 +869,7 @@ async function refreshDetail() {
     transcriptQueue.append(turn);
   }
   if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
-  if (atBottom && transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount)) view.scrollTop = view.scrollHeight;
+  if (atBottom && (rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount))) view.scrollTop = view.scrollHeight;
   transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
 }
 $("message").oninput = () => {
