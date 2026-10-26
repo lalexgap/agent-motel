@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   rows: [],
   selected: null,
-  filter: "all",
+  filter: "live",
   sort: "status",
   reverse: false,
   conciergeKey: null,
@@ -71,6 +71,9 @@ function updateAgentView() {
 $("terminal-tab").onclick = () => { state.detailMode = "terminal"; updateAgentView(); };
 $("chat-tab").onclick = () => { state.detailMode = "chat"; updateAgentView(); };
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
+new MutationObserver(() => {
+  $("terminal-reconnect").hidden = $("terminal-status").textContent.startsWith("●");
+}).observe($("terminal-status"), { childList: true, characterData: true, subtree: true });
 $("terminal-focus").onclick = () => agentTerminal.focus();
 const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A", down: "\x1b[B", enter: "\r" };
 document.querySelectorAll("[data-terminal-key]").forEach(button => {
@@ -134,7 +137,8 @@ const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) {
-    if (className === "turn-text" || tag === "pre") window.agentLinks.render(node, text);
+    if (className === "turn-text") window.agentMarkdown.render(node, text);
+    else if (tag === "pre") window.agentLinks.render(node, text);
     else node.textContent = text;
   }
   return node;
@@ -270,7 +274,7 @@ $("logout").onclick = async () => {
   }
 };
 $("mobile-logout").onclick = () => $("logout").click();
-function showOverview(filter = "all") {
+function showOverview(filter = "live") {
   $("search-page").hidden = true;
   $("search-nav").classList.remove("active");
   saveDraft();
@@ -281,6 +285,7 @@ function showOverview(filter = "all") {
   state.filter = filter;
   $("detail").hidden = true;
   $("overview").hidden = false;
+  $("new-agent").hidden = false;
   $("page-title").textContent =
     filter === "attention" ? "Needs attention" : "Fleet monitor";
   $("page-subtitle").textContent = "";
@@ -355,12 +360,22 @@ function compareRows(a, b) {
 function renderFleet() {
   if (!$("search-page").hidden) renderAdvancedSearch();
   const rows = state.rows.filter((row) => row.name !== "concierge");
-  $("stat-all").textContent = rows.length;
+  const stopped = (row) => ["exited", "dead"].includes(row.status);
+  const matchesFilter = (row, filter) =>
+    filter === "all" ||
+    (filter === "live" ? !stopped(row) :
+      filter === "attention" ? attention(row) :
+        filter === "exited" ? stopped(row) : row.status === filter);
+  $("stat-all").textContent = rows.filter((row) => !stopped(row)).length;
+  document.querySelectorAll("[data-count]").forEach((count) => {
+    count.textContent = rows.filter((row) => matchesFilter(row, count.dataset.count)).length;
+  });
   $("stat-working").textContent = rows.filter(
     (r) => r.status === "working",
   ).length;
   $("stat-attention").textContent = rows.filter(attention).length;
   $("attention-count").textContent = rows.filter(attention).length;
+  $("attention-count").hidden = !rows.some(attention);
   $("stat-idle").textContent = rows.filter((r) => r.status === "idle").length;
   const nav = $("agent-nav");
   nav.replaceChildren();
@@ -394,12 +409,7 @@ function renderFleet() {
   const query = $("search").value.toLowerCase();
   const visible = rows.filter(
     (row) =>
-      (state.filter === "all" ||
-        (state.filter === "attention"
-          ? attention(row)
-          : state.filter === "exited"
-            ? ["exited", "dead"].includes(row.status)
-            : row.status === state.filter)) &&
+      matchesFilter(row, state.filter) &&
       `${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
         .toLowerCase()
         .includes(query),
@@ -407,7 +417,7 @@ function renderFleet() {
   visible.sort(compareRows);
   $("list-count").textContent = visible.length;
   document
-    .querySelectorAll(".filters button")
+    .querySelectorAll(".filters button, .stats button")
     .forEach((b) =>
       b.classList.toggle("selected", b.dataset.filter === state.filter),
     );
@@ -487,6 +497,10 @@ async function selectAgent(name, mode) {
   $("detail").hidden = false;
   updateAgentView();
   connectEvents();
+  $("new-agent").hidden = true;
+  $("detail-meta").textContent = "";
+  $("detail-meta").classList.remove("expanded");
+  updateDetailMetaToggle();
   $("page-title").textContent = name.endsWith("concierge") ? "Concierge" : name;
   $("page-subtitle").textContent = name.endsWith("concierge") ? "" : "";
   $("breadcrumb").textContent = name;
@@ -511,6 +525,30 @@ async function selectAgent(name, mode) {
     notice(error.message);
   }
 }
+function updateDetailMetaToggle() {
+  const meta = $("detail-meta"), expanded = meta.classList.contains("expanded");
+  $("detail-meta-toggle").hidden = !expanded && meta.scrollHeight <= meta.clientHeight + 1;
+  $("detail-meta-toggle").textContent = expanded ? "Show less" : "Show full task";
+  $("detail-meta-toggle").setAttribute("aria-expanded", String(expanded));
+}
+$("detail-meta-toggle").onclick = () => {
+  $("detail-meta").classList.toggle("expanded");
+  updateDetailMetaToggle();
+};
+window.addEventListener("resize", updateDetailMetaToggle);
+const moreActions = document.querySelector(".more-actions");
+moreActions.addEventListener("click", (event) => {
+  if (event.target.closest(".more-menu button")) moreActions.open = false;
+});
+document.addEventListener("pointerdown", (event) => {
+  if (moreActions.open && !moreActions.contains(event.target)) moreActions.open = false;
+});
+moreActions.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && moreActions.open) {
+    moreActions.open = false;
+    moreActions.querySelector("summary").focus();
+  }
+});
 async function openConcierge(question) {
   try {
     notice("Opening the front desk…");
@@ -620,6 +658,19 @@ async function refreshWorkspace() {
   } finally { request.pending = false; }
 }
 
+function toolGroup() {
+  const group = el("details", "tool-group"), summary = el("summary"), names = new Map();
+  group.append(summary);
+  return Object.assign(group, {
+    add(name, tool) {
+      names.set(name, (names.get(name) || 0) + 1);
+      group.append(tool);
+      const total = group.childElementCount - 1;
+      summary.textContent = `${total} tool call${total === 1 ? "" : "s"} · ` +
+        [...names].map(([tool, count]) => count > 1 ? `${tool} ×${count}` : tool).join(", ");
+    },
+  });
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -646,18 +697,26 @@ async function refreshDetail() {
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   updateAgentActions(detail, document.querySelector(".actions"), name);
   $("handover-agent").hidden = !actionAvailable(detail, "handover");
+  moreActions.hidden = [...moreActions.querySelectorAll(".more-menu button")].every((button) => button.hidden);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
+  updateDetailMetaToggle();
   const room = $("room-details");
   room.replaceChildren();
   for (const [title, value] of [
     ["Provider", detail.provider],
     ["Model", runtimeLabel(detail, "model")],
     ["Reasoning", runtimeLabel(detail, "effort")],
-    ["Role", detail.role?.name || detail.role || "None"],
+    ["Role", detail.role?.name || detail.role],
     ["Directory", detail.dir],
-    ["Branch", detail.worktreeBranch || "—"],
+    ["Branch", detail.worktreeBranch],
   ]) {
-    room.append(el("dt", "", title), el("dd", "", String(value)));
+    if (!value || value === "Unknown") continue;
+    const dd = el("dd");
+    String(value).split("/").forEach((part, index) => {
+      if (index) dd.append("/", el("wbr"));
+      dd.append(part);
+    });
+    room.append(el("dt", "", title), dd);
   }
   window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
   renderRelated(name, subagents);
@@ -726,6 +785,7 @@ async function refreshDetail() {
       view.append(
         el("p", "", "The conversation starts here. Send a message below."),
       );
+    let tools = null;
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
         const tool = el("details", "tool");
@@ -737,8 +797,10 @@ async function refreshDetail() {
             [entry.input, entry.output].filter(Boolean).join("\n\n"),
           ),
         );
-        view.append(tool);
+        if (!tools) view.append(tools = toolGroup());
+        tools.add(entry.name, tool);
       } else {
+        tools = null;
         const turn = el(
           "article",
           `turn ${entry.kind === "user" ? "user" : "assistant"}`,
@@ -1292,12 +1354,9 @@ async function refreshSubagent() {
           "turn-label",
           entry.kind === "tool" ? entry.name : entry.kind,
         ),
-        el(
-          "div",
-          "turn-text",
-          entry.text ||
-            [entry.input, entry.output].filter(Boolean).join("\n\n"),
-        ),
+        entry.kind === "tool"
+          ? el("pre", "turn-output", [entry.input, entry.output].filter(Boolean).join("\n\n"))
+          : el("div", "turn-text", entry.text),
       );
       view.append(block);
     }

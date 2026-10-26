@@ -11,6 +11,7 @@
     <script src="/vendor/addon-fit.js" defer></script>
     <script src="/vendor/addon-web-links.js" defer></script>
     <script src="/links.js" defer></script>
+    <script src="/markdown.js" defer></script>
     <script src="/terminal.js" defer></script>
     <script src="/search.js" defer></script>
     <script src="/app.js" defer></script>
@@ -44,12 +45,12 @@
         >
         <div class="workspace">AGENT MOTEL <span>PERSONAL</span></div>
         <nav>
-          <button id="overview-nav" class="nav active">
+          <button id="overview-nav" class="nav active" data-short="Agents">
             ◫ <span>Overview</span></button
-          ><button id="attention-nav" class="nav">
+          ><button id="attention-nav" class="nav" data-short="Attention">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
-          ><button id="search-nav" class="nav">⌕ <span>Search</span></button
-          ><button id="concierge-nav" class="nav">
+          ><button id="search-nav" class="nav" data-short="Search">⌕ <span>Search</span></button
+          ><button id="concierge-nav" class="nav" data-short="Concierge">
             ✳ <span>Concierge</span>
           </button>
         </nav>
@@ -73,7 +74,7 @@
           <span
             >Workspace <span class="muted">/</span>
             <b id="breadcrumb">Overview</b></span
-          ><span class="top-note">AGENT CONTROL / LIVE</span>
+          >
           <button id="mobile-logout" class="mobile-only">Sign out</button>
         </header>
         <div class="page">
@@ -96,7 +97,7 @@
                 <label>Provider<select id="advanced-provider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
                 <label>Host<select id="advanced-host"><option value="">All hosts</option></select></label>
                 <label>Sort<select id="advanced-sort"><option value="recent">Recent activity</option><option value="runtime">Time running</option><option value="repo">Repository</option><option value="status">Status</option><option value="name">Name</option></select></label>
-                <button type="submit">Search</button><button id="advanced-reset" type="button">Clear filters</button>
+                <button type="submit" class="primary">Search</button><button id="advanced-reset" type="button">Clear filters</button>
               </div>
             </form>
             <p id="advanced-summary" role="status"></p>
@@ -104,9 +105,9 @@
           </section>
           <section id="overview">
             <div class="stats">
-              <button data-filter="all">
-                <span>All agents</span><strong id="stat-all">—</strong
-                ><small>Total</small></button
+              <button data-filter="live">
+                <span>Live agents</span><strong id="stat-all">—</strong
+                ><small>Not stopped</small></button
               ><button data-filter="working">
                 <span>Working <i class="dot working"></i></span
                 ><strong id="stat-working">—</strong
@@ -126,11 +127,11 @@
                   <h2>Agents <span id="list-count"></span></h2>
                   <div class="list-controls">
                     <select id="sort" aria-label="Sort agents">
-                      <option value="status">Status</option>
-                      <option value="repo">Repository</option>
-                      <option value="runtime">Time running</option>
-                      <option value="recent">Recent activity</option>
-                      <option value="name">Name</option></select
+                      <option value="status">Sort: Status</option>
+                      <option value="repo">Sort: Repository</option>
+                      <option value="runtime">Sort: Time running</option>
+                      <option value="recent">Sort: Recent activity</option>
+                      <option value="name">Sort: Name</option></select
                     ><button
                       id="sort-direction"
                       aria-label="Reverse sort direction"
@@ -146,11 +147,12 @@
                   </div>
                 </div>
                 <div class="filters" aria-label="Filter agents">
-                  <button class="selected" data-filter="all">All agents</button
-                  ><button data-filter="working">Working</button
-                  ><button data-filter="attention">Needs attention</button
-                  ><button data-filter="idle">Available</button
-                  ><button data-filter="exited">Stopped</button>
+                  <button class="selected" data-filter="live">Live <span data-count="live"></span></button
+                  ><button data-filter="working">Working <span data-count="working"></span></button
+                  ><button data-filter="attention">Needs attention <span data-count="attention"></span></button
+                  ><button data-filter="idle">Available <span data-count="idle"></span></button
+                  ><button data-filter="exited">Stopped <span data-count="exited"></span></button
+                  ><button data-filter="all">All <span data-count="all"></span></button>
                 </div>
                 <div class="agent-columns">
                   <span>AGENT / TASK</span><span>REPOSITORY</span
@@ -197,17 +199,23 @@
           </section>
           <section id="detail" hidden>
             <div class="detail-heading">
-              <div>
+              <div class="detail-summary">
                 <span id="detail-status" class="badge"></span>
                 <p id="detail-meta"></p>
+                <button id="detail-meta-toggle" class="text-button" type="button" aria-controls="detail-meta" aria-expanded="false" hidden>Show full task</button>
               </div>
               <div class="actions">
-                <button id="handover-agent">Handover</button>
                 <button data-action="resume">Resume</button
-                ><button data-action="restart">Restart</button
                 ><button data-action="interrupt">Interrupt</button
-                ><button data-action="stop">Stop</button
-                ><button data-action="delete" class="danger">Remove</button>
+                ><button data-action="restart">Restart</button>
+                <details class="more-actions">
+                  <summary aria-label="More agent actions" title="More actions">⋯</summary>
+                  <div class="more-menu">
+                    <button id="handover-agent">Handover…</button
+                    ><button data-action="stop">Stop</button
+                    ><button data-action="delete" class="danger">Remove…</button>
+                  </div>
+                </details>
               </div>
             </div>
             <div id="permissions"></div>
@@ -304,13 +312,16 @@
       <button role="menuitem" data-agent-menu="open">Open agent</button>
       <button role="menuitem" data-agent-menu="chat">Open chat</button>
       <button role="menuitem" data-agent-menu="terminal">Open terminal</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="handover">Handover…</button>
       <button role="menuitem" data-agent-menu="rename">Rename…</button>
       <button role="menuitem" data-agent-menu="move">Move to host…</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="resume">Resume</button>
       <button role="menuitem" data-agent-menu="restart">Restart</button>
       <button role="menuitem" data-agent-menu="interrupt">Interrupt</button>
       <button role="menuitem" data-agent-menu="stop">Stop</button>
+      <div class="menu-separator" role="separator"></div>
       <button role="menuitem" data-agent-menu="delete" class="danger">Remove…</button>
     </div>
     <dialog id="workspace-diff-dialog" aria-labelledby="workspace-diff-title">
