@@ -45,6 +45,17 @@ function seedAgent(name: string, status: AgentState["status"] = "idle") {
   writeAgent({ name, status, dir: "/tmp", tmuxSession: `agentmgr-${name}`, createdAt: now, updatedAt: now });
 }
 
+describe("agent workspace", () => {
+  test("requires authentication and reports missing agents and non-repository directories", async () => {
+    expect((await fetch(url("/api/agents/missing/workspace"))).status).toBe(401);
+    expect((await fetch(url("/api/agents/missing/workspace"), auth())).status).toBe(404);
+    seedAgent("workspace");
+    const response = await fetch(url("/api/agents/workspace/workspace"), auth());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ available: false, files: [], pullRequests: [] });
+  });
+});
+
 describe("api auth", () => {
   test("rejects missing token", async () => {
     expect((await fetch(url("/api/health"))).status).toBe(401);
@@ -603,6 +614,18 @@ describe("remote agents api (host:name)", () => {
 
   const post = (path: string, body?: unknown) =>
     fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+
+  test("workspace forwards exact remote names and older hosts fail explicitly", async () => {
+    const workspace = { available: true, branch: "feature", files: [], total: 0, pullRequests: [] };
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify(workspace) });
+    const response = await fetch(url("/api/agents/laptop:workspace/workspace"), auth());
+    expect(await response.json()).toEqual(workspace);
+    expect(calls[0]?.args).toEqual(["__workspace", "workspace", "--local", "--exact"]);
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__workspace"' });
+    const old = await fetch(url("/api/agents/laptop:old-workspace/workspace"), auth());
+    expect(old.status).toBe(409);
+    expect((await old.json() as { error: string }).error).toContain("remote am too old");
+  });
 
   test("detail runs am __detail on the host and returns its JSON", async () => {
     const detail = { name: "api", status: "idle", queue: [], pane: "hi" };

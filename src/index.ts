@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { agentWorkspace } from "./workspace";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
@@ -892,6 +893,10 @@ async function main(): Promise<void> {
         requirePositional(args, 0, "agent name"),
         requirePositional(args, 1, "expected creation timestamp"),
       );
+      break;
+    }
+    case "__workspace": {
+      console.log(JSON.stringify(await agentWorkspace(requirePositional(args, 0, "agent name"), false)));
       break;
     }
     case "__detail": {
