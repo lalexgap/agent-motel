@@ -635,6 +635,7 @@ async function refreshDetail() {
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   updateAgentActions(detail, document.querySelector(".actions"), name);
+  $("handover-agent").hidden = !actionAvailable(detail, "handover");
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
   const room = $("room-details");
   room.replaceChildren();
@@ -886,6 +887,7 @@ function actionAvailable(row, action) {
   if (["stop", "restart", "terminal"].includes(action)) return !stopped;
   if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
   if (action === "rename") return row.name !== "concierge";
+  if (action === "handover") return (row.role?.name || row.role) !== "concierge" && row.name !== "concierge";
   return true;
 }
 function updateAgentActions(row, container = document.querySelector(".actions"), agentKey = row ? key(row) : null) {
