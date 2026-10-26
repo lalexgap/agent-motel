@@ -135,9 +135,7 @@ export function turnRunning(pane: string[], provider: Provider = "claude"): bool
   return plain.slice(Math.max(0, top - 3), top).concat(plain.slice(seps[seps.length - 1]! + 1)).some(line => RUNNING_RE.test(line));
 }
 
-// Codex fires SessionStart only at its first turn, so a launched or resumed
-// Codex agent with nothing to do never leaves "starting" on its own. Its
-// composer on screen with no turn running means it is ready and idle.
+// Codex's composer is on screen with no turn running.
 export function codexReadyAtPrompt(pane: string[]): boolean {
   return parsedInputBoxText(pane, "codex") !== null && !turnRunning(pane, "codex");
 }

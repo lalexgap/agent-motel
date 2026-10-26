@@ -59,6 +59,12 @@ describe("settleCodexStart", () => {
     expect(readAgent("caretaker")?.status).toBe("starting");
   });
 
+  test("leaves a session-less daemon-attached agent starting so its first SessionStart can bind", () => {
+    expect(settleCodexStart(agent({ codexDaemonAttached: true }), () => idlePane)).toBe(false);
+    expect(readAgent("caretaker")?.status).toBe("starting");
+    expect(settleCodexStart(agent({ codexDaemonAttached: true, sessionId: "thread-1" }), () => idlePane)).toBe(true);
+  });
+
   test("does not overwrite a status a hook set after the sweep read the agent", () => {
     const stale = agent();
     writeAgent({ ...readAgent("caretaker")!, status: "working" });

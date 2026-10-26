@@ -2,7 +2,7 @@ import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, wa
 import { join } from "node:path";
 import { tryAcquireFileLock } from "./filelock";
 import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { agentNamesAndAliases, agentProvider, listAgents, matchAgent, readAgent, setStatus, type AgentState } from "./state";
+import { agentNamesAndAliases, agentProvider, agentSessionId, listAgents, matchAgent, readAgent, setStatus, updateAgentIf, updateAgentStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { capturePane, hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
@@ -181,13 +181,17 @@ const CODEX_START_GRACE_MS = 10_000;
 // but no hook will say so until its first turn; settle it from the screen.
 export function settleCodexStart(agent: AgentState, pane: (session: string) => string[] | null = capturePane): boolean {
   if (agent.status !== "starting" || agentProvider(agent) !== "codex") return false;
+  // Its hooks find a session-less daemon-attached agent only while it is starting.
+  if (agent.codexDaemonAttached && !agentSessionId(agent)) return false;
   if (Date.now() - (Date.parse(agent.statusChangedAt ?? "") || 0) < CODEX_START_GRACE_MS) return false;
   const lines = pane(agent.tmuxSession);
   if (!lines || !codexReadyAtPrompt(lines)) return false;
-  // Re-check right before writing: a hook may have moved it on meanwhile.
-  if (readAgent(agent.name)?.status !== "starting") return false;
-  setStatus(agent.name, "idle", "ready at prompt");
-  return true;
+  // Under the state lock: a hook may have moved it on meanwhile.
+  return updateAgentIf(agent.name, (current) => {
+    if (current.status !== "starting" || current.createdAt !== agent.createdAt) return false;
+    updateAgentStatus(current, "idle", "ready at prompt");
+    return true;
+  });
 }
 
 // The sweep's self-heal: an idle agent with messages queued, or a Codex
