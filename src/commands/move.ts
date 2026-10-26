@@ -505,17 +505,20 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
 
 export function validateRemoteExport(remote: any, expectedName?: string): void {
   const state = remote?.state;
+  const messageId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
   const absolute = (value: unknown) => typeof value === "string" && isAbsolute(value) && !value.includes("\0");
   if (!state || typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name) ||
       expectedName !== undefined && state.name !== expectedName || !absolute(state.dir) || !absolute(remote.home) ||
       typeof state.tmuxSession !== "string" || !state.tmuxSession ||
       ![undefined, "codex", "claude"].includes(state.provider) ||
       !Array.isArray(remote.queue) || !remote.queue.every((message: unknown) => typeof message === "string") ||
-      remote.queueIds !== undefined && (!Array.isArray(remote.queueIds) || !remote.queueIds.every((id: unknown) => id == null || typeof id === "string")) ||
-      remote.receivedMsgIds !== undefined && (!Array.isArray(remote.receivedMsgIds) || !remote.receivedMsgIds.every((id: unknown) => typeof id === "string")) ||
+      remote.queueIds !== undefined && (!Array.isArray(remote.queueIds) || !remote.queueIds.every((id: unknown) => id == null || messageId(id))) ||
+      remote.receivedMsgIds !== undefined && (!Array.isArray(remote.receivedMsgIds) || !remote.receivedMsgIds.every(messageId)) ||
       state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
       state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
     throw new Error("malformed remote move export");
+  if (state.worktreeBranch !== undefined && Bun.spawnSync(["git", "check-ref-format", "--branch", state.worktreeBranch], { stdout: "pipe", stderr: "pipe", timeout: 5000 }).exitCode !== 0)
+    throw new Error("invalid remote worktree branch");
   if (remote.transcript != null) {
     const sessionId = agentSessionId(state);
     if (!absolute(remote.transcript.path) || typeof sessionId !== "string") throw new Error("malformed remote transcript metadata");

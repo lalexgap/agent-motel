@@ -624,6 +624,10 @@ test("remote export rejects mismatched identities and escaping transcript paths"
   }
   expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: "../../evil" } }, "source")).toThrow();
   expect(() => validateRemoteExport({ ...exported, queue: [42] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, queueIds: ["bad.id"] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, receivedMsgIds: ["../bad"] }, "source")).toThrow();
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, worktreeBranch: "--upload-pack=touch-marker" } }, "source")).toThrow("invalid remote worktree branch");
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, worktreeBranch: "feature/valid" } }, "source")).not.toThrow();
   expect(mapHomeDir("/remote/../../etc", "/remote", "/local")).toBeNull();
   expect(mapHomeDir("/remote/work/../repo", "/remote", "/local")).toBe("/local/repo");
 });
