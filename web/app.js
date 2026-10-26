@@ -158,9 +158,13 @@ function lock() {
     "permissions",
     "queue",
     "room-details",
+    "workspace-prs",
+    "workspace-files",
   ])
     $(id).replaceChildren();
   $("pane").textContent = "";
+  $("workspace-count").textContent = "";
+  $("workspace-summary").textContent = "";
   $("message").value = "";
 }
 async function unlock() {
@@ -392,6 +396,11 @@ async function selectAgent(name) {
   state.selected = name;
   state.detailMode = name.endsWith("concierge") ? "chat" : "terminal";
   state.detailVersion++;
+  $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
+  $("workspace-files").replaceChildren();
+  $("workspace-count").textContent = "";
+  $("workspace-summary").textContent = "Loading changes…";
+  refreshWorkspace();
   $("overview").hidden = true;
   $("detail").hidden = false;
   updateAgentView();
@@ -438,6 +447,61 @@ $("expand-concierge").onclick = () => openConcierge();
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
+let workspaceRequest = null;
+async function refreshWorkspace() {
+  const name = state.selected, version = state.detailVersion;
+  if (!name || !state.authenticated) return;
+  if (workspaceRequest?.name === name && workspaceRequest.version === version &&
+      (workspaceRequest.pending || Date.now() - workspaceRequest.at < 15000)) return;
+  const request = workspaceRequest = { name, version, at: Date.now(), pending: true };
+  try {
+    const workspace = await api("/api/agents/" + encodeURIComponent(name) + "/workspace");
+    if (!state.authenticated || name !== state.selected || version !== state.detailVersion) return;
+    const prs = $("workspace-prs");
+    prs.replaceChildren();
+    for (const pr of workspace.pullRequests || []) {
+      // Remote hosts supply metadata; only allow canonical GitHub PR URLs.
+      if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(pr.url)) continue;
+      const link = el("a", "workspace-pr");
+      link.href = pr.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const label = pr.state === "MERGED" ? "Merged" : pr.state === "CLOSED" ? "Closed" : pr.isDraft ? "Draft" : "Open";
+      link.append(el("span", "", `#${pr.number} · ${label} ↗`), el("strong", "", pr.title));
+      prs.append(link);
+    }
+    if (!prs.childNodes.length) prs.append(el("p", "workspace-note", workspace.pullRequestsError ||
+      (!workspace.available ? "No Git workspace." : !workspace.repository ? "No GitHub origin configured." :
+        !workspace.branch ? "Detached HEAD — no branch PR lookup." : "No pull requests for this branch.")));
+    $("workspace-count").textContent = workspace.available ? `(${workspace.total})` : "";
+    const scope = workspace.base === "HEAD" ? "Uncommitted changes" : `Changes vs ${workspace.base || "base"}`;
+    $("workspace-summary").textContent = workspace.error || `${workspace.branch || "Detached HEAD"} · ${scope}`;
+    const files = $("workspace-files");
+    files.replaceChildren();
+    for (const file of workspace.files || []) {
+      const row = el("div", "workspace-file");
+      const code = el("span", "workspace-file-status", file.status === "??" ? "U" : file.status);
+      code.title = file.working ? "Uncommitted" : "Committed on this branch";
+      const path = el("span", "workspace-file-path", file.path);
+      path.title = file.path;
+      row.append(code, path);
+      if (file.additions !== null && file.deletions !== null) {
+        const counts = el("span", "workspace-file-counts");
+        counts.append(el("span", "added", `+${file.additions}`), el("span", "removed", `−${file.deletions}`));
+        row.append(counts);
+      }
+      files.append(row);
+    }
+    if (workspace.available && !workspace.error && !workspace.total) files.append(el("p", "workspace-note", "No changed files."));
+    if (workspace.total > (workspace.files || []).length) files.append(el("p", "workspace-note", `Showing ${workspace.files.length} of ${workspace.total} files.`));
+  } catch (error) {
+    if (state.authenticated && name === state.selected && version === state.detailVersion) {
+      $("workspace-prs").replaceChildren(el("p", "workspace-note", "Workspace unavailable."));
+      $("workspace-summary").textContent = error.message;
+    }
+  } finally { request.pending = false; }
+}
+
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -645,6 +709,7 @@ document.querySelectorAll("[data-action]").forEach(
     }),
 );
 async function refresh() {
+  refreshWorkspace();
   if (!state.authenticated) return;
   if (state.refreshing) { state.refreshPending = true; return; }
   state.refreshing = true;

@@ -1,3 +1,4 @@
+import { agentWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
@@ -348,6 +349,9 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
+    if (route === "workspace" && method === "GET") {
+      return json(await cachedWorkspace(`remote:${host}:${name}`, async () => withPullRequests(await runRemoteJson<WorkspaceInfo>(host, ["__workspace", name]))));
+    }
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
       return json({ records: await runRemoteJson(host, ["subagents", name, "--json"]) });
@@ -628,6 +632,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     if (parts.length === 2 && method === "GET") {
       const detail = agentDetail(name);
       return detail ? json(detail) : json({ error: `no local agent "${name}"` }, 404);
+    }
+
+    if (parts.length === 3 && parts[2] === "workspace" && method === "GET") {
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      try { return json(await agentWorkspace(name)); }
+      catch { return json({ error: "Workspace inspection unavailable. Try again shortly." }, 503); }
     }
 
     // DELETE /api/agents/:name — kill + forget
