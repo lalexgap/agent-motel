@@ -127,7 +127,7 @@ small,
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 205px;
+  width: var(--sidebar-width, 205px);
   background: var(--sidebar);
   border-right: 1px solid var(--border);
   padding: 18px 10px;
@@ -268,7 +268,7 @@ nav {
   color: #9da5af;
 }
 main {
-  margin-left: 205px;
+  margin-left: var(--sidebar-width, 205px);
   min-width: 0;
 }
 .topbar {
@@ -885,10 +885,10 @@ dialog p.muted {
 }
 @media (max-width: 1250px) {
   .sidebar {
-    width: 175px;
+    width: var(--sidebar-width, 175px);
   }
   main {
-    margin-left: 175px;
+    margin-left: var(--sidebar-width, 175px);
   }
   .page {
     padding: 20px;
@@ -1288,12 +1288,8 @@ button.workspace-file:hover { background: #252a31; }
 .diff-line.hunk { color: #8ec9ef; background: #172b3d; }
 .diff-line.header { color: #c0c5ce; }
 
-.pr-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.pr-filters input[type="search"] { flex: 1; min-width: 180px; }
-.pr-filters select { width: auto; max-width: 100%; }
-.pr-filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.pr-filters input[type="checkbox"] { width: auto; }
-.fleet-pr { padding: 16px 0; border-bottom: 1px solid #333; }
-.fleet-pr-title { color: #75beff; font-size: 15px; overflow-wrap: anywhere; }
-.fleet-pr-agents { display: flex; flex-wrap: wrap; gap: 6px; }
-.fleet-pr-agents button { font-size: 12px; overflow-wrap: anywhere; max-width: 100%; }
+.pull-requests-panel { margin-bottom: 20px; }
+#sidebar-divider { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; z-index: 110; cursor: col-resize; touch-action: none; }
+#sidebar-divider:hover, #sidebar-divider:focus-visible, body.resizing-sidebar #sidebar-divider { background: #007acc; outline: none; }
+body.resizing-sidebar { cursor: col-resize; user-select: none; }
+@media (max-width: 700px) { #sidebar-divider { display: none; } }

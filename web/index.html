@@ -47,7 +47,6 @@
             ◫ <span>Overview</span></button
           ><button id="attention-nav" class="nav">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
-          ><button id="pull-requests-nav" class="nav" aria-label="Pull requests">⑂ <span>Pull requests</span></button
           ><button id="concierge-nav" class="nav">
             ✳ <span>Concierge</span>
           </button>
@@ -65,6 +64,7 @@
           <span id="connection" role="status">Connecting…</span
           ><button id="logout">Sign out ↗</button>
         </div>
+        <div id="sidebar-divider" title="Drag to resize; double-click to reset" role="separator" aria-label="Resize agents sidebar" aria-orientation="vertical" tabindex="0"></div>
       </aside>
       <main>
         <header class="topbar">
@@ -84,16 +84,6 @@
             <button id="new-agent" class="primary">+ New agent</button>
           </section>
           <div id="notice" role="status" hidden></div>
-          <section id="pull-requests-view" hidden aria-label="Fleet pull requests">
-            <div class="pr-filters">
-              <input id="pr-search" type="search" placeholder="Filter by agent, repository or PR…" aria-label="Filter pull requests" />
-              <select id="pr-repository" aria-label="Repository"><option value="">All repositories</option></select>
-              <label><input id="pr-show-closed" type="checkbox" /> Show merged and closed</label>
-              <button id="refresh-pull-requests">Refresh</button>
-            </div>
-            <p id="pr-load-status" class="muted" role="status"></p>
-            <div id="fleet-pull-requests"></div>
-          </section>
           <section id="overview">
             <div class="stats">
               <button data-filter="all">
@@ -254,14 +244,14 @@
                 </div>
               </div>
               <aside class="activity">
-                <section class="workspace-panel" aria-label="Workspace changes and pull requests">
-                  <h3>Pull requests</h3>
+                <section class="pull-requests-panel" aria-label="Selected agent pull requests">
+                  <h3>Pull requests <span id="workspace-pr-count"></span></h3>
                   <div id="workspace-prs"></div>
-                  <details open>
-                    <summary>Changed files <span id="workspace-count"></span></summary>
-                    <p id="workspace-summary" class="workspace-note"></p>
-                    <div id="workspace-files"></div>
-                  </details>
+                </section>
+                <section class="workspace-panel" aria-label="Workspace changes">
+                  <h3>Changed files <span id="workspace-count"></span></h3>
+                  <p id="workspace-summary" class="workspace-note"></p>
+                  <div id="workspace-files"></div>
                 </section>
                 <h3>Agent details</h3>
                 <dl id="room-details"></dl>

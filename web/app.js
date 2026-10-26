@@ -76,6 +76,58 @@ const terminalKeys = { escape: "\x1b", tab: "\t", interrupt: "\x03", up: "\x1b[A
 document.querySelectorAll("[data-terminal-key]").forEach(button => {
   button.onclick = () => { agentTerminal.input(terminalKeys[button.dataset.terminalKey]); agentTerminal.focus(); };
 });
+const sidebarDivider = $("sidebar-divider");
+let sidebarWidth = null, sidebarPointer = null;
+try {
+  const saved = Number(localStorage.getItem("am.sidebarWidth"));
+  if (Number.isFinite(saved) && saved >= 175 && saved <= 520) sidebarWidth = saved;
+} catch {}
+const maxSidebarWidth = () => Math.min(520, Math.max(175, innerWidth - 560));
+function applySidebarWidth() {
+  if (sidebarWidth === null) document.documentElement.style.removeProperty("--sidebar-width");
+  else document.documentElement.style.setProperty("--sidebar-width", Math.min(maxSidebarWidth(), Math.max(175, sidebarWidth)) + "px");
+  sidebarDivider.setAttribute("aria-valuemin", "175");
+  sidebarDivider.setAttribute("aria-valuemax", String(maxSidebarWidth()));
+  sidebarDivider.setAttribute("aria-valuenow", String(Math.round(document.querySelector(".sidebar").getBoundingClientRect().width)));
+}
+function saveSidebarWidth() {
+  try {
+    if (sidebarWidth === null) localStorage.removeItem("am.sidebarWidth");
+    else localStorage.setItem("am.sidebarWidth", String(sidebarWidth));
+  } catch {}
+}
+sidebarDivider.onpointerdown = event => {
+  if (event.button !== 0 || innerWidth <= 700) return;
+  event.preventDefault();
+  sidebarPointer = event.pointerId;
+  sidebarDivider.setPointerCapture(event.pointerId);
+  document.body.classList.add("resizing-sidebar");
+};
+sidebarDivider.onpointermove = event => {
+  if (sidebarPointer !== event.pointerId) return;
+  sidebarWidth = Math.min(maxSidebarWidth(), Math.max(175, event.clientX));
+  applySidebarWidth();
+};
+const endSidebarResize = event => {
+  if (sidebarPointer !== event.pointerId) return;
+  sidebarPointer = null;
+  document.body.classList.remove("resizing-sidebar");
+  saveSidebarWidth();
+};
+sidebarDivider.onpointerup = endSidebarResize;
+sidebarDivider.onpointercancel = endSidebarResize;
+sidebarDivider.onlostpointercapture = endSidebarResize;
+sidebarDivider.ondblclick = () => { sidebarWidth = null; applySidebarWidth(); saveSidebarWidth(); };
+sidebarDivider.onkeydown = event => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = document.querySelector(".sidebar").getBoundingClientRect().width;
+  sidebarWidth = event.key === "Home" ? 175 : event.key === "End" ? maxSidebarWidth() :
+    Math.min(maxSidebarWidth(), Math.max(175, current + (event.key === "ArrowRight" ? 1 : -1) * (event.shiftKey ? 50 : 10)));
+  applySidebarWidth(); saveSidebarWidth();
+};
+window.addEventListener("resize", applySidebarWidth);
+applySidebarWidth();
 const key = (row) => (row.host ? `${row.host}:${row.name}` : row.name);
 const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
 const el = (tag, className, text) => {
@@ -152,9 +204,6 @@ function lock() {
   handoverSource = null;
   manageAgent = null;
   diffRequest = null;
-  closePullRequests();
-  fleetPullRequests = [];
-  $("fleet-pull-requests").replaceChildren();
   $("workspace-diff-dialog").close();
   $("manage-agent-dialog").close();
   state.related = null;
@@ -218,7 +267,6 @@ $("logout").onclick = async () => {
 };
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "all") {
-  closePullRequests();
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -416,12 +464,12 @@ function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
 async function selectAgent(name, mode) {
-  closePullRequests();
   saveDraft();
   agentTerminal.close();
   state.selected = name;
   state.detailMode = mode || (name.endsWith("concierge") ? "chat" : "terminal");
   state.detailVersion++;
+  $("workspace-pr-count").textContent = "";
   $("workspace-prs").replaceChildren(el("p", "workspace-note", "Loading pull requests…"));
   $("workspace-files").replaceChildren();
   $("workspace-count").textContent = "";
@@ -474,95 +522,6 @@ $("expand-concierge").onclick = () => openConcierge();
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
-let prLoad = null, fleetPullRequests = [];
-function closePullRequests() {
-  prLoad = null;
-  $("pull-requests-view").hidden = true;
-  $("pull-requests-nav").classList.remove("active");
-}
-function renderPullRequests() {
-  const query = $("pr-search").value.trim().toLowerCase(), repo = $("pr-repository").value;
-  const showClosed = $("pr-show-closed").checked;
-  const view = $("fleet-pull-requests");
-  view.replaceChildren();
-  for (const pr of fleetPullRequests) {
-    if (!showClosed && pr.state !== "OPEN") continue;
-    if (repo && pr.repository !== repo) continue;
-    if (query && ![pr.repository, pr.title, String(pr.number), ...pr.agents].join(" ").toLowerCase().includes(query)) continue;
-    const row = el("article", "fleet-pr");
-    const link = window.agentLinks.anchor(`#${pr.number} ${pr.title}`, pr.url);
-    link.className = "fleet-pr-title";
-    const status = pr.state === "OPEN" ? pr.isDraft ? "Draft" : "Open" : pr.state === "MERGED" ? "Merged" : pr.state === "CLOSED" ? "Closed" : "Unknown";
-    row.append(link, el("p", "muted", pr.repository + " · " + status));
-    const agents = el("div", "fleet-pr-agents");
-    for (const name of pr.agents) {
-      const button = el("button", "", name);
-      button.onclick = () => selectAgent(name);
-      agents.append(button);
-    }
-    row.append(agents);
-    view.append(row);
-  }
-  if (!view.childNodes.length) view.append(el("p", "workspace-note", prLoad?.pending ? "Looking up pull requests…" : "No matching pull requests."));
-}
-async function showPullRequests() {
-  if (!state.authenticated || prLoad?.pending) return;
-  saveDraft();
-  agentTerminal.close();
-  state.selected = null;
-  state.detailVersion++;
-  connectEvents();
-  $("overview").hidden = $("detail").hidden = true;
-  $("pull-requests-view").hidden = false;
-  $("page-title").textContent = "Pull requests";
-  $("page-subtitle").textContent = "";
-  $("breadcrumb").textContent = "Pull requests";
-  document.querySelectorAll(".nav").forEach(button => button.classList.toggle("active", button.id === "pull-requests-nav"));
-  renderFleet();
-  const request = prLoad = { epoch: state.sessionEpoch, pending: true };
-  fleetPullRequests = [];
-  const rows = [...state.rows], found = new Map();
-  let next = 0, done = 0, errors = 0;
-  const current = () => prLoad === request && state.authenticated && request.epoch === state.sessionEpoch;
-  const update = () => {
-    const selectedRepo = $("pr-repository").value;
-    $("pr-repository").replaceChildren(new Option("All repositories", ""));
-    const repos = [...new Set(fleetPullRequests.map(pr => pr.repository))].sort();
-    for (const repo of repos) $("pr-repository").add(new Option(repo, repo));
-    if (repos.includes(selectedRepo)) $("pr-repository").value = selectedRepo;
-    $("pr-load-status").textContent = `${fleetPullRequests.length} pull requests · ${done}/${rows.length} agents checked${errors ? ` · ${errors} unavailable` : ""}`;
-    renderPullRequests();
-  };
-  update();
-  async function worker() {
-    while (current() && next < rows.length) {
-      const row = rows[next++];
-      try {
-        const workspace = await api("/api/agents/" + encodeURIComponent(key(row)) + "/workspace");
-        if (!current()) return;
-        if (workspace.pullRequestsError || workspace.error && workspace.available) errors++;
-        for (const pr of workspace.pullRequests || []) {
-          const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/[1-9][0-9]*$/.exec(pr.url);
-          if (!match) continue;
-          let item = found.get(pr.url);
-          if (!item) { item = { ...pr, repository: match[1], agents: [] }; found.set(pr.url, item); }
-          if (!item.agents.includes(key(row))) item.agents.push(key(row));
-        }
-      } catch { if (current()) errors++; }
-      if (!current()) return;
-      done++;
-      fleetPullRequests = [...found.values()];
-      update();
-    }
-  }
-  await Promise.all([worker(), worker(), worker()]);
-  if (current()) { request.pending = false; update(); }
-}
-$("pull-requests-nav").onclick = showPullRequests;
-$("refresh-pull-requests").onclick = showPullRequests;
-$("pr-search").oninput = renderPullRequests;
-$("pr-repository").onchange = renderPullRequests;
-$("pr-show-closed").onchange = renderPullRequests;
 function runtimeLabel(detail, field) {
   const value = detail.runtime?.[field] || detail[field];
   if (!value) return "Unknown";
@@ -614,6 +573,7 @@ async function refreshWorkspace() {
       link.append(el("span", "", `#${pr.number} · ${label} ↗`), el("strong", "", pr.title));
       prs.append(link);
     }
+    $("workspace-pr-count").textContent = prs.childNodes.length ? `(${prs.childNodes.length})` : "";
     if (!prs.childNodes.length) prs.append(el("p", "workspace-note", workspace.pullRequestsError ||
       (!workspace.available ? "No Git workspace." : !workspace.repository ? "No GitHub origin configured." :
         !workspace.branch ? "Detached HEAD — no branch PR lookup." : "No pull requests for this branch.")));
