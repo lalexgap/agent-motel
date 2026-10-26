@@ -1,5 +1,7 @@
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
-import { agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
+import { join } from "node:path";
+import { tryAcquireFileLock } from "./filelock";
+import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
 import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { hasSession, sessionName } from "./tmux";
@@ -17,6 +19,7 @@ import { mailboxHandoffActive } from "./mailbox";
 import { settleMessages } from "./messages";
 import { startCodexApprovalWatcher } from "./codexApprovals";
 import { readPermission, refreshPermissions } from "./permissions";
+import { managedServices, serviceAction, servicePid } from "./services";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -512,12 +515,57 @@ export async function notifyDaemon(agent: string, event: string): Promise<boolea
   return !!res?.ok;
 }
 
-export function runForegroundDaemon(): void {
-  const handle = startDaemonServer();
+export function recordedPidMayOwnDaemon(pid: number): boolean {
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // A daemon and its socket run as this user; EPERM therefore identifies
+      // an unrelated process that cannot own this daemon's files.
+      if (code === "ESRCH" || code === "EPERM") return false;
+      throw error;
+    }
+  };
+  if (!alive()) return false;
+  try {
+    // Legacy daemons have no lock, but are launched with the __daemon argument.
+    if (process.platform === "linux") {
+      const command = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (!command) throw new Error("Process command is unavailable");
+      return command.split("\0").includes("__daemon");
+    }
+    const result = Bun.spawnSync(["ps", "-ww", "-p", String(pid), "-o", "args="]);
+    if (result.exitCode !== 0 || !result.stdout.toString().trim()) throw new Error("Process command is unavailable");
+    return /(?:^|\s)__daemon(?:\s|$)/.test(result.stdout.toString());
+  } catch (error) {
+    if (!alive()) return false;
+    throw new Error(`Cannot verify daemon PID ${pid}; refusing to replace its socket.`, { cause: error });
+  }
+}
+
+export async function runForegroundDaemon(): Promise<void> {
+  ensureDirs();
+  const release = tryAcquireFileLock(join(baseDir(), "daemon.lock"));
+  if (!release) throw new Error("Another daemon owns daemon.lock");
+  let handle: DaemonHandle;
+  try {
+    if (await daemonHealth()) throw new Error("A daemon already owns the socket; stop it explicitly before migrating.");
+    const pid = readDaemonPid();
+    if (pid && pid !== process.pid && recordedPidMayOwnDaemon(pid)) {
+      throw new Error(`Daemon PID ${pid} is still alive; refusing to replace its socket.`);
+    }
+    handle = startDaemonServer();
+  } catch (error) {
+    release();
+    throw error;
+  }
   writeFileSync(daemonPidFile(), String(process.pid) + "\n");
   const shutdown = () => {
     handle.stop();
     rmSync(daemonPidFile(), { force: true });
+    release();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -526,6 +574,19 @@ export function runForegroundDaemon(): void {
 }
 
 export async function ensureDaemon(): Promise<boolean> {
+  if (managedServices()) {
+    serviceAction("daemon", "start");
+    const expected = servicePid("daemon");
+    for (let i = 0; i < 40; i++) {
+      const health = await daemonHealth();
+      if (health) {
+        if (health.pid !== expected) throw new Error("An unmanaged daemon owns the socket; follow docs/service-lifecycle.md before migrating.");
+        return true;
+      }
+      await Bun.sleep(50);
+    }
+    return false;
+  }
   if (await daemonHealth()) return true;
   let out: number | "ignore" = "ignore";
   try {

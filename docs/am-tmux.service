@@ -1,0 +1,16 @@
+# Owns the default tmux socket independently of the HTTP frontends.
+# Never restart this unit during a frontend/daemon deployment.
+[Unit]
+Description=Agent Motel tmux server
+
+[Service]
+Type=exec
+# Load the profile PATH for bare claude/codex commands in new and resumed panes.
+ExecStart=/bin/sh -lc 'exec /usr/bin/tmux -D'
+Environment=AGENTMGR_SYSTEMD=1
+UnsetEnvironment=AGENTMGR_AGENT AGENTMGR_HOME AM_HOST TMUX
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

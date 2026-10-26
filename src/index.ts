@@ -890,7 +890,7 @@ async function main(): Promise<void> {
       await sidebarCommand();
       break;
     case "__daemon":
-      runForegroundDaemon();
+      await runForegroundDaemon();
       return; // keep the process alive serving the socket
     case "__events":
       // Relay the daemon's event stream to stdout — the remote end of a

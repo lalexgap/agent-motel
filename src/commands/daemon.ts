@@ -1,11 +1,12 @@
 import { rmSync } from "node:fs";
 import { daemonLogFile, daemonPidFile, daemonSocket } from "../paths";
 import { daemonHealth, ensureDaemon, readDaemonPid } from "../daemon";
+import { managedServices, serviceAction } from "../services";
 
 export async function daemonCommand(action: string | undefined): Promise<void> {
   switch (action ?? "status") {
     case "start": {
-      if (await daemonHealth()) {
+      if (!managedServices() && await daemonHealth()) {
         console.log("daemon already running");
         return;
       }
@@ -15,6 +16,11 @@ export async function daemonCommand(action: string | undefined): Promise<void> {
       break;
     }
     case "stop": {
+      if (managedServices()) {
+        serviceAction("daemon", "stop");
+        console.log("daemon service stopped");
+        return;
+      }
       const health = await daemonHealth();
       const pid = health?.pid ?? readDaemonPid();
       if (!pid) {

@@ -1,4 +1,5 @@
 import { cliEntrypoint } from "./settings";
+import { ensureTmuxService, managedServices } from "./services";
 
 export const SESSION_PREFIX = "agentmgr-";
 
@@ -7,7 +8,9 @@ export function sessionName(agent: string): string {
 }
 
 export function tmux(...args: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(["tmux", ...args]);
+  const managed = managedServices();
+  if (managed && args[0] === "new-session") ensureTmuxService();
+  const result = Bun.spawnSync(["tmux", ...(managed ? ["-N"] : []), ...args]);
   return {
     exitCode: result.exitCode,
     stdout: result.stdout.toString(),
