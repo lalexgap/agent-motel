@@ -549,8 +549,9 @@ let activeSearches = 0;
 
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
-  if (parts.length === 1 && parts[0] === "search" && method === "GET") {
-    const query = new URL(req.url).searchParams.get("q");
+  if (parts.length === 1 && parts[0] === "search" && method === "POST") {
+    const body = await req.json().catch(() => null);
+    const query = body?.query;
     if (!validSearchQuery(query)) return json({ error: "Search must contain 2–256 characters" }, 400);
     if (activeSearches >= 2) return json({ error: "Search is busy. Try again shortly." }, 429);
     activeSearches++;

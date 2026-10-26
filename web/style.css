@@ -1310,3 +1310,5 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 @media (max-width: 700px) { .search-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-result { padding: 12px; } }
 
 .search-snippet { border-left: 2px solid #569cd6; padding-left: 10px; color: #b9cbd8; font-family: monospace; font-size: 12px; }
+
+@media (max-width: 700px) { .search-filters label:first-child { grid-column: 1 / -1; } }

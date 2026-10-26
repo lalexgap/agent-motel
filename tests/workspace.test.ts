@@ -141,3 +141,18 @@ test("untracked previews are bounded and reject symlinks", async () => {
   symlinkSync("/etc/passwd", join(dir, "link"));
   await expect(inspectWorkspaceDiff(dir, "link")).rejects.toThrow("symlinks");
 });
+
+test("untracked diff previews preserve line endings and bound formatted output", async () => {
+  const dir = repo();
+  for (const [name, content, expected] of [["terminated", "hello\n", "+hello\n"], ["unterminated", "hello", "+hello\n\\ No newline at end of file\n"], ["empty", "", ""]]) {
+    writeFileSync(join(dir, name!), content!);
+    const preview = await inspectWorkspaceDiff(dir, name!);
+    const body = preview.diff.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++"));
+    expect(body).toEqual(content ? ["+hello"] : []);
+    if (expected) expect(preview.diff.endsWith(expected)).toBe(true);
+  }
+  writeFileSync(join(dir, "many-lines"), "\n".repeat(256 * 1024));
+  const preview = await inspectWorkspaceDiff(dir, "many-lines");
+  expect(preview.diff.length).toBeLessThanOrEqual(256 * 1024);
+  expect(preview.truncated).toBe(true);
+});

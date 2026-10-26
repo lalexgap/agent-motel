@@ -548,8 +548,10 @@ async function openWorkspaceDiff(name, path) {
     const result = await api("/api/agents/" + encodeURIComponent(name) + "/diff?path=" + encodeURIComponent(path));
     if (diffRequest !== request || !state.authenticated || request.epoch !== state.sessionEpoch || !$("workspace-diff-dialog").open) return;
     if (typeof result.diff !== "string") throw new Error("Invalid diff response");
-    $("workspace-diff-meta").textContent = name + (result.binary ? " · Binary file" : " · Unified diff") + (result.truncated ? " · Preview truncated" : "");
-    for (const line of result.diff.split("\n")) {
+    const lines = result.diff.slice(0, 256 * 1024).split("\n", 2001);
+    const truncated = result.truncated || result.diff.length > 256 * 1024 || lines.length > 2000;
+    $("workspace-diff-meta").textContent = name + (result.binary ? " · Binary file" : " · Unified diff") + (truncated ? " · Preview truncated" : "");
+    for (const line of lines.slice(0, 2000)) {
       const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") ? "header" : line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : line.startsWith("@@") ? "hunk" : "context";
       $("workspace-diff-output").append(el("span", "diff-line " + kind, line || " "));
     }

@@ -151,8 +151,14 @@ export async function inspectWorkspaceDiff(dir: string, path: string): Promise<W
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       if (buffer.subarray(0, bytesRead).includes(0)) return { path, diff: "Binary file", binary: true, truncated: false };
       const content = buffer.subarray(0, Math.min(bytesRead, MAX_DIFF)).toString("utf8");
-      diff = `--- /dev/null\n+++ b/${path}\n` + content.split("\n").map(line => "+" + line).join("\n");
-      return { path, diff, binary: false, truncated: bytesRead > MAX_DIFF };
+      const lines = content ? content.split("\n") : [];
+      if (content.endsWith("\n")) lines.pop();
+      diff = `--- /dev/null\n+++ b/${path}\n`;
+      if (lines.length) {
+        diff += `@@ -0,0 +1,${lines.length} @@\n` + lines.map(line => "+" + line).join("\n") + "\n";
+        if (!content.endsWith("\n") && bytesRead <= MAX_DIFF) diff += "\\ No newline at end of file\n";
+      }
+      return { path, diff: diff.slice(0, MAX_DIFF), binary: false, truncated: bytesRead > MAX_DIFF || diff.length > MAX_DIFF };
     } finally { await handle.close(); }
   }
   const base = workspace.base === "New repository" ? null : workspace.base === "HEAD" ? "HEAD" :

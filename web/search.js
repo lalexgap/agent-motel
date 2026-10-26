@@ -9,7 +9,7 @@ async function runConversationSearch() {
   conversationSearch = { query, pending: true, matches: new Map() };
   renderAdvancedSearch();
   try {
-    const result = await api("/api/search?q=" + encodeURIComponent(query));
+    const result = await api("/api/search", { query });
     if (request !== conversationRequest || epoch !== state.sessionEpoch || !state.authenticated) return;
     conversationSearch = { query, matches: new Map(result.matches.map(match => [(match.host ? match.host + ":" : "") + match.name, match.snippets])), partial: result.partial, unavailable: result.unavailable || [] };
   } catch (error) {

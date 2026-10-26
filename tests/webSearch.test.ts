@@ -33,3 +33,24 @@ test("query validation keeps flags literal and rejects empty, oversized or NUL i
   for (const query of [null, 42, "a", "   ", "a".repeat(257), "x\0y"]) expect(validSearchQuery(query)).toBe(false);
   expect(validSearchQuery("--last")).toBe(true);
 });
+
+test("search scans past nonmatching agents and marks missing recorded transcripts partial", async () => {
+  const { writeAgent } = await import("../src/state");
+  const { searchConversations } = await import("../src/webSearch");
+  const dir = mkdtempSync(join(tmpdir(), "am-search-fleet-"));
+  const previous = process.env.AGENTMGR_HOME;
+  process.env.AGENTMGR_HOME = dir;
+  try {
+    const empty = join(dir, "empty.jsonl"), hit = join(dir, "hit.jsonl");
+    writeFileSync(empty, entry("no match here")); writeFileSync(hit, entry("needle after the first hundred"));
+    for (let i = 0; i <= 100; i++) writeAgent({ name: `agent-${String(i).padStart(3, "0")}`, provider: "claude", status: "exited", dir, tmuxSession: "unused", transcriptPath: i === 100 ? hit : empty, createdAt: "now", updatedAt: "now" });
+    const found = await searchConversations("needle");
+    expect(found.partial).toBe(false);
+    expect(found.matches.map(match => match.name)).toEqual(["agent-100"]);
+    writeAgent({ name: "missing", provider: "claude", status: "exited", dir, tmuxSession: "unused", sessionId: "missing-search-session", createdAt: "now", updatedAt: "now" });
+    expect((await searchConversations("needle")).partial).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.AGENTMGR_HOME; else process.env.AGENTMGR_HOME = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
