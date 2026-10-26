@@ -631,3 +631,19 @@ test("remote export rejects mismatched identities and escaping transcript paths"
   expect(mapHomeDir("/remote/../../etc", "/remote", "/local")).toBeNull();
   expect(mapHomeDir("/remote/work/../repo", "/remote", "/local")).toBe("/local/repo");
 });
+
+
+test("remote exports validate session IDs without transcripts and bound storage IDs", () => {
+  const exported = { state: { name: "source", provider: "codex", sessionId: "abc-123", dir: "/remote/work", tmuxSession: "agentmgr-source" }, home: "/remote", queue: [], transcript: null };
+  expect(() => validateRemoteExport(exported, "source")).not.toThrow();
+  for (const id of ["--last", "-x", "", "../escape", "a".repeat(129), 42, null]) {
+    expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, sessionId: id } })).toThrow();
+    expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: id } })).toThrow();
+  }
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: "different" } })).toThrow("conflicting");
+  expect(() => validateRemoteExport({ ...exported, state: { ...exported.state, claudeSessionId: "abc-123" } })).not.toThrow();
+  for (const key of ["queueIds", "receivedMsgIds"]) {
+    expect(() => validateRemoteExport({ ...exported, [key]: ["a".repeat(300)] })).toThrow();
+    expect(() => validateRemoteExport({ ...exported, [key]: ["a".repeat(128)] })).not.toThrow();
+  }
+});

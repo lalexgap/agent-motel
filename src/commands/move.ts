@@ -505,7 +505,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
 
 export function validateRemoteExport(remote: any, expectedName?: string): void {
   const state = remote?.state;
-  const messageId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
+  const messageId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
   const absolute = (value: unknown) => typeof value === "string" && isAbsolute(value) && !value.includes("\0");
   if (!state || typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name) ||
       expectedName !== undefined && state.name !== expectedName || !absolute(state.dir) || !absolute(remote.home) ||
@@ -517,6 +517,12 @@ export function validateRemoteExport(remote: any, expectedName?: string): void {
       state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
       state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
     throw new Error("malformed remote move export");
+  for (const id of [state.sessionId, state.claudeSessionId]) {
+    if (id !== undefined && (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)))
+      throw new Error("invalid remote session id");
+  }
+  if (state.sessionId !== undefined && state.claudeSessionId !== undefined && state.sessionId !== state.claudeSessionId)
+    throw new Error("conflicting remote session ids");
   if (state.worktreeBranch !== undefined && Bun.spawnSync(["git", "check-ref-format", "--branch", state.worktreeBranch], { stdout: "pipe", stderr: "pipe", timeout: 5000 }).exitCode !== 0)
     throw new Error("invalid remote worktree branch");
   if (remote.transcript != null) {
@@ -552,6 +558,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
     };
 
     validateRemoteExport(remote, opts.exact ? name : undefined);
+    if (opts.start && !agentSessionId(remote.state)) throw new Error("cannot auto-resume a remote agent without a session id");
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
     const renew = async () => {
