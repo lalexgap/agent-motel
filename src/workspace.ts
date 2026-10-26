@@ -61,7 +61,7 @@ export function changedFiles(names: string, stats: string, status: string): Work
 export async function inspectWorkspace(dir: string, includePullRequests = true): Promise<WorkspaceInfo> {
   const result: WorkspaceInfo = { available: false, files: [], total: 0, pullRequests: [] };
   let root: string;
-  try { root = (await git(dir, "rev-parse", "--show-toplevel")).trim(); }
+  try { root = (await git(dir, "rev-parse", "--show-toplevel")).replace(/\n$/, ""); }
   catch { return { ...result, error: "No Git workspace available." }; }
   result.available = true;
   try {

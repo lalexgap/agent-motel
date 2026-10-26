@@ -100,3 +100,14 @@ printf '%s' '[{"number":12,"title":"A PR","state":"OPEN","isDraft":true,"url":"j
     expect(failed.available).toBe(true); expect(failed.pullRequestsError).toContain("PR lookup unavailable");
   } finally { process.env.PATH = previous; }
 });
+
+
+test("workspace paths retain trailing spaces", async () => {
+  const parent = repo();
+  const dir = join(parent, "workspace "); mkdirSync(dir);
+  git(dir, "init", "-b", "main");
+  writeFileSync(join(dir, "new-file"), "x");
+  const info = await inspectWorkspace(dir);
+  expect(info.error).toBeUndefined();
+  expect(info.files.map(file => file.path)).toEqual(["new-file"]);
+});
