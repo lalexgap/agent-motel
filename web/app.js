@@ -603,6 +603,7 @@ async function refreshWorkspace() {
     if (workspace.total > (workspace.files || []).length) files.append(el("p", "workspace-note", `Showing ${workspace.files.length} of ${workspace.total} files.`));
   } catch (error) {
     if (state.authenticated && name === state.selected && version === state.detailVersion) {
+      $("workspace-pr-count").textContent = "";
       $("workspace-prs").replaceChildren(el("p", "workspace-note", "Workspace unavailable."));
       $("workspace-summary").textContent = error.message;
     }
