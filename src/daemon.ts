@@ -2,11 +2,11 @@ import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, wa
 import { join } from "node:path";
 import { tryAcquireFileLock } from "./filelock";
 import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
-import { agentNamesAndAliases, listAgents, matchAgent, readAgent, setStatus, type AgentState } from "./state";
+import { agentNamesAndAliases, agentProvider, agentSessionId, listAgents, matchAgent, readAgent, setStatus, updateAgentIf, updateAgentStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
-import { hasSession, sessionName } from "./tmux";
+import { capturePane, hasSession, sessionName } from "./tmux";
 import { openLogFd } from "./fsutil";
-import { acquireDeliverLock, deliverNext, needsCodexRecovery, releaseDeliverLock, type DeliveryResult } from "./deliver";
+import { acquireDeliverLock, codexReadyAtPrompt, deliverNext, needsCodexRecovery, releaseDeliverLock, type DeliveryResult } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
 import { loadConfig } from "./config";
@@ -174,6 +174,26 @@ async function collectFromRemotes(): Promise<number> {
   return total;
 }
 
+// Grace for the Codex TUI to draw its composer after launch or resume.
+const CODEX_START_GRACE_MS = 10_000;
+
+// A Codex agent sitting at its empty prompt after launch or resume is idle,
+// but no hook will say so until its first turn; settle it from the screen.
+export function settleCodexStart(agent: AgentState, pane: (session: string) => string[] | null = capturePane): boolean {
+  if (agent.status !== "starting" || agentProvider(agent) !== "codex") return false;
+  // Its hooks find a session-less daemon-attached agent only while it is starting.
+  if (agent.codexDaemonAttached && !agentSessionId(agent)) return false;
+  if (Date.now() - (Date.parse(agent.statusChangedAt ?? "") || 0) < CODEX_START_GRACE_MS) return false;
+  const lines = pane(agent.tmuxSession);
+  if (!lines || !codexReadyAtPrompt(lines)) return false;
+  // Under the state lock: a hook may have moved it on meanwhile.
+  return updateAgentIf(agent.name, (current) => {
+    if (current.status !== "starting" || current.createdAt !== agent.createdAt) return false;
+    updateAgentStatus(current, "idle", "ready at prompt");
+    return true;
+  });
+}
+
 // The sweep's self-heal: an idle agent with messages queued, or a Codex
 // reclaim to finish (its message out of both queues until it does).
 export function drainStranded(agent: AgentState): Promise<DeliveryResult> | null {
@@ -322,6 +342,8 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         settleMessages(agent.name);
         continue;
       }
+      // The state-file watcher publishes the change.
+      if (settleCodexStart(agent)) agent.status = "idle";
       const draining = drainStranded(agent);
       if (draining) {
         waiting.add(agent.name);

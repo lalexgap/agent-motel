@@ -38,6 +38,9 @@ describe("provider composer captures", () => {
   test("Codex placeholder and empty composer are empty", () => {
     expect(parsedInputBoxText(codex("Ask Codex to do anything"), "codex")).toBe("");
     expect(parsedInputBoxText(codex(""), "codex")).toBe("");
+    // Codex shows a bare "~" for the cwd when it runs in the home folder.
+    const home = codex("draft").map((line) => line.replace(/~\/\.agent-manager\S*/, "~ · caretaker"));
+    expect(parsedInputBoxText(home, "codex")).toBe("draft");
   });
 
   test("Codex human draft includes multiline continuation", () => {
