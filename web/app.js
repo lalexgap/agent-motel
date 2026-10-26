@@ -718,7 +718,8 @@ const transcriptQueue = el("div", "transcript-queue");
 // A message sent mid-turn is held by the agent's TUI until it reads it, so keep
 // showing it until a user turn logged after the send matches it.
 const pendingSent = new Map(), lastUserTexts = new Map();
-const normalizeMessage = (text) => String(text || "").replace(/\s+/g, " ").trim();
+const normalizeMessage = (text) =>
+  String(text || "").replace(/<\/?pasted_content id="[^"]*">/g, "").replace(/\s+/g, " ").trim();
 function notePending(name, text, id) {
   const list = pendingSent.get(name) || [];
   // Before the first transcript load the baseline is unknown; any matching turn then counts.
@@ -731,6 +732,7 @@ function pendingFor(name, entries) {
   const claimed = new Set();
   const list = (pendingSent.get(name) || []).filter((pending) => {
     if (Date.now() - pending.at >= 30 * 60000) return false;
+    if (users.length < pending.baseline) pending.baseline = 0; // new session
     const index = users.findIndex((text, i) => i >= pending.baseline && !claimed.has(i) &&
       (text === pending.text || text.startsWith(pending.text)));
     if (index < 0) return true;
