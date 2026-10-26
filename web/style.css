@@ -1464,5 +1464,4 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 }
 .side-agent:hover { background: var(--surface); color: var(--fg); }
 .side-agent.selected { background: var(--surface-raised); color: var(--fg-strong); }
-.side-agent-time { flex: none; font: 11px var(--mono); color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 .workspace, .side-heading { color: var(--fg-subtle); }

@@ -390,9 +390,11 @@ function renderFleet() {
       .toLowerCase().includes(sidebarQuery)) continue;
     const button = el("button", "side-agent");
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
-    const time = row.status === "working" ? elapsed(runtime(row)) : "";
-    button.title = `${row.name} · ${statusName(row.status)} · ${provider}`;
-    button.append(dot(row.status), el("span", "side-agent-name", row.name), el("span", "side-agent-time", time));
+    const label = el("span", "side-agent-provider", provider);
+    label.dataset.provider = provider.toLowerCase();
+    const time = row.status === "working" ? ` · ${elapsed(runtime(row))}` : "";
+    button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
+    button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     button.classList.toggle("selected", key(row) === state.selected);
     if (key(row) === state.selected) button.setAttribute("aria-current", "page");
     button.dataset.agentKey = key(row);
