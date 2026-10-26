@@ -304,7 +304,11 @@ function renderFleet() {
     if (!`${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
       .toLowerCase().includes(sidebarQuery)) continue;
     const button = el("button", "side-agent");
-    button.append(dot(row.status), el("span", "", row.name));
+    const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
+    const label = el("span", "side-agent-provider", provider);
+    label.dataset.provider = provider.toLowerCase();
+    button.title = `${row.name} · ${provider}`;
+    button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     button.onclick = () => selectAgent(key(row));
     nav.append(button);
   }
