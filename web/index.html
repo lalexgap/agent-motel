@@ -171,11 +171,12 @@
             </div>
           </section>
           <section id="detail" hidden>
-            <div class="detail-heading">
-              <div class="detail-summary">
-                <span id="detail-status" class="badge"></span>
-                <p id="detail-meta"></p>
-                <button id="detail-meta-toggle" class="text-button" type="button" aria-controls="detail-meta" aria-expanded="false" hidden>Show full task</button>
+            <div class="agent-bar">
+              <h1 id="detail-name"></h1>
+              <span id="detail-status" class="badge"></span>
+              <div class="view-switch segmented" aria-label="Agent view">
+                <button id="terminal-tab" aria-pressed="true">Terminal</button
+                ><button id="chat-tab" aria-pressed="false">Chat</button>
               </div>
               <div class="actions">
                 <button data-action="resume">Resume</button
@@ -191,16 +192,13 @@
                 </details>
               </div>
             </div>
+            <div class="detail-summary">
+              <p id="detail-meta"></p>
+              <button id="detail-meta-toggle" class="text-button" type="button" aria-controls="detail-meta" aria-expanded="false" hidden>Show full task</button>
+            </div>
             <div id="permissions"></div>
             <div class="conversation-layout">
               <div class="conversation">
-                <div class="section-header">
-                  <div class="view-switch" aria-label="Agent view">
-                    <button id="terminal-tab" aria-pressed="true">Terminal</button>
-                    <button id="chat-tab" aria-pressed="false">Chat</button>
-                  </div>
-                  <span id="message-status" role="status"></span>
-                </div>
                 <section id="terminal-panel" aria-label="Interactive agent terminal">
                   <div class="terminal-toolbar">
                     <span id="terminal-status" role="status">Connecting…</span>
@@ -236,6 +234,7 @@
                     <select id="message-mode" aria-label="Delivery mode">
                       <option value="now">Send now</option>
                       <option value="queue">Queue for next turn</option></select
+                    ><span id="message-status" role="status"></span
                     ><small>⌘ Enter to send</small
                     ><button class="primary">Send ↗</button>
                   </div>
