@@ -517,6 +517,7 @@ export function validateRemoteExport(remote: any, expectedName?: string): void {
       state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
       state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
     throw new Error("malformed remote move export");
+  if (!agentSessionId(state)) throw new Error("cannot move a remote agent without a session id");
   for (const id of [state.sessionId, state.claudeSessionId]) {
     if (id !== undefined && (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)))
       throw new Error("invalid remote session id");
@@ -558,7 +559,6 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
     };
 
     validateRemoteExport(remote, opts.exact ? name : undefined);
-    if (opts.start && !agentSessionId(remote.state)) throw new Error("cannot auto-resume a remote agent without a session id");
     if (remote.handoffToken !== handoff) throw new Error(`remote on ${host} does not support delivery handoff — update am there`);
     handoffName = remote.state.name;
     const renew = async () => {
