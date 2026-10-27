@@ -717,6 +717,61 @@ function showWorking(id, status, since) {
 const transcriptQueue = el("div", "transcript-queue");
 // A message sent mid-turn is held by the agent's TUI until it reads it, so keep
 // showing it until a user turn logged after the send matches it.
+// AskUserQuestion arrives as a permission request: show the questions and
+// their answers instead of the raw tool input.
+function permissionBox(request, base) {
+  const questions = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions) ? request.input.questions : null;
+  const box = el("div", questions ? "permission question" : "permission");
+  const answer = (option) => async () => {
+    for (const other of box.querySelectorAll("button")) other.disabled = true;
+    try {
+      await api(base + "/permissions/" + encodeURIComponent(request.id), { optionId: option.id });
+      await refreshDetail();
+    } catch (e) {
+      notice(e.message);
+      for (const other of box.querySelectorAll("button")) other.disabled = false;
+    }
+  };
+  if (!questions) {
+    box.append(el("h3", "", "Permission requested"));
+    const call = el("pre", "permission-call");
+    call.append(el("strong", "", request.tool), document.createTextNode(" " + request.summary.replace(/^[^:]*:\s*/, "")));
+    box.append(call);
+    const actions = el("div", "permission-actions");
+    for (const option of request.options) {
+      const button = el("button", option.kind === "allow" ? "primary" : "", option.label);
+      button.onclick = answer(option);
+      actions.append(button);
+    }
+    box.append(actions);
+    return box;
+  }
+  const answers = new Map(request.options.filter((o) => o.id.startsWith("answer-")).map((o) => [o.label, o]));
+  for (const question of questions) {
+    if (question.header) box.append(el("span", "question-header", question.header));
+    box.append(window.agentMarkdown.render(el("div", "turn-text question-text"), question.question));
+    const list = el("div", "question-options");
+    for (const choice of question.options || []) {
+      const option = answers.get(choice.label);
+      const item = el(option ? "button" : "div", "question-option");
+      item.append(el("span", "question-label", choice.label));
+      if (choice.description) item.append(el("span", "question-description", choice.description));
+      if (option) item.onclick = answer(option);
+      list.append(item);
+    }
+    box.append(list);
+  }
+  const footer = el("div", "permission-actions");
+  footer.append(el("span", "question-note", answers.size ? "Or answer in the terminal." : "Answer in the terminal."));
+  for (const option of request.options.filter((o) => !o.id.startsWith("answer-"))) {
+    const button = el("button", "text-button", option.label);
+    button.onclick = answer(option);
+    footer.append(button);
+  }
+  box.append(footer);
+  return box;
+}
+
 const pendingSent = new Map(), lastUserTexts = new Map();
 const normalizeMessage = (text) =>
   String(text || "").replace(/<\/?pasted_content id="[^"]*">/g, "").replace(/\s+/g, " ").trim();
@@ -823,30 +878,7 @@ async function refreshDetail() {
   }
   const pending = $("permissions");
   pending.replaceChildren();
-  for (const request of permissions.requests) {
-    const box = el("div", "permission");
-    box.append(
-      el("h3", "", `Permission requested · ${request.tool}`),
-      el("p", "", request.summary),
-    );
-    for (const option of request.options) {
-      const button = el("button", "", option.label);
-      button.onclick = async () => {
-        button.disabled = true;
-        try {
-          await api(base + "/permissions/" + encodeURIComponent(request.id), {
-            optionId: option.id,
-          });
-          await refreshDetail();
-        } catch (e) {
-          notice(e.message);
-          button.disabled = false;
-        }
-      };
-      box.append(button);
-    }
-    pending.append(box);
-  }
+  for (const request of permissions.requests) pending.append(permissionBox(request, base));
   showWorking("chat-working", detail.status, detail.statusChangedAt);
   const view = $("transcript"),
     atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 90;

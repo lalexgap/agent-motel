@@ -369,12 +369,56 @@ export function claudePermissionOptions(suggestions: unknown): {
   return { options, decisions };
 }
 
+interface ClaudeQuestion {
+  question: string;
+  options: { label: string }[];
+  multiSelect?: boolean;
+}
+
+function claudeQuestions(input: unknown): ClaudeQuestion[] {
+  const questions = (input as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.filter(
+    (q): q is ClaudeQuestion =>
+      typeof q?.question === "string" && Array.isArray(q.options) && q.options.every((o: unknown) => typeof (o as { label?: unknown })?.label === "string"),
+  );
+}
+
+// AskUserQuestion goes through the same hook. A single single-choice question
+// gets one option per answer, sent back as updatedInput.answers so Claude
+// takes it as the user's pick; anything bigger is answered in the pane.
+export function claudeQuestionOptions(input: unknown): {
+  options: PermissionOption[];
+  decisions: Record<string, unknown>;
+} {
+  const options: PermissionOption[] = [];
+  const decisions: Record<string, unknown> = {};
+  const questions = claudeQuestions(input);
+  const [only] = questions;
+  if (only && questions.length === 1 && !only.multiSelect) {
+    only.options.forEach(({ label }, i) => {
+      options.push({ id: `answer-${i}`, label, kind: "allow" });
+      decisions[`answer-${i}`] = {
+        behavior: "allow",
+        updatedInput: { ...(input as object), answers: { [only.question]: label } },
+      };
+    });
+  }
+  options.push({ id: "deny", label: "Skip", kind: "deny" });
+  decisions.deny = { behavior: "deny", message: "The operator skipped this question through am." };
+  return { options, decisions };
+}
+
 function oneLine(text: string, max = 200): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
 export function claudePermissionSummary(tool: string, input: unknown): string {
+  if (tool === "AskUserQuestion") {
+    const questions = claudeQuestions(input);
+    if (questions.length) return questions.map((q) => q.question).join("\n");
+  }
   const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const str = (k: string) => (typeof i[k] === "string" ? (i[k] as string) : undefined);
   const main = str("command") ?? str("file_path") ?? str("notebook_path") ?? str("url") ?? str("pattern") ?? str("path");
