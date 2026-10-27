@@ -655,20 +655,58 @@ main {
   padding: 3px 7px;
 }
 .permission {
-  padding: 16px;
+  padding: 14px 16px;
   border: 1px solid var(--warning-border);
-  background: var(--warning-soft);
-  border-radius: 3px;
-  margin-bottom: 18px;
+  border-left-width: 3px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  margin-bottom: 14px;
 }
-.permission p {
+.permission h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--warning-text); }
+.permission-call {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: var(--radius);
   white-space: pre-wrap;
-  margin: 10px 0;
-  color: var(--warning-text);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  max-height: 160px;
+  overflow: auto;
 }
-.permission button {
-  margin-right: 8px;
+.permission-call strong { color: var(--warning-text); font-weight: 600; }
+.permission-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.question { border-color: var(--accent); }
+.question-header {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent-text);
 }
+.question-text { margin-bottom: 10px; color: var(--fg-strong); }
+.question-text p { margin: 0 0 6px; font-size: 14px; }
+.question-options { display: grid; gap: 6px; margin-bottom: 12px; }
+.question-option {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--sans);
+}
+button.question-option { cursor: pointer; }
+button.question-option:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--accent); }
+.question-label { font-size: 13px; font-weight: 600; color: var(--fg-strong); }
+.question-description { font-size: 12px; line-height: 1.45; color: var(--fg-muted); }
+.question-note { margin-right: auto; font-size: 11px; color: var(--fg-subtle); }
 #notice {
   padding: 11px 14px;
   background: var(--warning-soft);
@@ -1137,7 +1175,6 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .turn-text,
 .search-result .search-task,
 .search-snippet,
-.permission p,
 .queue-item,
 .login-card > p {
   font-family: var(--sans);

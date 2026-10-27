@@ -38,6 +38,7 @@ import {
   claimAnswer,
   claudeDecisionOutput,
   claudePermissionOptions,
+  claudeQuestionOptions,
   claudePermissionSummary,
   claudeToolCallStates,
   createPermission,
@@ -484,7 +485,8 @@ export async function awaitPermissionDecision(
   // this one counts as answered only once all of them are.
   const unanswered = initial.uses.filter((id) => !initial.answered.includes(id));
   const candidates = new Set(toolUseId && unanswered.includes(toolUseId) ? [toolUseId] : unanswered);
-  const { options, decisions } = claudePermissionOptions(payload.permission_suggestions);
+  const { options, decisions } =
+    tool === "AskUserQuestion" ? claudeQuestionOptions(input) : claudePermissionOptions(payload.permission_suggestions);
   const record = createPermission({
     agent: agent.name,
     provider: "claude",

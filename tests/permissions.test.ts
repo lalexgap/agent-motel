@@ -11,6 +11,7 @@ import {
   claimAnswer,
   claudePermissionOptions,
   claudePermissionSummary,
+  claudeQuestionOptions,
   claudeToolCallStates,
   createPermission,
   listPermissions,
@@ -87,6 +88,20 @@ describe("claude options", () => {
     expect(claudePermissionSummary("Bash", { command: "rm -rf\n node_modules", description: "x" })).toBe("Bash: rm -rf node_modules");
     expect(claudePermissionSummary("Write", { file_path: "/a/b.ts", content: "..." })).toBe("Write: /a/b.ts");
     expect(claudePermissionSummary("mcp__x__y", { q: 1 })).toBe('mcp__x__y: {"q":1}');
+  });
+
+  test("a single question offers its answers, sent back as the user's pick", () => {
+    const input = { questions: [{ question: "Which repo?", header: "Repo", options: [{ label: "a" }, { label: "b" }], multiSelect: false }] };
+    const { options, decisions } = claudeQuestionOptions(input);
+    expect(options.map((o) => [o.id, o.label])).toEqual([["answer-0", "a"], ["answer-1", "b"], ["deny", "Skip"]]);
+    expect(decisions["answer-1"]).toEqual({ behavior: "allow", updatedInput: { ...input, answers: { "Which repo?": "b" } } });
+    expect(claudePermissionSummary("AskUserQuestion", input)).toBe("Which repo?");
+  });
+
+  test("several or multi-select questions are left to the pane", () => {
+    const q = (question: string, multiSelect = false) => ({ question, options: [{ label: "x" }], multiSelect });
+    expect(claudeQuestionOptions({ questions: [q("1"), q("2")] }).options.map((o) => o.id)).toEqual(["deny"]);
+    expect(claudeQuestionOptions({ questions: [q("1", true)] }).options.map((o) => o.id)).toEqual(["deny"]);
   });
 
   test("the transcript tells which calls already have a result", () => {
