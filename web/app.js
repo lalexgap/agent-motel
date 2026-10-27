@@ -715,10 +715,7 @@ function showWorking(id, status, since) {
     (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
 }
 const transcriptQueue = el("div", "transcript-queue");
-// A message sent mid-turn is held by the agent's TUI until it reads it, so keep
-// showing it until a user turn logged after the send matches it.
-// AskUserQuestion arrives as a permission request: show the questions and
-// their answers instead of the raw tool input.
+// AskUserQuestion arrives as a permission request; render its questions.
 function permissionBox(request, base) {
   const questions = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions) ? request.input.questions : null;
   const box = el("div", questions ? "permission question" : "permission");
@@ -772,6 +769,8 @@ function permissionBox(request, base) {
   return box;
 }
 
+// A message sent mid-turn is held by the agent's TUI until it reads it, so keep
+// showing it until a user turn logged after the send matches it.
 const pendingSent = new Map(), lastUserTexts = new Map();
 const normalizeMessage = (text) =>
   String(text || "").replace(/<\/?pasted_content id="[^"]*">/g, "").replace(/\s+/g, " ").trim();

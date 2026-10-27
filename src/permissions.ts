@@ -384,9 +384,8 @@ function claudeQuestions(input: unknown): ClaudeQuestion[] {
   );
 }
 
-// AskUserQuestion goes through the same hook. A single single-choice question
-// gets one option per answer, sent back as updatedInput.answers so Claude
-// takes it as the user's pick; anything bigger is answered in the pane.
+// Claude takes updatedInput.answers as the user's pick. Multi-question or
+// multi-select prompts are left to the pane.
 export function claudeQuestionOptions(input: unknown): {
   options: PermissionOption[];
   decisions: Record<string, unknown>;
