@@ -717,7 +717,10 @@ function showWorking(id, status, since) {
 const transcriptQueue = el("div", "transcript-queue");
 // AskUserQuestion arrives as a permission request; render its questions.
 function permissionBox(request, base) {
-  const questions = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions) ? request.input.questions : null;
+  const asked = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions)
+    ? request.input.questions.filter((q) => typeof q?.question === "string")
+    : [];
+  const questions = asked.length ? asked : null;
   const box = el("div", questions ? "permission question" : "permission");
   const answer = (option) => async () => {
     for (const other of box.querySelectorAll("button")) other.disabled = true;
@@ -732,7 +735,7 @@ function permissionBox(request, base) {
   if (!questions) {
     box.append(el("h3", "", "Permission requested"));
     const call = el("pre", "permission-call");
-    call.append(el("strong", "", request.tool), document.createTextNode(" " + request.summary.replace(/^[^:]*:\s*/, "")));
+    call.append(el("strong", "", request.tool), document.createTextNode(request.summary.startsWith(request.tool + ":") ? request.summary.slice(request.tool.length + 1) : ""));
     box.append(call);
     const actions = el("div", "permission-actions");
     for (const option of request.options) {
@@ -748,7 +751,7 @@ function permissionBox(request, base) {
     if (question.header) box.append(el("span", "question-header", question.header));
     box.append(window.agentMarkdown.render(el("div", "turn-text question-text"), question.question));
     const list = el("div", "question-options");
-    for (const choice of question.options || []) {
+    for (const choice of (Array.isArray(question.options) ? question.options : []).filter((c) => typeof c?.label === "string")) {
       const option = answers.get(choice.label);
       const item = el(option ? "button" : "div", "question-option");
       item.append(el("span", "question-label", choice.label));
