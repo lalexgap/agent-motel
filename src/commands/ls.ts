@@ -114,6 +114,18 @@ function fileTail(path: string): string {
   }
 }
 
+// Subagent .output files are JSONL transcripts; their tail is never a readable status line.
+function isTranscript(path: string): boolean {
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(14);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.toString("utf8", 0, n) === '{"parentUuid":';
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const BG_RECENT_MS = 30 * 60 * 1000;
 
 export interface BackgroundTasks {
@@ -139,9 +151,7 @@ export function backgroundTasks(agent: AgentState): BackgroundTasks | null {
   const freshest = files[0]!;
   let lastLine: string | null = null;
   try {
-    // A subagent's .output is its JSONL transcript, which says nothing readable.
-    const line = lastNonEmptyLine(fileTail(freshest.path));
-    lastLine = line && !/^[{[]/.test(line) ? line : null;
+    if (!isTranscript(freshest.path)) lastLine = lastNonEmptyLine(fileTail(freshest.path));
   } catch {
     // unreadable tail is fine — fall back to the pane detail
   }

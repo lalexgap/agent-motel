@@ -357,7 +357,7 @@ function repoName(row) {
   return repoPath(row).replace(/\/$/, "").split("/").pop() || "—";
 }
 function runtime(row) {
-  if (row.status !== "working") return -1;
+  if (row.status !== "working" && row.status !== "waiting") return -1;
   const start = Date.parse(row.statusChangedAt || "");
   return Number.isFinite(start) ? Math.max(0, Date.now() - start) : -1;
 }
@@ -424,7 +424,7 @@ function renderFleet() {
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
-    const time = row.status === "working" ? ` · ${elapsed(runtime(row))}` : "";
+    const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
     button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     button.classList.toggle("selected", key(row) === state.selected);

@@ -91,7 +91,11 @@ describe("background task surfacing", () => {
       expect(bg.lastLine).toBe("tick-7");
       expect(bg.count).toBe(2);
       await Bun.sleep(20);
-      writeFileSync(`${dir}/agent.output`, '{"parentUuid":"x","type":"assistant"}\n');
+      writeFileSync(`${dir}/fresh.output`, '[INFO] ready\n{"ok":true}\n');
+      expect(backgroundTasks(agent)!.lastLine).toBe('{"ok":true}');
+      await Bun.sleep(20);
+      const big = JSON.stringify({ type: "user", content: "x".repeat(6000) });
+      writeFileSync(`${dir}/agent.output`, `{"parentUuid":null,"type":"user"}\n${big}\n`);
       expect(backgroundTasks(agent)!.lastLine).toBeNull();
     } finally {
       rmSync(dir.replace(/\/tasks$/, ""), { recursive: true, force: true });
