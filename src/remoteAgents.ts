@@ -112,9 +112,7 @@ export async function remoteSpawnDir(
   return mapHomeDir(dir, localHome, targetHome)!;
 }
 
-// Drop bytes into a remote agent's inbox (~/.agent-manager/inbox/<name>/ on
-// that host, where `am send --file` puts files) and return the remote path.
-// fileName is server-generated; callers never pass a client-supplied name.
+// fileName must be server-generated: it is interpolated into a remote path.
 export async function pushRemoteInboxFile(host: string, name: string, fileName: string, bytes: Uint8Array): Promise<string> {
   await ensureExactCapable(host, name);
   let home: string;

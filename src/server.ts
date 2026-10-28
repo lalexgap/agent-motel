@@ -337,9 +337,6 @@ async function handoffBody(req: Request): Promise<{ to: Provider; newName?: stri
   return { to: body.to, newName: body.newName, full: body.full ?? false };
 }
 
-// Pasted images (POST /api/agents/:name/files): the raw bytes as the body,
-// typed by Content-Type. Stored in the agent's inbox under a server-made name
-// so the agent can open the returned path.
 export const PASTE_MAX_BYTES = 10 * 1024 * 1024;
 const JSON_MAX_BYTES = 256 * 1024;
 const ascii = (b: Uint8Array, from: number, to: number) => String.fromCharCode(...b.subarray(from, to));
@@ -974,7 +971,6 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
     // and remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
-    // Sized for pasted images; every other route keeps the JSON cap below.
     maxRequestBodySize: PASTE_MAX_BYTES + 64 * 1024,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
@@ -983,8 +979,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       const path = url.pathname;
 
       const respond = (response: Response) => secureWebResponse(response);
-      // Only image uploads get the large body limit; everything else (JSON
-      // routes, /auth/login) keeps the old 256 KB cap.
+      // Only image uploads get the large body limit.
       if (!/^\/api\/agents\/[^/]+\/files$/.test(path) && Number(req.headers.get("content-length") ?? 0) > JSON_MAX_BYTES)
         return respond(json({ error: "request body too large" }, 413));
       if (webAuth) {

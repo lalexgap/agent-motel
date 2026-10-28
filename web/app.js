@@ -997,8 +997,6 @@ $("message-form").onsubmit = async (event) => {
   }
 };
 
-// Pasted or dropped images upload to the agent's host right away (its inbox);
-// sending appends one `[image: <path>]` line per image so the agent can open it.
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 function agentAttachments(name) {
@@ -1086,8 +1084,7 @@ const droppedImages = (data) => [...(data?.files || [])].filter((file) => file.t
 $("message").addEventListener("paste", (event) => {
   const files = droppedImages(event.clipboardData);
   if (!files.length) return;
-  // Keep any text that came along (some apps copy both); otherwise the
-  // browser would paste nothing useful for the image.
+  // Some apps copy text alongside the image; let that paste through.
   if (!event.clipboardData.getData("text/plain")) event.preventDefault();
   attachImages(files);
 });
