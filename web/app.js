@@ -80,7 +80,13 @@ function setDetailMode(mode) {
   try { localStorage.setItem("am.detailMode", mode); } catch {}
 }
 $("terminal-tab").onclick = () => { setDetailMode("terminal"); updateAgentView(); };
-$("chat-tab").onclick = () => { setDetailMode("chat"); updateAgentView(); };
+$("chat-tab").onclick = () => {
+  if (state.detailMode === "chat") return;
+  setDetailMode("chat");
+  updateAgentView();
+  // A hidden transcript can't scroll, so open the chat at its latest message.
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+};
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
 new MutationObserver(() => {
   $("terminal-reconnect").hidden = $("terminal-status").textContent.startsWith("●");
