@@ -139,7 +139,9 @@ export function backgroundTasks(agent: AgentState): BackgroundTasks | null {
   const freshest = files[0]!;
   let lastLine: string | null = null;
   try {
-    lastLine = lastNonEmptyLine(fileTail(freshest.path));
+    // A subagent's .output is its JSONL transcript, which says nothing readable.
+    const line = lastNonEmptyLine(fileTail(freshest.path));
+    lastLine = line && !/^[{[]/.test(line) ? line : null;
   } catch {
     // unreadable tail is fine — fall back to the pane detail
   }

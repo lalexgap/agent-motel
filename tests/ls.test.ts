@@ -90,6 +90,9 @@ describe("background task surfacing", () => {
       const bg = backgroundTasks(agent)!;
       expect(bg.lastLine).toBe("tick-7");
       expect(bg.count).toBe(2);
+      await Bun.sleep(20);
+      writeFileSync(`${dir}/agent.output`, '{"parentUuid":"x","type":"assistant"}\n');
+      expect(backgroundTasks(agent)!.lastLine).toBeNull();
     } finally {
       rmSync(dir.replace(/\/tasks$/, ""), { recursive: true, force: true });
     }
