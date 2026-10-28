@@ -203,7 +203,13 @@ nav {
 .nav:hover:not(.active) {
   background: var(--surface);
 }
+.nav span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .nav b {
+  flex: none;
   margin-left: auto;
   font-size: 13px;
   background: var(--surface-hover);
