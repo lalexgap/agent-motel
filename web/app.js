@@ -708,7 +708,6 @@ async function refreshWorkspace() {
   } finally { request.pending = false; }
 }
 
-// Small line icons (24px grid, stroked) for the work log, built without markup strings.
 const ICONS = {
   command: ["m4 17 6-6-6-6", "M12 19h8"],
   read: ["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4", "M16 13H8", "M16 17H8"],
@@ -780,7 +779,6 @@ const TOOL_SUMMARY = {
   search: ["Searched", "time", "times"],
   other: ["Used", "tool", "tools"],
 };
-// Consecutive tool calls collapse into one work-log row summarising them by kind.
 function toolGroup() {
   const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
   const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");

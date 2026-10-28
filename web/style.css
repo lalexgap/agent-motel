@@ -32,7 +32,7 @@
   --warning-border: rgb(232 185 49 / 35%);
   --radius: 6px;
   --radius-lg: 10px;
-  /* Chat timeline (T3 Code style): one centred lane, quiet bubbles, blue links. */
+  /* Chat timeline. */
   --chat-lane: 736px;
   --chat-lane-pad: 48px;
   --chat-text: rgb(244 244 245 / 84%);
@@ -1379,7 +1379,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 }
 @keyframes working-spin { to { transform: rotate(1turn); } }
 
-/* Chat timeline, modelled on T3 Code: a 736px lane, right-aligned user bubbles, plain assistant prose. */
+/* Chat timeline: a 736px lane, right-aligned user bubbles, plain assistant prose. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1459,7 +1459,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .turn-text th, .turn-text td { padding: 0.45rem 0.75rem; border: 0; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 .turn-text th { font-weight: 600; white-space: nowrap; color: var(--fg-strong); }
 
-/* Work log: consecutive tool calls fold into one row ("Ran 3 commands"), each call a 24px row. */
+/* Work log: consecutive tool calls fold into one row. */
 .work-group { padding-bottom: 8px; font-size: 14px; line-height: 1.625; }
 .work-row {
   display: flex;
@@ -1525,7 +1525,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
   to { background-position: calc(100% + 4.5rem) 0, 0 0; }
 }
 
-/* Composer: a floating glass container in the same lane. */
+/* Composer. */
 #message-form {
   margin: 4px max(var(--chat-lane-pad), calc((100% - var(--chat-lane)) / 2)) 16px;
   padding: 0;
