@@ -154,7 +154,7 @@
                 >
                   <p>Send a task or ask about your fleet.</p>
                 </div>
-                <div id="dock-working" class="working-indicator" role="status" hidden><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Working</span></div>
+                <div id="dock-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
                 <form id="dock-form">
                   <textarea
                     id="dock-message"
@@ -222,7 +222,7 @@
                   tabindex="0"
                   aria-label="Agent conversation"
                 ></div>
-                <div id="chat-working" class="working-indicator" role="status" hidden><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Working</span></div>
+                <div id="chat-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
                 <form id="message-form">
                   <div
                     id="message-attachments"
@@ -241,7 +241,7 @@
                   <div class="composer-footer">
                     <span id="message-status" role="status"></span
                     ><small>⌘ Enter to send</small
-                    ><button id="message-send" class="primary">Send ↗</button>
+                    ><button id="message-send" class="primary send-button" aria-label="Send message" title="Send (⌘ Enter)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
                   </div>
                 </form>
                 </div>
