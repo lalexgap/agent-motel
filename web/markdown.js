@@ -53,7 +53,7 @@ window.agentMarkdown = {
       }
       const heading = line.match(this.heading);
       if (heading) {
-        this.inline(this.element(["h3", "h4", "h5", "h5", "h5", "h5"][heading[1].length - 1], parent),
+        this.inline(this.element(["h3", "h4", "h5", "h6", "h6", "h6"][heading[1].length - 1], parent),
           (heading[2] ?? "").trimEnd().replace(/(?:^|[ \t])#+$/, "").trim());
         index++;
         continue;

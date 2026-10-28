@@ -708,27 +708,141 @@ async function refreshWorkspace() {
   } finally { request.pending = false; }
 }
 
+const ICONS = {
+  command: ["m4 17 6-6-6-6", "M12 19h8"],
+  read: ["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4", "M16 13H8", "M16 17H8"],
+  edit: ["M12 20h9", "M16.4 3.6a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"],
+  search: ["M3 11a8 8 0 1 0 16 0a8 8 0 1 0-16 0", "m21 21-4.3-4.3"],
+  other: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
+  chevron: ["m9 18 6-6-6-6"],
+  shield: ["M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z", "M12 8v4", "M12 16h.01"],
+};
+function icon(name, className = "icon") {
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  for (const [attr, value] of Object.entries({
+    class: className, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true",
+  })) svg.setAttribute(attr, value);
+  for (const d of ICONS[name]) {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+// Claude names its tools; Codex runs commands as `exec` code cells, `shell` or `exec_command`.
+function toolKind(entry) {
+  const name = entry.name || "";
+  if (/^(Bash|BashOutput|KillShell|shell|local_shell|exec_command|unified_exec|write_stdin)$/.test(name)) return "command";
+  if (name === "exec") return /apply_patch/.test(entry.input || "") && !/exec_command/.test(entry.input || "") ? "edit" : "command";
+  if (/^(Read|NotebookRead|view_image|read_file)$/.test(name)) return "read";
+  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|write_file)$/.test(name)) return "edit";
+  if (/^(Grep|Glob|LS|WebSearch|web_search|grep_files|list_dir|tool_search|ToolSearch)$/.test(name)) return "search";
+  return "other";
+}
+function toolLabel(entry, kind) {
+  const raw = entry.input || "";
+  let input = null;
+  try { input = JSON.parse(raw); } catch {}
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = input?.[key];
+      if (typeof value === "string" && value) return value;
+      if (Array.isArray(value) && value.every((part) => typeof part === "string")) return value.join(" ");
+    }
+    return "";
+  };
+  const firstLine = (text) => text.split("\n").find((line) => line.trim())?.trim() || "";
+  let detail = "";
+  if (kind === "command") {
+    detail = pick("command", "cmd", "chars");
+    if (!detail && entry.name === "exec") {
+      const cmds = [...raw.matchAll(/\bcmd\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => {
+        try { return JSON.parse(`"${match[1]}"`); } catch { return match[1]; }
+      });
+      const calls = [...raw.matchAll(/\btools\.(\w+)\s*\(/g)].map((match) => match[1]);
+      detail = cmds.length ? cmds.join(" ; ") : calls.length ? [...new Set(calls)].join(", ") : firstLine(raw);
+    }
+  } else if (kind === "read" || kind === "edit") {
+    detail = pick("file_path", "notebook_path", "path");
+    if (!detail) detail = [...raw.matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((match) => match[1].trim()).join(", ");
+  } else if (kind === "search") detail = [pick("pattern", "query"), pick("path", "glob")].filter(Boolean).join(" in ");
+  else detail = pick("description", "summary", "query", "url", "prompt", "action", "skill");
+  if (!detail && kind !== "other") detail = firstLine(raw);
+  if (kind === "other") return detail ? `${entry.name} · ${firstLine(detail)}` : entry.name;
+  return firstLine(detail) || entry.name;
+}
+const TOOL_SUMMARY = {
+  command: ["Ran", "command", "commands"],
+  read: ["Read", "file", "files"],
+  edit: ["Edited", "file", "files"],
+  search: ["Searched", "time", "times"],
+  other: ["Used", "tool", "tools"],
+};
 function toolGroup() {
-  const group = el("details", "tool-group"), summary = el("summary"), names = new Map();
-  group.append(summary);
+  const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
+  const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");
+  summary.append(glyph, label, icon("chevron", "icon work-chevron"));
+  group.append(summary, list);
+  const counts = new Map();
   return Object.assign(group, {
-    add(name, tool) {
-      names.set(name, (names.get(name) || 0) + 1);
-      group.append(tool);
-      const total = group.childElementCount - 1;
-      summary.textContent = `${total} tool call${total === 1 ? "" : "s"} · ` +
-        [...names].map(([tool, count]) => count > 1 ? `${tool} ×${count}` : tool).join(", ");
+    add(entry) {
+      const kind = toolKind(entry);
+      counts.set(kind, (counts.get(kind) || 0) + 1);
+      if (counts.size === 1 && counts.get(kind) === 1) glyph.append(icon(kind));
+      label.textContent = [...counts].map(([kind, count], index) => {
+        const [verb, one, many] = TOOL_SUMMARY[kind];
+        const text = `${verb} ${count} ${count === 1 ? one : many}`;
+        return index ? text[0].toLowerCase() + text.slice(1) : text;
+      }).join(", ");
+      const call = el("details", "work-entry"), row = el("summary", "work-row");
+      const text = toolLabel(entry, kind), slash = text.lastIndexOf("/");
+      let name;
+      // File rows lead with the file name; the directory trails, muted, and truncates first.
+      if ((kind === "read" || kind === "edit") && slash > 0 && slash < text.length - 1 && !/[,\s]/.test(text)) {
+        name = el("span", "work-label mono");
+        name.append(el("span", "work-file", text.slice(slash + 1)), el("span", "work-dir", " " + text.slice(0, slash + 1)));
+      } else name = el("span", "work-label" + (kind === "other" ? "" : " mono"), text);
+      row.title = text;
+      const iconBox = el("span", "work-icon");
+      iconBox.append(icon(kind));
+      row.append(iconBox, name);
+      call.append(row, el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n")));
+      list.append(call);
     },
   });
+}
+function duration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+function workingLabel(status) {
+  return { starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working";
+}
+function tickWorking(box) {
+  const start = Number(box.dataset.since);
+  box.querySelector(".working-text").textContent = workingLabel(box.dataset.status) +
+    (Number.isFinite(start) && box.dataset.since !== "" ? " for " + duration(Math.max(0, Date.now() - start)) : "");
 }
 function showWorking(id, status, since) {
   const box = $(id), busy = ["working", "starting", "waiting"].includes(status);
   box.hidden = !busy;
   if (!busy) return;
   const start = Date.parse(since || "");
-  box.lastElementChild.textContent = ({ starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working") +
-    (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
+  box.dataset.status = status;
+  box.dataset.since = Number.isFinite(start) ? String(start) : "";
+  // The ticking text is hidden from screen readers; only a status change is announced.
+  const announced = box.querySelector("[role=status]");
+  if (announced.textContent !== workingLabel(status)) announced.textContent = workingLabel(status);
+  tickWorking(box);
 }
+setInterval(() => {
+  for (const box of document.querySelectorAll(".working-indicator:not([hidden])")) tickWorking(box);
+}, 1000);
 const transcriptQueue = el("div", "transcript-queue");
 // AskUserQuestion arrives as a permission request; render its questions.
 function permissionBox(request, base) {
@@ -748,7 +862,9 @@ function permissionBox(request, base) {
     }
   };
   if (!questions) {
-    box.append(el("h3", "", "Permission requested"));
+    const title = el("h3", "", "Permission requested");
+    title.prepend(icon("shield"));
+    box.append(title);
     const call = el("pre", "permission-call");
     call.append(el("strong", "", request.tool), document.createTextNode(request.summary.startsWith(request.tool + ":") ? request.summary.slice(request.tool.length + 1) : ""));
     box.append(call);
@@ -766,10 +882,12 @@ function permissionBox(request, base) {
     if (question.header) box.append(el("span", "question-header", question.header));
     box.append(window.agentMarkdown.render(el("div", "turn-text question-text"), question.question));
     const list = el("div", "question-options");
-    for (const choice of (Array.isArray(question.options) ? question.options : []).filter((c) => typeof c?.label === "string")) {
+    for (const [index, choice] of (Array.isArray(question.options) ? question.options : []).filter((c) => typeof c?.label === "string").entries()) {
       const option = answers.get(choice.label);
       const item = el(option ? "button" : "div", "question-option");
-      item.append(el("span", "question-label", choice.label));
+      const number = el("span", "question-index", String(index + 1));
+      number.setAttribute("aria-hidden", "true");
+      item.append(number, el("span", "question-label", choice.label));
       if (choice.description) item.append(el("span", "question-description", choice.description));
       if (option) item.onclick = answer(option);
       list.append(item);
@@ -813,6 +931,13 @@ function pendingFor(name, entries) {
   });
   pendingSent.set(name, list);
   return list;
+}
+// Speaker names are for screen readers; the layout already shows who said what.
+function chatTurn(entry, agentName) {
+  const user = entry.kind === "user";
+  const turn = el("article", `turn ${user ? "user" : "assistant"}`);
+  turn.append(el("span", "turn-label sr-only", user ? "You" : agentName), el("div", "turn-text", entry.text));
+  return turn;
 }
 function pendingBubble(text, label) {
   const turn = el("article", "turn user queued");
@@ -912,28 +1037,11 @@ async function refreshDetail() {
     let tools = null;
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
-        const tool = el("details", "tool");
-        tool.append(
-          el("summary", "", entry.name),
-          el(
-            "pre",
-            "",
-            [entry.input, entry.output].filter(Boolean).join("\n\n"),
-          ),
-        );
         if (!tools) view.append(tools = toolGroup());
-        tools.add(entry.name, tool);
+        tools.add(entry);
       } else {
         tools = null;
-        const turn = el(
-          "article",
-          `turn ${entry.kind === "user" ? "user" : "assistant"}`,
-        );
-        turn.append(
-          el("div", "turn-label", entry.kind === "user" ? "You" : detail.name),
-          el("div", "turn-text", entry.text),
-        );
-        view.append(turn);
+        view.append(chatTurn(entry, detail.name));
       }
     }
     view.scrollTop = atBottom ? view.scrollHeight : scroll;
@@ -1467,17 +1575,7 @@ async function refreshDock() {
   const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
   view.dataset.content = fingerprint;
   view.replaceChildren();
-  for (const entry of entries) {
-    const turn = el(
-      "article",
-      "turn " + (entry.kind === "user" ? "user" : "assistant"),
-    );
-    turn.append(
-      el("div", "turn-label", entry.kind === "user" ? "You" : "Concierge"),
-      el("div", "turn-text", entry.text),
-    );
-    view.append(turn);
-  }
+  for (const entry of entries) view.append(chatTurn(entry, "Concierge"));
   for (const item of pending) view.append(pendingBubble(item.shown, "Sent · waiting for the concierge to read it"));
   if (!entries.length && !pending.length)
     view.append(el("p", "", "Send a task or ask about your fleet."));
