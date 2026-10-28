@@ -1661,12 +1661,13 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 #transcript, #dock-transcript { position: relative; }
 /* Desktop agent page fits the viewport: transcript, terminal and the details rail scroll inside. */
 @media (min-width: 1001px) {
-  main:has(#detail:not([hidden])) { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+  main:has(#detail:not([hidden])) { display: flex; flex-direction: column; height: 100dvh; overflow-y: auto; }
   main:has(#detail:not([hidden])) > .page { display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 0; padding-bottom: 12px; }
   #detail:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
   #detail > :not(.conversation-layout) { flex: none; }
   #detail > #permissions { max-height: 40dvh; overflow-y: auto; }
-  #detail .conversation-layout { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+  #detail-meta.expanded { max-height: 30dvh; overflow-y: auto; }
+  #detail .conversation-layout { flex: 1; min-height: 360px; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
   #detail .conversation { display: flex; flex-direction: column; min-height: 0; }
   #terminal-panel:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
   #terminal-screen { flex: 1; height: auto; min-height: 0; }
