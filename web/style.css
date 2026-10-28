@@ -1168,7 +1168,7 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .turn-text ul, .turn-text ol { margin: 0 0 0.8em; padding-left: 1.5em; }
 .turn-text li { margin: 0.2em 0; white-space: pre-wrap; }
 .turn-text li > ul, .turn-text li > ol, .turn-text li > p { margin: 0.2em 0; }
-.turn-text strong { color: var(--fg-strong); font-weight: 600; }
+.turn-text strong { color: var(--fg-strong); font-weight: 700; }
 .turn-text code { font-family: var(--mono); font-size: 0.92em; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .turn-text pre { margin: 0 0 0.8em; padding: 10px 12px; background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 3px; overflow-x: auto; white-space: pre; line-height: 1.5; }
 .turn-text pre code { background: none; border: 0; padding: 0; font-size: 0.92em; }
