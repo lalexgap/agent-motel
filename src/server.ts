@@ -8,8 +8,9 @@ import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalD
 import { startWebEvents } from "./webEvents";
 import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { apiTokenFile, ensureDirs } from "./paths";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { apiTokenFile, ensureDirs, inboxDir } from "./paths";
 import { type Provider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
@@ -47,6 +48,7 @@ import {
   REMOTE_NEW_TIMEOUT_MS,
   RemoteError,
   ensureExactCapable,
+  pushRemoteInboxFile,
   remoteSpawnDir,
   resolveHost,
   runRemoteAm,
@@ -335,6 +337,39 @@ async function handoffBody(req: Request): Promise<{ to: Provider; newName?: stri
   return { to: body.to, newName: body.newName, full: body.full ?? false };
 }
 
+// Pasted images (POST /api/agents/:name/files): the raw bytes as the body,
+// typed by Content-Type. Stored in the agent's inbox under a server-made name
+// so the agent can open the returned path.
+export const PASTE_MAX_BYTES = 10 * 1024 * 1024;
+const JSON_MAX_BYTES = 256 * 1024;
+const ascii = (b: Uint8Array, from: number, to: number) => String.fromCharCode(...b.subarray(from, to));
+const PASTE_TYPES: Record<string, { ext: string; magic: (b: Uint8Array) => boolean }> = {
+  "image/png": { ext: "png", magic: (b) => b[0] === 0x89 && ascii(b, 1, 4) === "PNG" },
+  "image/jpeg": { ext: "jpg", magic: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  "image/gif": { ext: "gif", magic: (b) => ascii(b, 0, 4) === "GIF8" },
+  "image/webp": { ext: "webp", magic: (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP" },
+};
+
+async function pastedImage(req: Request): Promise<Response | { bytes: Uint8Array; fileName: string }> {
+  const type = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const kind = PASTE_TYPES[type];
+  if (!kind) return json({ error: "Only PNG, JPEG, GIF and WebP images can be attached" }, 415);
+  if (Number(req.headers.get("content-length") ?? 0) > PASTE_MAX_BYTES) return json({ error: "Image is larger than 10 MB" }, 413);
+  const bytes = new Uint8Array(await req.arrayBuffer());
+  if (bytes.length > PASTE_MAX_BYTES) return json({ error: "Image is larger than 10 MB" }, 413);
+  if (!bytes.length) return json({ error: "Image is empty" }, 400);
+  if (!kind.magic(bytes)) return json({ error: `File is not a valid ${type} image` }, 415);
+  return { bytes, fileName: `paste-${Date.now()}-${randomBytes(4).toString("hex")}.${kind.ext}` };
+}
+
+function saveLocalPaste(name: string, fileName: string, bytes: Uint8Array): string {
+  const dir = inboxDir(name);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, fileName);
+  writeFileSync(path, bytes, { mode: 0o600, flag: "wx" });
+  return path;
+}
+
 async function handleRemoteAgent(req: Request, host: string, name: string, rest: string[]): Promise<Response> {
   const method = req.method;
 
@@ -373,6 +408,11 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       if (!path || path.length > 4096 || path.includes("\0")) return json({ error: "file path required" }, 400);
       const result = await runRemoteJson(host, ["__workspace-diff", name], { stdin: JSON.stringify(path) });
       return json(result);
+    }
+    if (route === "files" && method === "POST") {
+      const image = await pastedImage(req);
+      if (image instanceof Response) return image;
+      return json({ path: await pushRemoteInboxFile(host, name, image.fileName, image.bytes) }, 201);
     }
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
@@ -727,6 +767,14 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       catch { return json({ error: "Workspace inspection unavailable. Try again shortly." }, 503); }
     }
 
+    // POST /api/agents/:name/files — raw image body; returns {path} in the inbox
+    if (parts.length === 3 && parts[2] === "files" && method === "POST") {
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      const image = await pastedImage(req);
+      if (image instanceof Response) return image;
+      return json({ path: saveLocalPaste(name, image.fileName, image.bytes) }, 201);
+    }
+
     if (parts.length === 3 && parts[2] === "handoff" && method === "POST") {
       const body = await handoffBody(req);
       if (body instanceof Response) return body;
@@ -926,7 +974,8 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
     // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
     // and remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
-    maxRequestBodySize: 256 * 1024,
+    // Sized for pasted images; every other route keeps the JSON cap below.
+    maxRequestBodySize: PASTE_MAX_BYTES + 64 * 1024,
     port: opts.port ?? loadConfig().apiPort,
     hostname: opts.hostname ?? loadConfig().apiBind,
     async fetch(req, server) {
@@ -934,6 +983,10 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       const path = url.pathname;
 
       const respond = (response: Response) => secureWebResponse(response);
+      // Only image uploads get the large body limit; everything else (JSON
+      // routes, /auth/login) keeps the old 256 KB cap.
+      if (!/^\/api\/agents\/[^/]+\/files$/.test(path) && Number(req.headers.get("content-length") ?? 0) > JSON_MAX_BYTES)
+        return respond(json({ error: "request body too large" }, 413));
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);

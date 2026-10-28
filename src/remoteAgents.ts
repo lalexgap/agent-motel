@@ -1,6 +1,9 @@
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig, localHostIdentity } from "./config";
-import { sshAmAsync, sshRunAsync, type SshResult } from "./remote";
+import { sshAmAsync, sshPushFile, sshRunAsync, type SshResult } from "./remote";
+import { shQuote } from "./tmux";
 import { mapHomeDir, remoteHome } from "./commands/move";
 import { conflictReason, type ConflictReason } from "./messages";
 
@@ -22,13 +25,16 @@ export class RemoteError extends Error {
 
 type AmRunner = (host: string, args: string[], opts?: { stdin?: string; timeoutMs?: number }) => Promise<SshResult>;
 type ShRunner = (host: string, command: string, opts?: { timeoutMs?: number }) => Promise<SshResult>;
+type PushRunner = (host: string, srcPath: string, remotePath: string, opts?: { timeoutMs?: number }) => Promise<SshResult>;
 
 let amRunner: AmRunner = sshAmAsync;
 let shRunner: ShRunner = sshRunAsync;
+let pushRunner: PushRunner = sshPushFile;
 
-export function setRemoteRunnersForTests(runners: { am?: AmRunner; sh?: ShRunner } = {}): void {
+export function setRemoteRunnersForTests(runners: { am?: AmRunner; sh?: ShRunner; push?: PushRunner } = {}): void {
   amRunner = runners.am ?? sshAmAsync;
   shRunner = runners.sh ?? sshRunAsync;
+  pushRunner = runners.push ?? sshPushFile;
 }
 
 // null = this machine; a string = a configured remote; undefined = unknown.
@@ -104,4 +110,32 @@ export async function remoteSpawnDir(
     throw new RemoteError((error as Error).message, 502);
   }
   return mapHomeDir(dir, localHome, targetHome)!;
+}
+
+// Drop bytes into a remote agent's inbox (~/.agent-manager/inbox/<name>/ on
+// that host, where `am send --file` puts files) and return the remote path.
+// fileName is server-generated; callers never pass a client-supplied name.
+export async function pushRemoteInboxFile(host: string, name: string, fileName: string, bytes: Uint8Array): Promise<string> {
+  await ensureExactCapable(host, name);
+  let home: string;
+  try {
+    home = await remoteHome(host, shRunner);
+  } catch (error) {
+    throw new RemoteError((error as Error).message, 502);
+  }
+  const destDir = `${home}/.agent-manager/inbox/${name}`;
+  const dest = `${destDir}/${fileName}`;
+  const mkdir = await shRunner(host, `mkdir -p ${shQuote(destDir)}`, { timeoutMs: 8000 });
+  if (mkdir.exitCode !== 0) throw new RemoteError(`could not create inbox on ${host}: ${mkdir.stderr.trim()}`, 502);
+  const tmp = mkdtempSync(join(tmpdir(), "am-paste-"));
+  try {
+    const src = join(tmp, fileName);
+    writeFileSync(src, bytes, { mode: 0o600 });
+    const push = await pushRunner(host, src, dest, { timeoutMs: 120_000 });
+    if (push.exitCode !== 0) throw new RemoteError(`file copy to ${host} failed: ${push.stderr.trim() || `exit ${push.exitCode}`}`, 502);
+    await shRunner(host, `chmod 600 ${shQuote(dest)}`, { timeoutMs: 8000 });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  return dest;
 }

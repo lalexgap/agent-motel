@@ -17,6 +17,7 @@ const state = {
   drafts: new Map(),
   draftRevisions: new Map(),
   sending: new Map(),
+  attachments: new Map(), // agent key -> [{ label, preview, status, path, error }]
   dockRevision: 0,
   noticeSource: null,
   detailMode: "terminal",
@@ -221,6 +222,9 @@ function lock() {
   state.drafts.clear();
   state.draftRevisions.clear();
   state.sending.clear();
+  state.attachments.clear();
+  $("message-attachments").replaceChildren();
+  $("message-attachments").hidden = true;
   pendingSent.clear();
   lastUserTexts.clear();
   state.dockRevision++;
@@ -546,7 +550,7 @@ async function selectAgent(name, mode) {
   $("breadcrumb").textContent = name;
   $("message").value = state.drafts.get(name) || "";
   $("message-status").textContent = "";
-  $("message-form").querySelector("button").disabled = state.sending.has(name);
+  renderAttachments();
   delete $("transcript").dataset.content;
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
   $("chat-working").hidden = true;
@@ -958,15 +962,18 @@ $("message").oninput = () => {
 };
 $("message-form").onsubmit = async (event) => {
   event.preventDefault();
-  const name = state.selected,
-    text = $("message").value.trim();
-  if (!name || !text || state.sending.has(name) || !state.authenticated) return;
+  const name = state.selected;
+  if (!name || state.sending.has(name) || uploadsPending(name) || !state.authenticated) return;
+  const images = agentAttachments(name).filter((item) => item.status === "ready");
+  const text = [$("message").value.trim(), ...images.map((item) => `[image: ${item.path}]`)]
+    .filter(Boolean)
+    .join("\n");
+  if (!text) return;
   const epoch = state.sessionEpoch;
   const revision = state.draftRevisions.get(name) || 0;
   const request = Symbol();
   state.sending.set(name, request);
-  const button = event.submitter || $("message-form").querySelector("button");
-  button.disabled = true;
+  $("message-send").disabled = true;
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
@@ -974,6 +981,7 @@ $("message-form").onsubmit = async (event) => {
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     notePending(name, text, sent.id);
+    if (images.length) state.attachments.set(name, agentAttachments(name).filter((item) => !images.includes(item)));
     const unchanged = (state.draftRevisions.get(name) || 0) === revision;
     if (unchanged) state.drafts.delete(name);
     if (state.selected === name) {
@@ -985,9 +993,119 @@ $("message-form").onsubmit = async (event) => {
     notice(error.message);
   } finally {
     if (state.sending.get(name) === request) state.sending.delete(name);
-    if (state.selected === name) button.disabled = state.sending.has(name);
+    if (state.selected === name) renderAttachments();
   }
 };
+
+// Pasted or dropped images upload to the agent's host right away (its inbox);
+// sending appends one `[image: <path>]` line per image so the agent can open it.
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+function agentAttachments(name) {
+  return state.attachments.get(name) || [];
+}
+function uploadsPending(name) {
+  return agentAttachments(name).some((item) => item.status === "uploading");
+}
+function renderAttachments() {
+  const name = state.selected;
+  const list = name ? agentAttachments(name) : [];
+  const strip = $("message-attachments");
+  strip.hidden = !list.length;
+  strip.replaceChildren(
+    ...list.map((item) => {
+      const chip = el("div", "attachment " + item.status);
+      const thumb = el(item.preview ? "img" : "span", "attachment-thumb");
+      if (item.preview) {
+        thumb.alt = "";
+        thumb.src = item.preview;
+      }
+      const label = el(
+        "span",
+        "attachment-label",
+        item.status === "uploading" ? "Uploading…" : item.status === "error" ? item.error : item.label,
+      );
+      chip.title = item.status === "ready" ? item.path : item.status === "error" ? item.error : item.label;
+      const remove = el("button", "attachment-remove", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + item.label);
+      remove.onclick = () => {
+        state.attachments.set(name, agentAttachments(name).filter((other) => other !== item));
+        renderAttachments();
+        $("message").focus();
+      };
+      if (item.status === "error") chip.append(label, remove);
+      else chip.append(thumb, label, remove);
+      return chip;
+    }),
+  );
+  $("message").required = !list.some((item) => item.status === "ready");
+  $("message-send").disabled = !!name && (state.sending.has(name) || uploadsPending(name));
+}
+function attachImages(files) {
+  const name = state.selected;
+  if (!name || !state.authenticated) return;
+  const epoch = state.sessionEpoch;
+  for (const file of files) {
+    const item = { label: file.name || "Pasted image", preview: "", status: "uploading" };
+    if (!IMAGE_TYPES.includes(file.type)) Object.assign(item, { status: "error", error: "Use PNG, JPEG, GIF or WebP" });
+    else if (file.size > IMAGE_MAX_BYTES) Object.assign(item, { status: "error", error: "Larger than 10 MB" });
+    state.attachments.set(name, [...agentAttachments(name), item]);
+    if (item.status !== "uploading") continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      item.preview = reader.result;
+      if (state.selected === name) renderAttachments();
+    };
+    reader.readAsDataURL(file);
+    uploadAttachment(name, file, item, epoch);
+  }
+  renderAttachments();
+}
+async function uploadAttachment(name, file, item, epoch) {
+  try {
+    const response = await fetch("/api/agents/" + encodeURIComponent(name) + "/files", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": file.type },
+      body: file,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (epoch !== state.sessionEpoch) return;
+    if (response.status === 401) return lock();
+    if (!response.ok || typeof data.path !== "string")
+      throw new Error(data.error || `Upload failed (${response.status})`);
+    Object.assign(item, { status: "ready", path: data.path });
+  } catch (error) {
+    if (epoch !== state.sessionEpoch) return;
+    Object.assign(item, { status: "error", error: error.message });
+  }
+  if (state.selected === name) renderAttachments();
+}
+const droppedImages = (data) => [...(data?.files || [])].filter((file) => file.type.startsWith("image/"));
+$("message").addEventListener("paste", (event) => {
+  const files = droppedImages(event.clipboardData);
+  if (!files.length) return;
+  // Keep any text that came along (some apps copy both); otherwise the
+  // browser would paste nothing useful for the image.
+  if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+  attachImages(files);
+});
+$("message-form").addEventListener("dragover", (event) => {
+  if (!event.dataTransfer?.types.includes("Files")) return;
+  event.preventDefault();
+  $("message-form").classList.add("dragging");
+});
+$("message-form").addEventListener("dragleave", (event) => {
+  if (!$("message-form").contains(event.relatedTarget)) $("message-form").classList.remove("dragging");
+});
+$("message-form").addEventListener("drop", (event) => {
+  $("message-form").classList.remove("dragging");
+  const files = droppedImages(event.dataTransfer);
+  if (!files.length) return;
+  event.preventDefault();
+  attachImages(files);
+});
 $("message").onkeydown = (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
