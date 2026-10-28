@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "../state";
 import { claudeProjectSlug } from "../transcript";
@@ -114,13 +114,15 @@ function fileTail(path: string): string {
   }
 }
 
-// Subagent .output files are JSONL transcripts; their tail is never a readable status line.
+// Subagent .output files are JSONL transcripts (symlinks to subagents/*.jsonl);
+// their tail is never a readable status line.
 function isTranscript(path: string): boolean {
+  if (lstatSync(path).isSymbolicLink() && readlinkSync(path).endsWith(".jsonl")) return true;
   const fd = openSync(path, "r");
   try {
-    const buf = Buffer.alloc(14);
+    const buf = Buffer.alloc(32);
     const n = readSync(fd, buf, 0, buf.length, 0);
-    return buf.toString("utf8", 0, n) === '{"parentUuid":';
+    return /^\{"(parentUuid":|type":"fork-context-ref")/.test(buf.toString("utf8", 0, n));
   } finally {
     closeSync(fd);
   }
