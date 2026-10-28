@@ -150,7 +150,8 @@ sidebarDivider.onkeydown = event => {
 window.addEventListener("resize", applySidebarWidth);
 applySidebarWidth();
 const key = (row) => (row.host ? `${row.host}:${row.name}` : row.name);
-const attention = (row) => ["needs-attention", "waiting"].includes(row.status);
+// Waiting means the agent is still busy on its own background tasks, not on you.
+const attention = (row) => row.status === "needs-attention";
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -167,7 +168,7 @@ const dot = (status) => {
     `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
   // Re-renders replace the dot; phase the spin off a shared clock so it doesn't snap back.
-  if (status === "working") node.style.animationDelay = `-${Math.round(performance.now() % 1600)}ms`;
+  if (status === "working" || status === "waiting") node.style.animationDelay = `-${Math.round(performance.now() % 1600)}ms`;
   return node;
 };
 const statusName = (status) =>
@@ -175,7 +176,7 @@ const statusName = (status) =>
     working: "Working",
     idle: "Available",
     "needs-attention": "Needs attention",
-    waiting: "Waiting",
+    waiting: "Waiting on background tasks",
     dead: "Offline",
     exited: "Stopped",
     starting: "Starting",
@@ -356,7 +357,7 @@ function repoName(row) {
   return repoPath(row).replace(/\/$/, "").split("/").pop() || "—";
 }
 function runtime(row) {
-  if (row.status !== "working") return -1;
+  if (row.status !== "working" && row.status !== "waiting") return -1;
   const start = Date.parse(row.statusChangedAt || "");
   return Number.isFinite(start) ? Math.max(0, Date.now() - start) : -1;
 }
@@ -373,8 +374,8 @@ function elapsed(ms) {
 function compareRows(a, b) {
   const ranks = {
     "needs-attention": 0,
-    waiting: 1,
     working: 2,
+    waiting: 2,
     idle: 3,
     exited: 4,
     dead: 5,
@@ -408,7 +409,7 @@ function renderFleet() {
   const nav = $("agent-nav");
   nav.replaceChildren();
   const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
-  const sidebarRank = { "needs-attention": 0, waiting: 0, working: 1, starting: 2, idle: 3 };
+  const sidebarRank = { "needs-attention": 0, waiting: 1, working: 1, starting: 2, idle: 3 };
   const sidebarRows = [...rows].sort((a, b) =>
     (sidebarRank[a.status] ?? 4) - (sidebarRank[b.status] ?? 4) || a.name.localeCompare(b.name));
   for (const row of sidebarRows) {
@@ -423,7 +424,7 @@ function renderFleet() {
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
-    const time = row.status === "working" ? ` · ${elapsed(runtime(row))}` : "";
+    const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
     button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     button.classList.toggle("selected", key(row) === state.selected);
@@ -519,7 +520,7 @@ function renderFleet() {
   }
 }
 function statusGroup(status) {
-  return attention({ status }) ? "Needs attention" : ["exited", "dead"].includes(status) ? "Stopped" : statusName(status);
+  return attention({ status }) ? "Needs attention" : ["exited", "dead"].includes(status) ? "Stopped" : status === "waiting" ? statusName("working") : statusName(status);
 }
 function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
@@ -721,11 +722,11 @@ function toolGroup() {
   });
 }
 function showWorking(id, status, since) {
-  const box = $(id), busy = status === "working" || status === "starting";
+  const box = $(id), busy = ["working", "starting", "waiting"].includes(status);
   box.hidden = !busy;
   if (!busy) return;
   const start = Date.parse(since || "");
-  box.lastElementChild.textContent = (status === "starting" ? "Starting" : "Working") +
+  box.lastElementChild.textContent = ({ starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working") +
     (Number.isFinite(start) ? " · " + elapsed(Math.max(0, Date.now() - start)) : "");
 }
 const transcriptQueue = el("div", "transcript-queue");

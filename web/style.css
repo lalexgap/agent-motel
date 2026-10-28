@@ -363,12 +363,12 @@ main {
   border-style: dashed;
   vertical-align: -1px;
 }
-.dot.working {
+.dot.working,
+.dot.waiting {
   border: 1.5px solid var(--working);
   background: conic-gradient(var(--working) 0 50%, transparent 50% 100%);
 }
-.dot.needs-attention,
-.dot.waiting {
+.dot.needs-attention {
   border: 1.5px solid var(--attention);
   background: var(--attention);
   box-shadow: inset 0 0 0 1.5px var(--bg);
@@ -1589,7 +1589,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
   .working-dots i { opacity: 0.8; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .dot.working { animation: working-spin 1.6s linear infinite; }
+  .dot.working, .dot.waiting { animation: working-spin 1.6s linear infinite; }
 }
 @keyframes working-spin { to { transform: rotate(1turn); } }
 @keyframes working-pulse {

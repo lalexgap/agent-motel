@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "../state";
 import { claudeProjectSlug } from "../transcript";
@@ -114,6 +114,20 @@ function fileTail(path: string): string {
   }
 }
 
+// Subagent .output files are JSONL transcripts (symlinks to subagents/*.jsonl);
+// their tail is never a readable status line.
+function isTranscript(path: string): boolean {
+  if (lstatSync(path).isSymbolicLink() && readlinkSync(path).endsWith(".jsonl")) return true;
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(32);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return /^\{"(parentUuid":|type":"fork-context-ref")/.test(buf.toString("utf8", 0, n));
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const BG_RECENT_MS = 30 * 60 * 1000;
 
 export interface BackgroundTasks {
@@ -139,7 +153,7 @@ export function backgroundTasks(agent: AgentState): BackgroundTasks | null {
   const freshest = files[0]!;
   let lastLine: string | null = null;
   try {
-    lastLine = lastNonEmptyLine(fileTail(freshest.path));
+    if (!isTranscript(freshest.path)) lastLine = lastNonEmptyLine(fileTail(freshest.path));
   } catch {
     // unreadable tail is fine — fall back to the pane detail
   }

@@ -76,7 +76,7 @@ describe("background task surfacing", () => {
 
   test("backgroundTasks reads the freshest output tail", async () => {
     const { backgroundTasks, sessionTasksDir } = await import("../src/commands/ls");
-    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, rmSync, symlinkSync } = await import("node:fs");
     const agent = {
       name: "x", status: "idle", dir: "/tmp/am-bg-fixture", tmuxSession: "agentmgr-x",
       sessionId: "fixture-session", createdAt: "", updatedAt: "",
@@ -90,6 +90,20 @@ describe("background task surfacing", () => {
       const bg = backgroundTasks(agent)!;
       expect(bg.lastLine).toBe("tick-7");
       expect(bg.count).toBe(2);
+      await Bun.sleep(20);
+      writeFileSync(`${dir}/fresh.output`, '[INFO] ready\n{"ok":true}\n');
+      expect(backgroundTasks(agent)!.lastLine).toBe('{"ok":true}');
+      await Bun.sleep(20);
+      const big = JSON.stringify({ type: "user", content: "x".repeat(6000) });
+      writeFileSync(`${dir}/agent.output`, `{"parentUuid":null,"type":"user"}\n${big}\n`);
+      expect(backgroundTasks(agent)!.lastLine).toBeNull();
+      await Bun.sleep(20);
+      writeFileSync(`${dir}/fork.output`, '{"type":"fork-context-ref","id":"x"}\n{"parentUuid":null}\n');
+      expect(backgroundTasks(agent)!.lastLine).toBeNull();
+      await Bun.sleep(20);
+      writeFileSync(`${dir}/../agent-y.jsonl`, '{"type":"something-else"}\n{"a":1}\n');
+      symlinkSync(`${dir}/../agent-y.jsonl`, `${dir}/linked.output`);
+      expect(backgroundTasks(agent)!.lastLine).toBeNull();
     } finally {
       rmSync(dir.replace(/\/tasks$/, ""), { recursive: true, force: true });
     }
