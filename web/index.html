@@ -224,18 +224,24 @@
                 ></div>
                 <div id="chat-working" class="working-indicator" role="status" hidden><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Working</span></div>
                 <form id="message-form">
+                  <div
+                    id="message-attachments"
+                    class="attachments"
+                    aria-label="Attached images"
+                    hidden
+                  ></div>
                   <textarea
                     id="message"
                     aria-label="Message agent"
                     rows="3"
-                    placeholder="Message agent…"
+                    placeholder="Message agent… (paste or drop images)"
                     required
                     maxlength="100000"
                   ></textarea>
                   <div class="composer-footer">
                     <span id="message-status" role="status"></span
                     ><small>⌘ Enter to send</small
-                    ><button class="primary">Send ↗</button>
+                    ><button id="message-send" class="primary">Send ↗</button>
                   </div>
                 </form>
                 </div>

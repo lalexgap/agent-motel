@@ -619,6 +619,70 @@ main {
 .composer-footer button {
   padding: 7px 13px;
 }
+#message-form.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.attachment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 4px 28px 4px 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 12px;
+}
+.attachment-thumb {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface-hover);
+}
+.attachment.uploading .attachment-thumb {
+  opacity: 0.45;
+}
+.attachment.error {
+  min-height: 46px;
+  padding-left: 10px;
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.attachment-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-remove {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  line-height: 1;
+}
+.attachment-remove:hover {
+  background: var(--surface-hover);
+  color: var(--fg-strong);
+}
 .activity {
   padding: 13px 0;
 }

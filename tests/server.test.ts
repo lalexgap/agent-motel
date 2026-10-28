@@ -1,7 +1,7 @@
 import * as migration from "../src/commands/move";
 import * as handover from "../src/commands/handoff";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, resetModelsCacheForTests, type ApiServerHandle } from "../src/server";
@@ -80,6 +80,56 @@ describe("agent workspace", () => {
     const response = await fetch(url("/api/agents/workspace/workspace"), auth());
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ available: false, files: [], pullRequests: [] });
+  });
+});
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+describe("pasted image upload", () => {
+  const upload = (key: string, body: string | Uint8Array, type = "image/png", authenticated = true) => {
+    const init: RequestInit = { method: "POST", body, headers: { "content-type": type } };
+    return fetch(url(`/api/agents/${key}/files`), authenticated ? auth(init) : init);
+  };
+
+  test("requires authentication and an existing local agent", async () => {
+    expect((await upload("pasty", PNG, "image/png", false)).status).toBe(401);
+    expect((await upload("pasty", PNG)).status).toBe(404);
+    expect((await upload("..%2Fetc", PNG)).status).toBe(400);
+  });
+
+  test("rejects non-image types, mismatched bytes, empty bodies and oversized images", async () => {
+    seedAgent("pasty");
+    expect((await upload("pasty", "hello", "text/plain")).status).toBe(415);
+    expect((await upload("pasty", PNG, "image/svg+xml")).status).toBe(415);
+    expect((await upload("pasty", "<svg/>", "image/png")).status).toBe(415);
+    expect((await upload("pasty", new Uint8Array(0))).status).toBe(400);
+    const huge = new Uint8Array(10 * 1024 * 1024 + 1);
+    huge.set(PNG);
+    expect((await upload("pasty", huge)).status).toBe(413);
+    expect(existsSync(join(home, "inbox", "pasty"))).toBe(false);
+  });
+
+  test("writes the image into the agent's inbox under a server-chosen name", async () => {
+    seedAgent("pasty");
+    const response = await upload("pasty", PNG, "image/png; charset=binary");
+    expect(response.status).toBe(201);
+    const { path } = (await response.json()) as { path: string };
+    expect(path.startsWith(join(home, "inbox", "pasty") + "/")).toBe(true);
+    expect(path).toMatch(/\/paste-\d+-[0-9a-f]{8}\.png$/);
+    expect(new Uint8Array(readFileSync(path))).toEqual(PNG);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const jpeg = await upload("pasty", new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0]), "image/jpeg");
+    expect(((await jpeg.json()) as { path: string }).path).toMatch(/\.jpg$/);
+  });
+
+  test("other routes keep the small JSON body cap", async () => {
+    seedAgent("pasty");
+    const big = JSON.stringify({ text: "x".repeat(300 * 1024) });
+    const response = await fetch(url("/api/agents/pasty/messages"), auth({ method: "POST", body: big }));
+    expect(response.status).toBe(413);
+    const chunked = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("{}")); c.close(); } });
+    expect((await fetch(url("/api/agents/pasty/messages"), auth({ method: "POST", body: chunked }))).status).toBe(413);
+    expect((await fetch(url("/api/agents/pasty/resume"), auth({ method: "POST" }))).status).not.toBe(413);
   });
 });
 
@@ -632,11 +682,13 @@ describe("remote agents api (host:name)", () => {
     timeoutMs?: number;
   }
   let calls: Call[];
+  let pushed: { host: string; remotePath: string; bytes: Uint8Array }[];
   let reply: (call: Call) => { exitCode: number; stdout?: string; stderr?: string };
 
   beforeEach(() => {
     writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: ["laptop", "box.example.com"] }));
     calls = [];
+    pushed = [];
     reply = () => ({ exitCode: 0, stdout: "" });
     setRemoteRunnersForTests({
       am: async (host, args, opts = {}) => {
@@ -648,6 +700,10 @@ describe("remote agents api (host:name)", () => {
       sh: async (host, command) => {
         calls.push({ host, args: ["sh", command] });
         return { exitCode: 0, stdout: "/Users/remote\n", stderr: "" };
+      },
+      push: async (host, srcPath, remotePath) => {
+        pushed.push({ host, remotePath, bytes: new Uint8Array(readFileSync(srcPath)) });
+        return { exitCode: 0, stdout: "", stderr: "" };
       },
     });
     setFleetFetchForTests(async () => null);
@@ -663,6 +719,23 @@ describe("remote agents api (host:name)", () => {
 
   const post = (path: string, body?: unknown) =>
     fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+
+  test("pasted images are pushed into the remote agent's inbox", async () => {
+    const send = (key: string, body: string | Uint8Array, type = "image/png") =>
+      fetch(url(`/api/agents/${key}/files`), auth({ method: "POST", body, headers: { "content-type": type } }));
+    expect((await send("laptop:worker", "text", "text/plain")).status).toBe(415);
+    expect(calls).toHaveLength(0);
+    const response = await send("laptop:worker", PNG);
+    expect(response.status).toBe(201);
+    const { path } = (await response.json()) as { path: string };
+    expect(path).toMatch(/^\/Users\/remote\/\.agent-manager\/inbox\/worker\/paste-\d+-[0-9a-f]{8}\.png$/);
+    expect(calls[0]?.args).toEqual(["__detail", "worker", "--local", "--exact"]);
+    expect(calls.some((call) => call.args[1] === `mkdir -p '/Users/remote/.agent-manager/inbox/worker' && (umask 077 && : > '${path}')`)).toBe(true);
+    expect(pushed).toEqual([{ host: "laptop", remotePath: path, bytes: PNG }]);
+    reply = () => ({ exitCode: 1, stderr: 'am: no local agent "ghost"' });
+    expect((await send("laptop:ghost", PNG)).status).toBe(404);
+    expect(pushed).toHaveLength(1);
+  });
 
   test("remote diff sends literal filenames on stdin and handles old hosts", async () => {
     reply = () => ({ exitCode: 0, stdout: JSON.stringify({ path: "--strange file", diff: "+new", binary: false, truncated: false }) });
