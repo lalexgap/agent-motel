@@ -696,7 +696,6 @@ main {
   color: var(--accent-text);
 }
 .question-text { margin-bottom: 10px; color: var(--fg-strong); }
-.question-text p { margin: 0 0 6px; font-size: 16px; }
 .question-options { display: grid; gap: 6px; margin-bottom: 12px; }
 .question-option {
   display: grid;
