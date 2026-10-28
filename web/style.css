@@ -1184,7 +1184,7 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .turn-text { font-size: 15px; line-height: 1.6; }
 #transcript .turn-text { max-width: 82ch; }
 #dock-transcript .turn-text { font-size: 14px; line-height: 1.55; }
-.search-result .search-task { font-size: 13.5px; line-height: 1.55; }
+.search-result .search-task { font-size: 14.5px; line-height: 1.55; }
 .search-snippet { font-size: 14px; }
 .turn-text code, .turn-text pre { font-family: var(--mono); }
 .detail-summary { min-width: 0; flex: 1; }
@@ -1340,7 +1340,7 @@ kbd,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 500 12.5px var(--mono);
+  font: 500 13.5px var(--mono);
   color: var(--fg-strong);
 }
 .agent-identity p {
@@ -1350,12 +1350,12 @@ kbd,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--fg-subtle);
 }
 .agent-identity small { flex: none; font-size: 12px; color: var(--fg-subtle); }
 .agent-tag {
-  font: 11px var(--mono);
+  font: 12px var(--mono);
   color: var(--fg-muted);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -1370,7 +1370,7 @@ kbd,
 }
 .agent-runtime {
   text-align: right;
-  font: 11.5px var(--mono);
+  font: 12.5px var(--mono);
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
