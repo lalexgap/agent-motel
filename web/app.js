@@ -160,11 +160,15 @@ const el = (tag, className, text) => {
   }
   return node;
 };
-const dot = (status) =>
-  el(
+const dot = (status) => {
+  const node = el(
     "i",
     `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
+  // Re-renders replace the dot; phase the spin off a shared clock so it doesn't snap back.
+  if (status === "working") node.style.animationDelay = `-${Math.round(performance.now() % 1600)}ms`;
+  return node;
+};
 const statusName = (status) =>
   ({
     working: "Working",
