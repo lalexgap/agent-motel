@@ -979,9 +979,13 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       const path = url.pathname;
 
       const respond = (response: Response) => secureWebResponse(response);
-      // Only image uploads get the large body limit.
-      if (!/^\/api\/agents\/[^/]+\/files$/.test(path) && Number(req.headers.get("content-length") ?? 0) > JSON_MAX_BYTES)
-        return respond(json({ error: "request body too large" }, 413));
+      // Only image uploads get the large body limit; elsewhere a body must
+      // declare its length (no chunked bypass) and stay under the JSON cap.
+      if (!/^\/api\/agents\/[^/]+\/files$/.test(path)) {
+        const length = req.headers.get("content-length");
+        if (length === null ? req.body !== null : Number(length) > JSON_MAX_BYTES)
+          return respond(json({ error: "request body too large" }, 413));
+      }
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);

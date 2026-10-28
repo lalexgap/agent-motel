@@ -127,6 +127,9 @@ describe("pasted image upload", () => {
     const big = JSON.stringify({ text: "x".repeat(300 * 1024) });
     const response = await fetch(url("/api/agents/pasty/messages"), auth({ method: "POST", body: big }));
     expect(response.status).toBe(413);
+    const chunked = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("{}")); c.close(); } });
+    expect((await fetch(url("/api/agents/pasty/messages"), auth({ method: "POST", body: chunked }))).status).toBe(413);
+    expect((await fetch(url("/api/agents/pasty/resume"), auth({ method: "POST" }))).status).not.toBe(413);
   });
 });
 
@@ -727,7 +730,7 @@ describe("remote agents api (host:name)", () => {
     const { path } = (await response.json()) as { path: string };
     expect(path).toMatch(/^\/Users\/remote\/\.agent-manager\/inbox\/worker\/paste-\d+-[0-9a-f]{8}\.png$/);
     expect(calls[0]?.args).toEqual(["__detail", "worker", "--local", "--exact"]);
-    expect(calls.some((call) => call.args[1] === "mkdir -p '/Users/remote/.agent-manager/inbox/worker'")).toBe(true);
+    expect(calls.some((call) => call.args[1] === `mkdir -p '/Users/remote/.agent-manager/inbox/worker' && (umask 077 && : > '${path}')`)).toBe(true);
     expect(pushed).toEqual([{ host: "laptop", remotePath: path, bytes: PNG }]);
     reply = () => ({ exitCode: 1, stderr: 'am: no local agent "ghost"' });
     expect((await send("laptop:ghost", PNG)).status).toBe(404);
