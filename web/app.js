@@ -81,6 +81,7 @@ function setDetailMode(mode) {
 }
 $("terminal-tab").onclick = () => { setDetailMode("terminal"); updateAgentView(); };
 $("chat-tab").onclick = () => {
+  if (state.detailMode === "chat") return;
   setDetailMode("chat");
   updateAgentView();
   // A hidden transcript can't scroll, so open the chat at its latest message.
