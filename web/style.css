@@ -1155,13 +1155,13 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .search-result .search-task { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; color: var(--fg); }
 .search-result mark { background: var(--warning-soft); color: var(--warning-text); border-radius: 2px; padding: 0 1px; }
 #advanced-reset { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
-.turn-text p { margin: 0 0 0.8em; white-space: pre-wrap; font-size: inherit; line-height: inherit; color: inherit; }
+#advanced-reset:hover { color: var(--fg); }
 
 @media (max-width: 700px) { .search-filters label:first-child { grid-column: 1 / -1; } }
 .turn-text { white-space: normal; }
 .turn-text > :first-child { margin-top: 0; }
 .turn-text > :last-child { margin-bottom: 0; }
-.turn-text p { margin: 0 0 0.8em; white-space: pre-wrap; }
+.turn-text p { margin: 0 0 0.8em; white-space: pre-wrap; font-size: inherit; line-height: inherit; color: inherit; }
 .turn-text h3, .turn-text h4, .turn-text h5 { margin: 1.1em 0 0.5em; font-weight: 600; line-height: 1.35; color: var(--fg-strong); }
 .turn-text h3 { font-size: 1.2em; }
 .turn-text h4 { font-size: 1.08em; }
