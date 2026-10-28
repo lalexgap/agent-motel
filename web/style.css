@@ -1155,7 +1155,7 @@ body.resizing-sidebar { cursor: col-resize; user-select: none; }
 .search-result .search-task { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; color: var(--fg); }
 .search-result mark { background: var(--warning-soft); color: var(--warning-text); border-radius: 2px; padding: 0 1px; }
 #advanced-reset { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
-#advanced-reset:hover { color: var(--fg); }
+.turn-text p { margin: 0 0 0.8em; white-space: pre-wrap; font-size: inherit; line-height: inherit; color: inherit; }
 
 @media (max-width: 700px) { .search-filters label:first-child { grid-column: 1 / -1; } }
 .turn-text { white-space: normal; }
