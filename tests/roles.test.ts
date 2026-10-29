@@ -89,7 +89,7 @@ describe("role registry", () => {
       description: "Reviews auth",
       instructions: "Inspect trust boundaries.",
     });
-    expect(listRoles().map((role) => role.name)).toEqual(["caretaker", "concierge", "security-reviewer"]);
+    expect(listRoles().map((role) => role.name)).toEqual(["concierge", "security-reviewer"]);
     expect(() => addRole({ name: "security-reviewer", instructions: "new" })).toThrow(/--force/);
     addRole({ name: "security-reviewer", instructions: "New instructions", force: true });
     expect(requireRole("security-reviewer").instructions).toBe("New instructions");

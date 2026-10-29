@@ -27,7 +27,6 @@ import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { restartAgent, restartCommand } from "./commands/restart";
-import { caretakerCommand } from "./commands/caretaker";
 import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
@@ -114,8 +113,6 @@ usage:
                               this describes the whole fleet. Codex's reading
                               comes from its session log and is labelled with
                               when it was taken
-  am caretaker [question...]  open the Codex housekeeping agent; asks before cleanup
-                              --scan performs an inspection-only pass (no attach)
   am concierge [question...]  open the fleet concierge: a reserved agent whose
                               only job is fleet management — "which agent
                               worked on X?", status summaries, safe revives
@@ -644,13 +641,6 @@ async function main(): Promise<void> {
       await usageCommand({
         json: !!args.flags.json,
         provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : (args.flags.provider as string | undefined),
-      });
-      break;
-    case "caretaker":
-      await caretakerCommand({
-        question: args.positional.join(" ") || ((args.flags.m ?? args.flags.message) as string | undefined),
-        scan: !!args.flags.scan,
-        jump: args.flags["no-jump"] ? false : undefined,
       });
       break;
     case "concierge":
