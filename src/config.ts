@@ -46,8 +46,6 @@ export interface Config {
   conciergeEffort?: string;
   conciergeAutoStart?: boolean;
   webOrigin?: string;
-  caretakerModel?: string;
-  caretakerEffort?: string;
   // Where the fleet concierge lives: "local" or an ssh host alias (usually one
   // of `remotes`). Every machine with the same value routes `am concierge` and
   // the hub's `c` key to that single agent. Unset = adopt an existing
