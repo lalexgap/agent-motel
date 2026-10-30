@@ -783,6 +783,7 @@ function toolGroup(entry) {
   const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
   const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");
   group.dataset.scrollKey = "group:" + entry.index;
+  list.dataset.scrollKey = "list:" + entry.index;
   summary.append(glyph, label, icon("chevron", "icon work-chevron"));
   group.append(summary, list);
   const counts = new Map();

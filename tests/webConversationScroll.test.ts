@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
-type Entry = { key: string; height: number; open?: boolean; children?: Entry[] };
+type Entry = { key?: string; height: number; open?: boolean; children?: Entry[]; tagName?: string; maxHeight?: number };
 
 function load() {
   const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
@@ -16,16 +16,16 @@ function load() {
 }
 
 class Node {
-  readonly dataset: { scrollKey: string };
+  readonly dataset: { scrollKey?: string };
   readonly tagName: string;
   readonly children: Node[];
   open: boolean;
-  scrollTop = 0;
+  private scroll = 0;
   scrollLeft = 0;
 
   constructor(readonly view: View, readonly entry: Entry) {
     this.dataset = { scrollKey: entry.key };
-    this.tagName = entry.children ? "DETAILS" : "ARTICLE";
+    this.tagName = entry.tagName ?? (entry.children ? "DETAILS" : "ARTICLE");
     this.open = entry.open ?? false;
     this.children = (entry.children ?? []).map(child => new Node(view, child));
   }
@@ -34,8 +34,19 @@ class Node {
     return this === node || this.children.some(child => child.contains(node));
   }
 
+  append(...nodes: Node[]) { this.children.push(...nodes); }
+
+  get scrollTop(): number { return this.scroll; }
+  set scrollTop(value: number) {
+    const max = this.entry.maxHeight === undefined ? Infinity : this.getBoundingClientRect().height
+      ? this.children.reduce((sum, child) => sum + child.height, 0) - this.height : 0;
+    this.scroll = Math.max(0, Math.min(value, max));
+  }
+
   get height(): number {
-    return this.entry.height + (this.open ? this.children.reduce((sum, child) => sum + child.height, 0) : 0);
+    const height = this.entry.height + (this.open || this.tagName !== "DETAILS"
+      ? this.children.reduce((sum, child) => sum + child.height, 0) : 0);
+    return Math.min(height, this.entry.maxHeight ?? Infinity);
   }
 
   getBoundingClientRect() {
@@ -76,7 +87,7 @@ class View {
   querySelectorAll(selector: string): Node[] {
     expect(selector).toBe("[data-scroll-key]");
     const flatten = (nodes: Node[]): Node[] => nodes.flatMap(node => [node, ...flatten(node.children)]);
-    return flatten(this.nodes);
+    return flatten(this.nodes).filter(node => node.dataset.scrollKey !== undefined);
   }
 
   node(key: string): Node {
@@ -97,8 +108,8 @@ class View {
           const top = this.top + y - this.scrollTop;
           return { top, bottom: top + node.height, height: node.height };
         }
-        if (node.open) {
-          const found = locate(node.children, y + node.entry.height);
+        if (node.open || node.tagName !== "DETAILS") {
+          const found = locate(node.children, y + node.entry.height - node.scrollTop);
           if (found) return found;
         }
         y += node.height;
@@ -156,6 +167,44 @@ describe("preserveConversationScroll", () => {
     expect(view.node("output:0").scrollTop).toBe(480);
     expect(view.node("output:0").scrollLeft).toBe(40);
     expect(view.offset("output:0")).toBe(offset);
+  });
+
+  test("keeps a capped tool list's independent position with collapsed calls after rebuilding", () => {
+    const view = new View([]);
+    const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
+    const context = {
+      el: (tag: string, className: string) => new Node(view, {
+        tagName: tag.toUpperCase(), height: tag === "details" ? 24 : 0,
+        maxHeight: className === "work-list" ? 288 : undefined,
+      }),
+      icon: () => new Node(view, { height: 0 }),
+      toolKind: () => "other", toolLabel: () => "Tool call",
+      TOOL_SUMMARY: { other: ["Used", "tool", "tools"] },
+      toolGroup: undefined as undefined | ((entry: { index: number }) => Node & { add(entry: { index: number }): void }),
+    };
+    runInNewContext(source.slice(source.indexOf("function toolGroup("), source.indexOf("function duration(")), context);
+    const rebuild = (count: number) => {
+      const group = context.toolGroup!({ index: 10 });
+      for (let index = 10; index < 30; index++) group.add({ index });
+      view.replace(turns(0, 2));
+      view.nodes.push(group, ...turns(30, count).map(entry => new Node(view, entry)));
+      return { group, list: group.children[1]! };
+    };
+    const original = rebuild(8);
+    original.group.open = true;
+    original.list.scrollTop = 144;
+    expect(original.list.scrollTop).toBe(144);
+    view.scrollTop = 220;
+    const offset = view.offset("tool:18");
+    const restore = load()(view, 90);
+    const updated = rebuild(9);
+    expect(updated.list.scrollTop).toBe(0);
+    restore();
+    expect(updated.group.open).toBe(true);
+    expect(updated.list.children.every(call => !call.open)).toBe(true);
+    expect(updated.list.scrollTop).toBe(144);
+    expect(view.offset("tool:18")).toBe(offset);
+    expect(view.scrollTop).toBe(220);
   });
 
   test("growth above a visible anchor compensates scrollTop", () => {
