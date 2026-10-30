@@ -79,7 +79,7 @@ function auditForward(host: string, args: string[]): ((exitCode?: number, stdout
         if (result?.ok === false) {
           refusalReason = ["busy", "queued", "in_turn"].includes(result.reason) ? result.reason : "remote_refused";
         }
-      } catch { /* Non-JSON output remains a transport outcome. */ }
+      } catch {}
     }
     if (refusalReason) {
       recordAudit(target, action, "refused", { requestId, targetHost: host, reason: refusalReason });

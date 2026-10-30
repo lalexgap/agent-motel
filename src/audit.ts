@@ -26,7 +26,6 @@ function field(value: string | undefined): string | undefined {
   return value?.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 256);
 }
 
-// Explicit fields only: never serialize argv, request headers/bodies, or errors.
 export function recordAudit(target: string, action: string, phase: AuditPhase, details: AuditDetails = {}): string {
   const scoped = context.getStore();
   const sshPeer = process.env.SSH_CONNECTION?.split(/\s+/)[0];
@@ -55,7 +54,6 @@ export function recordAudit(target: string, action: string, phase: AuditPhase, d
   return requestId;
 }
 
-// Persist intent before a destructive operation; an unavailable audit fails closed.
 export function auditOperation<T>(target: string, action: string, fn: () => T): T {
   const requestId = recordAudit(target, action, "requested");
   try {

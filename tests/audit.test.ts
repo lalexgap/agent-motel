@@ -19,7 +19,6 @@ function agent(name = "audit-fixture"): AgentState {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "am-audit-"));
   process.env.AGENTMGR_HOME = home;
-  // Every subprocess in these tests is fake, including all tmux access.
   spawnSpy = spyOn(Bun, "spawnSync").mockImplementation((argv: any) => ({
     exitCode: argv[0] === "tmux" && argv.includes("has-session") ? 1 : 0,
     stdout: Buffer.from(""), stderr: Buffer.from(""),
