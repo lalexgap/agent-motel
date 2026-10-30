@@ -1,4 +1,5 @@
 import { runConversationSearch, validSearchQuery, type ConversationMatches } from "./webSearch";
+import { recordAudit, withAuditContext } from "./audit";
 import { agentRuntimeSettings } from "./runtimeSettings";
 import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
@@ -584,6 +585,37 @@ async function spawnRemote(host: string, body: SpawnBody & { name: string }): Pr
 
 let activeSearches = 0;
 
+// Only route templates enter the audit context; never request URLs or IDs.
+function auditRoute(req: Request, parts: string[]): string {
+  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "interrupt", "files", "transcript", "workspace", "diff"]);
+  const route = parts[0] === "agents" && parts.length >= 2
+    ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
+    : "api";
+  return `${["GET", "HEAD", "POST", "DELETE", "PUT", "PATCH", "OPTIONS"].includes(req.method) ? req.method : "OTHER"} ${route}`;
+}
+
+async function auditedApi(req: Request, parts: string[]): Promise<Response> {
+  const stopping = req.method === "POST" && parts.length === 3 && parts[0] === "agents" && parts[2] === "stop";
+  const target = stopping ? parseTarget(parts[1]!) : undefined;
+  if (!target || target instanceof Response) return handleApi(req, parts);
+  const details = target.host ? { targetHost: target.host } : {};
+  const requestId = recordAudit(target.name, "stop-request", "requested", details);
+  try {
+    const response = await handleApi(req, parts);
+    let reason: string | undefined;
+    if (!response.ok) {
+      const body = await response.clone().json().catch(() => null) as { reason?: unknown } | null;
+      const safeReasons = ["busy", "queued", "in_turn", "remote_too_old", "not_found"];
+      reason = typeof body?.reason === "string" && safeReasons.includes(body.reason) ? body.reason : `http_${response.status}`;
+    }
+    recordAudit(target.name, "stop-request", response.ok ? "completed" : response.status < 500 ? "refused" : "failed", { ...details, requestId, ...(reason ? { reason } : {}) });
+    return response;
+  } catch (error) {
+    recordAudit(target.name, "stop-request", "failed", { ...details, requestId, reason: "http_exception" });
+    throw error;
+  }
+}
+
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
   if (parts.length === 1 && parts[0] === "search" && method === "POST") {
@@ -1063,7 +1095,13 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
         }
         try {
           if (req.method === "POST" && parts.length === 3 && parts[0] === "agents" && parts[2] === "move") server.timeout(req, 0);
-          return respond(await handleApi(req, parts));
+          return respond(await withAuditContext({
+            source: bearerValid ? "http-api" : "web-front-desk",
+            route: auditRoute(req, parts),
+            actor: bearerValid ? "shared-bearer" : "browser-session",
+            auth: bearerValid ? "bearer" : "browser-session",
+            peer: server.requestIP(req)?.address,
+          }, () => auditedApi(req, parts)));
         }
         catch { return respond(json({ error: "request failed" }, 500)); }
       }

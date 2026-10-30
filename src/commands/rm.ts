@@ -1,3 +1,4 @@
+import { auditOperation, recordAudit } from "../audit";
 import { readAgent, removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear, queueDepth } from "../queue";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
@@ -13,25 +14,26 @@ import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, release
 
 // Stop = kill the tmux session but keep state, so `am resume` still works.
 // The SessionEnd hook never fires for a killed session, so mark it ourselves.
-function stopAgentLocked(agent: AgentState): void {
+type StopAction = "stop" | "move" | "cd";
+function stopAgentLocked(agent: AgentState, action: StopAction): void {
   const current = currentLifecycleAgent(agent);
   if (hasSession(current.tmuxSession)) killSession(current.tmuxSession);
   stopCodexDaemonWork(current);
-  setStatus(current.name, "exited", "stopped by operator");
+  setStatus(current.name, "exited", action === "stop" ? "stopped by operator" : `stopped for ${action}`);
 }
 
-export function stopAgent(agent: AgentState, opts: { lifecycleLocked?: boolean } = {}): void {
-  if (opts.lifecycleLocked) {
-    if (!lifecycleLockHeld(agent.name)) throw new Error("stop requires the agent lifecycle lock");
-    stopAgentLocked(agent);
-    return;
-  }
-  if (!acquireLifecycleLock(agent.name)) throw new Error(`agent "${agent.name}" is being stopped, removed, renamed, or restarted — retry`);
-  try {
-    stopAgentLocked(agent);
-  } finally {
-    releaseLifecycleLock(agent.name);
-  }
+export function stopAgent(agent: AgentState, opts: { lifecycleLocked?: boolean; auditAction?: StopAction } = {}): void {
+  const action = opts.auditAction ?? "stop";
+  auditOperation(agent.name, action, () => {
+    if (opts.lifecycleLocked) {
+      if (!lifecycleLockHeld(agent.name)) throw new Error("stop requires the agent lifecycle lock");
+      stopAgentLocked(agent, action);
+      return;
+    }
+    if (!acquireLifecycleLock(agent.name)) throw new Error(`agent "${agent.name}" is being stopped, removed, renamed, or restarted — retry`);
+    try { stopAgentLocked(agent, action); }
+    finally { releaseLifecycleLock(agent.name); }
+  });
 }
 
 export type StopIfIdleReason = "busy" | "queued" | "in_turn";
@@ -109,10 +111,13 @@ export async function runIfIdle<T>(
 }
 
 export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
+  const requestId = recordAudit(agent.name, "stop-if-idle", "requested");
   try {
     const result = await runIfIdle(agent, {}, (current) => stopAgent(current));
+    recordAudit(agent.name, "stop-if-idle", result.ok ? "completed" : "refused", { requestId, ...(!result.ok ? { reason: result.reason } : {}) });
     return result.ok ? { ok: true } : result;
   } catch (error) {
+    recordAudit(agent.name, "stop-if-idle", "failed", { requestId });
     return { ok: false, error: (error as Error).message, reason: "busy" };
   }
 }
@@ -151,21 +156,20 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   if (current.codexTrustedDir) releaseCodexTrust(current.codexTrustedDir, current.name, deadline);
 }
 
-export function destroyAgent(agent: AgentState, opts: { clean: boolean; lifecycleLocked?: boolean }): void {
-  if (opts.lifecycleLocked) {
-    if (!lifecycleLockHeld(agent.name)) throw new Error("remove requires the agent lifecycle lock");
-    destroyAgentLocked(agent, opts.clean);
-    return;
-  }
-  if (!acquireLifecycleLock(agent.name)) throw new Error(`agent "${agent.name}" is being stopped, removed, renamed, or restarted — retry`);
-  try {
-    destroyAgentLocked(agent, opts.clean);
-  } finally {
-    releaseLifecycleLock(agent.name);
-  }
+export function destroyAgent(agent: AgentState, opts: { clean: boolean; lifecycleLocked?: boolean; auditAction?: "remove" | "gc" | "run-cleanup" | "move-cleanup" }): void {
+  auditOperation(agent.name, opts.auditAction ?? "remove", () => {
+    if (opts.lifecycleLocked) {
+      if (!lifecycleLockHeld(agent.name)) throw new Error("remove requires the agent lifecycle lock");
+      destroyAgentLocked(agent, opts.clean);
+      return;
+    }
+    if (!acquireLifecycleLock(agent.name)) throw new Error(`agent "${agent.name}" is being stopped, removed, renamed, or restarted — retry`);
+    try { destroyAgentLocked(agent, opts.clean); }
+    finally { releaseLifecycleLock(agent.name); }
+  });
 }
 
-export function rmCommand(prefix: string, opts: { clean: boolean }): void {
+export function rmCommand(prefix: string, opts: { clean: boolean; auditAction?: "remove" | "move-cleanup" }): void {
   const agent = resolveAgent(prefix);
   destroyAgent(agent, opts);
   console.log(`removed agent "${agent.name}"`);

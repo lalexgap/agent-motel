@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { withAuditContext } from "./audit";
 import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
@@ -414,7 +415,7 @@ async function pickerFlow(): Promise<void> {
   const load = fleetPickerItems;
   const config = loadConfig();
   const handlers: PickerHandlers = {
-    restart: async (key: string) => {
+    restart: async (key: string) => withAuditContext({ source: "interactive-picker", route: "restart" }, async () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = await sshAmAsync(host, ["restart", name]);
@@ -423,8 +424,8 @@ async function pickerFlow(): Promise<void> {
       }
       await restartAgent(name);
       return `restarted ${name}`;
-    },
-    stop: (key: string) => {
+    }),
+    stop: (key: string) => withAuditContext({ source: "interactive-picker", route: "stop" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["stop", name]);
@@ -434,8 +435,8 @@ async function pickerFlow(): Promise<void> {
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
-    },
-    remove: (key: string) => {
+    }),
+    remove: (key: string) => withAuditContext({ source: "interactive-picker", route: "remove" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["rm", name]);
@@ -445,7 +446,7 @@ async function pickerFlow(): Promise<void> {
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
-    },
+    }),
     preview: (key: string) => {
       // A subagent row previews its transcript: there is no pane to capture.
       const sub = splitSubagentKey(key);
@@ -845,12 +846,12 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(await stopIfIdle(agent)));
         break;
       }
-      stopAgent(agent);
+      stopAgent(agent, { auditAction: args.flags["for-move"] === true ? "move" : "stop" });
       console.log(`stopped "${agent.name}" — resume with \`am resume ${agent.name}\``);
       break;
     }
     case "rm":
-      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean });
+      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean, auditAction: args.flags["for-move"] === true ? "move-cleanup" : "remove" });
       break;
     case "restore":
       await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });
@@ -994,7 +995,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: Error) => {
+withAuditContext({ source: process.env.SSH_CONNECTION ? "ssh-cli" : "cli", route: "am" }, () => main()).catch((error: Error) => {
   console.error(`am: ${error.message}`);
   process.exit(1);
 });

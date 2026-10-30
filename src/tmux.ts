@@ -45,7 +45,8 @@ export function newSession(opts: {
 }
 
 export function killSession(session: string): void {
-  tmux("kill-session", "-t", `=${session}`);
+  const result = tmux("kill-session", "-t", `=${session}`);
+  if (result.exitCode !== 0) throw new Error(`tmux kill-session failed: ${result.stderr.trim()}`);
 }
 
 export function restartSession(opts: {

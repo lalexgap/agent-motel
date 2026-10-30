@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shQuote } from "./tmux";
+import { recordAudit } from "./audit";
 
 // `am -H server <cmd>` / `AM_HOST=server am <cmd>`: run the command on a
 // remote am over plain SSH. am stays transport-ignorant — ssh does auth,
@@ -62,6 +63,48 @@ export interface SshResult {
   stderr: string;
 }
 
+function auditForward(host: string, args: string[]): ((exitCode?: number, stdout?: string) => void) | undefined {
+  const command = args[0];
+  const action = command === "stop" ? (args.includes("--for-move") ? "move" : "stop")
+    : command === "rm" ? (args.includes("--for-move") ? "move-cleanup" : "remove")
+    : command === "restart" ? "restart" : undefined;
+  const target = args[1];
+  if (!action || !target || target.startsWith("-")) return;
+  const requestId = recordAudit(target, action, "requested", { targetHost: host });
+  return (exitCode, stdout) => {
+    let refusalReason: string | undefined;
+    if (exitCode === 0 && args.includes("--if-idle") && stdout !== undefined) {
+      try {
+        const result = JSON.parse(stdout);
+        if (result?.ok === false) {
+          refusalReason = ["busy", "queued", "in_turn"].includes(result.reason) ? result.reason : "remote_refused";
+        }
+      } catch { /* Non-JSON output remains a transport outcome. */ }
+    }
+    if (refusalReason) {
+      recordAudit(target, action, "refused", { requestId, targetHost: host, reason: refusalReason });
+      return;
+    }
+    recordAudit(target, action, exitCode === 0 ? "completed" : "failed", {
+      requestId, targetHost: host,
+      ...(exitCode === 0 ? {} : { reason: exitCode === undefined ? "ssh_spawn_failed" : exitCode === 124 ? "ssh_timeout" : "ssh_exit_nonzero" }),
+    });
+  };
+}
+
+function auditedForward<T>(host: string, args: string[], run: () => T, outcome: (result: T) => { exitCode: number; stdout?: string }): T {
+  const finish = auditForward(host, args);
+  try {
+    const result = run();
+    const { exitCode, stdout } = outcome(result);
+    finish?.(exitCode, stdout);
+    return result;
+  } catch (error) {
+    finish?.();
+    throw error;
+  }
+}
+
 // Login shell (bash -lc) so ~/.bun/bin lands on PATH for non-interactive
 // ssh; bash rather than sh because profiles routinely use bashisms
 // (`source`) that dash chokes on. argv is re-quoted to survive both ssh's
@@ -97,15 +140,17 @@ export function sshAm(
   args: string[],
   opts: { stdin?: string; timeoutMs?: number } = {},
 ): SshResult {
-  const result = Bun.spawnSync(sshArgv(host, amCommandString(args), false), {
-    stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
-    timeout: opts.timeoutMs,
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
+  return auditedForward(host, args, () => {
+    const result = Bun.spawnSync(sshArgv(host, amCommandString(args), false), {
+      stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
+      timeout: opts.timeoutMs,
+    });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }, result => result);
 }
 
 // A killed-on-timeout process reports 124, like coreutils `timeout`.
@@ -208,7 +253,15 @@ export async function sshAmAsync(
   args: string[],
   opts: { stdin?: string; timeoutMs?: number } = {},
 ): Promise<SshResult> {
-  return runAsync(sshArgv(host, amCommandString(args), false), opts);
+  const finish = auditForward(host, args);
+  try {
+    const result = await runAsync(sshArgv(host, amCommandString(args), false), opts);
+    finish?.(result.exitCode, result.stdout);
+    return result;
+  } catch (error) {
+    finish?.();
+    throw error;
+  }
 }
 
 // Async raw remote command (realpath, test -d, mkdir).
@@ -224,12 +277,14 @@ export async function sshRunAsync(
 // the picker). Returns when the remote command does — unlike remoteExec it
 // does NOT exit the process.
 export function sshAmInteractive(host: string, args: string[]): number {
-  const result = Bun.spawnSync(sshArgv(host, amCommandString(args), true), {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  return result.exitCode;
+  return auditedForward(host, args, () => {
+    const result = Bun.spawnSync(sshArgv(host, amCommandString(args), true), {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return result.exitCode;
+  }, code => ({ exitCode: code }));
 }
 
 // Run a raw (non-am) command on the host, e.g. tmux capture-pane or test -d.
@@ -251,10 +306,11 @@ export function sshRun(
 
 export function remoteExec(host: string, argv: string[]): never {
   const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY;
-  const result = Bun.spawnSync(sshArgv(host, amCommandString(stripHostArgs(argv)), interactive), {
+  const args = stripHostArgs(argv);
+  const result = auditedForward(host, args, () => Bun.spawnSync(sshArgv(host, amCommandString(args), interactive), {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
-  });
+  }), result => ({ exitCode: result.exitCode }));
   process.exit(result.exitCode);
 }

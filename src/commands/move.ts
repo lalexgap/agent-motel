@@ -429,7 +429,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the move`);
     const handoff = newMsgId();
     try {
-      if (!opts.clone) stopAgent(agent, { lifecycleLocked: true }); // a move never leaves two live copies
+      if (!opts.clone) stopAgent(agent, { lifecycleLocked: true, auditAction: "move" }); // a move never leaves two live copies
 
       // Ship the conversation file (if the agent ever ran a turn).
       const transcript = sourceTranscript(agent);
@@ -481,7 +481,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
         throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
       }
 
-      if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false, lifecycleLocked: true });
+      if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false, lifecycleLocked: true, auditAction: "move-cleanup" });
       let message = opts.clone
         ? `cloned "${agent.name}" → ${host}:${storedDir} (original still here)`
         : `moved "${agent.name}" → ${host}:${storedDir}${opts.copy ? " (local copy kept)" : ""}`;
@@ -629,7 +629,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       await renew();
       await settleBeforeMoveRemote(host, name, remote.state.status, sshAm); // let it wrap up
       await renew();
-      const stopped = await sshAm(host, ["stop", name], { timeoutMs: 15000 });
+      const stopped = await sshAm(host, ["stop", name, "--for-move"], { timeoutMs: 15000 });
       if (stopped.exitCode !== 0) {
         const detail = (stopped.stderr + stopped.stdout).trim();
         throw new Error(`could not stop source on ${host}${detail ? `: ${detail}` : ""} — retry the move`);
@@ -678,7 +678,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
     const importedQueue = queueList(name);
     try {
       if (!opts.copy && !opts.clone) {
-        const removed = await sshAm(host, ["rm", name], { timeoutMs: 15000 });
+        const removed = await sshAm(host, ["rm", name, "--for-move"], { timeoutMs: 15000 });
         if (removed.exitCode !== 0) {
           const probe = await sshAm(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
           const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe);
@@ -845,7 +845,7 @@ export async function cdAgent(
   const wasLive = hasSession(agent.tmuxSession);
   if (wasLive) {
     await settleBeforeMove(agent.name, dir); // heads-up + capped wrap-up window
-    stopAgent(agent);
+    stopAgent(agent, { auditAction: "cd" });
   }
 
   // Re-file the claude conversation under the new dir's slug (codex rollouts

@@ -1,3 +1,4 @@
+import { withAuditContext } from "../audit";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -410,7 +411,7 @@ export async function sidebarCommand(): Promise<void> {
       clearTimeout(highlightTimer);
       return showAgent(key, true);
     },
-    restart: async (key: string) => {
+    restart: async (key: string) => withAuditContext({ source: "interactive-hub", route: "restart" }, async () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = await sshAmAsync(host, ["restart", name]);
@@ -419,8 +420,8 @@ export async function sidebarCommand(): Promise<void> {
       }
       await restartAgent(name);
       return `restarted ${name}`;
-    },
-    stop: (key: string) => {
+    }),
+    stop: (key: string) => withAuditContext({ source: "interactive-hub", route: "stop" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["stop", name]);
@@ -430,8 +431,8 @@ export async function sidebarCommand(): Promise<void> {
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
-    },
-    remove: (key: string) => {
+    }),
+    remove: (key: string) => withAuditContext({ source: "interactive-hub", route: "remove" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["rm", name]);
@@ -441,7 +442,7 @@ export async function sidebarCommand(): Promise<void> {
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
-    },
+    }),
     remotes: config.remotes ?? [],
     create: async (spec) => {
       if (spec.host) {
