@@ -809,7 +809,9 @@ function toolGroup(entry) {
       const iconBox = el("span", "work-icon");
       iconBox.append(icon(kind));
       row.append(iconBox, name);
-      call.append(row, el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n")));
+      const output = el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n"));
+      output.dataset.scrollKey = "output:" + entry.index;
+      call.append(row, output);
       list.append(call);
     },
   });
@@ -955,6 +957,7 @@ function preserveConversationScroll(view, threshold) {
   const top = view.getBoundingClientRect().top;
   const nodes = [...view.querySelectorAll("[data-scroll-key]")];
   const open = new Set(nodes.filter(node => node.open).map(node => node.dataset.scrollKey));
+  const positions = new Map(nodes.map(node => [node.dataset.scrollKey, { top: node.scrollTop, left: node.scrollLeft }]));
   const visible = nodes.filter(node => {
     const rect = node.getBoundingClientRect();
     return rect.height && rect.bottom > top && rect.top < top + view.clientHeight;
@@ -965,6 +968,10 @@ function preserveConversationScroll(view, threshold) {
     const updated = [...view.querySelectorAll("[data-scroll-key]")];
     for (const node of updated)
       if (node.tagName === "DETAILS") node.open = open.has(node.dataset.scrollKey);
+    for (const node of updated) {
+      const position = positions.get(node.dataset.scrollKey);
+      if (position) { node.scrollTop = position.top; node.scrollLeft = position.left; }
+    }
     if (atBottom && follow) { view.scrollTop = view.scrollHeight; return; }
     const anchor = anchors.find(anchor => updated.some(node => node.dataset.scrollKey === anchor.key));
     const node = anchor && updated.find(node => node.dataset.scrollKey === anchor.key);

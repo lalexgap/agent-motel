@@ -20,6 +20,8 @@ class Node {
   readonly tagName: string;
   readonly children: Node[];
   open: boolean;
+  scrollTop = 0;
+  scrollLeft = 0;
 
   constructor(readonly view: View, readonly entry: Entry) {
     this.dataset = { scrollKey: entry.key };
@@ -135,6 +137,25 @@ describe("preserveConversationScroll", () => {
     expect(view.node("group:0").open).toBe(true);
     expect(view.node("tool:0").open).toBe(true);
     expect(view.offset("turn:1")).toBe(offset);
+  });
+
+  test("keeps the reading position inside rebuilt long tool-output panes", () => {
+    const entries = (open: boolean): Entry[] => [
+      { key: "group:0", height: 30, open, children: [
+        { key: "tool:0", height: 30, open, children: [{ key: "output:0", height: 256 }] },
+      ] },
+      ...turns(1, 8),
+    ];
+    const view = new View(entries(true), 100);
+    view.node("output:0").scrollTop = 480;
+    view.node("output:0").scrollLeft = 40;
+    const offset = view.offset("output:0");
+    const restore = load()(view, 90);
+    view.replace(entries(false));
+    restore();
+    expect(view.node("output:0").scrollTop).toBe(480);
+    expect(view.node("output:0").scrollLeft).toBe(40);
+    expect(view.offset("output:0")).toBe(offset);
   });
 
   test("growth above a visible anchor compensates scrollTop", () => {
