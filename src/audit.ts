@@ -1,9 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { constants, openSync, closeSync, writeSync, fsyncSync, fchmodSync, mkdirSync } from "node:fs";
+import { constants, openSync, closeSync, writeSync, fsyncSync, fchmodSync, mkdirSync, fstatSync, readSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { logsDir } from "./paths";
+import { withFileLock } from "./filelock";
 
 export interface AuditContext {
   source?: string;
@@ -41,16 +42,25 @@ export function recordAudit(target: string, action: string, phase: AuditPhase, d
     targetHost: field(details.targetHost), reason: field(details.reason),
   };
   mkdirSync(logsDir(), { recursive: true, mode: 0o700 });
-  const fd = openSync(auditLogFile(), constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
-  try {
-    fchmodSync(fd, 0o600);
-    const bytes = Buffer.from(JSON.stringify(entry) + "\n");
-    if (writeSync(fd, bytes) !== bytes.length) throw new Error("incomplete lifecycle audit write");
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
-  // Persist a newly created log's directory entry as well as its contents.
-  const directory = openSync(logsDir(), constants.O_RDONLY);
-  try { fsyncSync(directory); } finally { closeSync(directory); }
+  withFileLock(auditLogFile() + ".lock", () => {
+    const fd = openSync(auditLogFile(), constants.O_RDWR | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+    try {
+      fchmodSync(fd, 0o600);
+      const size = fstatSync(fd).size;
+      if (size > 0) {
+        const tail = Buffer.alloc(1);
+        if (readSync(fd, tail, 0, 1, size - 1) !== 1 || tail[0] !== 10) {
+          throw new Error(`incomplete lifecycle audit tail in ${auditLogFile()}; archive the intact trail before the next lifecycle operation; keep the .lock file`);
+        }
+      }
+      const bytes = Buffer.from(JSON.stringify(entry) + "\n");
+      if (writeSync(fd, bytes) !== bytes.length) throw new Error("incomplete lifecycle audit write");
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    // Persist a newly created log's directory entry as well as its contents.
+    const directory = openSync(logsDir(), constants.O_RDONLY);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  });
   return requestId;
 }
 

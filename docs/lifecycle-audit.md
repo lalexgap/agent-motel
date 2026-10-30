@@ -2,6 +2,8 @@
 
 Each host appends JSON records to `$AGENTMGR_HOME/logs/lifecycle-audit.jsonl` (default `~/.agent-manager/logs/lifecycle-audit.jsonl`). These are host-local files: inspect the executing host, or use `ssh gapserver` for gapserver's trail. The log survives agent removal, trash expiry and GC. It is separate from the size-capped `daemon.log`; am never truncates or automatically expires it. Archive it according to your retention policy. File permissions are restricted to `0600` on every append.
 
+An incomplete final line (for example, after a short write) blocks later lifecycle operations before they act. Archive the intact trail by moving it aside before the next operation; am will create a new trail. Do not truncate or repair retained evidence. Appends are serialized using the sibling `lifecycle-audit.jsonl.lock`; this lock file must remain in place, including when archiving.
+
 For example, on the host where the agent ran:
 
 ```sh

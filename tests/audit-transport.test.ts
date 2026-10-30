@@ -58,6 +58,54 @@ describe("SSH lifecycle transport audit", () => {
     expect(rows.filter(row => row.phase === "requested").map(row => row.action)).toEqual(["stop", "remove", "restart", "move", "move-cleanup"]);
   });
 
+  test.each(["sshAm", "sshAmAsync", "sshAmInteractive", "remoteExec"])("%s audits flags before targets using CLI value rules", helper => {
+    const cases: [string[], string][] = [
+      [["stop", "--exact", "sample"], "stop"],
+      [["rm", "--clean", "sample"], "remove"],
+      [["restart", "--model", "default", "--effort", "high", "sample"], "restart"],
+      [["stop", "--resume", "previous-session", "sample"], "stop"],
+      [["stop", "--resume", "--exact", "sample"], "stop"],
+      [["stop", "--for-move", "sample"], "move"],
+      [["rm", "--for-move", "sample"], "move-cleanup"],
+      [["stop", "--message", "--for-move", "sample"], "stop"],
+      [["rm", "--description", "--for-move", "sample"], "remove"],
+      [["stop", "--model", "--if-idle", "sample"], "stop"],
+    ];
+    for (const [args] of cases) {
+      const argv = helper === "remoteExec" ? ["-H", "remote-box", ...args] : args;
+      child(`import * as remote from "./src/remote"; await remote.${helper}("remote-box", ${JSON.stringify(argv)});`, {
+        SSH_OUTPUT: JSON.stringify({ ok: false, reason: "busy" }), SSH_ERROR: "", AGENTMGR_AGENT: "origin-agent",
+      });
+    }
+    const rows = records();
+    expect(rows).toHaveLength(cases.length * 2);
+    for (const [i, [, action]] of cases.entries()) {
+      expect(rows[i * 2]).toMatchObject({ target: "sample", targetHost: "remote-box", action, actor: "origin-agent", phase: "requested" });
+      expect(rows[i * 2 + 1]).toMatchObject({ requestId: rows[i * 2].requestId, action, phase: "completed" });
+    }
+  });
+
+  test("if-idle before the target records captured refusals", () => {
+    child(`
+      import { sshAm, sshAmAsync } from "./src/remote";
+      sshAm("remote-box", ["stop", "--if-idle", "sample"]);
+      await sshAmAsync("remote-box", ["restart", "--if-idle", "sample"]);
+    `, { SSH_OUTPUT: JSON.stringify({ ok: false, reason: "queued" }) });
+    expect(records().map(row => [row.target, row.action, row.phase, row.reason])).toEqual([
+      ["sample", "stop", "requested", undefined], ["sample", "stop", "refused", "queued"],
+      ["sample", "restart", "requested", undefined], ["sample", "restart", "refused", "queued"],
+    ]);
+  });
+
+  test("non-lifecycle helpers do not parse incomplete value flags", () => {
+    child(`
+      import { sshAm, sshAmAsync } from "./src/remote";
+      sshAm("remote-box", ["__detail", "sample", "--model"]);
+      await sshAmAsync("remote-box", ["__export", "sample", "--model"]);
+    `);
+    expect(records()).toEqual([]);
+  });
+
   test("nonzero exits and timeouts fail without recording remote output", () => {
     child(`
       import { sshAm, sshAmAsync } from "./src/remote";

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +82,38 @@ test("audit failure prevents a stop and symlinks are never followed", () => {
   expect(() => stopAgent(a)).toThrow();
   expect(readAgent(a.name)?.status).toBe("working");
   expect(readFileSync(other, "utf8")).toBe("untouched");
+  expect(spawnSpy).not.toHaveBeenCalled();
+});
+
+test("an incomplete retained tail blocks stops without appending or acting", () => {
+  const a = agent();
+  recordAudit(a.name, "stop", "requested");
+  const retained = readFileSync(auditLogFile(), "utf8") + '{"partial":';
+  writeFileSync(auditLogFile(), retained);
+  const lockInode = statSync(auditLogFile() + ".lock").ino;
+  expect(() => stopAgent(a)).toThrow("archive the intact trail");
+  expect(() => recordAudit(a.name, "stop", "requested")).toThrow("incomplete lifecycle audit tail");
+  expect(readFileSync(auditLogFile(), "utf8")).toBe(retained);
+  expect(statSync(auditLogFile() + ".lock").ino).toBe(lockInode);
+  expect(readAgent(a.name)?.status).toBe("working");
+  expect(spawnSpy).not.toHaveBeenCalled();
+});
+
+test("a positive short write preserves evidence and blocks subsequent append and stop", () => {
+  const a = agent();
+  const actualWrite = fs.writeSync;
+  const writeSpy = spyOn(fs, "writeSync").mockImplementation((fd: number, buffer: any) => actualWrite(fd, buffer, 0, 12));
+  try {
+    expect(() => stopAgent(a)).toThrow("incomplete lifecycle audit write");
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+  } finally { writeSpy.mockRestore(); }
+  const retained = readFileSync(auditLogFile());
+  expect(retained.length).toBe(12);
+  expect(retained.toString()).toBe('{"timestamp"');
+  expect(() => recordAudit(a.name, "stop", "requested")).toThrow("incomplete lifecycle audit tail");
+  expect(() => stopAgent(a)).toThrow("archive the intact trail");
+  expect(readFileSync(auditLogFile())).toEqual(retained);
+  expect(readAgent(a.name)?.status).toBe("working");
   expect(spawnSpy).not.toHaveBeenCalled();
 });
 

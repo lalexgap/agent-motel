@@ -3,6 +3,7 @@ import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shQuote } from "./tmux";
 import { recordAudit } from "./audit";
+import { parseArgs } from "./args";
 
 // `am -H server <cmd>` / `AM_HOST=server am <cmd>`: run the command on a
 // remote am over plain SSH. am stays transport-ignorant — ssh does auth,
@@ -65,15 +66,16 @@ export interface SshResult {
 
 function auditForward(host: string, args: string[]): ((exitCode?: number, stdout?: string) => void) | undefined {
   const command = args[0];
-  const action = command === "stop" ? (args.includes("--for-move") ? "move" : "stop")
-    : command === "rm" ? (args.includes("--for-move") ? "move-cleanup" : "remove")
-    : command === "restart" ? "restart" : undefined;
-  const target = args[1];
-  if (!action || !target || target.startsWith("-")) return;
+  if (command !== "stop" && command !== "rm" && command !== "restart") return;
+  const { positional, flags } = parseArgs(args.slice(1));
+  const action = command === "stop" ? (flags["for-move"] === true ? "move" : "stop")
+    : command === "rm" ? (flags["for-move"] === true ? "move-cleanup" : "remove") : "restart";
+  const target = positional[0];
+  if (!target) return;
   const requestId = recordAudit(target, action, "requested", { targetHost: host });
   return (exitCode, stdout) => {
     let refusalReason: string | undefined;
-    if (exitCode === 0 && args.includes("--if-idle") && stdout !== undefined) {
+    if (exitCode === 0 && flags["if-idle"] === true && stdout !== undefined) {
       try {
         const result = JSON.parse(stdout);
         if (result?.ok === false) {
