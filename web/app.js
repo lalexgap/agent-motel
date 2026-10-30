@@ -779,9 +779,11 @@ const TOOL_SUMMARY = {
   search: ["Searched", "time", "times"],
   other: ["Used", "tool", "tools"],
 };
-function toolGroup() {
+function toolGroup(entry) {
   const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
   const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");
+  group.dataset.scrollKey = "group:" + entry.index;
+  list.dataset.scrollKey = "list:" + entry.index;
   summary.append(glyph, label, icon("chevron", "icon work-chevron"));
   group.append(summary, list);
   const counts = new Map();
@@ -796,6 +798,7 @@ function toolGroup() {
         return index ? text[0].toLowerCase() + text.slice(1) : text;
       }).join(", ");
       const call = el("details", "work-entry"), row = el("summary", "work-row");
+      call.dataset.scrollKey = "tool:" + entry.index;
       const text = toolLabel(entry, kind), slash = text.lastIndexOf("/");
       let name;
       // File rows lead with the file name; the directory trails, muted, and truncates first.
@@ -807,7 +810,9 @@ function toolGroup() {
       const iconBox = el("span", "work-icon");
       iconBox.append(icon(kind));
       row.append(iconBox, name);
-      call.append(row, el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n")));
+      const output = el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n"));
+      output.dataset.scrollKey = "output:" + entry.index;
+      call.append(row, output);
       list.append(call);
     },
   });
@@ -936,6 +941,7 @@ function pendingFor(name, entries) {
 function chatTurn(entry, agentName) {
   const user = entry.kind === "user";
   const turn = el("article", `turn ${user ? "user" : "assistant"}`);
+  turn.dataset.scrollKey = "turn:" + entry.index;
   turn.append(el("span", "turn-label sr-only", user ? "You" : agentName), el("div", "turn-text", entry.text));
   return turn;
 }
@@ -943,6 +949,35 @@ function pendingBubble(text, label) {
   const turn = el("article", "turn user queued");
   turn.append(el("div", "turn-text", text), el("div", "queued-meta", label));
   return turn;
+}
+// Anchor visible content as well as scrollTop: tool output and the dock's
+// sliding message window can change the height above the reader.
+function preserveConversationScroll(view, threshold) {
+  const scroll = view.scrollTop;
+  const atBottom = view.scrollHeight - scroll - view.clientHeight < threshold;
+  const top = view.getBoundingClientRect().top;
+  const nodes = [...view.querySelectorAll("[data-scroll-key]")];
+  const open = new Set(nodes.filter(node => node.open).map(node => node.dataset.scrollKey));
+  const positions = new Map(nodes.map(node => [node.dataset.scrollKey, { top: node.scrollTop, left: node.scrollLeft }]));
+  const visible = nodes.filter(node => {
+    const rect = node.getBoundingClientRect();
+    return rect.height && rect.bottom > top && rect.top < top + view.clientHeight;
+  });
+  const anchors = visible.filter(node => !visible.some(other => other !== node && node.contains(other)))
+    .map(node => ({ key: node.dataset.scrollKey, offset: node.getBoundingClientRect().top - top }));
+  return (follow = true) => {
+    const updated = [...view.querySelectorAll("[data-scroll-key]")];
+    for (const node of updated)
+      if (node.tagName === "DETAILS") node.open = open.has(node.dataset.scrollKey);
+    for (const node of updated) {
+      const position = positions.get(node.dataset.scrollKey);
+      if (position) { node.scrollTop = position.top; node.scrollLeft = position.left; }
+    }
+    if (atBottom && follow) { view.scrollTop = view.scrollHeight; return; }
+    const anchor = anchors.find(anchor => updated.some(node => node.dataset.scrollKey === anchor.key));
+    const node = anchor && updated.find(node => node.dataset.scrollKey === anchor.key);
+    view.scrollTop = node ? view.scrollTop + node.getBoundingClientRect().top - view.getBoundingClientRect().top - anchor.offset : scroll;
+  };
 }
 async function refreshDetail() {
   const name = state.selected,
@@ -964,6 +999,7 @@ async function refreshDetail() {
     !state.authenticated
   )
     return;
+  const view = $("transcript"), restoreScroll = preserveConversationScroll(view, 90);
   $("detail-status").replaceWith(
     Object.assign(badge(detail.status), { id: "detail-status" }),
   );
@@ -1022,13 +1058,10 @@ async function refreshDetail() {
   pending.replaceChildren();
   for (const request of permissions.requests) pending.append(permissionBox(request, base));
   showWorking("chat-working", detail.status, detail.statusChangedAt);
-  const view = $("transcript"),
-    atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 90;
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;
   if (rerender) {
     view.dataset.content = fingerprint;
-    const scroll = view.scrollTop;
     view.replaceChildren();
     if (!transcript.entries.length)
       view.append(
@@ -1037,14 +1070,13 @@ async function refreshDetail() {
     let tools = null;
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
-        if (!tools) view.append(tools = toolGroup());
+        if (!tools) view.append(tools = toolGroup(entry));
         tools.add(entry);
       } else {
         tools = null;
         view.append(chatTurn(entry, detail.name));
       }
     }
-    view.scrollTop = atBottom ? view.scrollHeight : scroll;
   }
   // Queued messages are not in the transcript until delivered, so show them at the end of the chat.
   transcriptQueue.replaceChildren();
@@ -1063,7 +1095,7 @@ async function refreshDetail() {
     transcriptQueue.append(turn);
   }
   if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
-  if (atBottom && (rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount))) view.scrollTop = view.scrollHeight;
+  restoreScroll(rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount));
   transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
 }
 $("message").oninput = () => {
@@ -1572,14 +1604,14 @@ async function refreshDock() {
   const pending = pendingFor(name, transcript.entries);
   const fingerprint = JSON.stringify([entries, pending.map((item) => item.text)]);
   if (view.dataset.content === fingerprint) return;
-  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
+  const restoreScroll = preserveConversationScroll(view, 60);
   view.dataset.content = fingerprint;
   view.replaceChildren();
   for (const entry of entries) view.append(chatTurn(entry, "Concierge"));
   for (const item of pending) view.append(pendingBubble(item.shown, "Sent · waiting for the concierge to read it"));
   if (!entries.length && !pending.length)
     view.append(el("p", "", "Send a task or ask about your fleet."));
-  if (atBottom) view.scrollTop = view.scrollHeight;
+  restoreScroll();
 }
 $("dock-form").onsubmit = async (event) => {
   event.preventDefault();
