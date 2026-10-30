@@ -1,3 +1,4 @@
+import { recordAudit, withAuditContext } from "./audit";
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tryAcquireFileLock } from "./filelock";
@@ -338,6 +339,9 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     const waiting = new Set<string>();
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
+        try {
+          withAuditContext({ source: "daemon", route: "session-sweep" }, () => recordAudit(agent.name, "session-disappeared", "observed"));
+        } catch { log("lifecycle audit write failed during session sweep"); }
         setStatus(agent.name, "exited", "tmux session disappeared");
         settleMessages(agent.name);
         continue;

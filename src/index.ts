@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { withAuditContext } from "./audit";
+import { parseArgs, type ParsedArgs } from "./args";
 import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
 import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
@@ -254,38 +256,6 @@ remote (agents running on a server, am on your laptop):
                               the fleet works both ways (see docs/reverse-ssh.md)
 `;
 
-interface ParsedArgs {
-  positional: string[];
-  flags: Record<string, string | boolean>;
-}
-
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "new-name", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent"]);
-const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg.startsWith("-") && arg !== "-") {
-      const key = arg.replace(/^--?/, "");
-      if (VALUE_FLAGS.has(key)) {
-        const value = argv[++i];
-        if (value === undefined) throw new Error(`flag --${key} requires a value`);
-        flags[key] = value;
-      } else if (OPTIONAL_VALUE_FLAGS.has(key)) {
-        const next = argv[i + 1];
-        flags[key] = next !== undefined && !next.startsWith("-") ? argv[++i]! : true;
-      } else {
-        flags[key] = true;
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { positional, flags };
-}
-
 function requirePositional(args: ParsedArgs, index: number, what: string): string {
   const value = args.positional[index];
   if (!value) throw new Error(`missing ${what} — see \`am help\``);
@@ -414,7 +384,7 @@ async function pickerFlow(): Promise<void> {
   const load = fleetPickerItems;
   const config = loadConfig();
   const handlers: PickerHandlers = {
-    restart: async (key: string) => {
+    restart: async (key: string) => withAuditContext({ source: "interactive-picker", route: "restart" }, async () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = await sshAmAsync(host, ["restart", name]);
@@ -423,8 +393,8 @@ async function pickerFlow(): Promise<void> {
       }
       await restartAgent(name);
       return `restarted ${name}`;
-    },
-    stop: (key: string) => {
+    }),
+    stop: (key: string) => withAuditContext({ source: "interactive-picker", route: "stop" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["stop", name]);
@@ -434,8 +404,8 @@ async function pickerFlow(): Promise<void> {
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
-    },
-    remove: (key: string) => {
+    }),
+    remove: (key: string) => withAuditContext({ source: "interactive-picker", route: "remove" }, () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["rm", name]);
@@ -445,7 +415,7 @@ async function pickerFlow(): Promise<void> {
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
-    },
+    }),
     preview: (key: string) => {
       // A subagent row previews its transcript: there is no pane to capture.
       const sub = splitSubagentKey(key);
@@ -845,12 +815,12 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(await stopIfIdle(agent)));
         break;
       }
-      stopAgent(agent);
+      stopAgent(agent, { auditAction: args.flags["for-move"] === true ? "move" : "stop" });
       console.log(`stopped "${agent.name}" — resume with \`am resume ${agent.name}\``);
       break;
     }
     case "rm":
-      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean });
+      rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean, auditAction: args.flags["for-move"] === true ? "move-cleanup" : "remove" });
       break;
     case "restore":
       await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });
@@ -994,7 +964,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: Error) => {
+withAuditContext({ source: process.env.SSH_CONNECTION ? "ssh-cli" : "cli", route: "am" }, () => main()).catch((error: Error) => {
   console.error(`am: ${error.message}`);
   process.exit(1);
 });

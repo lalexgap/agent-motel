@@ -167,7 +167,7 @@ export async function runAgent(name: string, opts: RunOptions): Promise<RunResul
   const agent = readAgent(name);
   const result = agent ? finalAssistantText(agent) : "";
 
-  if (opts.rm && agent) destroyAgent(agent, { clean: !!agent.worktreePath });
+  if (opts.rm && agent) destroyAgent(agent, { clean: !!agent.worktreePath, auditAction: "run-cleanup" });
 
   return { name, outcome, status: agent?.status ?? "exited", result };
 }

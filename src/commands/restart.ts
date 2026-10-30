@@ -1,3 +1,4 @@
+import { auditOperation } from "../audit";
 import { existsSync } from "node:fs";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
 import { hasSession, newSession, restartSession } from "../tmux";
@@ -48,6 +49,10 @@ function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?:
 
 // Caller holds the lifecycle and delivery locks.
 function restartLocked(agent: AgentState, opts: RestartOpts): RestartResult {
+  return auditOperation(agent.name, "restart", () => restartAudited(agent, opts));
+}
+
+function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
   const provider = agentProvider(agent);
   const executable = Bun.which(provider, { PATH: process.env.PATH });

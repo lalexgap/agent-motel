@@ -1,3 +1,4 @@
+import { recordAudit, withAuditContext } from "../audit";
 import { statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -711,6 +712,11 @@ export async function hookCommand(event: string): Promise<void> {
     : 0;
 
   const lastIdleAt = agent.status === "idle" ? agent.statusChangedAt : undefined;
+  if (effects.status === "exited" && agent.status !== "exited") {
+    try {
+      withAuditContext({ source: "provider-hook", route: "session-end" }, () => recordAudit(agent.name, "session-ended", "observed"));
+    } catch { console.error("warning: lifecycle audit write failed during session end"); }
+  }
   updateAgentStatus(agent, effects.status, effects.reason, turnEndedAt?.toISOString());
   const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
   // An inbox delivery reaches the hook inside Claude's cross-session framing;

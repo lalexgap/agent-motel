@@ -284,7 +284,7 @@ export function applyGc(plan: GcPlan): string[] {
       lines.push(`skipped "${agent.name}" — running again`);
       continue;
     }
-    destroyAgent(withWorktreeMeta(agent), { clean: false });
+    destroyAgent(withWorktreeMeta(agent), { clean: false, auditAction: "gc" });
     lines.push(`reaped agent "${agent.name}" (restorable with \`am restore ${agent.name}\`)`);
   }
 
