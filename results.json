@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": [
+    "default collapsed",
+    "Enter expands",
+    "Space collapses",
+    "full original content retained",
+    "expanded and collapsed state across live rebuild",
+    "keyboard focus after live rebuild",
+    "summary and body reading positions across live rebuild",
+    "main transcript and dock",
+    "mobile no horizontal overflow"
+  ]
+}
