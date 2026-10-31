@@ -938,11 +938,49 @@ function pendingFor(name, entries) {
   return list;
 }
 // Speaker names are for screen readers; the layout already shows who said what.
+function collapsibleMessage(entry) {
+  if (entry.kind !== "user") return null;
+  const text = entry.text?.trim() || "";
+  const opening = "<subagent_notification>", closing = "</subagent_notification>";
+  const notification = text.startsWith(opening) && text.endsWith(closing);
+  const instructions = /^# AGENTS\.md instructions(?: for [^\n]+)?(?:\r?\n|$)/.test(text);
+  if (!notification && !instructions) return null;
+  let preview = notification ? text.slice(opening.length, -closing.length).trim() : text.slice(text.indexOf("\n") + 1).trim();
+  if (preview.length <= 600 && preview.split("\n").length <= 8) return null;
+  if (notification) {
+    try {
+      const notice = JSON.parse(preview);
+      if (typeof notice.status?.completed === "string") preview = notice.status.completed;
+    } catch {}
+  }
+  preview = preview.replace(/\s+/g, " ").trim();
+  return {
+    label: instructions ? "AGENTS.md instructions" : "Subagent notification",
+    subject: instructions ? "instructions" : "notification",
+    preview: preview.length > 140 ? preview.slice(0, 140) + "…" : preview,
+  };
+}
 function chatTurn(entry, agentName) {
   const user = entry.kind === "user";
   const turn = el("article", `turn ${user ? "user" : "assistant"}`);
   turn.dataset.scrollKey = "turn:" + entry.index;
-  turn.append(el("span", "turn-label sr-only", user ? "You" : agentName), el("div", "turn-text", entry.text));
+  const disclosure = collapsibleMessage(entry);
+  turn.append(el("span", "turn-label sr-only", disclosure !== null ? disclosure.label : user ? "You" : agentName));
+  if (disclosure === null) turn.append(el("div", "turn-text", entry.text));
+  else {
+    const notice = el("details", "message-disclosure");
+    notice.dataset.scrollKey = "notice:" + entry.index;
+    const summary = el("summary", "message-disclosure-summary");
+    summary.dataset.scrollKey = "notice-summary:" + entry.index;
+    summary.append(el("strong", "", disclosure.label),
+      el("span", "message-disclosure-preview", disclosure.preview),
+      el("span", "message-disclosure-expand", "Read full " + disclosure.subject),
+      el("span", "message-disclosure-collapse", "Collapse " + disclosure.subject));
+    const body = el("div", "turn-text", entry.text);
+    body.dataset.scrollKey = "notice-body:" + entry.index;
+    notice.append(summary, body);
+    turn.append(notice);
+  }
   return turn;
 }
 function pendingBubble(text, label) {
@@ -957,6 +995,7 @@ function preserveConversationScroll(view, threshold) {
   const atBottom = view.scrollHeight - scroll - view.clientHeight < threshold;
   const top = view.getBoundingClientRect().top;
   const nodes = [...view.querySelectorAll("[data-scroll-key]")];
+  const focused = nodes.find(node => node === view.ownerDocument?.activeElement)?.dataset.scrollKey;
   const open = new Set(nodes.filter(node => node.open).map(node => node.dataset.scrollKey));
   const positions = new Map(nodes.map(node => [node.dataset.scrollKey, { top: node.scrollTop, left: node.scrollLeft }]));
   const visible = nodes.filter(node => {
@@ -973,6 +1012,7 @@ function preserveConversationScroll(view, threshold) {
       const position = positions.get(node.dataset.scrollKey);
       if (position) { node.scrollTop = position.top; node.scrollLeft = position.left; }
     }
+    if (focused) updated.find(node => node.dataset.scrollKey === focused)?.focus({ preventScroll: true });
     if (atBottom && follow) { view.scrollTop = view.scrollHeight; return; }
     const anchor = anchors.find(anchor => updated.some(node => node.dataset.scrollKey === anchor.key));
     const node = anchor && updated.find(node => node.dataset.scrollKey === anchor.key);
