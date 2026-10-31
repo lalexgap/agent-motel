@@ -230,19 +230,93 @@ function extractCodexOutput(output: unknown): string {
   return output;
 }
 
-export function parseTranscript(provider: Provider, jsonl: string, opts: ParseOpts = {}): Transcript {
-  if (provider === "antigravity") {
-    const transcript: Transcript = { source: provider, turns: [] };
-    for (const entry of parseLines(jsonl)) {
-      if (!entry || typeof entry !== "object") continue;
-      if ((entry.kind !== "user" && entry.kind !== "assistant") || typeof entry.text !== "string") continue;
-      transcript.sessionId ??= typeof entry.sessionId === "string" ? entry.sessionId : undefined;
-      transcript.dir ??= typeof entry.dir === "string" ? entry.dir : undefined;
-      transcript.startedAt ??= typeof entry.timestamp === "string" ? entry.timestamp : undefined;
-      transcript.turns.push({ kind: entry.kind, text: entry.text });
-    }
-    return transcript;
+const ANTIGRAVITY_RESPONSE_BYTES = 2 * 1024 * 1024;
+const ANTIGRAVITY_TOOL_TEXT_BYTES = 4096;
+
+type AntigravityRecord = {
+  sessionId?: unknown;
+  dir?: unknown;
+  timestamp?: unknown;
+} & (
+  | { kind: "user" | "assistant"; text: string }
+  | { kind: "assistant_delta" | "assistant_final"; responseId: string; text: string }
+  | { kind: "tool"; activityId: string; name: string; input: string; output?: string; error?: boolean }
+);
+
+function boundedAntigravityText(value: unknown, bytes: number): value is string {
+  return typeof value === "string" && value.length <= bytes && Buffer.byteLength(value) <= bytes;
+}
+
+function antigravityIdentity(value: unknown): value is string {
+  return boundedAntigravityText(value, 256) && !!value.trim() && value.trim() === value &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
+function antigravityRecord(value: unknown): AntigravityRecord | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const entry = value as Record<string, unknown>;
+  if (entry.kind === "user" || entry.kind === "assistant") {
+    if (typeof entry.text !== "string") return;
+  } else if (entry.kind === "assistant_delta" || entry.kind === "assistant_final") {
+    if (!antigravityIdentity(entry.responseId) || !boundedAntigravityText(entry.text, ANTIGRAVITY_RESPONSE_BYTES)) return;
+  } else if (entry.kind === "tool") {
+    if (!antigravityIdentity(entry.activityId) || !antigravityIdentity(entry.name) ||
+        !boundedAntigravityText(entry.input, ANTIGRAVITY_TOOL_TEXT_BYTES) ||
+        (entry.output !== undefined && !boundedAntigravityText(entry.output, ANTIGRAVITY_TOOL_TEXT_BYTES)) ||
+        (entry.error !== undefined && typeof entry.error !== "boolean")) return;
+  } else {
+    return;
   }
+  return entry as AntigravityRecord;
+}
+
+function parseAntigravityTranscript(jsonl: string): Transcript {
+  const transcript: Transcript = { source: "antigravity", turns: [] };
+  const responses = new Map<string, { turn: Extract<Turn, { kind: "assistant" }>; bytes: number; final: boolean }>();
+  const tools = new Map<string, Extract<Turn, { kind: "tool" }>>();
+  for (const value of parseLines(jsonl)) {
+    const entry = antigravityRecord(value);
+    if (!entry) continue;
+    transcript.sessionId ??= typeof entry.sessionId === "string" ? entry.sessionId : undefined;
+    transcript.dir ??= typeof entry.dir === "string" ? entry.dir : undefined;
+    transcript.startedAt ??= typeof entry.timestamp === "string" ? entry.timestamp : undefined;
+    if (entry.kind === "user" || entry.kind === "assistant") {
+      transcript.turns.push({ kind: entry.kind, text: entry.text });
+    } else if (entry.kind === "tool") {
+      let tool = tools.get(entry.activityId);
+      if (!tool) {
+        tool = { kind: "tool", name: entry.name, input: entry.input };
+        tools.set(entry.activityId, tool);
+        transcript.turns.push(tool);
+      }
+      tool.name = entry.name;
+      tool.input = entry.input;
+      if (entry.output !== undefined) tool.output = entry.output;
+      if (entry.error !== undefined) tool.error = entry.error;
+    } else if (entry.kind === "assistant_delta" || entry.kind === "assistant_final") {
+      let response = responses.get(entry.responseId);
+      if (!response) {
+        const turn: Extract<Turn, { kind: "assistant" }> = { kind: "assistant", text: "" };
+        response = { turn, bytes: 0, final: false };
+        responses.set(entry.responseId, response);
+        transcript.turns.push(turn);
+      }
+      const bytes = Buffer.byteLength(entry.text);
+      if (entry.kind === "assistant_final") {
+        response.turn.text = entry.text;
+        response.bytes = bytes;
+        response.final = true;
+      } else if (!response.final && response.bytes + bytes <= ANTIGRAVITY_RESPONSE_BYTES) {
+        response.turn.text += entry.text;
+        response.bytes += bytes;
+      }
+    }
+  }
+  return transcript;
+}
+
+export function parseTranscript(provider: Provider, jsonl: string, opts: ParseOpts = {}): Transcript {
+  if (provider === "antigravity") return parseAntigravityTranscript(jsonl);
   return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl, opts);
 }
 
@@ -257,8 +331,19 @@ export interface Fragment {
 }
 
 export function entryFragments(provider: Provider, entry: Record<string, any>): Fragment[] {
-  if (provider === "antigravity") return (entry.kind === "user" || entry.kind === "assistant") && typeof entry.text === "string"
-    ? [{ kind: entry.kind, text: entry.text }] : [];
+  if (provider === "antigravity") {
+    const record = antigravityRecord(entry);
+    if (!record) return [];
+    if (record.kind === "user" || record.kind === "assistant") return [{ kind: record.kind, text: record.text }];
+    if (record.kind === "assistant_delta" || record.kind === "assistant_final") return [{ kind: "assistant", text: record.text }];
+    if (record.kind === "tool") {
+      // The runtime supplies generic progress/completion text; never search raw provider payloads.
+      const fragments: Fragment[] = [{ kind: "tool", text: `${record.name} ${record.input}` }];
+      if (record.output?.trim()) fragments.push({ kind: "tool", text: record.output });
+      return fragments;
+    }
+    return [];
+  }
   return provider === "codex" ? codexEntryFragments(entry) : claudeEntryFragments(entry);
 }
 

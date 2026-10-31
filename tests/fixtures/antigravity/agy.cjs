@@ -40,6 +40,17 @@ rl.on('line', line => {
   setTimeout(() => {
     if(mode==='checkpoint') {emit({event:'step_update',step_update:{conversation_id:id,state:'DONE',step_type:'checkpoint'}});emit({event:'step_update',step_update:{conversation_id:id,state:'ACTIVE',step_type:'future_step'}});}
     emit({event:'step_update', step_update:{conversation_id:id,state:'DONE',step_type:'user_input'}});
+    if(mode==='progress-error' || mode==='progress-metadata') {
+      emit({event:'step_update',step_update:{conversation_id:id,step_index:3,state:'ACTIVE',step_type:'tool',tool_name:'run_command'}});
+      if(mode==='progress-metadata')emit({event:'step_update',step_update:{conversation_id:id,step_index:3,state:'FUTURE_STATE'}});
+      else {process.stderr.write('Print mode: soft-denying tool confirmation \"RunCommand\" at step 3\n');emit({event:'step_update',step_update:{conversation_id:id,step_index:3,state:'ERROR',step_type:'tool',tool_name:'run_command'}});}
+    }
+    if(mode==='progress-stream' || mode==='progress-crash') {
+      emit({event:'step_update',step_update:{conversation_id:id,step_index:1,state:'ACTIVE',step_type:'agent_response',text_delta:'partial response'}});
+      emit({event:'step_update',step_update:{conversation_id:id,step_index:2,state:'ACTIVE',step_type:'tool',tool_name:'search_web',tool_info:{parameters:{secret:'never-persist-me'},output:'Bearer never-persist-me'}}});
+      if(mode==='progress-crash'){setTimeout(()=>process.exit(23),150);return;}
+      setTimeout(()=>{emit({event:'step_update',step_update:{conversation_id:id,step_index:2,state:'DONE',step_type:'tool',tool_name:'search_web'}});emit({event:'result',result:{conversation_id:id,status:'SUCCESS',response:'canonical final response'}});},700);return;
+    }
     if (mode === 'hang-turn' || mode === 'survive-interrupt') return;
     setTimeout(() => {
       if (mode === 'permission') process.stderr.write('tool run_command soft-denied: requires approval\n');
