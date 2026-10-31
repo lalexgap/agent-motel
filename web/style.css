@@ -1409,6 +1409,14 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
   color: var(--fg-strong);
 }
 .turn.assistant > .turn-text { padding: 2px 4px; color: var(--chat-text); }
+.message-disclosure { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 12px; color: var(--fg-muted); }
+.message-disclosure-summary { padding: 12px; cursor: pointer; overflow-wrap: anywhere; font-size: 13px; }
+.message-disclosure-summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 12px; }
+.message-disclosure-preview { display: block; margin-top: 6px; line-height: 1.5; }
+.message-disclosure-expand, .message-disclosure-collapse { display: block; margin-top: 6px; color: var(--link); }
+.message-disclosure-collapse, .message-disclosure[open] .message-disclosure-expand { display: none; }
+.message-disclosure[open] .message-disclosure-collapse { display: block; }
+.message-disclosure > .turn-text { padding: 0 12px 12px; color: var(--chat-text); }
 .turn.user.queued > .turn-text { background: transparent; border: 1px dashed var(--border-strong); opacity: 0.72; }
 .queued-meta { display: flex; align-items: center; gap: 10px; padding: 0 4px; font-size: 12px; color: var(--fg-subtle); }
 .queued-meta .text-button { padding: 0; font-size: 12px; }
