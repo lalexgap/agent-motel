@@ -111,8 +111,20 @@ unsupported and fail clearly.
 The runner owns a separate Unix process group. Shutdown retains TERM→KILL
 escalation even after agy exits, and verifies ordinary group workers are stopped
 before recording exited. Stop/remove/restart wait for authenticated cleanup
-acknowledgement before killing or replacing the tmux pane. Missing runner or
-cleanup evidence causes an explicit refusal. A process group is not a security
+acknowledgement before killing or replacing the tmux pane. Every new/resume/restart
+reserves a cryptographically random pending generation in state before tmux starts,
+and clears previous cleanup evidence. A runner may claim that exact generation
+and immutable incarnation only once. Stop/remove can atomically cancel an unclaimed
+startup; a delayed or duplicate runner then refuses to launch agy. After a claim,
+cleanup must be verified for that exact generation.
+
+Resume, restore revival and restart serialize with stop/remove under the lifecycle
+lock. If a runner was SIGKILLed or is unreachable without matching cleanup evidence,
+AM refuses replacement and preserves its identity and queued work. A missing tmux
+pane does not prove its detached process group stopped. Inspect and clean up the
+specific failed workload separately; AM will not guess PIDs, reuse an older cleanup
+token, or silently replace that generation. Failed launches also retain state when
+cleanup cannot be verified. A process group is not a security
 sandbox: a command that deliberately creates a separate session/group can escape
 this boundary. AM does not claim containment of such detached workloads; agy's
 configured execution policy remains the access boundary.
@@ -173,12 +185,14 @@ The harness uses temporary HOME/state, an isolated tmux socket, and provider
 stubs. Tests include actual fixture child processes, stdin/stdout NDJSON,
 auth/exit/timeout failures, model/identity mismatch, malformed/oversized output,
 queue acknowledgement/crash ambiguity, drafts, interrupts, and a real isolated
-tmux launch/send/stop/resume/restart lifecycle. They validate AM behavior against
+tmux launch/send/stop/resume/restart lifecycle. Launch fixtures also exercise
+SIGKILL owner loss, stop/remove before runner claim, duplicate/stale invocation,
+restore serialization and failed-launch cleanup/refusal. They validate AM behavior against
 the documented contract; **they do not validate an installed authenticated agy**.
 
-As of implementation, agy was absent on gapserver. No installation, sign-in,
-paid model requests, production changes, pushes or PRs were authorized or run.
-After separately authorizing installation/authentication **and model requests**:
+No agy installation, Google authentication changes, or real provider/model requests
+have been performed for this implementation. Live authenticated agy verification
+remains pending. After separately authorizing installation/authentication **and model requests**:
 
 1. Record `agy --version`, `agy --help` and `agy models`; compare the installed
    stream flags, explicit Argon slugs and permission policy with the sources.

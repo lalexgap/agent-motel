@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -96,13 +96,14 @@ async function primer(name: string, opts: AntigravityOptions): Promise<string> {
   return `${standard}\n\n${capability}`;
 }
 
-export async function runAntigravity(name: string, rawOpts: AntigravityOptions): Promise<void> {
+export async function runAntigravity(name: string, rawOpts: AntigravityOptions, expected?: {runId:string;createdAt:string}): Promise<void> {
   antigravityName(name);
   const opts=antigravityOptions(rawOpts);
   const initial=readAgent(name);
-  if (!initial || (initial.provider as string) !== "antigravity") throw new Error("Antigravity agent state is unavailable or belongs to another provider");
-  const runId=randomBytes(16).toString("hex");
-  const createdAt=initial.createdAt;
+  if (!expected || typeof expected.createdAt!=="string" || !/^[a-f0-9]{32}$/.test(expected.runId) || !initial || initial.provider!=="antigravity" || initial.createdAt!==expected.createdAt || initial.antigravityRunId!==expected.runId || initial.antigravityRunPhase!=="pending" || initial.antigravityCleanupRunId===expected.runId) throw new Error("Antigravity runner requires its exact reserved pending generation and incarnation");
+  const runId=expected.runId;
+  const createdAt=expected.createdAt;
+  let claimedByThisRunner=false;
   const path=antigravitySocketPath(runId);
   let transcript: string | undefined;
   const incarnationDir=antigravityDir(name,createdAt);
@@ -116,7 +117,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     privateDir(join(incarnationDir,"deliveries"));
   } catch {
     updateAgentIf(name,s=>{
-      if(s.createdAt!==createdAt || s.antigravityRunId!==initial.antigravityRunId || s.provider!==initial.provider)return false;
+      if(s.createdAt!==createdAt || s.antigravityRunId!==runId || s.provider!==initial.provider || s.antigravityRunPhase!=="pending")return false;
       updateAgentStatus(s,"exited","Antigravity storage unavailable; verify owned private directories and a short AGENTMGR_HOME socket path");return true;
     });
     throw new Error("Antigravity storage unavailable");
@@ -149,9 +150,9 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   let diagnosticWindow="";
   const sockets=new Set<Socket>();
   const pendingOperator:string[]=opts.message ? [opts.message] : opts.roleInstructions ? [`Apply these role instructions for this session: ${opts.role ?? "managed agent"}.`] : [];
-  const owned=() => { const s=readAgent(name);return !!s && s.createdAt===createdAt && s.antigravityRunId===runId && (s.provider as string)==="antigravity"; };
+  const owned=() => { const s=readAgent(name);return claimedByThisRunner && !!s && s.createdAt===createdAt && s.antigravityRunId===runId && s.antigravityRunPhase==="claimed" && s.provider==="antigravity"; };
   const mutate=(fn:(s:AgentState)=>void) => updateAgentIf(name,s=>{
-    if(s.createdAt!==createdAt || s.antigravityRunId!==runId || (s.provider as string)!=="antigravity") return false;
+    if(!claimedByThisRunner || s.createdAt!==createdAt || s.antigravityRunId!==runId || s.antigravityRunPhase!=="claimed" || s.provider!=="antigravity") return false;
     fn(s);return true;
   });
   const status=(value:AgentStatus,reason?:string) => mutate(s=>updateAgentStatus(s,value,reason));
@@ -167,6 +168,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   let finishResolve:()=>void;
   const finished=new Promise<void>(resolve=>{finishResolve=resolve;});
   const server=createServer();
+  let socketListening=false;
   const signalGroup=(signal:NodeJS.Signals):boolean => {
     if(!child?.pid)return false;
     try {process.kill(-child.pid,signal);return true;}
@@ -198,7 +200,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
       } catch {clean=false;}
       for(const reply of stopReplies)reply(response(clean?"stopped":"unavailable",clean?undefined:"Antigravity owned process-group cleanup unverified; stop refused"));
       for(const socket of sockets) {socket.end();setTimeout(()=>socket.destroy(),50).unref();}
-      server.close();try {rmSync(path,{force:true});}catch{}
+      server.close();if(socketListening)try {rmSync(path,{force:true});}catch{}
       if(!clean)process.exitCode=1;
       finishResolve();
     };
@@ -343,13 +345,14 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     // State ownership is claimed under the existing state lock before opening
     // the socket. A stale runner only mutates its exact incarnation afterward.
     const claimed=updateAgentIf(name,s=>{
-      if(s.createdAt!==createdAt || (s.provider as string)!=="antigravity" || s.antigravityRunId!==initial.antigravityRunId)return false;
-      s.antigravityRunId=runId;delete s.antigravityCleanupRunId;s.model=opts.model;
+      if(s.createdAt!==createdAt || s.provider!=="antigravity" || s.antigravityRunId!==runId || s.antigravityRunPhase!=="pending" || s.antigravityCleanupRunId===runId)return false;
+      s.antigravityRunPhase="claimed";s.model=opts.model;
       const previousPath=s.sessionId ? antigravityTranscriptPath(name,createdAt,s.sessionId) : undefined;
       if(s.transcriptPath!==previousPath)delete s.transcriptPath;
       updateAgentStatus(s,"starting");return true;
     });
-    if(!claimed)throw new Error("Antigravity state changed before launch");
+    if(!claimed)throw new Error("Antigravity reserved generation changed or was cancelled before launch");
+    claimedByThisRunner=true;
     server.on("connection",socket=>{
       if(sockets.size>=MAX_CONNECTIONS) {socket.destroy();return;}
       sockets.add(socket);socket.on("close",()=>sockets.delete(socket));socket.on("error",()=>{});
@@ -393,6 +396,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
       });
     });
     await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(path,resolve);});
+    socketListening=true;
     chmodSync(path,0o600);
     server.on("error",()=>fail("control socket failed; resume the agent"));
     if(process.stdin.isTTY) {
@@ -456,7 +460,8 @@ if(import.meta.main) {
   try {
     if(!name)throw new Error("missing Antigravity agent name");
     const opts=JSON.parse(process.argv[3] ?? "{}");
-    await runAntigravity(name,opts);
+    const expected=JSON.parse(process.argv[4] ?? "null");
+    await runAntigravity(name,opts,expected);
   } catch {
     // Never include exception text: provider diagnostics and option payloads can
     // contain credentials. The owned state carries a bounded actionable reason.

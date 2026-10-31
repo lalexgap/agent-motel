@@ -1,9 +1,10 @@
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { connect } from "node:net";
-import { antigravityCommand, antigravityRequest, ANTIGRAVITY_DEFAULT_MODEL, antigravityTranscriptPath, antigravitySocketPath, antigravityDeliveryPath, stopAntigravity } from "../src/antigravity";
+import { antigravityCommand, antigravityRequest, ANTIGRAVITY_DEFAULT_MODEL, antigravityTranscriptPath, antigravitySocketPath, antigravityDeliveryPath, stopAntigravity, reserveAntigravityLaunch } from "../src/antigravity";
 import { readMessage, queueTrackedMessage } from "../src/messages";
 import { locateTranscript, parseTranscript } from "../src/transcript";
 import { trashState, readTrashedState } from "../src/trash";
@@ -46,8 +47,14 @@ function state(extra:Partial<AgentState>={}):AgentState {
 }
 async function launch(mode='normal',opts:Parameters<typeof antigravityCommand>[1]={}) {
   process.env.AGY_FIXTURE_MODE=mode;
-  writeAgent(state());
-  const p=Bun.spawn(antigravityCommand('api',opts).command,{env:{...process.env},cwd:home,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+  const plan=antigravityCommand('api',opts);
+  if(!acquireLifecycleLock('api'))throw new Error('fixture lifecycle busy');
+  try {
+    const existing=readAgent('api');
+    if(existing) {stopAntigravity(existing);reserveAntigravityLaunch(existing,plan);}
+    else reserveAntigravityLaunch(state(),plan,true);
+  } finally {releaseLifecycleLock('api');}
+  const p=Bun.spawn(plan.command,{env:{...process.env},cwd:home,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
   processes.push(p);
   await until(()=>!!readAgent('api')?.antigravityRunId || readAgent('api')?.status==='exited');
   return p;
@@ -324,10 +331,12 @@ test('SEC2/F1 replacement startup failure cannot read old task output and restor
   const p=await launch('normal',{message:'old task'});await idle();
   const old=readAgent('api')!;trashState(old);p.kill();await p.exited;removeAgent('api');
   const other=join(home,'other-project');mkdirSync(other);
-  writeAgent(state({createdAt:'new-incarnation',dir:other}));
+  const replacementPlan=antigravityCommand('api',{});
+  if(!acquireLifecycleLock('api'))throw new Error('fixture lifecycle busy');
+  try {reserveAntigravityLaunch(state({createdAt:'new-incarnation',dir:other}),replacementPlan,true);}finally{releaseLifecycleLock('api');}
   expect(()=>locateTranscript(readAgent('api')!)).toThrow();
   process.env.AGY_FIXTURE_MODE='auth';
-  const replacement=Bun.spawn(antigravityCommand('api',{}).command,{env:{...process.env},cwd:other,stdin:'pipe',stdout:'pipe',stderr:'pipe'});processes.push(replacement);
+  const replacement=Bun.spawn(replacementPlan.command,{env:{...process.env},cwd:other,stdin:'pipe',stdout:'pipe',stderr:'pipe'});processes.push(replacement);
   await until(()=>readAgent('api')?.status==='exited');await replacement.exited;
   expect(()=>locateTranscript(readAgent('api')!)).toThrow();
   removeAgent('api');writeAgent(readTrashedState('api')!);

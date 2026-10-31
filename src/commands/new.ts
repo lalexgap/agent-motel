@@ -1,4 +1,5 @@
-import { ANTIGRAVITY_DEFAULT_MODEL } from "../antigravity";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../lifecycle";
+import { ANTIGRAVITY_DEFAULT_MODEL, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
@@ -340,16 +341,23 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // Register the agent BEFORE its queue and session exist: the SessionStart
   // hook reads the state file to drain the queue, and gc's orphan scan treats
   // a queue without a registered owner as garbage.
-  writeAgent(state);
-  // Queue before the session starts so the SessionStart hook finds it.
-  if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
-
+  const nativeLaunch=provider==="antigravity";
+  if(nativeLaunch && !acquireLifecycleLock(name))throw new Error(`agent "${name}" lifecycle is busy — retry creation`);
   try {
-    newSession({ session, dir, env: agentEnv(name, provider), command: scrubNestedSessionEnv(plan.command) });
-  } catch (error) {
-    removeAgent(name);
-    queueClear(name);
-    throw error;
+    if(nativeLaunch)reserveAntigravityLaunch(state,plan,true);
+    else writeAgent(state);
+    // Queue before the session starts so the SessionStart hook finds it.
+    if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
+    try {
+      newSession({ session, dir, env: agentEnv(name, provider), command: scrubNestedSessionEnv(plan.command) });
+    } catch (error) {
+      if(nativeLaunch)failAntigravityLaunch(state);
+      removeAgent(name);
+      queueClear(name);
+      throw error;
+    }
+  } finally {
+    if(nativeLaunch)releaseLifecycleLock(name);
   }
 
   if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);

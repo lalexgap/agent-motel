@@ -1,6 +1,7 @@
+import { acquireLifecycleLock, releaseLifecycleLock } from "../lifecycle";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { readAgent, updateAgentStatus, writeAgent } from "../state";
+import { agentProvider, readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
 import { reviveAgent } from "./resume";
 
@@ -26,30 +27,35 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
   if (!trashed) throw new Error(`no removed agent "${name}" to restore — run \`am restore\` to see what's recoverable`);
 
   const { trashedAt, ...state } = trashed;
+  const native=agentProvider(state)==="antigravity";
+  if(native && !acquireLifecycleLock(name))throw new Error(`agent "${name}" lifecycle is busy — retry restore`);
+  try {
+    if(native && readAgent(name))throw new Error(`agent "${name}" already exists — refusing to overwrite its launch identity`);
 
-  // If `rm --clean` removed the worktree, recreate it from its branch so the
-  // agent has somewhere to run again. Committed work is on the branch;
-  // uncommitted changes from before the delete are gone for good.
-  if (!existsSync(state.dir) && state.worktreePath && state.worktreeBranch && state.repoRoot && existsSync(state.repoRoot)) {
-    mkdirSync(dirname(state.worktreePath), { recursive: true });
-    const res = Bun.spawnSync(["git", "-C", state.repoRoot, "worktree", "add", state.worktreePath, state.worktreeBranch]);
-    if (res.exitCode === 0) console.log(`recreated worktree ${state.worktreePath} from ${state.worktreeBranch}`);
-    else console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
-  }
+    // If `rm --clean` removed the worktree, recreate it from its branch so the
+    // agent has somewhere to run again. Committed work is on the branch;
+    // uncommitted changes from before the delete are gone for good.
+    if (!existsSync(state.dir) && state.worktreePath && state.worktreeBranch && state.repoRoot && existsSync(state.repoRoot)) {
+      mkdirSync(dirname(state.worktreePath), { recursive: true });
+      const res = Bun.spawnSync(["git", "-C", state.repoRoot, "worktree", "add", state.worktreePath, state.worktreeBranch]);
+      if (res.exitCode === 0) console.log(`recreated worktree ${state.worktreePath} from ${state.worktreeBranch}`);
+      else console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
+    }
 
-  updateAgentStatus(state, "exited", "restored; not running");
-  state.workingSince = undefined;
-  writeAgent(state);
-  console.log(`restored agent "${name}" (removed ${trashedAt})`);
+    updateAgentStatus(state, "exited", "restored; not running");
+    state.workingSince = undefined;
+    writeAgent(state);
+    console.log(`restored agent "${name}" (removed ${trashedAt})`);
 
-  if (opts.resume === false) {
-    console.log(`  start it:  am resume ${name}`);
-    return;
-  }
-  if (!existsSync(state.dir)) {
-    console.error(`  note: ${state.dir} no longer exists — re-registered, but can't relaunch; read its history with \`am transcript ${name}\``);
-    return;
-  }
-  await reviveAgent(state);
-  console.log(`  resumed in ${state.dir} — jump with \`am j ${name}\``);
+    if (opts.resume === false) {
+      console.log(`  start it:  am resume ${name}`);
+      return;
+    }
+    if (!existsSync(state.dir)) {
+      console.error(`  note: ${state.dir} no longer exists — re-registered, but can't relaunch; read its history with \`am transcript ${name}\``);
+      return;
+    }
+    await reviveAgent(state,{}, {lifecycleLocked:native});
+    console.log(`  resumed in ${state.dir} — jump with \`am j ${name}\``);
+  } finally {if(native)releaseLifecycleLock(name);}
 }

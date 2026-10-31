@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseDir } from "./paths";
+import { lifecycleLockHeld } from "./lifecycle";
 import { ANTIGRAVITY_MAX_MESSAGE_BYTES } from "./providerLimits";
-import { readAgent, type AgentState } from "./state";
+import { readAgent, updateAgentIf, updateAgentStatus, writeAgent, type AgentState } from "./state";
 
 export const ANTIGRAVITY_DEFAULT_MODEL = "gemini-4-argon-high";
 export const ANTIGRAVITY_MAX_LINE_BYTES = 256 * 1024;
@@ -44,9 +45,51 @@ export function antigravityOptions(opts: AntigravityOptions): AntigravityOptions
   return { ...opts, model };
 }
 
-export function antigravityCommand(name: string, opts: AntigravityOptions): { command: string[]; deferredMessage?: string } {
+export interface AntigravityLaunchPlan {
+  command: string[];
+  deferredMessage?: string;
+  antigravityRunId: string;
+}
+
+export function antigravityCommand(name: string, opts: AntigravityOptions): AntigravityLaunchPlan {
   antigravityName(name);
-  return { command: [process.execPath, fileURLToPath(new URL("./antigravityRunner.ts", import.meta.url)), name, JSON.stringify(antigravityOptions(opts))] };
+  const antigravityRunId=randomBytes(16).toString("hex");
+  return { antigravityRunId, command: [process.execPath, fileURLToPath(new URL("./antigravityRunner.ts", import.meta.url)), name, JSON.stringify(antigravityOptions(opts)), JSON.stringify({runId:antigravityRunId})] };
+}
+
+// Reservation is persisted before tmux is allowed to start. The runner receives
+// its expected incarnation/generation separately from user launch options.
+export function reserveAntigravityLaunch(agent: AgentState, plan: {command:string[];antigravityRunId?:string}, initial=false): AgentState {
+  if(!lifecycleLockHeld(agent.name))throw new Error("Antigravity launch reservation requires the lifecycle lock");
+  const runId=plan.antigravityRunId;
+  if(!runId || !/^[a-f0-9]{32}$/.test(runId) || agent.provider!=="antigravity")throw new Error("invalid Antigravity launch reservation");
+  plan.command[4]=JSON.stringify({runId,createdAt:agent.createdAt});
+  if(initial) {
+    if(readAgent(agent.name))throw new Error("Antigravity agent already exists; refusing to replace its launch identity");
+    agent.antigravityRunId=runId;agent.antigravityRunPhase="pending";delete agent.antigravityCleanupRunId;
+    writeAgent(agent);
+  } else {
+    const reserved=updateAgentIf(agent.name,current=>{
+      if(current.provider!=="antigravity" || current.createdAt!==agent.createdAt || current.antigravityRunId!==agent.antigravityRunId || !current.antigravityRunId || current.antigravityCleanupRunId!==current.antigravityRunId || current.antigravityRunPhase==="pending" || runId===current.antigravityRunId)return false;
+      current.antigravityRunId=runId;current.antigravityRunPhase="pending";delete current.antigravityCleanupRunId;
+      updateAgentStatus(current,"starting","Antigravity launch reserved; awaiting exact runner claim");return true;
+    });
+    if(!reserved)throw new Error("Antigravity previous-run cleanup unverified or incarnation changed; refusing a replacement launch. Preserve the old identity and inspect its workload");
+  }
+  return readAgent(agent.name)!;
+}
+
+// A launch error may occur after tmux already started the runner. Never restore
+// a previous generation or delete state until this generation is proven clean.
+export function failAntigravityLaunch(agent:AgentState):void {
+  try {stopAntigravity(agent);}
+  catch {
+    updateAgentIf(agent.name,current=>{
+      if(current.provider!=="antigravity" || current.createdAt!==agent.createdAt || current.antigravityRunId!==agent.antigravityRunId)return false;
+      updateAgentStatus(current,"needs-attention","Antigravity launch failed and exact-generation cleanup is unverified; identity and queued work preserved. Inspect the runner workload before retrying");return true;
+    });
+    throw new Error("Antigravity launch failed; exact-generation cleanup unverified. Identity and queued work preserved; inspect the workload before retrying");
+  }
 }
 
 export function antigravityDir(name: string, createdAt = readAgent(name)?.createdAt): string {
@@ -134,9 +177,21 @@ export async function antigravityRequest(agent: AgentState, action: "deliver" | 
 // killed or its state is replaced. Only the runner knows its in-memory PGID.
 export function stopAntigravity(agent: AgentState): void {
   if (agent.provider !== "antigravity") return;
-  const current = readAgent(agent.name);
-  if (!current || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) throw new Error("Antigravity incarnation changed; refresh state before stopping");
+  let current = readAgent(agent.name);
+  if (!current || current.provider!=="antigravity" || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) throw new Error("Antigravity incarnation changed; refresh state before stopping");
   if (!current.antigravityRunId) throw new Error("Antigravity cleanup cannot be verified: no runner identity; inspect the failed launch before removing or restarting");
+  if(current.antigravityRunPhase==="pending") {
+    // This CAS races the runner's claim under the same state lock. Winning
+    // proves that no child can ever be spawned for the cancelled generation.
+    const cancelled=updateAgentIf(current.name,state=>{
+      if(state.provider!=="antigravity" || state.createdAt!==current!.createdAt || state.antigravityRunId!==current!.antigravityRunId || state.antigravityRunPhase!=="pending")return false;
+      state.antigravityRunPhase="cancelled";state.antigravityCleanupRunId=state.antigravityRunId;
+      updateAgentStatus(state,"exited","Antigravity pending startup cancelled before runner claim; no provider workload launched");return true;
+    });
+    if(cancelled)return;
+    current=readAgent(agent.name);
+    if(!current || current.provider!=="antigravity" || current.createdAt!==agent.createdAt || current.antigravityRunId!==agent.antigravityRunId)throw new Error("Antigravity generation changed while stopping; refresh state");
+  }
   if (current.antigravityCleanupRunId === current.antigravityRunId) return;
   const result = Bun.spawnSync([process.execPath, fileURLToPath(import.meta.url), "stop", JSON.stringify({name:current.name,createdAt:current.createdAt,runId:current.antigravityRunId})], {
     env:{...process.env}, stdin:"ignore", stdout:"pipe", stderr:"pipe", timeout:7_000,

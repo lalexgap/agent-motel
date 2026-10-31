@@ -136,6 +136,8 @@ function codexModelArgs(opts: { model?: string; effort?: string }): string[] {
 
 export interface LaunchPlan {
   command: string[];
+  // Reserved in state before any Antigravity tmux launch.
+  antigravityRunId?: string;
   // --remote-control greedily consumes a following positional as the remote
   // session's display name — including what was meant to be the initial
   // prompt. With remote on, the message comes back here instead, for the

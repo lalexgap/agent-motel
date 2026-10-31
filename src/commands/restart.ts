@@ -1,4 +1,4 @@
-import { stopAntigravity } from "../antigravity";
+import { stopAntigravity, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
 import { auditOperation } from "../audit";
 import { existsSync } from "node:fs";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
@@ -74,6 +74,11 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
   if (provider !== "antigravity") plan.command[0] = executable;
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
+  if(provider==="antigravity") {
+    const selection={model:agent.model,effort:agent.effort};
+    agent=reserveAntigravityLaunch(agent,plan);
+    Object.assign(agent,selection);
+  }
   const launch = {
     session: agent.tmuxSession,
     dir: agent.dir,
@@ -91,6 +96,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
       }
     } else newSession(launch);
   } catch (error) {
+    if(provider==="antigravity")failAntigravityLaunch(agent);
     agent.model = previous.model;
     agent.effort = previous.effort;
     updateAgentStatus(agent, provider === "antigravity" ? "exited" : previous.status, provider === "antigravity" ? "restart launch failed after verified process-group cleanup" : previous.reason);

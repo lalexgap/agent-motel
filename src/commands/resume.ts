@@ -1,3 +1,6 @@
+import { reserveAntigravityLaunch, stopAntigravity, failAntigravityLaunch } from "../antigravity";
+import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
+import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { existsSync } from "node:fs";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession } from "../tmux";
@@ -53,15 +56,12 @@ export function claudeResumeTrust(agent: AgentState): void {
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
-export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Promise<void> {
+export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, internal: {lifecycleLocked?:boolean} = {}): Promise<void> {
+  if(agentProvider(agent)==="antigravity")return reviveAntigravity(agent,opts,!!internal.lifecycleLocked);
   if (hasSession(agent.tmuxSession)) return; // already live
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   const provider = agentProvider(agent);
-  if (provider === "antigravity") {
-    if (!Bun.which(providerBinary(provider))) throw new Error("agy is not installed — install Antigravity CLI and sign in first; see docs/antigravity.md");
-    buildResumeCommand(provider, agent, opts);
-  }
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
   claudeResumeTrust(agent);
@@ -78,6 +78,33 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
     env: agentEnv(agent.name, provider),
     command: scrubNestedSessionEnv(plan.command),
   });
+}
+
+// All revive callers (restore, picker and API included) share this barrier.
+// A missing pane is not evidence that its detached provider group was stopped.
+async function reviveAntigravity(expected:AgentState, opts:ResumeOpts, locked:boolean):Promise<void> {
+  if(locked && !lifecycleLockHeld(expected.name))throw new Error("Antigravity revive requires the caller's lifecycle lock");
+  if(!locked && !acquireLifecycleLock(expected.name))throw new Error(`agent "${expected.name}" lifecycle is busy — retry resume`);
+  try {
+    let agent=currentLifecycleAgent(expected);
+    if(hasSession(agent.tmuxSession))return;
+    if(!existsSync(agent.dir))throw new Error(`agent directory no longer exists: ${agent.dir}`);
+    if(!Bun.which(providerBinary("antigravity"),{PATH:process.env.PATH}))throw new Error("agy is not installed — install Antigravity CLI and sign in first; see docs/antigravity.md");
+    const plan=buildResumeCommand("antigravity",agent,opts);
+    if(!acquireDeliverLock(agent.name))throw new Error(`agent "${agent.name}" mailbox is busy — retry resume`);
+    try {
+      stopAntigravity(agent);
+      await ensureDaemon();
+      agent=reserveAntigravityLaunch(agent,plan);
+      updateAgentStatus(agent,"starting","resuming reserved Antigravity generation");writeAgent(agent);
+      try {
+        newSession({session:agent.tmuxSession,dir:agent.dir,env:agentEnv(agent.name,"antigravity"),command:scrubNestedSessionEnv(plan.command)});
+      } catch(error) {
+        failAntigravityLaunch(agent);
+        throw error;
+      }
+    } finally {releaseDeliverLock(agent.name);}
+  } finally {if(!locked)releaseLifecycleLock(expected.name);}
 }
 
 export async function resumeCommand(prefix: string, opts: ResumeOpts): Promise<void> {
