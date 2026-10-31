@@ -941,14 +941,15 @@ function pendingFor(name, entries) {
 function collapsibleMessage(entry) {
   if (entry.kind !== "user") return null;
   const text = entry.text?.trim() || "";
-  const match = text.match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/);
+  const opening = "<subagent_notification>", closing = "</subagent_notification>";
+  const notification = text.startsWith(opening) && text.endsWith(closing);
   const instructions = /^# AGENTS\.md instructions(?: for [^\n]+)?(?:\r?\n|$)/.test(text);
-  if (!match && !instructions) return null;
-  let preview = match ? match[1] : text.slice(text.indexOf("\n") + 1).trim();
+  if (!notification && !instructions) return null;
+  let preview = notification ? text.slice(opening.length, -closing.length).trim() : text.slice(text.indexOf("\n") + 1).trim();
   if (preview.length <= 600 && preview.split("\n").length <= 8) return null;
-  if (match) {
+  if (notification) {
     try {
-      const notice = JSON.parse(match[1]);
+      const notice = JSON.parse(preview);
       if (typeof notice.status?.completed === "string") preview = notice.status.completed;
     } catch {}
   }
