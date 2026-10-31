@@ -96,6 +96,7 @@ function agentIsLive(agent: AgentState): boolean {
 }
 
 function agentReport(agent: AgentState): string[] {
+  if (agentProvider(agent) === "antigravity") return [`${agent.name}: Antigravity subagent observation is unsupported`];
   if (agentIsLive(agent)) reconcileOpenSubagents(agent);
   const records = readSubagents(agent.name);
   if (records.length === 0) {
@@ -111,6 +112,7 @@ function agentReport(agent: AgentState): string[] {
 export function subagentsCommand(prefix: string | undefined, opts: { json?: boolean } = {}): void {
   if (prefix) {
     const agent = resolveAgent(prefix);
+    if (agentProvider(agent) === "antigravity") throw new Error("Antigravity subagent observation is unsupported");
     const records = readSubagents(agent.name);
     if (opts.json) {
       console.log(JSON.stringify(jsonRecords(records, agentIsLive(agent)), null, 2));

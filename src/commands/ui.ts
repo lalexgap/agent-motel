@@ -2,7 +2,7 @@ import { withAuditContext } from "../audit";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
+import { agentProvider, isProvider, listAgents, readAgent, recordAttached, type Provider } from "../state";
 import { attachOrSwitch, hasSession, SCROLL_BINDINGS, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { cachedRemoteRow, fleetPickerItems, splitFleetKey, splitSubagentKey, subagentKey, startFleetEventWatch, subscribeFleetCache, toggleGroupMode, toggleSortMode } from "../fleet";
@@ -50,7 +50,7 @@ export function roleOptionsForHost(
         .map((role) => ({
           name: role.name,
           ...(typeof role.description === "string" && role.description ? { description: role.description } : {}),
-          ...(role.provider === "claude" || role.provider === "codex" ? { provider: role.provider } : {}),
+          ...(role.provider === "claude" || role.provider === "codex" || role.provider === "antigravity" ? { provider: role.provider } : {}),
         }));
     } catch {
       throw new Error(`could not load roles from ${host}: invalid JSON response`);
@@ -67,10 +67,12 @@ export function remoteNewCommandArgs(opts: {
   effort?: string;
   role?: string;
 }): string[] {
+  if (opts.provider !== undefined && !isProvider(opts.provider)) throw new Error("unknown provider");
   const args = ["new", opts.name, "--no-jump"];
   if (opts.task) args.push("-m", opts.task);
   if (opts.dir) args.push("--dir", opts.dir);
   if (opts.provider) args.push(`--${opts.provider}`);
+  if (opts.provider === "antigravity") args.push("--no-remote");
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
   if (opts.role) args.push("--role", opts.role);
@@ -466,6 +468,7 @@ export async function sidebarCommand(): Promise<void> {
         message: spec.task,
         dir: spec.dir,
         provider: spec.provider as Provider | undefined,
+        remote: spec.provider === "antigravity" ? false : undefined,
         model: spec.model,
         effort: spec.effort,
         role: spec.role,

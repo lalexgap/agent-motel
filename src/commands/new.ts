@@ -1,7 +1,8 @@
+import { ANTIGRAVITY_DEFAULT_MODEL } from "../antigravity";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
+import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider, providerBinary } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
@@ -121,11 +122,12 @@ export async function createWorktree(
   return { path, repoRoot };
 }
 
-export function agentEnv(name: string): Record<string, string> {
+export function agentEnv(name: string, provider?: Provider): Record<string, string> {
   return {
     AGENTMGR_AGENT: name,
     // Tells SessionStart this process loaded the inbound-accepting settings.
-    AGENTMGR_PEER_INBOX: "1",
+    AGENTMGR_PEER_INBOX: provider === "antigravity" ? "0" : "1",
+    ...(provider === "antigravity" ? Object.fromEntries(["PATH", "HOME"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : [])) : {}),
     ...(process.env.AGENTMGR_HOME ? { AGENTMGR_HOME: process.env.AGENTMGR_HOME } : {}),
   };
 }
@@ -206,11 +208,16 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // resume/move, where the agent's own provider is passed in.
   const provider = providerForRole(opts.role, loadConfig().defaultProvider, opts.provider);
   let model = modelForRole(opts.role, provider, opts.model);
+  if (provider === "antigravity") {
+    model ??= ANTIGRAVITY_DEFAULT_MODEL;
+    // Validate unsupported options before daemon/config/worktree side effects.
+    buildLaunchCommand(provider, name, { ...opts, model });
+  }
   // Fail loudly now rather than spawning a tmux session that dies instantly
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
-  if (!Bun.which(provider)) {
-    throw new Error(`${provider} is not installed on this machine — install it or pick the other provider (--claude / --codex)`);
+  if (!Bun.which(providerBinary(provider), { PATH: process.env.PATH })) {
+    throw new Error(`${providerBinary(provider)} is not installed on this machine — ${provider === "antigravity" ? "install Antigravity CLI and sign in with agy first; see docs/antigravity.md" : "install it or choose --claude / --codex / --antigravity"}`);
   }
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
@@ -222,7 +229,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     // older CLI, a different account) must not block the spawn — drop to the
     // provider's own default instead, then re-check: the effort was validated
     // against the unknown model's levels, and the default model's may differ.
-    if (roleModel && complaints.some((c) => c.fatal && c.message.includes(`model "${roleModel}"`))) {
+    if (provider !== "antigravity" && roleModel && complaints.some((c) => c.fatal && c.message.includes(`model "${roleModel}"`))) {
       if (!opts.quiet) console.error(`warning: unknown ${provider} model "${roleModel}" from role "${opts.role}" — using the ${provider} default`);
       model = undefined;
       complaints = validateSelection(catalog, { effort: opts.effort });
@@ -242,7 +249,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
   // Same idea for the roles: the providers' agent files must match the
   // registry before a session that might delegate to them starts.
-  ensureSubagentRoles();
+  if (provider !== "antigravity") ensureSubagentRoles();
 
   // Expand ~ ourselves rather than leaning on the shell: a --dir routed over
   // ssh arrives single-quoted (shQuote), so the remote shell never expands it.
@@ -338,7 +345,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
 
   try {
-    newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(plan.command) });
+    newSession({ session, dir, env: agentEnv(name, provider), command: scrubNestedSessionEnv(plan.command) });
   } catch (error) {
     removeAgent(name);
     queueClear(name);

@@ -12,7 +12,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { apiTokenFile, ensureDirs, inboxDir } from "./paths";
-import { type Provider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
+import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
@@ -127,6 +127,7 @@ export function agentDetail(name: string) {
   const agent = readAgent(name);
   if (!agent) return null;
   const status = displayStatus(agent);
+  const nativeControls = agentProvider(agent) !== "antigravity";
   return {
     name: agent.name,
     status,
@@ -137,6 +138,12 @@ export function agentDetail(name: string) {
         : displayStatusReason(agent, status) ?? null,
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
+    capabilities: {
+      remoteControl: nativeControls, quota: nativeControls,
+      approvalRelay: nativeControls, interruptByReceipt: nativeControls,
+      handoff: nativeControls, move: nativeControls, rename: nativeControls,
+      subagents: nativeControls, attachments: nativeControls,
+    },
     // null = the provider default.
     runtime: agentRuntimeSettings(agent),
     model: agent.model ?? null,
@@ -156,7 +163,8 @@ export function agentDetail(name: string) {
     terminalAttach: 1,
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
-    permissionRequests: true,
+    permissionRequests: nativeControls,
+    interruptByReceipt: nativeControls,
     // ...and that `am restart` takes --model/--effort/--if-idle/--json.
     restartModel: true,
     pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
@@ -329,8 +337,9 @@ async function interruptBody(req: Request): Promise<Response | { text: string; m
   return typeof body?.messageId === "string" ? { text, messageId: body.messageId } : { text };
 }
 
-async function handoffBody(req: Request): Promise<{ to: Provider; newName?: string; full: boolean } | Response> {
-  const body = await req.json().catch(() => null);
+async function handoffBody(req: Request): Promise<{ to: "claude" | "codex"; newName?: string; full: boolean } | Response> {
+  const body = await req.json().catch(() => null) as { to?: unknown; newName?: unknown; full?: unknown } | null;
+  if (body?.to === "antigravity") return json({ error: "antigravity handoff is unsupported" }, 400);
   if (!body || (body.to !== "claude" && body.to !== "codex")) return json({ error: "to must be claude or codex" }, 400);
   if (body.newName !== undefined && (typeof body.newName !== "string" || !AGENT_NAME_RE.test(body.newName) || body.newName.length > 64))
     return json({ error: "newName must be 1–64 letters, numbers, dashes or underscores" }, 400);
@@ -554,6 +563,7 @@ interface SpawnBody {
 }
 
 async function spawnRemote(host: string, body: SpawnBody & { name: string }): Promise<Response> {
+  if (body.provider !== undefined && !isProvider(body.provider)) return json({ error: "unknown provider" }, 400);
   if (!AGENT_NAME_RE.test(body.name)) {
     return json({ error: "agent name must be alphanumeric with dashes/underscores" }, 409);
   }
@@ -720,11 +730,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     for (const field of ["model", "effort"] as const) {
       if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
     }
-    // `provider` names either one; the older boolean `codex` only ever meant
-    // "not the default", so it can't ask for claude now that codex IS the
-    // default — clients that want claude send provider.
-    if (body.provider && body.provider !== "claude" && body.provider !== "codex") {
-      return json({ error: `provider must be "claude" or "codex"` }, 400);
+    if (body.provider !== undefined && !isProvider(body.provider)) {
+      return json({ error: "provider must be claude, codex, or antigravity" }, 400);
+    }
+    if (body.codex !== undefined && typeof body.codex !== "boolean") return json({ error: "codex must be a boolean" }, 400);
+    if (body.provider !== undefined && body.codex !== undefined && ((body.provider === "codex") !== body.codex)) {
+      return json({ error: "contradictory provider and codex selection" }, 400);
     }
     for (const field of ["task", "role", "dir", "remoteDir"] as const) {
       if (body[field] != null && typeof body[field] !== "string") return json({ error: `${field} must be a string` }, 400);
@@ -741,6 +752,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         message: body.task,
         dir: body.dir,
         provider: (body.provider as Provider | undefined) ?? (body.codex ? "codex" : undefined),
+        remote: body.provider === "antigravity" ? false : undefined,
         role: body.role,
         model: body.model || undefined,
         effort: body.effort || undefined,
@@ -798,7 +810,9 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
     // POST /api/agents/:name/files — raw image body; returns {path} in the inbox
     if (parts.length === 3 && parts[2] === "files" && method === "POST") {
-      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      if (agentProvider(agent) === "antigravity") return json({ error: "Antigravity image attachments are unsupported" }, 409);
       const image = await pastedImage(req);
       if (image instanceof Response) return image;
       return json({ path: saveLocalPaste(name, image.fileName, image.bytes) }, 201);
@@ -807,7 +821,9 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     if (parts.length === 3 && parts[2] === "handoff" && method === "POST") {
       const body = await handoffBody(req);
       if (body instanceof Response) return body;
-      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      const source = readAgent(name);
+      if (!source) return json({ error: `no local agent "${name}"` }, 404);
+      if (agentProvider(source) === "antigravity") return json({ error: "antigravity handoff is unsupported" }, 409);
       try {
         const result = await handoffAgent(name, { ...body, exact: true, jump: false, quiet: true });
         return json({ ok: true, name: result.name, target: result.target, key: result.name }, 201);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { claudeSessionsDir } from "./paths";
 import { readJsonOrNull } from "./fsutil";
 import { tmux } from "./tmux";
-import type { AgentState } from "./state";
+import { agentProvider, type AgentState } from "./state";
 
 // Claude Code's cross-session inbox: each interactive session registers in
 // ~/.claude/sessions/<pid>.json and takes NDJSON user frames on a Unix socket,
@@ -48,6 +48,7 @@ function paneId(session: string): string | null {
 // hold the message behind an approval dialog. Requiring the entry to sit in
 // this agent's pane keeps a recycled pid or stray session from receiving it.
 export function peerTarget(agent: AgentState): PeerTarget | null {
+  if (agentProvider(agent) !== "claude") return null;
   if (!agent.peerInboxSession) return null;
   const pane = paneId(agent.tmuxSession);
   if (!pane) return null;

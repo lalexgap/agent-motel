@@ -974,7 +974,7 @@ export function preservedFieldIndex(previous: string[], index: number, next: str
 }
 
 // Provider cycle (mirrors the Where field). The first entry is the default.
-export const PROVIDER_OPTIONS = ["claude", "codex"];
+export const PROVIDER_OPTIONS = ["claude", "codex", "antigravity"];
 
 // A role offered by the create form. `provider` is the role's pin: selecting
 // the role moves the form's provider strip to it, the way a CLI spawn without
@@ -1274,7 +1274,7 @@ export async function pick(
           // fill, flipping to the cursor blue when their own row is focused
           // (the selection fill would vanish against the focused row's bg).
           const selectedStyle = kind === "provider"
-            ? `${o === "claude" ? bg("bb9af7") : bg("7aa2f7")}${fg("16161e")}${BOLD}`
+            ? `${o === "claude" ? bg("bb9af7") : o === "antigravity" ? bg("9ece6a") : bg("7aa2f7")}${fg("16161e")}${BOLD}`
             : rowBase === THEME.selected
               ? bg("7aa2f7") + fg("16161e")
               : bg("283457") + THEME.bright;
@@ -1365,12 +1365,12 @@ export async function pick(
     }
     rule();
     const provider = PROVIDER_OPTIONS[newProviderIdx]!;
-    const providerColor = provider === "claude" ? THEME.purple : THEME.blue;
+    const providerColor = provider === "claude" ? THEME.purple : provider === "antigravity" ? THEME.green : THEME.blue;
     const where = hostOptions[newHostIdx] === "local" ? "locally" : `on ${hostOptions[newHostIdx]}`;
     const worktree = handlers.worktreeByDefault ? " in a worktree of" : " in";
     const selectedRole = roleOptions[newRoleIdx]?.name;
     const roleSummary = selectedRole ? ` as ${THEME.cyan}${selectedRole}${THEME.muted}` : "";
-    const summary = `${THEME.muted}  will run ${providerColor}${provider}${THEME.muted}${roleSummary} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.form}`;
+    const summary = `${THEME.muted}  will run ${providerColor}${provider}${THEME.muted}${roleSummary}${provider === "antigravity" ? " · remote control unavailable" : ""} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.form}`;
     const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.form}`;
     card.push({ text: content(alignAnsi(summary, create, cardWidth)) });
     card.push({ text: content("") });

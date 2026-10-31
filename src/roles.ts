@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { ensureDirs, rolesDir } from "./paths";
-import type { Provider } from "./state";
+import { isProvider, type Provider } from "./state";
 
 export const CONCIERGE_ROLE = "concierge";
 export const CARETAKER_ROLE = "caretaker";
@@ -99,7 +99,7 @@ interface StoredRole {
 }
 
 function storedProvider(stored: StoredRole | null): Provider | undefined {
-  return stored?.provider === "claude" || stored?.provider === "codex" ? stored.provider : undefined;
+  return isProvider(stored?.provider) ? stored.provider : undefined;
 }
 
 export function validateRoleName(name: string): void {
@@ -216,6 +216,7 @@ function writeRoleSettings(role: AgentRole, settings: { provider?: Provider; mod
 }
 
 export function setRoleModel(name: string, provider: Provider, model: string | undefined): AgentRole {
+  if (!isProvider(provider)) throw new Error("unknown role provider");
   const role = requireRole(name);
   if (model !== undefined && !model.trim()) throw new Error("model cannot be empty; use --clear to remove the default");
   const models = { ...role.models };
@@ -228,6 +229,7 @@ export function setRoleModel(name: string, provider: Provider, model: string | u
 
 // Pin (or unpin, with `provider` undefined) the provider a role launches on.
 export function setRoleProvider(name: string, provider: Provider | undefined): AgentRole {
+  if (provider !== undefined && !isProvider(provider)) throw new Error("unknown role provider");
   const role = requireRole(name);
   ensureDirs();
   writeRoleSettings(role, { provider, models: role.models });

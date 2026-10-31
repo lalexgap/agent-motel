@@ -1,4 +1,4 @@
-import type { Provider } from "../state";
+import { isProvider, type Provider } from "../state";
 import { providerCatalog, validateSelection } from "../catalog";
 import { addRole, getRole, listRoles, removeRole, setRoleModel, setRoleProvider } from "../roles";
 import { ensureSubagentRoles, exportSubagentRoles, formatExportReport } from "../subagentRoles";
@@ -15,6 +15,7 @@ export interface RoleCommandOptions {
 }
 
 export function roleCommand(action: string | undefined, name: string | undefined, opts: RoleCommandOptions = {}): void {
+  if (opts.provider !== undefined && !isProvider(opts.provider)) throw new Error("unknown role provider");
   if (!action || action === "list" || action === "ls") {
     const roles = listRoles();
     if (opts.json) console.log(JSON.stringify(roles, null, 2));
@@ -27,6 +28,7 @@ export function roleCommand(action: string | undefined, name: string | undefined
   }
 
   if (action === "export") {
+    if (opts.provider === "antigravity") throw new Error("antigravity role export is unsupported");
     const providers = opts.provider ? [opts.provider] : undefined;
     const report = exportSubagentRoles({ providers, dryRun: opts.dryRun });
     console.log(formatExportReport(report, opts.dryRun).join("\n"));
@@ -50,7 +52,7 @@ export function roleCommand(action: string | undefined, name: string | undefined
   }
   if (action === "provider") {
     if (opts.clear ? !!opts.provider : !opts.provider) {
-      throw new Error("pass either --claude/--codex or --clear");
+      throw new Error("pass either --claude/--codex/--antigravity or --clear");
     }
     const role = setRoleProvider(name, opts.clear ? undefined : opts.provider);
     console.log(role.provider ? `role "${name}" now launches on ${role.provider}` : `role "${name}" no longer pins a provider`);
@@ -58,7 +60,7 @@ export function roleCommand(action: string | undefined, name: string | undefined
     return;
   }
   if (action === "model") {
-    if (!opts.provider) throw new Error("select a provider with --claude or --codex");
+    if (!opts.provider) throw new Error("select a provider with --claude, --codex, or --antigravity");
     if (opts.clear ? opts.model !== undefined : !opts.model?.trim()) {
       throw new Error("pass either --model <name> or --clear");
     }

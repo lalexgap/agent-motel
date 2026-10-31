@@ -640,6 +640,8 @@ export async function hookCommand(event: string): Promise<void> {
   // That keeps the rename race window to the atomic state-write itself.
   let agent = matchAgent(inheritedName);
   if (!agent) return;
+  // Antigravity state is driven exclusively by its private stream runner.
+  if (agentProvider(agent) === "antigravity") return;
   // Daemon threads already have an identity assigned at launch. A retiring
   // process can still carry this name after it has been reused.
   if (agentProvider(agent) === "codex" && agent.codexDaemonAttached && agentSessionId(agent)

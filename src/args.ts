@@ -1,3 +1,5 @@
+import { isProvider, type Provider } from "./state";
+
 export interface ParsedArgs {
   positional: string[];
   flags: Record<string, string | boolean>;
@@ -27,5 +29,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       positional.push(arg);
     }
   }
+  selectedProvider(flags);
   return { positional, flags };
+}
+
+// Validate before dispatch or SSH forwarding so every command has the same rule.
+export function selectedProvider(flags: Record<string, string | boolean>): Provider | undefined {
+  const selected = (["claude", "codex", "antigravity"] as const).filter(provider => flags[provider] === true);
+  if (flags.provider !== undefined) {
+    if (!isProvider(flags.provider)) throw new Error("unknown provider (expected claude, codex, or antigravity)");
+    if (selected.some(provider => provider !== flags.provider)) throw new Error("select only one provider");
+  }
+  if (selected.length > 1) throw new Error("select only one provider");
+  return (flags.provider as Provider | undefined) ?? selected[0];
 }

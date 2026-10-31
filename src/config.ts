@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { configFile } from "./paths";
-import type { Provider } from "./state";
+import { isProvider, type Provider } from "./state";
 
 export function shortHost(host: string): string {
   return host.split(".")[0] || host;
@@ -14,8 +14,8 @@ export function localHostIdentity(): string {
 }
 
 export interface Config {
-  // Provider a new agent runs on when neither --codex nor --claude is given
-  // (and, in the create form, the preselected provider). "codex" or "claude".
+  // Provider a new agent runs on when no provider flag is given
+  // (and, in the create form, the preselected provider). "codex", "claude", or "antigravity".
   defaultProvider: Provider;
   // Notify when an agent goes idle (in addition to the always-on
   // needs-attention notifications).
@@ -24,7 +24,8 @@ export interface Config {
   // notification-worthy — filters out quick conversational replies.
   idleNotifyMinSeconds: number;
   // Launch agents with remote control: Claude Code Remote Control, or for
-  // codex, attached to the app-server daemon. Per-agent override via
+  // codex, attached to the app-server daemon. Antigravity defaults off and
+  // does not support remote control. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
   // macOS bundle id notifications are posted as (icon + click target), e.g.
@@ -138,11 +139,17 @@ const DEFAULTS: Config = {
 
 export function loadConfig(): Config {
   if (!existsSync(configFile())) return { ...DEFAULTS };
+  let stored: Partial<Config>;
   try {
-    return { ...DEFAULTS, ...JSON.parse(readFileSync(configFile(), "utf8")) };
+    stored = JSON.parse(readFileSync(configFile(), "utf8"));
   } catch {
     return { ...DEFAULTS };
   }
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULTS };
+  for (const key of ["defaultProvider", "conciergeProvider"] as const) {
+    if (key in stored && !isProvider(stored[key])) throw new Error(`${key} must be a provider: claude, codex, or antigravity`);
+  }
+  return { ...DEFAULTS, ...stored };
 }
 
 export function shouldNotifyIdle(opts: {

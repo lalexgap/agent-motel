@@ -1676,3 +1676,5 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   #detail .activity { min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
   #message-form { margin-bottom: 0; }
 }
+
+.side-agent-provider[data-provider="antigravity"] { color: #a8d998; background: #273c2e; }

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
+import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { queueAppendForAgent } from "../queue";
@@ -58,6 +58,10 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   const provider = agentProvider(agent);
+  if (provider === "antigravity") {
+    if (!Bun.which(providerBinary(provider))) throw new Error("agy is not installed — install Antigravity CLI and sign in first; see docs/antigravity.md");
+    buildResumeCommand(provider, agent, opts);
+  }
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
   claudeResumeTrust(agent);
@@ -66,14 +70,14 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}): Pro
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
 
+  updateAgentStatus(agent, "starting", "resuming");
+  writeAgent(agent);
   newSession({
     session: agent.tmuxSession,
     dir: agent.dir,
-    env: agentEnv(agent.name),
+    env: agentEnv(agent.name, provider),
     command: scrubNestedSessionEnv(plan.command),
   });
-  updateAgentStatus(agent, "starting", "resuming");
-  writeAgent(agent);
 }
 
 export async function resumeCommand(prefix: string, opts: ResumeOpts): Promise<void> {

@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { withAuditContext } from "./audit";
-import { parseArgs, type ParsedArgs } from "./args";
+import { parseArgs, selectedProvider, type ParsedArgs } from "./args";
 import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
 import { hostname } from "node:os";
-import { agentProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
+import { agentProvider, isProvider, listAgents, readAgent, resolveAgent, setExactNamesOnly, type Provider } from "./state";
 import { queueDepth } from "./queue";
 import { palettePopupUi, pick, type PaletteSpec, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
@@ -61,7 +61,7 @@ import { roleCommand } from "./commands/role";
 import { localCatalogs, modelsCommand } from "./commands/models";
 import { CONCIERGE_ROLE, listRoles } from "./roles";
 
-const HELP = `Agent Motel (am) — rooms for coding agents (Claude Code & Codex)
+const HELP = `Agent Motel (am) — rooms for coding agents (Claude Code, Codex & Antigravity)
 
 usage:
   am                          split view: sidebar + live agent pane
@@ -71,14 +71,14 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg | -m - | --file path] [--dir path] [--codex]
+  am new <name> [-m msg | -m - | --file path] [--dir path] [--claude|--codex|--antigravity]
                 [--remote | --no-remote] [--model <m>] [--effort <level>]
                 [--role <name>]
                               spawn a new agent in tmux and jump into it
                               (-m - reads the task from stdin, --file <path> from
                                a file — both dodge shell quoting for long tasks;
                                --no-jump to stay; non-TTY callers never jump;
-                               --codex / --claude pick the provider, overriding
+                               --codex / --claude / --antigravity select the provider, overriding
                                config.defaultProvider (default: codex);
                                --model / --effort override the provider defaults)
                               --role applies a named behavior preset
@@ -91,8 +91,13 @@ usage:
                                to <t> / to the agent that spawned it)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
-                              (bare --resume opens the provider's session picker)
-  am run <name> -m msg [--dir path] [--worktree b [--base ref] | --in-place] [--codex]
+                              (bare --resume opens Claude/Codex session pickers;
+                               Antigravity requires an exact ID)
+                              Antigravity: install/sign in to agy separately;
+                              exact model pin defaults to gemini-4-argon-high;
+                              no permission bypass/approval relay or --now;
+                              see docs/antigravity.md for limits and live checks
+  am run <name> -m msg [--dir path] [--worktree b [--base ref] | --in-place] [--claude|--codex|--antigravity]
                        [--role name] [--timeout secs] [--rm] [--json]
                               spawn a real agent, wait for its turn, print its
                               final message (for fan-out: the agent stays in
@@ -128,7 +133,7 @@ usage:
                               Created on first use, revived automatically
                               (press c in the hub; --no-jump queues the
                               question and stays)
-  am models [--json] [--codex|--claude]
+  am models [--json] [--claude|--codex|--antigravity]
                               models and reasoning-effort levels the installed
                               providers actually offer (what --model / --effort
                               accept; -H <host> asks that machine)
@@ -136,9 +141,9 @@ usage:
   am role show <name>         print a role's instructions
   am role add <name> -m msg   define a role (-m - or --file for long prompts;
                               --description adds a short UI summary; --force replaces)
-  am role model <name> --claude|--codex --model <model>
+  am role model <name> --claude|--codex|--antigravity --model <model>
                               set a role default (--clear removes it)
-  am role provider <name> --claude|--codex
+  am role provider <name> --claude|--codex|--antigravity
                               pin the provider a role launches on
                               (--clear unpins; --claude/--codex on the spawn
                                still win)
@@ -164,7 +169,7 @@ usage:
   am files [<agent>] [--json] list shared artifacts across the fleet
   am open <agent> [n|name]    pull that agent's latest (or nth/named) shared
                               artifact to this machine and open it
-  am interrupt <name> [msg]   abort current turn (Esc), then send message
+  am interrupt <name> [msg]   abort current turn (Esc; agy uses SIGINT), then send message
                               (no message: Esc only; - reads it from stdin)
                               (sends from inside an agent are auto-attributed:
                                the recipient sees "[am · from <you>] …")
@@ -441,11 +446,13 @@ async function pickerFlow(): Promise<void> {
       return [`(no live session — ${displayStatus(agent)})`];
     },
     create: async (spec) => {
+      if (spec.provider !== undefined && !isProvider(spec.provider)) throw new Error("unknown provider");
       await newCommand({
         name: spec.name,
         message: spec.task,
         dir: spec.dir ? expandHome(spec.dir) : undefined,
         provider: spec.provider as Provider | undefined,
+        remote: spec.provider === "antigravity" ? false : undefined,
         model: spec.model,
         effort: spec.effort,
         role: spec.role,
@@ -527,9 +534,9 @@ async function main(): Promise<void> {
   if (hostIdx >= 0 && !host) throw new Error("flag --host requires a value");
   const localArgv = stripHostArgs(argv);
   const [command, ...rest] = localArgv;
-  if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
-
   const args = parseArgs(rest);
+  if ((command === "handoff" || command === "__handoff") && args.flags.to === "antigravity") throw new Error("antigravity handoff is unsupported");
+  if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
   if (args.flags.exact === true) setExactNamesOnly(true);
   if (!forceLocal) maybeForwardToFleet(command, args, localArgv);
 
@@ -548,7 +555,7 @@ async function main(): Promise<void> {
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
         base: args.flags.base as string | undefined,
-        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
+        provider: selectedProvider(args.flags),
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
@@ -571,7 +578,7 @@ async function main(): Promise<void> {
         worktree: args.flags.worktree as string | undefined,
         base: args.flags.base as string | undefined,
         inPlace: !!args.flags["in-place"],
-        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
+        provider: selectedProvider(args.flags),
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
@@ -613,7 +620,7 @@ async function main(): Promise<void> {
     case "usage":
       await usageCommand({
         json: !!args.flags.json,
-        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : (args.flags.provider as string | undefined),
+        provider: selectedProvider(args.flags),
       });
       break;
     case "caretaker":
@@ -631,18 +638,17 @@ async function main(): Promise<void> {
       break;
     case "models":
       modelsCommand({
-        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
+        provider: selectedProvider(args.flags),
         json: !!args.flags.json,
       });
       break;
     case "role":
     case "roles":
-      if (args.flags.claude && args.flags.codex) throw new Error("select only one provider");
       roleCommand(args.positional[0], args.positional[1], {
         json: !!args.flags.json,
         instructions: await resolveTask(args.flags),
         description: args.flags.description as string | undefined,
-        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
+        provider: selectedProvider(args.flags),
         model: args.flags.model as string | undefined,
         clear: !!args.flags.clear,
         force: !!args.flags.force,

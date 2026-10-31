@@ -3,7 +3,8 @@ import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shQuote } from "./tmux";
 import { recordAudit } from "./audit";
-import { parseArgs } from "./args";
+import { parseArgs, selectedProvider } from "./args";
+import { parseCatalogs } from "./catalog";
 
 // `am -H server <cmd>` / `AM_HOST=server am <cmd>`: run the command on a
 // remote am over plain SSH. am stays transport-ignorant — ssh does auth,
@@ -62,6 +63,61 @@ export interface SshResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+const ANTIGRAVITY_PROBE = ["models", "--json", "--antigravity", "--local"];
+
+export function needsAntigravitySupport(args: string[]): boolean {
+  if (!args.some(arg => ["--provider", "--antigravity", "--codex", "--claude"].includes(arg))) return false;
+  const provider = selectedProvider(parseArgs(args.slice(1)).flags);
+  return provider === "antigravity" && args[0] !== "models";
+}
+
+export function assertAntigravitySupport(host: string, result: SshResult): void {
+  const catalog = result.exitCode === 0 ? parseCatalogs(result.stdout).find(c => c.provider === "antigravity") : undefined;
+  if (!catalog?.modelsExhaustive || !catalog.models.length || !catalog.models.every(m => /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/.test(m.id))) {
+    throw new Error(`antigravity support could not be verified on ${host}; update remote am and check agy models`);
+  }
+}
+
+function createdName(args: string[]): string | undefined {
+  if (args[0] !== "new" && args[0] !== "run") return undefined;
+  const { positional, flags } = parseArgs(args.slice(1));
+  return flags.rm ? undefined : positional[0];
+}
+
+function assertCreatedProvider(host: string, name: string, result: SshResult): void {
+  let detail: { provider?: unknown } | undefined;
+  try { detail = JSON.parse(result.stdout); } catch {}
+  if (result.exitCode !== 0 || detail?.provider !== "antigravity") {
+    throw new Error(`remote ${host}:${name} did not confirm provider antigravity; inspect it before retrying`);
+  }
+}
+
+// Injected transports use the same negotiation as the real SSH path. Old am
+// ignores unknown flags, so a successful exit alone cannot establish support.
+export async function checkedRemoteAm(
+  host: string, args: string[],
+  opts: { stdin?: string; timeoutMs?: number },
+  run: (host: string, args: string[], opts?: { stdin?: string; timeoutMs?: number }) => Promise<SshResult>,
+): Promise<SshResult> {
+  const check = needsAntigravitySupport(args);
+  if (check) assertAntigravitySupport(host, await run(host, ANTIGRAVITY_PROBE, { timeoutMs: 10000 }));
+  const result = await run(host, args, opts);
+  const name = check && result.exitCode === 0 ? createdName(args) : undefined;
+  if (name) assertCreatedProvider(host, name, await run(host, ["__detail", name, "--local", "--exact"], { timeoutMs: 10000 }));
+  return result;
+}
+
+function checkRemoteAmSync(host: string, args: string[]): boolean {
+  const check = needsAntigravitySupport(args);
+  if (check) assertAntigravitySupport(host, sshAm(host, ANTIGRAVITY_PROBE, { timeoutMs: 10000 }));
+  return check;
+}
+
+function verifyRemoteAmSync(host: string, args: string[], check: boolean, exitCode: number): void {
+  const name = check && exitCode === 0 ? createdName(args) : undefined;
+  if (name) assertCreatedProvider(host, name, sshAm(host, ["__detail", name, "--local", "--exact"], { timeoutMs: 10000 }));
 }
 
 function auditForward(host: string, args: string[]): ((exitCode?: number, stdout?: string) => void) | undefined {
@@ -142,7 +198,8 @@ export function sshAm(
   args: string[],
   opts: { stdin?: string; timeoutMs?: number } = {},
 ): SshResult {
-  return auditedForward(host, args, () => {
+  const check = checkRemoteAmSync(host, args);
+  const result = auditedForward(host, args, () => {
     const result = Bun.spawnSync(sshArgv(host, amCommandString(args), false), {
       stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
       timeout: opts.timeoutMs,
@@ -153,6 +210,8 @@ export function sshAm(
       stderr: result.stderr.toString(),
     };
   }, result => result);
+  verifyRemoteAmSync(host, args, check, result.exitCode);
+  return result;
 }
 
 // A killed-on-timeout process reports 124, like coreutils `timeout`.
@@ -257,7 +316,7 @@ export async function sshAmAsync(
 ): Promise<SshResult> {
   const finish = auditForward(host, args);
   try {
-    const result = await runAsync(sshArgv(host, amCommandString(args), false), opts);
+    const result = await checkedRemoteAm(host, args, opts, (target, command, options) => runAsync(sshArgv(target, amCommandString(command), false), options));
     finish?.(result.exitCode, result.stdout);
     return result;
   } catch (error) {
@@ -279,7 +338,8 @@ export async function sshRunAsync(
 // the picker). Returns when the remote command does — unlike remoteExec it
 // does NOT exit the process.
 export function sshAmInteractive(host: string, args: string[]): number {
-  return auditedForward(host, args, () => {
+  const check = checkRemoteAmSync(host, args);
+  const code = auditedForward(host, args, () => {
     const result = Bun.spawnSync(sshArgv(host, amCommandString(args), true), {
       stdin: "inherit",
       stdout: "inherit",
@@ -287,6 +347,8 @@ export function sshAmInteractive(host: string, args: string[]): number {
     });
     return result.exitCode;
   }, code => ({ exitCode: code }));
+  verifyRemoteAmSync(host, args, check, code);
+  return code;
 }
 
 // Run a raw (non-am) command on the host, e.g. tmux capture-pane or test -d.
@@ -309,10 +371,12 @@ export function sshRun(
 export function remoteExec(host: string, argv: string[]): never {
   const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY;
   const args = stripHostArgs(argv);
+  const check = checkRemoteAmSync(host, args);
   const result = auditedForward(host, args, () => Bun.spawnSync(sshArgv(host, amCommandString(args), interactive), {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
   }), result => ({ exitCode: result.exitCode }));
+  verifyRemoteAmSync(host, args, check, result.exitCode);
   process.exit(result.exitCode);
 }

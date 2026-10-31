@@ -1,6 +1,6 @@
 import { auditOperation } from "../audit";
 import { existsSync } from "node:fs";
-import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
+import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession, restartSession } from "../tmux";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { ensureDaemon } from "../daemon";
@@ -55,7 +55,7 @@ function restartLocked(agent: AgentState, opts: RestartOpts): RestartResult {
 function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
   const provider = agentProvider(agent);
-  const executable = Bun.which(provider, { PATH: process.env.PATH });
+  const executable = Bun.which(providerBinary(provider), { PATH: process.env.PATH });
   if (!executable) throw new Error(`${provider} executable not found in PATH`);
   if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
   // Re-checked on the re-read agent: a concurrent restart may have changed the half this one keeps.
@@ -70,12 +70,12 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
-  plan.command[0] = executable;
+  if (provider !== "antigravity") plan.command[0] = executable;
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
   const launch = {
     session: agent.tmuxSession,
     dir: agent.dir,
-    env: { ...agentEnv(agent.name), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
+    env: { ...agentEnv(agent.name, provider), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
     command: scrubNestedSessionEnv(plan.command),
   };
   updateAgentStatus(agent, "starting", "restarting");

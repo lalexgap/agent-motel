@@ -228,6 +228,7 @@ function lock() {
   state.draftRevisions.clear();
   state.sending.clear();
   state.attachments.clear();
+  state.detailCapabilities = null;
   $("message-attachments").replaceChildren();
   $("message-attachments").hidden = true;
   pendingSent.clear();
@@ -421,7 +422,7 @@ function renderFleet() {
     if (!`${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
       .toLowerCase().includes(sidebarQuery)) continue;
     const button = el("button", "side-agent");
-    const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : "Unknown";
+    const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : row.provider === "antigravity" ? "Antigravity" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
     const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
@@ -984,14 +985,11 @@ async function refreshDetail() {
     version = state.detailVersion;
   if (!name) return;
   const base = "/api/agents/" + encodeURIComponent(name);
-  const [detail, transcript, permissions, subagents] = await Promise.all([
-    api(base),
+  const detail = await api(base);
+  const [transcript, permissions, subagents] = await Promise.all([
     api(base + "/transcript"),
-    api(base + "/permissions"),
-    api(base + "/subagents").catch((error) => ({
-      records: [],
-      error: error.message,
-    })),
+    capabilityAvailable(detail, "approvalRelay") ? api(base + "/permissions") : { requests: [] },
+    capabilityAvailable(detail, "subagents") ? api(base + "/subagents").catch((error) => ({ records: [], error: error.message })) : { records: [] },
   ]);
   if (
     name !== state.selected ||
@@ -999,6 +997,7 @@ async function refreshDetail() {
     !state.authenticated
   )
     return;
+  state.detailCapabilities = { name, detail };
   const view = $("transcript"), restoreScroll = preserveConversationScroll(view, 90);
   $("detail-status").replaceWith(
     Object.assign(badge(detail.status), { id: "detail-status" }),
@@ -1188,6 +1187,8 @@ function renderAttachments() {
 function attachImages(files) {
   const name = state.selected;
   if (!name || !state.authenticated) return;
+  const detail = state.detailCapabilities?.name === name ? state.detailCapabilities.detail : state.rows.find(row => key(row) === name);
+  if (!capabilityAvailable(detail, "attachments")) { notice("Image attachments are unavailable for this provider."); return; }
   const epoch = state.sessionEpoch;
   for (const file of files) {
     const item = { label: file.name || "Pasted image", preview: "", status: "uploading" };
@@ -1306,6 +1307,8 @@ window.addEventListener("resize", () => closeAgentMenu());
 let handoverSource = null, handoverPending = false;
 function openHandover(name) {
   if (!name || handoverPending || !state.authenticated) return;
+  const sourceRow = state.rows.find(row => key(row) === name);
+  if (sourceRow?.provider === "antigravity") { notice("Antigravity handoff is unsupported."); return; }
   handoverSource = name;
   const row = state.rows.find(row => key(row) === handoverSource);
   $("handover-form").reset();
@@ -1350,14 +1353,20 @@ $("handover-form").onsubmit = async event => {
 };
 
 const pendingActions = new Set();
+function capabilityAvailable(row, capability) {
+  if (row?.capabilities?.[capability] === false) return false;
+  return row?.provider !== "antigravity" || !["remoteControl", "quota", "approvalRelay", "interruptByReceipt", "handoff", "move", "rename", "subagents", "attachments"].includes(capability);
+}
 function actionAvailable(row, action) {
   if (!row) return false;
+  const capability = { handover: "handoff", interrupt: "interruptByReceipt" }[action] || action;
+  if (!capabilityAvailable(row, capability)) return false;
   const stopped = ["dead", "exited"].includes(row.status);
   if (action === "resume") return stopped;
   if (["stop", "restart", "terminal"].includes(action)) return !stopped;
   if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
   if (action === "rename") return row.name !== "concierge";
-  if (action === "handover") return (row.role?.name || row.role) !== "concierge" && row.name !== "concierge";
+  if (action === "handover") return row.provider !== "antigravity" && row.capabilities?.handoff !== false && (row.role?.name || row.role) !== "concierge" && row.name !== "concierge";
   return true;
 }
 function updateAgentActions(row, container = document.querySelector(".actions"), agentKey = row ? key(row) : null) {
@@ -1474,6 +1483,7 @@ async function refresh() {
 async function loadModels() {
   const host = $("create-host").value,
     provider = $("create-provider").value;
+  $("create-provider-note").hidden = provider !== "antigravity";
   try {
     const data = await api(
       "/api/models" + (host ? "?host=" + encodeURIComponent(host) : ""),

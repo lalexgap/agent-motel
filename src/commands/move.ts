@@ -12,6 +12,7 @@ import {
   updateAgentStatus,
   writeAgent,
   type AgentState,
+  type Provider,
 } from "../state";
 import { queueAppendForAgent, queueAppendLocked, queueClear, queueList, queueReceiptIds, queueRecordReceipt } from "../queue";
 import { claudeProjectSlug, locateTranscript } from "../transcript";
@@ -121,13 +122,14 @@ export function parseMoveSpec(first: string, second: string | undefined): MoveSp
 // Where the conversation file must land on the target, given the TARGET dir
 // (claude keys transcripts by a slug of the working directory).
 export function targetTranscriptPath(
-  provider: "claude" | "codex",
+  provider: Provider,
   targetHome: string,
   targetDir: string,
   sessionId: string,
   codexRelative: string | null,
 ): string {
   if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) throw new Error("invalid transcript session id");
+  if (provider === "antigravity") throw new Error("Antigravity native transcript migration is unsupported");
   if (provider === "codex") {
     if (!codexRelative) throw new Error("codex agent has no rollout path to migrate");
     const parts = codexRelative.split("/");
@@ -203,6 +205,7 @@ export function withWorktreeMeta(agent: AgentState): AgentState {
 
 // The conversation file to ship, or null for agents that never ran a turn.
 export function sourceTranscript(agent: AgentState): { path: string; codexRelative: string | null } | null {
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity move/export is unsupported: native conversation storage has not been verified");
   try {
     const path = locateTranscript(agent);
     const codexRelative =
@@ -216,6 +219,7 @@ export function sourceTranscript(agent: AgentState): { path: string; codexRelati
 export function importPayload(raw: string, handoffToken?: string): string {
   const payload = JSON.parse(raw) as MovePayload;
   const state = payload.state;
+  if (state?.provider === "antigravity") throw new Error("Antigravity import/move is unsupported: native conversation storage has not been verified");
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
   if (!existsSync(state.dir)) throw new Error(`target dir does not exist: ${state.dir}`);
   if (!acquireDeliverLock(state.name)) throw new Error(`agent "${state.name}" is receiving a message — retry the import`);
@@ -359,6 +363,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
   // Backfill worktree metadata from git so an agent whose dir is a worktree
   // but never recorded it still gets its worktree recreated on the target.
   const source = opts.exact ? readAgent(name) : resolveAgent(name);
+  if (source && agentProvider(source) === "antigravity") throw new Error("Antigravity move is unsupported");
   if (!source) throw new Error(`no local agent "${name}"`);
   let agent = withWorktreeMeta(source);
 
@@ -505,6 +510,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
 
 export function validateRemoteExport(remote: any, expectedName?: string): void {
   const state = remote?.state;
+  if (state?.provider === "antigravity") throw new Error("Antigravity import/move is unsupported");
   const messageId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
   const absolute = (value: unknown) => typeof value === "string" && isAbsolute(value) && !value.includes("\0");
   if (!state || typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name) ||
@@ -782,6 +788,7 @@ export function exportCommand(name: string, mode?: string, token?: string): void
   // Enrich on the source side (where the worktree is live) so a pull recreates
   // it even when the agent never recorded its worktree metadata.
   const agent = withWorktreeMeta(resolveAgent(name));
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity export/move is unsupported");
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the export`);
   try {
     if (mode === "handoff") beginDeliveryHandoff(agent.name, token!);
@@ -826,6 +833,7 @@ export async function cdAgent(
   opts: { inPlace: boolean; start: boolean },
 ): Promise<string> {
   const agent = resolveAgent(prefix);
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity directory changes are unsupported; start a new agent in the target directory");
   const target = resolve(expandHome(dirArg));
   if (!existsSync(target)) throw new Error(`directory does not exist: ${target}`);
   const canonicalTarget = realpathSync(target);

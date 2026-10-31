@@ -207,8 +207,11 @@ info "worktree-resident agents: $N_AGENTS"
 # Codex agents are keyed by session-id under ~/.codex (cwd-independent) — exempt.
 MISSING=""
 while IFS=$'\t' read -r name provider status dir tpath live; do
+  if [[ "$provider" == antigravity ]]; then
+    die "Antigravity worktree migration is unsupported; leave this fleet unchanged"
+  fi
   [[ -z "$name" ]] && continue
-  [[ "$provider" == codex ]] && continue
+  [[ "$provider" != claude ]] && continue
   if [[ -z "$tpath" || ! -f "$tpath" ]]; then
     MISSING+="  - $name (status=$status, transcriptPath='${tpath:-<none>}')"$'\n'
   fi
@@ -338,7 +341,7 @@ if [[ "$MODE" == symlink ]]; then
   info "relinking ~/.claude/projects slugs (symlink mode)"
   declare -A DONE=()
   while IFS=$'\t' read -r name provider status dir tpath live; do
-    [[ -z "$name" || "$provider" == codex ]] && continue
+    [[ -z "$name" || "$provider" != claude ]] && continue
     OLD_SLUG="$(slug "$dir")"
     NEW_SLUG="$(slug "$(post_realpath "$dir")")"
     [[ "$OLD_SLUG" == "$NEW_SLUG" ]] && continue

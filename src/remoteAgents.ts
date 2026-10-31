@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, localHostIdentity } from "./config";
-import { sshAmAsync, sshPushFile, sshRunAsync, type SshResult } from "./remote";
+import { checkedRemoteAm, sshAmAsync, sshPushFile, sshRunAsync, type SshResult } from "./remote";
 import { shQuote } from "./tmux";
 import { mapHomeDir, remoteHome } from "./commands/move";
 import { conflictReason, type ConflictReason } from "./messages";
@@ -54,7 +54,11 @@ export async function runRemoteAm(
   const timeoutMs = opts.timeoutMs ?? REMOTE_TIMEOUT_MS;
   let result: SshResult;
   try {
-    result = await amRunner(host, [...args, "--local", "--exact"], { stdin: opts.stdin, timeoutMs });
+    const forwarded = [...args, "--local", "--exact"];
+    const options = { stdin: opts.stdin, timeoutMs };
+    result = amRunner === sshAmAsync
+      ? await amRunner(host, forwarded, options)
+      : await checkedRemoteAm(host, forwarded, options, amRunner);
   } catch (error) {
     throw new RemoteError(`ssh ${host}: ${(error as Error).message}`, 502);
   }
@@ -65,7 +69,7 @@ export async function runRemoteAm(
   if (result.exitCode === 127) throw new RemoteError(`am not found on ${host}: ${stderr}`, 502);
   if (/unknown command/.test(stderr)) throw new RemoteError(`remote am too old on ${host} (${stderr})`, 409, "remote_too_old");
   if (/no agent matches|no agents exist|no local agent|no message "|no permission request "/.test(stderr)) throw new RemoteError(stderr, 404);
-  if (/unknown permission option|unknown (claude|codex) (model|effort) "/.test(stderr)) throw new RemoteError(stderr, 400);
+  if (/unknown permission option|unknown (claude|codex|antigravity) (model|effort) "/.test(stderr)) throw new RemoteError(stderr, 400);
   throw new RemoteError(stderr || `am ${args[0]} failed on ${host} (exit ${result.exitCode})`, 409, conflictReason(stderr));
 }
 
@@ -114,7 +118,12 @@ export async function remoteSpawnDir(
 
 // fileName must be server-generated: it is interpolated into a remote path.
 export async function pushRemoteInboxFile(host: string, name: string, fileName: string, bytes: Uint8Array): Promise<string> {
-  await ensureExactCapable(host, name);
+  const raw = await runRemoteAm(host, ["__detail", name]);
+  let detail: { provider?: unknown; capabilities?: { attachments?: unknown } } | null = null;
+  try { detail = JSON.parse(raw); } catch {}
+  if (detail?.provider === "antigravity" || detail?.capabilities?.attachments === false) {
+    throw new RemoteError("Antigravity image attachments are unsupported", 409);
+  }
   let home: string;
   try {
     home = await remoteHome(host, shRunner);

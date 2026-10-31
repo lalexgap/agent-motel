@@ -353,7 +353,11 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         waiting.add(agent.name);
         draining.then(
           (result) => {
-            const reason = stuckDeliveryReason(result);
+            const reason = agentProvider(agent) === "antigravity" && result.status === "queued"
+              ? result.reason === "unverified" ? "Antigravity delivery outcome is unknown; inspect before resubmitting"
+                : result.reason === "unavailable" ? "Antigravity runner is busy, unavailable, or holding queued input"
+                : stuckDeliveryReason(result)
+              : stuckDeliveryReason(result);
             if (reason && lastRefusal.get(agent.name) !== reason) log(`delivery to ${agent.name} held: ${reason}`);
             if (reason) lastRefusal.set(agent.name, reason);
             else lastRefusal.delete(agent.name);

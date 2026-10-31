@@ -199,6 +199,7 @@ export interface ExportReport {
 }
 
 export function targetsFor(role: SubagentRole, providers: Provider[]): { path: string; content: string }[] {
+  if (providers.includes("antigravity")) throw new Error("Antigravity native role export is unsupported");
   const out: { path: string; content: string }[] = [];
   if (providers.includes("claude")) out.push({ path: join(claudeAgentsDir(), `${role.name}.md`), content: renderClaudeAgent(role) });
   if (providers.includes("codex")) out.push({ path: join(codexAgentsDir(), `${role.name}.toml`), content: renderCodexAgent(role) });
@@ -209,6 +210,7 @@ export function exportSubagentRoles(
   opts: { providers?: Provider[]; dryRun?: boolean; roles?: SubagentRole[] } = {},
 ): ExportReport {
   const providers = opts.providers ?? ["claude", "codex"];
+  if (providers.includes("antigravity")) throw new Error("Antigravity native role export is unsupported");
   const roles = opts.roles ?? exportableRoles();
   const manifest = readManifest();
   const report: ExportReport = { written: [], unchanged: [], skipped: [], removed: [] };

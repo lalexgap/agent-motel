@@ -1,8 +1,8 @@
 import { parseCatalogs, providerCatalog, type ProviderCatalog } from "../catalog";
 import { sshAmAsync } from "../remote";
-import type { Provider } from "../state";
+import { isProvider, type Provider } from "../state";
 
-const PROVIDERS: Provider[] = ["claude", "codex"];
+const PROVIDERS: Provider[] = ["claude", "codex", "antigravity"];
 
 export function localCatalogs(opts: { refresh?: boolean } = {}): ProviderCatalog[] {
   return PROVIDERS.map((provider) => providerCatalog(provider, opts)).filter((c): c is ProviderCatalog => !!c);
@@ -32,6 +32,7 @@ export interface ModelsCommandOptions {
 // installed CLIs. The picker's create form uses the same data, and fetches a
 // remote host's catalog by running `am models --json` there over ssh.
 export function modelsCommand(opts: ModelsCommandOptions = {}): void {
+  if (opts.provider !== undefined && !isProvider(opts.provider)) throw new Error("unknown model provider");
   const catalogs = opts.provider
     ? [providerCatalog(opts.provider)].filter((catalog): catalog is ProviderCatalog => !!catalog)
     : localCatalogs();
@@ -41,7 +42,7 @@ export function modelsCommand(opts: ModelsCommandOptions = {}): void {
     return;
   }
   if (!catalogs.length) {
-    console.log("no model catalog available — is claude or codex installed?");
+    console.log("no model catalog available — is claude, codex, or agy installed?");
     return;
   }
   for (const catalog of catalogs) {
@@ -56,7 +57,7 @@ export function modelsCommand(opts: ModelsCommandOptions = {}): void {
       console.log(`  ${model.id.padEnd(22)} ${marks.join("  · ")}`);
     }
     if (!catalog.modelsExhaustive) {
-      console.log(`  (${catalog.provider} has no catalog command — other model names may still work)`);
+      console.log(`  (${catalog.provider} model catalog is incomplete — other model names may still work)`);
     }
   }
 }

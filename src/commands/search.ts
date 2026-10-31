@@ -56,7 +56,7 @@ function headerLine(r: SearchResult): string {
     r.host ? `@${r.host}` : "",
     r.scope === "trash" ? "removed" : r.scope === "history" ? "history" : "",
     r.status ? r.status : "",
-    r.provider === "codex" ? "codex" : "",
+    r.provider !== "claude" ? r.provider : "",
   ].filter(Boolean);
   const badge = badges.length ? ` ${DIM}${badges.join(" · ")}${RESET}` : "";
   const count = `${r.matchCount} match${r.matchCount === 1 ? "" : "es"}`;
