@@ -94,7 +94,7 @@
                 <label>Search in<select id="advanced-mode"><option value="agents">Agent details</option><option value="conversations">Details + conversations</option></select></label>
                 <label>Repository<select id="advanced-repo"><option value="">All repositories</option></select></label>
                 <label>Status<select id="advanced-status"><option value="">All statuses</option><option value="live">Live</option><option value="finished">Finished</option><option>working</option><option>idle</option><option>waiting</option><option>needs-attention</option><option>starting</option><option>exited</option><option>dead</option></select></label>
-                <label>Provider<select id="advanced-provider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude</option></select></label>
+                <label>Provider<select id="advanced-provider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="antigravity">Antigravity</option></select></label>
                 <label>Host<select id="advanced-host"><option value="">All hosts</option></select></label>
                 <label>Sort<select id="advanced-sort"><option value="recent">Recent activity</option><option value="runtime">Time running</option><option value="repo">Repository</option><option value="status">Status</option><option value="name">Name</option></select></label>
                 <button type="submit" class="primary">Search</button><button id="advanced-reset" type="button">Clear filters</button>
@@ -375,6 +375,7 @@
             >Provider<select name="provider" id="create-provider">
               <option value="codex">Codex</option>
               <option value="claude">Claude</option>
+              <option value="antigravity">Antigravity</option>
             </select></label
           >
         </div>
@@ -394,6 +395,7 @@
             <option value="">No preset</option>
           </select></label
         >
+        <p id="create-provider-note" class="muted" hidden>Antigravity remote control and quota reporting are unavailable.</p>
         <p id="create-error" role="alert"></p>
         <button class="primary" id="create-submit">Create agent →</button>
         <p class="muted">Creates an isolated Git worktree.</p>

@@ -1,3 +1,4 @@
+import { antigravityCommand, ANTIGRAVITY_DEFAULT_MODEL } from "./antigravity";
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
@@ -98,7 +99,7 @@ export function remoteControlArgs(override: boolean | undefined): string[] {
 // closest equivalent — these agents run on the user's own trusted machines).
 // Config escape hatch: skipPermissions=false restores prompts.
 export function permissionArgs(provider: Provider): string[] {
-  if (!loadConfig().skipPermissions) return [];
+  if (provider === "antigravity" || !loadConfig().skipPermissions) return [];
   return provider === "codex"
     ? ["--dangerously-bypass-approvals-and-sandbox"]
     : ["--dangerously-skip-permissions"];
@@ -135,6 +136,8 @@ function codexModelArgs(opts: { model?: string; effort?: string }): string[] {
 
 export interface LaunchPlan {
   command: string[];
+  // Reserved in state before any Antigravity tmux launch.
+  antigravityRunId?: string;
   // --remote-control greedily consumes a following positional as the remote
   // session's display name — including what was meant to be the initial
   // prompt. With remote on, the message comes back here instead, for the
@@ -162,6 +165,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 }
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
+  if (provider === "antigravity") return antigravityCommand(name, opts);
   if (provider === "codex") {
     const conversation = codexConversationArgs(opts);
     const command = [
@@ -191,6 +195,13 @@ export function buildResumeCommand(
   opts: { message?: string; remote?: boolean; codexDaemon?: boolean },
 ): LaunchPlan {
   const sessionId = agentSessionId(agent);
+  if (provider === "antigravity") {
+    if (!sessionId) throw new Error("Antigravity resume requires a saved conversation ID; refusing to guess the latest session");
+    return antigravityCommand(agent.name, {
+      ...opts, resume: sessionId, model: agent.model ?? ANTIGRAVITY_DEFAULT_MODEL,
+      effort: agent.effort, reportTo: agent.reportTo, role: roleForAgent(agent), roleInstructions: agent.roleInstructions,
+    });
+  }
   if (provider === "codex") {
     // Old state files may predate session-id capture; --last picks up the
     // most recent conversation instead.

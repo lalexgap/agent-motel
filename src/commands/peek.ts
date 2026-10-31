@@ -1,4 +1,4 @@
-import { readAgent, resolveAgent, type AgentState } from "../state";
+import { agentProvider, readAgent, resolveAgent, type AgentState } from "../state";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { readSnapshot } from "../snapshots";
 import { displayStatus } from "./ls";
@@ -84,6 +84,7 @@ export async function peekCommand(
     throw new Error(`--lines must be a non-negative integer, got ${opts.lines}`);
   }
   const agent = resolveAgent(prefix);
+  if (opts.subagent && agentProvider(agent) === "antigravity") throw new Error("Antigravity subagent observation is unsupported");
   if (opts.subagent) return peekSubagent(agent, opts.subagent, opts);
   if (opts.follow) throw new Error("--follow applies to --subagent; attach to an agent to watch its screen");
   const colors = !!process.stdout.isTTY;

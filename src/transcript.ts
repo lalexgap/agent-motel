@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { antigravityTranscriptPath } from "./antigravity";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
@@ -230,6 +231,18 @@ function extractCodexOutput(output: unknown): string {
 }
 
 export function parseTranscript(provider: Provider, jsonl: string, opts: ParseOpts = {}): Transcript {
+  if (provider === "antigravity") {
+    const transcript: Transcript = { source: provider, turns: [] };
+    for (const entry of parseLines(jsonl)) {
+      if (!entry || typeof entry !== "object") continue;
+      if ((entry.kind !== "user" && entry.kind !== "assistant") || typeof entry.text !== "string") continue;
+      transcript.sessionId ??= typeof entry.sessionId === "string" ? entry.sessionId : undefined;
+      transcript.dir ??= typeof entry.dir === "string" ? entry.dir : undefined;
+      transcript.startedAt ??= typeof entry.timestamp === "string" ? entry.timestamp : undefined;
+      transcript.turns.push({ kind: entry.kind, text: entry.text });
+    }
+    return transcript;
+  }
   return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl, opts);
 }
 
@@ -244,6 +257,8 @@ export interface Fragment {
 }
 
 export function entryFragments(provider: Provider, entry: Record<string, any>): Fragment[] {
+  if (provider === "antigravity") return (entry.kind === "user" || entry.kind === "assistant") && typeof entry.text === "string"
+    ? [{ kind: entry.kind, text: entry.text }] : [];
   return provider === "codex" ? codexEntryFragments(entry) : claudeEntryFragments(entry);
 }
 
@@ -316,6 +331,17 @@ function codexEntryFragments(entry: Record<string, any>): Fragment[] {
 // include transcript_path; reject a known wrong-provider file left by a
 // stale hook before falling back to the recorded session id.
 export function locateTranscript(agent: AgentState): string {
+  if (agentProvider(agent) === "antigravity") {
+    if(!agent.sessionId)throw new Error("Antigravity transcript requires a validated conversation identity");
+    const expected=antigravityTranscriptPath(agent.name,agent.createdAt,agent.sessionId);
+    if(!agent.transcriptPath || agent.transcriptPath!==expected)throw new Error("no transcript bound to this Antigravity incarnation and conversation");
+    if(!existsSync(expected))throw new Error("no AM-recorded Antigravity transcript yet; native agy storage is not imported");
+    if(lstatSync(expected).isSymbolicLink() || realpathSync(expected)!==expected)throw new Error("Antigravity transcript path must remain inside its owned namespace");
+    for(const entry of parseLines(readFileSync(expected,"utf8"))) {
+      if(entry.createdAt!==agent.createdAt || entry.sessionId!==agent.sessionId)throw new Error("Antigravity transcript provenance does not match the current incarnation and conversation");
+    }
+    return expected;
+  }
   if (agent.transcriptPath && existsSync(agent.transcriptPath)) {
     const entries = parseLines(readFileTail(agent.transcriptPath, 64 * 1024) ?? "");
     const native = entries.find((entry) =>

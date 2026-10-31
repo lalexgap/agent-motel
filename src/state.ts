@@ -12,7 +12,16 @@ export type AgentStatus =
   | "needs-attention"
   | "exited";
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "codex" | "antigravity";
+
+export function isProvider(value: unknown): value is Provider {
+  return value === "claude" || value === "codex" || value === "antigravity";
+}
+
+export function providerBinary(provider: Provider): string {
+  if (!isProvider(provider)) throw new Error("unknown agent provider");
+  return provider === "antigravity" ? "agy" : provider;
+}
 
 export interface AgentState {
   name: string;
@@ -32,6 +41,11 @@ export interface AgentState {
   tmuxSession: string;
   // Absent in state files written before multi-provider support → claude.
   provider?: Provider;
+  // Exact runner incarnation; socket requests cannot target a replaced process.
+  antigravityRunId?: string;
+  antigravityRunPhase?: "pending" | "claimed" | "cancelled";
+  // Exact-generation proof: owned-group cleanup or atomic pre-claim cancellation.
+  antigravityCleanupRunId?: string;
   // Explicit model and reasoning effort; absent = the provider default. Set by
   // `am new` and `am restart --model/--effort`, reused by every resume.
   model?: string;
@@ -97,6 +111,7 @@ export interface AgentState {
 }
 
 export function agentProvider(state: AgentState): Provider {
+  if (state.provider !== undefined && !isProvider(state.provider)) throw new Error("unknown agent provider in state");
   return state.provider ?? "claude";
 }
 
@@ -121,7 +136,8 @@ function stateLock(name: string): string {
 // aside as .corrupt, freeing the name.
 function readStateFile(file: string): AgentState | null {
   if (!existsSync(file)) return null;
-  const state = readJsonOrNull<AgentState>(file);
+  let state = readJsonOrNull<AgentState>(file);
+  if (state && state.provider !== undefined && !isProvider(state.provider)) state = null;
   if (state === null) {
     try {
       renameSync(file, `${file}.corrupt`);

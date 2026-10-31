@@ -1,6 +1,7 @@
+import { stopAntigravity, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
 import { auditOperation } from "../audit";
 import { existsSync } from "node:fs";
-import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
+import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession, restartSession } from "../tmux";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { ensureDaemon } from "../daemon";
@@ -55,7 +56,7 @@ function restartLocked(agent: AgentState, opts: RestartOpts): RestartResult {
 function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
   const provider = agentProvider(agent);
-  const executable = Bun.which(provider, { PATH: process.env.PATH });
+  const executable = Bun.which(providerBinary(provider), { PATH: process.env.PATH });
   if (!executable) throw new Error(`${provider} executable not found in PATH`);
   if (!agentSessionId(agent)) throw new Error(`agent "${agent.name}" has no saved conversation ID — restart cannot resume it safely`);
   // Re-checked on the re-read agent: a concurrent restart may have changed the half this one keeps.
@@ -68,25 +69,37 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   // stop + relaunch; a daemon that misses it during the stop is skipped
   // for the relaunch.
   const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
+  stopAntigravity(agent);
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
-  plan.command[0] = executable;
+  if (provider !== "antigravity") plan.command[0] = executable;
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
+  if(provider==="antigravity") {
+    const selection={model:agent.model,effort:agent.effort};
+    agent=reserveAntigravityLaunch(agent,plan);
+    Object.assign(agent,selection);
+  }
   const launch = {
     session: agent.tmuxSession,
     dir: agent.dir,
-    env: { ...agentEnv(agent.name), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
+    env: { ...agentEnv(agent.name, provider), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
     command: scrubNestedSessionEnv(plan.command),
   };
   updateAgentStatus(agent, "starting", "restarting");
   writeAgent(agent);
   try {
-    if (hasSession(agent.tmuxSession)) restartSession(launch);
-    else newSession(launch);
+    if (hasSession(agent.tmuxSession)) {
+      try {restartSession(launch);}
+      catch(error) {
+        if(provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+        newSession(launch);
+      }
+    } else newSession(launch);
   } catch (error) {
+    if(provider==="antigravity")failAntigravityLaunch(agent);
     agent.model = previous.model;
     agent.effort = previous.effort;
-    updateAgentStatus(agent, previous.status, previous.reason);
+    updateAgentStatus(agent, provider === "antigravity" ? "exited" : previous.status, provider === "antigravity" ? "restart launch failed after verified process-group cleanup" : previous.reason);
     writeAgent(agent);
     throw error;
   }

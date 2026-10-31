@@ -50,6 +50,7 @@ interface TranscriptSource {
 }
 
 function subagentSource(agent: AgentState, query: string): TranscriptSource {
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity subagent transcripts are unsupported");
   const records = readSubagents(agent.name);
   if (records.length === 0) {
     throw new Error(`agent "${agent.name}" has no recorded subagents`);

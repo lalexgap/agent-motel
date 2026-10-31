@@ -1,5 +1,6 @@
+import { antigravityRequest } from "../antigravity";
 import { hostname } from "node:os";
-import { isExactNamesOnly, matchAgent, noteHandoff, readAgent, resolveAgent } from "../state";
+import { agentProvider, isExactNamesOnly, matchAgent, noteHandoff, readAgent, resolveAgent } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
 import { hasSession, sendText } from "../tmux";
 import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, noteTypedAfterEscape, releaseDeliverLock } from "../deliver";
@@ -89,6 +90,7 @@ export async function sendCommand(
   }
   const body = att.body;
 
+  if (opts.now && agentProvider(agent) === "antigravity") throw new Error("Antigravity mid-turn steering (--now) is unsupported; queue a normal send");
   if (opts.now) {
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
     // Inject immediately; the TUI's native mid-turn steering handles the rest.
@@ -129,6 +131,11 @@ export async function interruptCommand(
   opts: { from?: string; exact?: boolean; json?: boolean; track?: boolean } = {},
 ): Promise<SendResult> {
   const agent = requireLiveSession(prefix, opts.exact);
+  if (agentProvider(agent) === "antigravity") {
+    if (message) throw new Error("Antigravity interrupt-with-message is unsupported; interrupt first, then resume and queue a normal send");
+    await abortTurn(agent.name);
+    return printResult(opts, { id: null, outcome: "queued" });
+  }
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, "interrupt", undefined, { record: false });
   if (!att.allowed) return printResult(opts, { id: null, outcome: rateLimited(from!, agent.name) });
@@ -151,6 +158,12 @@ export async function interruptCommand(
 
 export async function abortTurn(name: string): Promise<void> {
   const agent = requireLiveSession(name, true);
+  if (agentProvider(agent) === "antigravity") {
+    const response = await antigravityRequest(agent, "interrupt");
+    if (!response.ok) throw new Error(response.reason ?? "Antigravity runner could not interrupt");
+    console.log(`interrupted "${agent.name}"; queued messages remain held until resumed`);
+    return;
+  }
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry`);
   const escAt = Date.now();
   try {

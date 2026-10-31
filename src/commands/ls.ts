@@ -86,6 +86,7 @@ function clipDetail(text: string): string {
 // says "N bashes running", but the freshest task file's tail says what
 // they're actually doing (agents write greppable verdict lines there).
 export function sessionTasksDir(agent: AgentState): string | null {
+  if (agentProvider(agent) === "antigravity") return null;
   const sessionId = agentSessionId(agent);
   if (!sessionId) return null;
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
@@ -171,6 +172,7 @@ const WAITING_CACHE_MS = 3000;
 const waitingCache = new Map<string, { info: WaitingInfo; at: number }>();
 
 export function waitingInfo(agent: AgentState): WaitingInfo {
+  if (agentProvider(agent) === "antigravity") return { waiting: false };
   const cached = waitingCache.get(agent.tmuxSession);
   if (cached && Date.now() - cached.at < WAITING_CACHE_MS) return cached.info;
   const pane = capturePane(agent.tmuxSession);

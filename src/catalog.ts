@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJsonOrNull } from "./fsutil";
-import type { Provider } from "./state";
+import { isProvider, providerBinary, type Provider } from "./state";
 
 // What models and reasoning-effort levels each provider actually offers on
 // THIS machine, asked of the CLIs themselves rather than hardcoded:
@@ -11,6 +11,7 @@ import type { Provider } from "./state";
 //           line of `claude --help` (authoritative for the installed version)
 //           and the model list is the documented aliases plus whatever extra
 //           options the CLI has cached from the API in ~/.claude.json.
+//   agy     `agy models` — a plain slug/display-label catalog.
 
 export interface ModelOption {
   // What goes on the command line (--model); "" is the provider's default.
@@ -51,7 +52,7 @@ const runProbe: ProbeRunner = (command) => {
   try {
     // The create form probes synchronously on open, so a wedged CLI would
     // freeze the whole picker — cap it and fall back to the built-in lists.
-    const result = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+    const result = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: 5000, maxBuffer: 1024 * 1024 });
     return { exitCode: result.exitCode, stdout: result.stdout.toString() };
   } catch {
     return { exitCode: 1, stdout: "" };
@@ -159,7 +160,31 @@ function claudeAdditionalModels(): unknown {
   return config?.additionalModelOptionsCache;
 }
 
+// `agy models` prints slug + display label. Require complete, bounded rows;
+// auth prompts and errors must never become an exhaustive model catalog.
+export function parseAntigravityCatalog(output: string): ProviderCatalog | null {
+  if (output.length > 1024 * 1024) return null;
+  const rows = output.trim().split(/\r?\n/);
+  if (!output.trim() || rows.length > 1000) return null;
+  const models: ModelOption[] = [];
+  for (const row of rows) {
+    const match = row.match(/^([a-z][a-z0-9]*(?:[.-][a-z0-9]+)+)[ \t]{2,}([A-Z][^\x00-\x1f\x7f]*)$/);
+    if (!match || !/\d/.test(match[1]!)) return null;
+    const [, id, label] = match;
+    if (label!.split(/[ \t]/)[0]!.toLowerCase() !== id!.split(/[.-]/)[0]) return null;
+    if (!models.some(model => model.id === id)) models.push({ id: id!, label: label!.trim(), efforts: [] });
+  }
+  return {
+    provider: "antigravity", models, modelsExhaustive: true,
+    efforts: [...FALLBACK_EFFORTS], effortsExhaustive: false,
+  };
+}
+
 function probeCatalog(provider: Provider, run: ProbeRunner): ProviderCatalog | null {
+  if (provider === "antigravity") {
+    const result = run([providerBinary(provider), "models"]);
+    return result.exitCode === 0 ? parseAntigravityCatalog(result.stdout) : null;
+  }
   if (provider === "codex") {
     const result = run(["codex", "debug", "models"]);
     if (result.exitCode !== 0) return null;
@@ -187,9 +212,10 @@ export function providerCatalog(
   provider: Provider,
   opts: { run?: ProbeRunner; refresh?: boolean } = {},
 ): ProviderCatalog | null {
+  if (!isProvider(provider)) throw new Error("unknown catalog provider");
   if (!opts.refresh && !opts.run && cache.has(provider)) return cache.get(provider)!;
   // An injected runner stands in for the CLI (tests), so only gate the real one.
-  if (!opts.run && !Bun.which(provider)) {
+  if (!opts.run && !Bun.which(providerBinary(provider))) {
     cache.set(provider, null);
     return null;
   }
@@ -224,7 +250,7 @@ export function parseCatalogs(json: string): ProviderCatalog[] {
   if (!Array.isArray(parsed)) return [];
   return parsed
     .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object")
-    .filter((entry) => entry.provider === "claude" || entry.provider === "codex")
+    .filter((entry) => isProvider(entry.provider))
     .map((entry) => ({
       provider: entry.provider as Provider,
       models: (Array.isArray(entry.models) ? entry.models : [])

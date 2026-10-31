@@ -267,3 +267,11 @@ Set `caretakerModel` and `caretakerEffort` in `~/.agent-manager/config.json` for
 For optional daily inspection at roughly 10:00 local time, install [the service](docs/am-caretaker.service) and [timer](docs/am-caretaker.timer) in `~/.config/systemd/user/`, then run `systemctl --user daemon-reload` and `systemctl --user enable --now am-caretaker.timer`. Disable scheduling with `systemctl --user disable --now am-caretaker.timer`; this does not stop the agent or delete its conversation. No timer is installed automatically. The scan service uses `KillMode=process` so ending the submission command does not kill its managed tmux/daemon children; stop those with am, not by stopping the scan unit. Revival requires a captured session ID and never falls back to another home-directory conversation.
 
 Lifecycle stop requests and outcomes are recorded separately from daemon output. See [inspecting the lifecycle audit trail](docs/lifecycle-audit.md) for attribution, filtering and retention.
+
+## Antigravity / Gemini 4 Argon
+
+Use `am new <name> --antigravity --model gemini-4-argon-high -m "task"` for the native
+`agy` provider. Install and sign in to Antigravity separately on the launch host.
+Existing Claude/Codex defaults are unchanged. See [Antigravity support](docs/antigravity.md)
+for model discovery, exact conversation resume, permissions, unsupported capabilities,
+and the authenticated validation steps that remain pending.

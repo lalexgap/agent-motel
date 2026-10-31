@@ -31,6 +31,7 @@ export async function handoffAgent(
   const agent = opts.exact ? readAgent(prefix) : resolveAgent(prefix);
   if (!agent) throw new Error(`no local agent "${prefix}"`);
   const source = agentProvider(agent);
+  if (source === "antigravity" || opts.to === "antigravity") throw new Error("Antigravity handoff is unsupported; use am transcript and an explicit new task");
   const target = targetProvider(source, opts.to);
 
   const file = locateTranscript(agent);

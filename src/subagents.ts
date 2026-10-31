@@ -330,6 +330,7 @@ const ACTIVITY_CHARS = 72;
 // while it runs, the id from the start hook is enough to derive it. Null when
 // the parent's own transcript can't be located.
 export function subagentTranscriptFile(agent: AgentState, subagentId: string): string | null {
+  if (agentProvider(agent) === "antigravity") return null;
   let parent: string;
   try {
     parent = locateTranscript(agent);
@@ -693,6 +694,7 @@ export function subagentScreen(
 
 // Why a subagent shows no output, in the provider's terms.
 export function subagentNoOutputNote(agent: AgentState): string {
+  if (agentProvider(agent) === "antigravity") return "Antigravity subagent observation is unsupported";
   return agentProvider(agent) === "codex"
     ? "no output yet — codex reports a subagent's transcript when it stops"
     : "no output yet — the subagent hasn't written a turn";

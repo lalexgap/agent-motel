@@ -70,6 +70,7 @@ export async function renameAgent(
   validateName(newName);
   const agent = resolveAgent(prefix);
   const oldName = agent.name;
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity rename is unsupported; its runner is bound to the launch identity");
   if (newName === oldName) return { oldName, newName, live: hasSession(agent.tmuxSession), worktreeBranch: agent.worktreeBranch };
   if (!acquireLifecycleLock(oldName)) {
     throw new Error(`agent "${oldName}" is being stopped, removed, renamed, or restarted — retry the rename`);

@@ -1,3 +1,5 @@
+import { providerMessageError } from "./providerLimits";
+import { antigravityRequest } from "./antigravity";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -83,6 +85,7 @@ const PLACEHOLDER_RE = /^Try "/;
 
 // Needs a colored capture so faint suggestions aren't read as drafts.
 export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
+  if (provider === "antigravity") return null;
   const plain = pane.map(stripSgr);
   const typed = pane.map(line => stripSgr(stripFaint(line)));
   if (provider === "codex") {
@@ -122,6 +125,7 @@ const RUNNING_RE = /esc to interrupt/;
 // Claude's footer under it, or the status line just above it (Codex, and
 // older Claude). Transcript text further up the pane can't pass for it.
 export function turnRunning(pane: string[], provider: Provider = "claude"): boolean {
+  if (provider === "antigravity") return false;
   const plain = pane.map(stripSgr);
   if (provider === "codex") {
     let prompt = -1;
@@ -158,7 +162,7 @@ const SUBMIT_CHECK_MS = 600;
 
 export type DeliveryResult =
   | { status: "submitted"; id: string }
-  | { status: "queued"; reason: "unavailable" | "locked" | "empty" | "composing" | "unverified" };
+  | { status: "queued"; reason: "unavailable" | "locked" | "empty" | "composing" | "unverified" | "invalid" };
 
 // The marker records which queued message we typed. If Enter is swallowed,
 // later attempts press Enter again instead of appending the text a second time.
@@ -260,9 +264,28 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
   try {
     const agent = readAgent(name);
     if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
+    const provider = agentProvider(agent);
+    if (provider === "antigravity") {
+      const head = queueHead(name);
+      if (!head) return { status: "queued", reason: "empty" };
+      const invalid = providerMessageError(provider, head.message);
+      if (invalid) {
+        updateAgentIf(name, current => {
+          if (current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) return false;
+          updateAgentStatus(current, "needs-attention", `${invalid}. Queued input ${head.id} is preserved; inspect it, use am queue --clear to discard the queue, then submit an operator prompt or restart.`);
+          return true;
+        });
+        return { status: "queued", reason: "invalid" };
+      }
+      // The runner acknowledges native user_input, persists the delivery and
+      // removes the exact entry before responding. Never type into its pane.
+      const response = await antigravityRequest(agent, "deliver", head);
+      if (response.outcome === "delivered") return { status: "submitted", id: head.id };
+      return { status: "queued", reason: response.outcome === "unknown" ? "unverified"
+        : response.outcome === "pending" && response.reason?.includes("compos") ? "composing" : "unavailable" };
+    }
     const incarnation = sessionIncarnation(agent);
     if (!incarnation) return { status: "queued", reason: "unavailable" };
-    const provider = agentProvider(agent);
     // A reclaim cut short left a message to take back; settle it before
     // anything queued behind it goes out.
     if (provider === "codex" && needsCodexRecovery(name)) await reclaimCodexHandoffs(name, agent, true);
@@ -363,6 +386,7 @@ function noteEscape(name: string, abortedKeys: (string | undefined)[]): void {
 
 // Esc the agent's turn, noted for codexQueueHeld. Callers hold the delivery lock.
 export function escapeTurn(agent: AgentState): void {
+  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity requires the runner interrupt protocol; terminal Escape is unsupported");
   sendEscape(agent.tmuxSession);
   noteEscape(agent.name, [agent.promptKey, ...lateHookKeys(agent.name, agent)]);
 }
@@ -585,6 +609,7 @@ async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly
 }
 
 function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
+  if (agentProvider(agent) === "antigravity") return null;
   if (agentProvider(agent) === "codex") {
     const threadId = agentSessionId(agent);
     return threadId && !codexQueueHeld(agent)
@@ -785,6 +810,8 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
 // keeps the Stop hook from marking it done, between the check and the Esc.
 // Null: no such message.
 export async function interruptMessage(name: string, id: string): Promise<InterruptResult | null> {
+  const target = readAgent(name);
+  if (target && agentProvider(target) === "antigravity") throw new Error("Antigravity interruption by message receipt is unsupported; use am interrupt <name>");
   if (!isMessageId(id)) return null;
   for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
     const record = readMessage(name, id);

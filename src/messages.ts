@@ -8,7 +8,7 @@ import { newMsgId } from "./msgid";
 import { agentProvider, readAgent, type AgentState } from "./state";
 import { locateTranscript, parseTranscript, type Turn } from "./transcript";
 import { hasSession } from "./tmux";
-import { queueAppendLocked, queuePopId } from "./queue";
+import { queueAppendLocked, queuePopId, validateQueuedMessage } from "./queue";
 import { withMailboxWrite } from "./mailbox";
 
 // Delivery receipts for tracked messages (API sends, `am send --json`).
@@ -356,6 +356,7 @@ export function lateHookKeys(name: string, agent: AgentState): string[] {
 // and a cancel (which also takes the producer lock) never sees one half made.
 export function queueTrackedMessage(name: string, body: string): string {
   return withMailboxWrite(name, () => {
+    validateQueuedMessage(name, body);
     if (!readAgent(name)) throw new Error(`agent "${name}" no longer exists — retry the message`);
     const id = newMsgId();
     createRecord(name, {
