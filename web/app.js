@@ -1137,6 +1137,13 @@ async function refreshDetail() {
   restoreScroll(rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount));
   transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
 }
+function messageSendMode(name) {
+  const row = state.rows.find((row) => key(row) === name);
+  const detail = state.detailCapabilities?.name === name ? state.detailCapabilities.detail : null;
+  if (row?.provider === "antigravity" || detail?.provider === "antigravity") return "queue";
+  const provider = detail?.provider || row?.provider;
+  return provider === "claude" || provider === "codex" ? "now" : "queue";
+}
 $("message").oninput = () => {
   if (state.selected)
     state.draftRevisions.set(
@@ -1161,7 +1168,7 @@ $("message-form").onsubmit = async (event) => {
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
-      { text, mode: "now" },
+      { text, mode: messageSendMode(name) },
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     notePending(name, text, sent.id);
@@ -1679,7 +1686,7 @@ $("dock-form").onsubmit = async (event) => {
     state.conciergeKey = target;
     const sent = await api(
       "/api/agents/" + encodeURIComponent(state.conciergeKey) + "/messages",
-      { text, mode: "now" },
+      { text, mode: messageSendMode(state.conciergeKey) },
     );
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     notePending(state.conciergeKey, text, sent.id);
