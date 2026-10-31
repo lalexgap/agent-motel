@@ -18,6 +18,7 @@ export interface AntigravityOptions {
   resume?: string | boolean;
   continue?: boolean;
   remote?: boolean;
+  skipPermissions?: boolean;
   reportTo?: string;
   role?: string;
   roleInstructions?: string;
@@ -28,8 +29,9 @@ export function antigravityName(name: string): string {
   return name;
 }
 
-export function antigravityOptions(opts: AntigravityOptions): AntigravityOptions & { model: string } {
+export function antigravityOptions(opts: AntigravityOptions): AntigravityOptions & { model: string; skipPermissions: boolean } {
   if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw new Error("invalid Antigravity launch options");
+  if (opts.skipPermissions !== undefined && typeof opts.skipPermissions !== "boolean") throw new Error("invalid Antigravity skipPermissions: expected a boolean");
   if (opts.resume && opts.continue) throw new Error("--resume and --continue are mutually exclusive");
   if (opts.resume === true) throw new Error("Antigravity headless mode requires an exact --resume session id; no interactive picker is supported");
   if (opts.remote === true) throw new Error("Antigravity remote control is unsupported by this runner");
@@ -42,7 +44,7 @@ export function antigravityOptions(opts: AntigravityOptions): AntigravityOptions
   if (typeof opts.resume === "string" && (!opts.resume.trim() || opts.resume.length > 256 || /[\s\x00-\x1f]/.test(opts.resume) || opts.resume.startsWith("-"))) throw new Error("invalid Antigravity conversation id");
   if (opts.resume !== undefined && opts.resume !== false && typeof opts.resume !== "string") throw new Error("invalid Antigravity resume option");
   if (opts.message && Buffer.byteLength(opts.message) > ANTIGRAVITY_MAX_MESSAGE_BYTES) throw new Error("Antigravity message exceeds 64 KiB");
-  return { ...opts, model };
+  return { ...opts, model, skipPermissions: opts.skipPermissions ?? false };
 }
 
 export interface AntigravityLaunchPlan {

@@ -94,12 +94,12 @@ export function remoteControlArgs(override: boolean | undefined): string[] {
 }
 
 // Managed agents run unattended, so they launch permissionless by default — a
-// per-command approval prompt would hang an agent nobody is watching. claude
-// bypasses its permission checks; codex bypasses approvals + sandbox (its
+// per-command approval prompt would hang an agent nobody is watching. Claude
+// and Antigravity bypass permission checks; Codex bypasses approvals + sandbox (its
 // closest equivalent — these agents run on the user's own trusted machines).
 // Config escape hatch: skipPermissions=false restores prompts.
 export function permissionArgs(provider: Provider): string[] {
-  if (provider === "antigravity" || !loadConfig().skipPermissions) return [];
+  if (!loadConfig().skipPermissions) return [];
   return provider === "codex"
     ? ["--dangerously-bypass-approvals-and-sandbox"]
     : ["--dangerously-skip-permissions"];
@@ -165,7 +165,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 }
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
-  if (provider === "antigravity") return antigravityCommand(name, opts);
+  if (provider === "antigravity") return antigravityCommand(name, { ...opts, skipPermissions: loadConfig().skipPermissions });
   if (provider === "codex") {
     const conversation = codexConversationArgs(opts);
     const command = [
@@ -199,6 +199,7 @@ export function buildResumeCommand(
     if (!sessionId) throw new Error("Antigravity resume requires a saved conversation ID; refusing to guess the latest session");
     return antigravityCommand(agent.name, {
       ...opts, resume: sessionId, model: agent.model ?? ANTIGRAVITY_DEFAULT_MODEL,
+      skipPermissions: loadConfig().skipPermissions,
       effort: agent.effort, reportTo: agent.reportTo, role: roleForAgent(agent), roleInstructions: agent.roleInstructions,
     });
   }

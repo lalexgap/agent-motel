@@ -44,11 +44,11 @@ describe('Antigravity provider integration', () => {
     expect(providerBinary('claude')).toBe('claude');
     expect(providerBinary('codex')).toBe('codex');
   });
-  test('launch uses native stream runner and never inherits global bypass', () => {
+  test('launch uses native stream runner and maps global permission bypass', () => {
     const launch = buildLaunchCommand('antigravity', 'argon-test', {message:'hello'});
     expect(launch.command.join(' ')).toContain('antigravityRunner.ts');
     expect(launch.command.join(' ')).not.toContain('--dangerously');
-    expect(permissionArgs('antigravity')).toEqual([]);
+    expect(permissionArgs('antigravity')).toEqual(['--dangerously-skip-permissions']);
   });
   test('resume never guesses latest when the saved conversation is missing', () => {
     const agent = {name:'argon-test',provider:'antigravity',dir:'/tmp',tmuxSession:'test',status:'exited',createdAt:'now',updatedAt:'now'} as AgentState;

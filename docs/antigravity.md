@@ -131,11 +131,13 @@ configured execution policy remains the access boundary.
 
 ## Permissions and capability limits
 
-AM **does not apply global `skipPermissions` to Antigravity**. It passes no
-permission bypass or sandbox override and never writes agy's permission settings.
-Google's configured policy remains authoritative; a role does not grant access.
-This preserves existing Claude/Codex defaults without silently extending their
-unattended permission bypass to a new runtime.
+AM applies its existing global `skipPermissions` setting to Antigravity on each
+new launch, resume and restart. When enabled, it passes agy's documented
+`--dangerously-skip-permissions`, which auto-approves tool permission requests.
+When disabled, AM omits that flag and agy uses its configured permission policy.
+Direct runner options default to no bypass. AM does not disable the sandbox,
+rewrite Google settings or change Claude/Codex behavior. Existing running agents
+keep their launch policy until an explicitly requested resume or restart.
 
 Google documents that headless tools needing approval can be **soft-denied**
 while the run still exits successfully. The stream rejects `control_request` and
@@ -156,11 +158,19 @@ is available. API detail advertises unsupported controls; corresponding methods
 reject them rather than using Claude/Codex implementations. Ordinary terminal
 attachment, text transcripts/search, AM roles and queueing remain available.
 
-AM's transcript is an owned JSONL projection of acknowledged input and final
-assistant responses, stored under
+AM's transcript is an owned JSONL projection of acknowledged input, streamed
+assistant text and generic tool activity, stored under
 `$AGENTMGR_HOME/antigravity/<name>/<incarnation-hash>/conversations/<conversation-hash>/transcript.jsonl` (default AM state root is
 `~/.agent-manager`). It is not a full tool trace or an import of native agy
-history. Records and their saved state bind the immutable agent incarnation and
+history. Streamed text is flushed within 100 ms and survives a failed turn; the
+canonical final result replaces that response without duplication. Tool names
+and generic running/completed/failed states are exposed while work is in progress;
+raw tool arguments and outputs are not copied into the AM projection. Existing
+hub transcript polling renders these updates through its normal assistant/tool
+components. Progress metadata is extensible: unknown step fields do not acknowledge
+a message or complete a turn. Only exact `user_input`/`DONE` acknowledges a queue
+entry and a validated terminal `result` ends it. Compact metadata-only diagnostics
+retain field types and known categories for unexpected progress, without raw payloads. Records and their saved state bind the immutable agent incarnation and
 validated native conversation. Reusing a name starts a separate namespace;
 restoring the old state retains its old namespace. Adopting a conversation
 exposes only turns recorded since adoption.
@@ -222,3 +232,19 @@ remains pending. After separately authorizing installation/authentication **and 
 8. Save sanitized evidence, then stop only the validation daemon/socket/agents
    and remove disposable state. Live verification remains pending until these
    checks run; do not infer it from fixtures.
+
+## Runtime compatibility incident (2026-10-31)
+
+The failed native session recorded a soft-denied RunCommand and an ERROR tool
+step just before AM rejected step_update metadata. The exact offending NDJSON
+was not retained, so ERROR wire-state fixtures are synthetic compatibility cases,
+not captured-wire proof. The parser formerly accepted only ACTIVE/DONE and
+terminated before handling other progress metadata. Permission recognition also
+missed the native wording “soft-denying”; both spellings are now recognized.
+
+Missing visible activity had a separate implementation cause: tool updates were
+discarded and response deltas buffered until result. The parser failure could
+then discard buffered text. The observed failed turn had native tool activity
+but no evidence of generated second-turn prose. These fixes are verified with
+isolated fixture processes and AM transcript/API rendering; they do not replay
+the operator task or establish authenticated live recovery.

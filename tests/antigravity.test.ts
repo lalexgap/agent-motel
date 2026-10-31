@@ -1,3 +1,4 @@
+import { startApiServer } from "../src/server";
 import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -61,13 +62,13 @@ async function launch(mode='normal',opts:Parameters<typeof antigravityCommand>[1
 }
 async function idle() {await until(()=>readAgent('api')?.status==='idle');}
 function capture():any[] {try{return readFileSync(join(home,'capture.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));}catch{return [];}}
-function transcript():any[] {try{return readFileSync(antigravityTranscriptPath('api'),'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch{return [];}}
+function transcript():any[] {try{return readFileSync(antigravityTranscriptPath('api'),'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)).filter(x=>['user','assistant','assistant_final'].includes(x.kind)).map(x=>({...x,kind:x.kind==='assistant_final'?'assistant':x.kind}));}catch{return [];}}
 
 test('command uses the absolute runner, pins a model, rejects unsupported selectors and remote',()=>{
   const plan=antigravityCommand('api',{});
   expect(plan.command[0]).toBe(process.execPath);
   expect(plan.command[1]).toMatch(/^\/.*\/antigravityRunner.ts$/);
-  expect(JSON.parse(plan.command[3]!)).toEqual({model:ANTIGRAVITY_DEFAULT_MODEL});
+  expect(JSON.parse(plan.command[3]!)).toEqual({model:ANTIGRAVITY_DEFAULT_MODEL,skipPermissions:false});
   expect(ANTIGRAVITY_DEFAULT_MODEL).toBe('gemini-4-argon-high');
   for(const opts of [{resume:true},{remote:true},{resume:'exact',continue:true},{model:''}]) expect(()=>antigravityCommand('api',opts)).toThrow();
   expect(()=>antigravityCommand('../bad',{})).toThrow();
@@ -255,7 +256,7 @@ test('assistant response is visible in the operator terminal',async()=>{
 
 for(const mode of ['flat','checkpoint']) test(mode+' output maintains bounded protocol compatibility',async()=>{
   await launch(mode,{message:'task'});await idle();
-  expect(transcript().map(x=>x.kind)).toEqual(['user','assistant']);
+  expect(parseTranscript('antigravity',readFileSync(locateTranscript(readAgent('api')!),'utf8')).turns.map(x=>x.kind)).toEqual(['user','assistant']);
 });
 
 
@@ -367,4 +368,42 @@ test('SEC2/F1 readers reject a forged path or foreign conversation record',async
   const text=readFileSync(current.transcriptPath!,'utf8');
   writeFileSync(current.transcriptPath!,text+JSON.stringify({kind:'assistant',text:'foreign result',sessionId:'foreign',createdAt:current.createdAt})+'\n');
   expect(()=>locateTranscript(current)).toThrow(/provenance/);
+});
+
+// Synthetic wire fixtures cover the native ERROR hypothesis; raw failed wire output was not retained.
+for(const mode of ['progress-error','progress-metadata']) test(mode+' metadata does not terminate the conversation',async()=>{
+  const p=await launch(mode,{message:'task'});await until(()=>readAgent('api')?.status==='idle' || readAgent('api')?.status==='needs-attention' || readAgent('api')?.status==='exited');
+  await delay(300);expect(readAgent('api')?.status).not.toBe('exited');
+  if(mode==='progress-error')expect(readAgent('api')?.status).toBe('needs-attention');
+  expect(parseTranscript('antigravity',readFileSync(locateTranscript(readAgent('api')!), 'utf8')).turns.some(t=>t.kind==='assistant')).toBe(true);
+});
+
+test('progress reaches transcript/API before final result without exposing tool arguments',async()=>{
+  await launch('progress-stream',{message:'task'});await until(()=>readAgent('api')?.status==='working');await delay(250);
+  const file=locateTranscript(readAgent('api')!);let raw=readFileSync(file,'utf8');let parsed=parseTranscript('antigravity',raw);
+  expect(parsed.turns.some(t=>t.kind==='assistant' && t.text==='partial response')).toBe(true);
+  expect(parsed.turns.some(t=>t.kind==='tool' && t.name==='search_web' && t.output===undefined)).toBe(true);
+  expect(raw).not.toContain('never-persist-me');expect(readAgent('api')?.status).toBe('working');
+  const server=startApiServer({port:0,hostname:'127.0.0.1',token:'fixture-token'});
+  try {
+    const response=await fetch(server.url+'/api/agents/api/transcript',{headers:{Authorization:'Bearer fixture-token'}});
+    expect(response.status).toBe(200);const body=await response.json() as {entries:Array<{kind:string;text?:string;name?:string}>};
+    expect(body.entries.some(e=>e.kind==='assistant' && e.text==='partial response')).toBe(true);
+    expect(body.entries.some(e=>e.kind==='tool' && e.name==='search_web')).toBe(true);
+  } finally {server.stop();}
+  await idle();raw=readFileSync(file,'utf8');parsed=parseTranscript('antigravity',raw);
+  expect(parsed.turns.filter(t=>t.kind==='assistant')).toEqual([{kind:'assistant',text:'canonical final response'}]);
+  expect(parsed.turns.some(t=>t.kind==='tool' && typeof t.output==='string')).toBe(true);
+});
+
+test('partial response and stopped activity survive child failure',async()=>{
+  const p=await launch('progress-crash',{message:'task'});await p.exited;
+  const parsed=parseTranscript('antigravity',readFileSync(locateTranscript(readAgent('api')!),'utf8'));
+  expect(parsed.turns.some(t=>t.kind==='assistant' && t.text==='partial response')).toBe(true);
+  expect(parsed.turns.some(t=>t.kind==='tool' && t.error===true && typeof t.output==='string')).toBe(true);
+});
+
+test('explicit skipPermissions reaches fixture process',async()=>{
+  await launch('normal',{message:'task',skipPermissions:true} as any);await idle();
+  expect(capture().find(x=>x.args)?.args).toContain('--dangerously-skip-permissions');
 });
