@@ -1,3 +1,4 @@
+import { providerMessageError } from "./providerLimits";
 import { antigravityRequest } from "./antigravity";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, rmSync } from "node:fs";
@@ -161,7 +162,7 @@ const SUBMIT_CHECK_MS = 600;
 
 export type DeliveryResult =
   | { status: "submitted"; id: string }
-  | { status: "queued"; reason: "unavailable" | "locked" | "empty" | "composing" | "unverified" };
+  | { status: "queued"; reason: "unavailable" | "locked" | "empty" | "composing" | "unverified" | "invalid" };
 
 // The marker records which queued message we typed. If Enter is swallowed,
 // later attempts press Enter again instead of appending the text a second time.
@@ -267,6 +268,15 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     if (provider === "antigravity") {
       const head = queueHead(name);
       if (!head) return { status: "queued", reason: "empty" };
+      const invalid = providerMessageError(provider, head.message);
+      if (invalid) {
+        updateAgentIf(name, current => {
+          if (current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) return false;
+          updateAgentStatus(current, "needs-attention", `${invalid}. Queued input ${head.id} is preserved; inspect it, use am queue --clear to discard the queue, then submit an operator prompt or restart.`);
+          return true;
+        });
+        return { status: "queued", reason: "invalid" };
+      }
       // The runner acknowledges native user_input, persists the delivery and
       // removes the exact entry before responding. Never type into its pane.
       const response = await antigravityRequest(agent, "deliver", head);

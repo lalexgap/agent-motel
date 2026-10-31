@@ -1,3 +1,4 @@
+import { stopAntigravity } from "../antigravity";
 import { auditOperation } from "../audit";
 import { existsSync } from "node:fs";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
@@ -68,6 +69,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   // stop + relaunch; a daemon that misses it during the stop is skipped
   // for the relaunch.
   const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
+  stopAntigravity(agent);
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
   if (provider !== "antigravity") plan.command[0] = executable;
@@ -81,12 +83,17 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   updateAgentStatus(agent, "starting", "restarting");
   writeAgent(agent);
   try {
-    if (hasSession(agent.tmuxSession)) restartSession(launch);
-    else newSession(launch);
+    if (hasSession(agent.tmuxSession)) {
+      try {restartSession(launch);}
+      catch(error) {
+        if(provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+        newSession(launch);
+      }
+    } else newSession(launch);
   } catch (error) {
     agent.model = previous.model;
     agent.effort = previous.effort;
-    updateAgentStatus(agent, previous.status, previous.reason);
+    updateAgentStatus(agent, provider === "antigravity" ? "exited" : previous.status, provider === "antigravity" ? "restart launch failed after verified process-group cleanup" : previous.reason);
     writeAgent(agent);
     throw error;
   }

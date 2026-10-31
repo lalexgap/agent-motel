@@ -5,17 +5,26 @@ const args = process.argv.slice(2);
 const capture = (x) => fs.appendFileSync(process.env.AGY_FIXTURE_CAPTURE, JSON.stringify(x) + '\n');
 const emit = (x) => { if(mode==='flat') x=x.step_update ? {...x.step_update,event:x.event} : x.result ? {...x.result,event:x.event} : x; process.stdout.write(JSON.stringify(x) + '\n'); };
 capture({args});
+if(args[0]==='models') { console.log('gemini-4-argon-high Gemini 4 Argon High\ngemini-4-argon-medium Gemini 4 Argon Medium');process.exit(0); }
 const conversation = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'fixture-session';
 const model = args[args.indexOf('--model') + 1];
 let turn = 0;
+if(mode.startsWith('group-')) {
+  const workerCode = `const fs=require('node:fs'); for(const s of ['SIGTERM','SIGHUP','SIGINT'])process.on(s,()=>{}); setInterval(()=>fs.appendFileSync(process.env.AGY_FIXTURE_HEARTBEAT,'x'),10);`;
+  const heartbeat=process.env.AGY_FIXTURE_HEARTBEAT+'.'+process.pid;
+  const worker=require('node:child_process').spawn(process.execPath,['-e',workerCode],{env:{...process.env,AGY_FIXTURE_HEARTBEAT:heartbeat},stdio:'ignore'});
+  capture({ownedRoot:process.pid,ownedWorker:worker.pid,ownedRunner:process.ppid,heartbeat});
+  process.on('SIGTERM',()=>process.exit(0));process.on('SIGHUP',()=>process.exit(0));
+}
+
 process.on('SIGINT', () => { capture({signal: 'SIGINT'}); if (mode === 'survive-interrupt') return; process.exit(130); });
 if (mode === 'auth') { process.stderr.write('authentication required Bearer super-secret-token https://login/?token=hidden\n'); process.exit(1); }
-if (mode === 'silent') { setInterval(() => {}, 1000); return; }
+if (mode === 'silent' || mode === 'group-silent') { setInterval(() => {}, 1000); return; }
 if (mode === 'malformed') { process.stdout.write('{not json}\n'); return; }
 if (mode === 'oversized') { process.stdout.write('x'.repeat(300000)); return; }
 const init = {model: mode === 'wrong-model' ? 'fallback-model' : model, cwd: process.cwd(), permission_mode: 'request-review', tools: []};
 if (mode === 'missing-model') delete init.model;
-emit({event:'init', conversation_id: mode === 'wrong-session' ? 'foreign' : mode === 'missing-session' ? '' : conversation, init});
+setTimeout(()=>emit({event:'init', conversation_id: mode === 'wrong-session' ? 'foreign' : mode === 'missing-session' ? '' : conversation, init}), mode==='delayed-init' ? 200 : ['wrong-model','missing-model','wrong-session','missing-session'].includes(mode) ? 100 : 0);
 if (mode === 'partial') { process.stdout.write('{'); process.exit(0); }
 if (mode === 'unknown-storm') for(let i=0;i<70;i++) emit({event:'future_event'});
 if (mode === 'unknown') emit({event:'future_event', command:'touch /tmp/never-execute-antigravity'});
@@ -25,7 +34,7 @@ rl.on('line', line => {
   const msg = JSON.parse(line);
   capture({input:msg});
   turn++;
-  if (mode === 'crash') process.exit(23);
+  if (mode === 'crash' || mode === 'group-crash') process.exit(23);
   if (mode === 'no-ack') return;
   const id = mode === 'foreign-step' ? 'foreign' : conversation;
   setTimeout(() => {

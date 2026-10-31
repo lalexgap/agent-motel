@@ -5,7 +5,8 @@ import { msgIdAt, newMsgId } from "./msgid";
 import { parseJsonl } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withMailboxWrite } from "./mailbox";
-import { readAgent } from "./state";
+import { agentProvider, readAgent } from "./state";
+import { providerMessageError } from "./providerLimits";
 
 // One directory per agent, one file per message (maildir-style). Appends and
 // pops touch different files, so a send can never race a pop into losing a
@@ -133,9 +134,16 @@ function entryFiles(name: string): string[] {
   return names.sort();
 }
 
+export function validateQueuedMessage(name: string, message: string): void {
+  const agent = readAgent(name);
+  const error = agent && providerMessageError(agentProvider(agent), message);
+  if (error) throw new Error(error);
+}
+
 // `entryId` names the entry file (`<id>.json`) for a caller that tracks the
 // message by that id; it must be a fresh msgId so FIFO order holds.
 export function queueAppendLocked(name: string, message: string, msgId?: string, entryId?: string): string {
+  validateQueuedMessage(name, message);
   if (msgId !== undefined) messageFile(name, msgId);
   if (entryId !== undefined) messageFile(name, entryId.replace(/\.json$/, ""));
   ensureDirs();
@@ -170,6 +178,7 @@ function messageFile(name: string, msgId: string): string {
 // Callers hold the delivery lock until the receipt is persisted, preventing
 // consumers from removing the queue entry during crash recovery.
 export function queueAppendOnceLocked(name: string, message: string, msgId: string): string {
+  validateQueuedMessage(name, message);
   const file = messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name);

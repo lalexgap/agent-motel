@@ -1,5 +1,5 @@
-import { baseDir } from "./paths";
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { antigravityTranscriptPath } from "./antigravity";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
@@ -332,10 +332,15 @@ function codexEntryFragments(entry: Record<string, any>): Fragment[] {
 // stale hook before falling back to the recorded session id.
 export function locateTranscript(agent: AgentState): string {
   if (agentProvider(agent) === "antigravity") {
-    if (!/^[A-Za-z0-9_-]+$/.test(agent.name)) throw new Error("invalid Antigravity agent name");
-    const file = join(baseDir(), "antigravity", agent.name, "transcript.jsonl");
-    if (existsSync(file)) return file;
-    throw new Error("no AM-recorded Antigravity transcript yet; native agy storage is not imported");
+    if(!agent.sessionId)throw new Error("Antigravity transcript requires a validated conversation identity");
+    const expected=antigravityTranscriptPath(agent.name,agent.createdAt,agent.sessionId);
+    if(!agent.transcriptPath || agent.transcriptPath!==expected)throw new Error("no transcript bound to this Antigravity incarnation and conversation");
+    if(!existsSync(expected))throw new Error("no AM-recorded Antigravity transcript yet; native agy storage is not imported");
+    if(lstatSync(expected).isSymbolicLink() || realpathSync(expected)!==expected)throw new Error("Antigravity transcript path must remain inside its owned namespace");
+    for(const entry of parseLines(readFileSync(expected,"utf8"))) {
+      if(entry.createdAt!==agent.createdAt || entry.sessionId!==agent.sessionId)throw new Error("Antigravity transcript provenance does not match the current incarnation and conversation");
+    }
+    return expected;
   }
   if (agent.transcriptPath && existsSync(agent.transcriptPath)) {
     const entries = parseLines(readFileTail(agent.transcriptPath, 64 * 1024) ?? "");

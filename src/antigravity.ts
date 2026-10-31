@@ -3,11 +3,12 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseDir } from "./paths";
+import { ANTIGRAVITY_MAX_MESSAGE_BYTES } from "./providerLimits";
 import { readAgent, type AgentState } from "./state";
 
 export const ANTIGRAVITY_DEFAULT_MODEL = "gemini-4-argon-high";
 export const ANTIGRAVITY_MAX_LINE_BYTES = 256 * 1024;
-export const ANTIGRAVITY_MAX_MESSAGE_BYTES = 64 * 1024;
+export { ANTIGRAVITY_MAX_MESSAGE_BYTES } from "./providerLimits";
 
 export interface AntigravityOptions {
   model?: string;
@@ -48,12 +49,14 @@ export function antigravityCommand(name: string, opts: AntigravityOptions): { co
   return { command: [process.execPath, fileURLToPath(new URL("./antigravityRunner.ts", import.meta.url)), name, JSON.stringify(antigravityOptions(opts))] };
 }
 
-export function antigravityDir(name: string): string {
-  return join(baseDir(), "antigravity", antigravityName(name));
+export function antigravityDir(name: string, createdAt = readAgent(name)?.createdAt): string {
+  if (!createdAt) throw new Error("Antigravity storage requires an immutable agent incarnation");
+  return join(baseDir(), "antigravity", antigravityName(name), createHash("sha256").update(createdAt).digest("hex"));
 }
 
-export function antigravityTranscriptPath(name: string): string {
-  return join(antigravityDir(name), "transcript.jsonl");
+export function antigravityTranscriptPath(name: string, createdAt = readAgent(name)?.createdAt, sessionId = readAgent(name)?.sessionId): string {
+  if (!sessionId) throw new Error("Antigravity transcript requires a validated conversation identity");
+  return join(antigravityDir(name, createdAt), "conversations", createHash("sha256").update(sessionId).digest("hex"), "transcript.jsonl");
 }
 
 export function antigravitySocketPath(runId: string): string {
@@ -61,11 +64,11 @@ export function antigravitySocketPath(runId: string): string {
   return join(baseDir(), "antigravity", `r-${runId}.sock`);
 }
 
-export function antigravityDeliveryPath(name: string, id: string): string {
-  return join(antigravityDir(name), "deliveries", createHash("sha256").update(id).digest("hex") + ".json");
+export function antigravityDeliveryPath(name: string, id: string, createdAt = readAgent(name)?.createdAt): string {
+  return join(antigravityDir(name, createdAt), "deliveries", createHash("sha256").update(id).digest("hex") + ".json");
 }
 
-export type AntigravityOutcome = "delivered" | "pending" | "unknown" | "unavailable" | "interrupted";
+export type AntigravityOutcome = "delivered" | "pending" | "unknown" | "unavailable" | "interrupted" | "stopped";
 export interface AntigravityResponse {
   ok: boolean;
   outcome: AntigravityOutcome;
@@ -80,14 +83,14 @@ export function antigravityTimeout(key: string, fallback: number): number {
 
 // A connection failure has no effect. After writing a request, loss of the
 // answer is ambiguous: callers must preserve the entry and never blindly retry.
-export async function antigravityRequest(agent: AgentState, action: "deliver" | "interrupt", payload?: AntigravityDelivery): Promise<AntigravityResponse> {
+export async function antigravityRequest(agent: AgentState, action: "deliver" | "interrupt" | "stop", payload?: AntigravityDelivery): Promise<AntigravityResponse> {
   const unavailable = (reason: string): AntigravityResponse => ({ ok: false, outcome: "unavailable", reason });
   try {
     antigravityName(agent.name);
     if ((agent.provider as string) !== "antigravity" || !agent.antigravityRunId) return unavailable("Antigravity runner unavailable; start or resume the agent");
     const current = readAgent(agent.name);
-    if (!current || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId || current.provider !== agent.provider || current.status === "exited") return unavailable("Antigravity runner incarnation changed or exited; refresh the agent state");
-    if (action !== "deliver" && action !== "interrupt") return unavailable("unsupported Antigravity action");
+    if (!current || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId || current.provider !== agent.provider || (current.status === "exited" && action !== "stop")) return unavailable("Antigravity runner incarnation changed or exited; refresh the agent state");
+    if (action !== "deliver" && action !== "interrupt" && action !== "stop") return unavailable("unsupported Antigravity action");
     if (action === "deliver" && (!payload || !/^[a-zA-Z0-9_-]+(?:\.json)?$/.test(payload.id) || payload.id.length > 200 || typeof payload.message !== "string" || !payload.message.trim() || Buffer.byteLength(payload.message) > ANTIGRAVITY_MAX_MESSAGE_BYTES)) return unavailable("invalid Antigravity delivery payload");
     const path = antigravitySocketPath(agent.antigravityRunId);
     return await new Promise<AntigravityResponse>((resolve) => {
@@ -115,7 +118,7 @@ export async function antigravityRequest(agent: AgentState, action: "deliver" | 
         if (nl < 0) return;
         try {
           const reply = JSON.parse(buffered.slice(0, nl));
-          if (typeof reply.ok !== "boolean" || !["delivered", "pending", "unknown", "unavailable", "interrupted"].includes(reply.outcome) || (reply.reason !== undefined && typeof reply.reason !== "string")) { failed(); return; }
+          if (typeof reply.ok !== "boolean" || !["delivered", "pending", "unknown", "unavailable", "interrupted", "stopped"].includes(reply.outcome) || (reply.reason !== undefined && typeof reply.reason !== "string")) { failed(); return; }
           finish(reply);
         } catch { failed(); }
       });
@@ -123,4 +126,32 @@ export async function antigravityRequest(agent: AgentState, action: "deliver" | 
       socket.on("close", () => { if (!done) failed(); });
     });
   } catch { return unavailable("Antigravity runner unavailable; verify the local agent state and resume it"); }
+}
+
+
+// Synchronous lifecycle callers use a separate short-lived control process so
+// the runner's async socket loop can finish owned-group cleanup before tmux is
+// killed or its state is replaced. Only the runner knows its in-memory PGID.
+export function stopAntigravity(agent: AgentState): void {
+  if (agent.provider !== "antigravity") return;
+  const current = readAgent(agent.name);
+  if (!current || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) throw new Error("Antigravity incarnation changed; refresh state before stopping");
+  if (!current.antigravityRunId) throw new Error("Antigravity cleanup cannot be verified: no runner identity; inspect the failed launch before removing or restarting");
+  if (current.antigravityCleanupRunId === current.antigravityRunId) return;
+  const result = Bun.spawnSync([process.execPath, fileURLToPath(import.meta.url), "stop", JSON.stringify({name:current.name,createdAt:current.createdAt,runId:current.antigravityRunId})], {
+    env:{...process.env}, stdin:"ignore", stdout:"pipe", stderr:"pipe", timeout:7_000,
+  });
+  const after = readAgent(agent.name);
+  if (result.exitCode !== 0 || !after || after.createdAt !== current.createdAt || after.antigravityRunId !== current.antigravityRunId || after.antigravityCleanupRunId !== current.antigravityRunId) throw new Error("Antigravity owned process-group cleanup unverified; stop refused. Keep state and inspect the runner before retrying");
+}
+
+if (import.meta.main) {
+  try {
+    if (process.argv[2] !== "stop") throw new Error("unsupported control action");
+    const request = JSON.parse(process.argv[3] ?? "{}");
+    const agent = readAgent(antigravityName(request.name));
+    if (!agent || agent.createdAt !== request.createdAt || agent.antigravityRunId !== request.runId) throw new Error("incarnation changed");
+    const reply = await antigravityRequest(agent, "stop");
+    if (reply.outcome !== "stopped") throw new Error("cleanup unverified");
+  } catch { process.exitCode=1; }
 }

@@ -1,3 +1,4 @@
+import { stopAntigravity } from "../antigravity";
 import { auditOperation, recordAudit } from "../audit";
 import { readAgent, removeAgent, resolveAgent, setStatus, type AgentState } from "../state";
 import { queueClear, queueDepth } from "../queue";
@@ -12,12 +13,23 @@ import { hasSession, killSession } from "../tmux";
 import { CODEX_STOP_BUDGET_MS, codexDeadline, releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 
+function killStoppedSession(agent: AgentState): void {
+  if(!hasSession(agent.tmuxSession))return;
+  try {killSession(agent.tmuxSession);}
+  catch(error) {
+    // An agy runner can exit naturally between the check and kill after its
+    // acknowledged cleanup. Other tmux errors still fail the lifecycle action.
+    if(agent.provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+  }
+}
+
 // Stop = kill the tmux session but keep state, so `am resume` still works.
 // The SessionEnd hook never fires for a killed session, so mark it ourselves.
 type StopAction = "stop" | "move" | "cd";
 function stopAgentLocked(agent: AgentState, action: StopAction): void {
   const current = currentLifecycleAgent(agent);
-  if (hasSession(current.tmuxSession)) killSession(current.tmuxSession);
+  stopAntigravity(current);
+  killStoppedSession(current);
   stopCodexDaemonWork(current);
   setStatus(current.name, "exited", action === "stop" ? "stopped by operator" : `stopped for ${action}`);
 }
@@ -123,8 +135,10 @@ export async function stopIfIdle(agent: AgentState): Promise<StopIfIdleResult> {
 }
 
 function destroyAgentLocked(agent: AgentState, clean: boolean): void {
-  const current = currentLifecycleAgent(agent);
-  if (hasSession(current.tmuxSession)) killSession(current.tmuxSession);
+  let current = currentLifecycleAgent(agent);
+  stopAntigravity(current);
+  current = currentLifecycleAgent(current);
+  killStoppedSession(current);
   const deadline = codexDeadline(CODEX_STOP_BUDGET_MS);
   stopCodexDaemonWork(current, deadline);
 

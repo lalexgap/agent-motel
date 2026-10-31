@@ -1,6 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -22,7 +22,7 @@ const MAX_CONNECTIONS = 16;
 type DeliveryRecord = { createdAt: string; runId: string; id: string; digest: string; outcome: "unknown" | "delivered"; promptAt?: string; mark?: DeliveryMark | null; completedAt?: string; interrupted?: boolean };
 type Turn = { text: string; wireText: string; id?: string; mark?: DeliveryMark | null; ack: boolean; promptAt?: string; reply: string; resolve?: (r: AntigravityResponse) => void };
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
-const response = (outcome: AntigravityResponse["outcome"], reason?: string): AntigravityResponse => ({ok:outcome === "delivered" || outcome === "interrupted",outcome,...(reason ? {reason} : {})});
+const response = (outcome: AntigravityResponse["outcome"], reason?: string): AntigravityResponse => ({ok:outcome === "delivered" || outcome === "interrupted" || outcome === "stopped",outcome,...(reason ? {reason} : {})});
 
 function privateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -57,6 +57,34 @@ function loadRecord(path: string): DeliveryRecord | null {
   if(!record || typeof record!=="object" || typeof record.createdAt!=="string" || !/^[a-f0-9]{32}$/.test(record.runId) || typeof record.id!=="string" || !/^[a-f0-9]{64}$/.test(record.digest) || !["unknown","delivered"].includes(record.outcome) || (record.outcome==="delivered" && !Number.isFinite(Date.parse(record.promptAt)))) throw new Error("invalid Antigravity delivery marker; outcome unknown");
   return record;
 }
+// A process group is the containment boundary, not a sandbox: a workload that
+// deliberately creates a new session/group escapes it. Zombies cannot execute
+// or write and may await reaping by the host's init after their root exits.
+function liveGroup(pgid: number | undefined): boolean | null {
+  if (!pgid) return false;
+  try { process.kill(-pgid, 0); }
+  catch(error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : null; }
+  if (process.platform !== "linux") {
+    const result=spawnSync("/bin/ps",["-axo","pgid=,stat="],{encoding:"utf8",timeout:500,maxBuffer:1024*1024});
+    if(result.error || result.status!==0)return null;
+    return result.stdout.split("\n").some(line=>{
+      const [group,state]=line.trim().split(/\s+/);
+      return Number(group)===pgid && !state?.startsWith("Z") && !state?.startsWith("X");
+    });
+  }
+  try {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      let text: string;
+      try { text=readFileSync(`/proc/${entry}/stat`,"utf8"); }
+      catch(error) { if((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ESRCH")continue; return null; }
+      const fields=text.slice(text.lastIndexOf(")")+2).split(" ");
+      if(Number(fields[2])===pgid && fields[0]!=="Z" && fields[0]!=="X")return true;
+    }
+    return false;
+  } catch { return null; }
+}
+
 async function primer(name: string, opts: AntigravityOptions): Promise<string> {
   // providers imports antigravityCommand; defer this import until invocation,
   // after both modules have completed initialization.
@@ -76,14 +104,16 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   const runId=randomBytes(16).toString("hex");
   const createdAt=initial.createdAt;
   const path=antigravitySocketPath(runId);
-  const transcript=antigravityTranscriptPath(name);
+  let transcript: string | undefined;
+  const incarnationDir=antigravityDir(name,createdAt);
+  const deliveryPath=(id:string)=>antigravityDeliveryPath(name,id,createdAt);
   try {
     if(Buffer.byteLength(path)>100) throw new Error("Antigravity socket path is too long; use a shorter AGENTMGR_HOME");
     privateDir(baseDir());
     privateDir(join(baseDir(),"antigravity"));
-    privateDir(antigravityDir(name));
-    privateDir(join(antigravityDir(name),"deliveries"));
-    privateFile(transcript);
+    privateDir(join(baseDir(),"antigravity",name));
+    privateDir(incarnationDir);
+    privateDir(join(incarnationDir,"deliveries"));
   } catch {
     updateAgentIf(name,s=>{
       if(s.createdAt!==createdAt || s.antigravityRunId!==initial.antigravityRunId || s.provider!==initial.provider)return false;
@@ -101,6 +131,9 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   let turnTimer:ReturnType<typeof setTimeout>|undefined;
   let killTimer:ReturnType<typeof setTimeout>|undefined;
   let exitDrainTimer:ReturnType<typeof setTimeout>|undefined;
+  let cleanupPoll:ReturnType<typeof setInterval>|undefined;
+  let cleanupFinished=false;
+  const stopReplies:((r:AntigravityResponse)=>void)[]=[];
   let child:ChildProcessWithoutNullStreams|undefined;
   let rl:Interface|undefined;
   let inputBuffer="";
@@ -115,7 +148,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   let authFailed=false;
   let diagnosticWindow="";
   const sockets=new Set<Socket>();
-  const pendingOperator:string[]=[];
+  const pendingOperator:string[]=opts.message ? [opts.message] : opts.roleInstructions ? [`Apply these role instructions for this session: ${opts.role ?? "managed agent"}.`] : [];
   const owned=() => { const s=readAgent(name);return !!s && s.createdAt===createdAt && s.antigravityRunId===runId && (s.provider as string)==="antigravity"; };
   const mutate=(fn:(s:AgentState)=>void) => updateAgentIf(name,s=>{
     if(s.createdAt!==createdAt || s.antigravityRunId!==runId || (s.provider as string)!=="antigravity") return false;
@@ -123,8 +156,9 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   });
   const status=(value:AgentStatus,reason?:string) => mutate(s=>updateAgentStatus(s,value,reason));
   const append=(kind:"user"|"assistant",text:string) => {
+    if(!initialized || !transcript || !sessionId)throw new Error("Antigravity transcript identity unavailable");
     privateFile(transcript);
-    appendFileSync(transcript,JSON.stringify({kind,text,sessionId,timestamp:new Date().toISOString(),dir:initial.dir})+"\n",{mode:0o600});
+    appendFileSync(transcript,JSON.stringify({kind,text,createdAt,sessionId,timestamp:new Date().toISOString(),dir:initial.dir})+"\n",{mode:0o600});
     syncFile(transcript);
   };
   const unknown=(why:string) => {
@@ -133,35 +167,57 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
   let finishResolve:()=>void;
   const finished=new Promise<void>(resolve=>{finishResolve=resolve;});
   const server=createServer();
+  const signalGroup=(signal:NodeJS.Signals):boolean => {
+    if(!child?.pid)return false;
+    try {process.kill(-child.pid,signal);return true;}
+    catch(error) {return (error as NodeJS.ErrnoException).code === "ESRCH";}
+  };
   const shutdown=(reason:string) => {
     if(ended) return;
     ended=true;
-    clearTimeout(startupTimer);clearTimeout(ackTimer);clearTimeout(turnTimer);
+    clearTimeout(startupTimer);clearTimeout(ackTimer);clearTimeout(turnTimer);clearTimeout(exitDrainTimer);
     unknown("Antigravity delivery outcome unknown; preserve the entry and inspect delivery evidence before resubmitting");
-    try {
-      if(owned()) {
-        const current=readAgent(name)!;
-        if(interrupted && turn?.ack) markTurnEnded(name,current,new Date(Math.max(Date.now(),Date.parse(current.promptAt ?? "")+1 || 0)),true,false);
-        markSessionEnded(name,current,undefined);
-        status("exited",reason);
-      }
-    } catch { /* exit still must finish if receipt storage failed */ }
-    rl?.close();
-    process.stdin.pause();
-    process.stdin.removeListener("data",onInput);
-    process.stdin.removeListener("end",onInputEnd);
-    for(const s of sockets) {s.end();setTimeout(()=>s.destroy(),50).unref();}
-    server.close();
-    try {rmSync(path,{force:true});}catch{}
-    if(child && child.exitCode===null && child.signalCode===null) {
-      child.kill("SIGTERM");
-      killTimer=setTimeout(()=>child?.kill("SIGKILL"),500);
-    } else finishResolve();
+    try {status("needs-attention","Antigravity stopping; verifying owned process-group cleanup before reporting exited");}
+    catch { /* A storage error must not prevent termination of the owned group. */ }
+    rl?.close();process.stdin.pause();
+    process.stdin.removeListener("data",onInput);process.stdin.removeListener("end",onInputEnd);
+    const complete=(clean:boolean) => {
+      if(cleanupFinished)return;
+      cleanupFinished=true;clearTimeout(killTimer);clearInterval(cleanupPoll);
+      child?.stdin.destroy();child?.stdout.destroy();child?.stderr.destroy();
+      try {
+        if(owned()) {
+          const current=readAgent(name)!;
+          if(interrupted && turn?.ack)markTurnEnded(name,current,new Date(Math.max(Date.now(),Date.parse(current.promptAt ?? "")+1 || 0)),true,false);
+          markSessionEnded(name,current,undefined);
+          mutate(s=>{
+            if(clean) {s.antigravityCleanupRunId=runId;updateAgentStatus(s,"exited",reason);}
+            else {delete s.antigravityCleanupRunId;updateAgentStatus(s,"needs-attention","Antigravity owned process-group cleanup unverified; stop refused. Preserve state and inspect the runner workload.");}
+          });
+        }
+      } catch {clean=false;}
+      for(const reply of stopReplies)reply(response(clean?"stopped":"unavailable",clean?undefined:"Antigravity owned process-group cleanup unverified; stop refused"));
+      for(const socket of sockets) {socket.end();setTimeout(()=>socket.destroy(),50).unref();}
+      server.close();try {rmSync(path,{force:true});}catch{}
+      if(!clean)process.exitCode=1;
+      finishResolve();
+    };
+    signalGroup("SIGTERM");
+    // Retain escalation and verification after the root exits: its group may
+    // still contain ordinary tool workers with TERM/HUP handlers.
+    killTimer=setTimeout(()=>signalGroup("SIGKILL"),500);
+    const deadline=Date.now()+3_000;
+    const check=()=>{
+      const live=liveGroup(child?.pid);
+      if(live===false)complete(true);
+      else if(Date.now()>=deadline)complete(false);
+    };
+    cleanupPoll=setInterval(check,25);check();
   };
   const fail=(reason:string) => shutdown(`Antigravity ${reason}`);
   const draft=() => !inputReadable || !!inputBuffer || !!rl?.line || pendingOperator.length>0;
   const send=(text:string,id?:string,resolve?:Turn["resolve"]) => {
-    if(ended || !child || !owned()) {resolve?.(response("unavailable","Antigravity runner incarnation changed"));return;}
+    if(ended || !initialized || !child || !owned()) {resolve?.(response("unavailable","Antigravity runner incarnation changed"));return;}
     const wireText=primed ? text : `${instructions}\n\n${text}`;
     const wireLine=JSON.stringify({event:"user",message:{content:wireText}})+"\n";
     if(Buffer.byteLength(wireLine)>ANTIGRAVITY_MAX_LINE_BYTES) {
@@ -170,7 +226,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
       return;
     }
     const mark=id ? deliveryMark(name,id) : undefined;
-    if(id) persist(antigravityDeliveryPath(name,id),{createdAt,runId,id,digest:digest(text),outcome:"unknown"});
+    if(id) persist(deliveryPath(id),{createdAt,runId,id,digest:digest(text),outcome:"unknown"});
     turn={text,wireText,id,mark,ack:false,reply:"",resolve};
     primed=true;
     permissionBlocked=false;
@@ -203,7 +259,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     hold=true;interrupted=true;
     mutate(s=>{s.escapedAt=new Date().toISOString();updateAgentStatus(s,"needs-attention","Antigravity interrupted; queued work is held until an operator submits a prompt or restarts. Native approval relay is unsupported.");});
     unknown("Antigravity interrupted before acknowledgement; delivery outcome unknown");
-    if(!child.kill("SIGINT")) return response("unavailable","Antigravity child could not be interrupted");
+    if(!signalGroup("SIGINT")) return response("unavailable","Antigravity child could not be interrupted");
     return response("interrupted");
   };
   const handle=(line:string) => {
@@ -218,9 +274,11 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
       if(!event.init || event.init.model!==opts.model) {fail("model echo is missing or does not match the exact requested pin; refusing fallback");return;}
       if(typeof event.conversation_id!=="string" || !event.conversation_id.trim() || event.conversation_id.length>256 || (typeof opts.resume==="string" && event.conversation_id!==opts.resume)) {fail("conversation identity is missing or differs from the exact resume id");return;}
       sessionId=event.conversation_id;
+      transcript=antigravityTranscriptPath(name,createdAt,sessionId);
+      privateDir(join(incarnationDir,"conversations"));privateDir(dirname(transcript));privateFile(transcript);
       initialized=true;clearTimeout(startupTimer);
       mutate(s=>{s.sessionId=sessionId;s.model=opts.model;s.transcriptPath=transcript;});
-      if(!turn)status("idle");
+      if(!turn && !pendingOperator.length)status("idle");
       drainOperator();
       return;
     }
@@ -243,7 +301,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
         if(turn.id) {
           // The requesting coordinator holds acquireDeliverLock across the
           // RPC. Persist acknowledgement before removing its exact queue id.
-          persist(antigravityDeliveryPath(name,turn.id),{createdAt,runId,id:turn.id,digest:digest(turn.text),outcome:"delivered",promptAt,mark:turn.mark});
+          persist(deliveryPath(turn.id),{createdAt,runId,id:turn.id,digest:digest(turn.text),outcome:"delivered",promptAt,mark:turn.mark});
           markDelivered(name,turn.id,turn.mark,"prompt",promptAt);
           queuePopId(name,turn.id);
         }
@@ -269,7 +327,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     const current=readAgent(name)!;
     const at=new Date(Math.max(Date.now(),Date.parse(turn.promptAt!)+1));
     if(body.status==="SUCCESS" || body.status==="CANCELED" || body.status==="INTERRUPTED") {
-      if(turn.id)persist(antigravityDeliveryPath(name,turn.id),{createdAt,runId,id:turn.id,digest:digest(turn.text),outcome:"delivered",promptAt:turn.promptAt,mark:turn.mark,completedAt:at.toISOString(),interrupted:interrupted || body.status!=="SUCCESS"});
+      if(turn.id)persist(deliveryPath(turn.id),{createdAt,runId,id:turn.id,digest:digest(turn.text),outcome:"delivered",promptAt:turn.promptAt,mark:turn.mark,completedAt:at.toISOString(),interrupted:interrupted || body.status!=="SUCCESS"});
       markTurnEnded(name,current,at,interrupted || body.status!=="SUCCESS",true);
     }
     const failed=body.status==="ERROR" || body.status==="INVALID";
@@ -278,7 +336,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     hold=hold || blocked || body.status!=="SUCCESS";
     turn=undefined;
     if(hold)status("needs-attention",blocked?"Antigravity waiting or permission blocked; native approval relay is unsupported. Review agy policy and submit an operator prompt or restart.":"Antigravity interrupted; queued work is held until an operator prompt or restart");
-    else status("idle");
+    else if(!pendingOperator.length)status("idle");
     drainOperator();
   };
   try {
@@ -286,7 +344,10 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     // the socket. A stale runner only mutates its exact incarnation afterward.
     const claimed=updateAgentIf(name,s=>{
       if(s.createdAt!==createdAt || (s.provider as string)!=="antigravity" || s.antigravityRunId!==initial.antigravityRunId)return false;
-      s.antigravityRunId=runId;s.model=opts.model;s.transcriptPath=transcript;updateAgentStatus(s,"starting");return true;
+      s.antigravityRunId=runId;delete s.antigravityCleanupRunId;s.model=opts.model;
+      const previousPath=s.sessionId ? antigravityTranscriptPath(name,createdAt,s.sessionId) : undefined;
+      if(s.transcriptPath!==previousPath)delete s.transcriptPath;
+      updateAgentStatus(s,"starting");return true;
     });
     if(!claimed)throw new Error("Antigravity state changed before launch");
     server.on("connection",socket=>{
@@ -305,10 +366,14 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
           const request=JSON.parse(buffer.slice(0,nl));
           const nonce=typeof request.runId==="string"?Buffer.from(request.runId):Buffer.alloc(0);
           if(nonce.length!==runId.length || !timingSafeEqual(nonce,Buffer.from(runId)) || request.createdAt!==createdAt || !owned()) {reply(response("unavailable","Antigravity runner incarnation mismatch"));return;}
+          if(request.action==="stop") {
+            if(cleanupFinished) {reply(response("unavailable","Antigravity cleanup already finished; refresh state"));return;}
+            stopReplies.push(reply);shutdown("Antigravity stopped by operator after verified owned process-group cleanup");return;
+          }
           if(request.action==="interrupt") {reply(interrupt());return;}
           const payload=request.payload as AntigravityDelivery;
           if(request.action!=="deliver" || !payload || typeof payload.id!=="string" || !/^[a-zA-Z0-9_-]+(?:\.json)?$/.test(payload.id) || payload.id.length>200 || typeof payload.message!=="string" || !payload.message.trim() || Buffer.byteLength(payload.message)>ANTIGRAVITY_MAX_MESSAGE_BYTES) {reply(response("unavailable","invalid Antigravity action or payload"));return;}
-          const record=loadRecord(antigravityDeliveryPath(name,payload.id));
+          const record=loadRecord(deliveryPath(payload.id));
           if(record && record.createdAt===createdAt) {
             if(record.id!==payload.id || record.digest!==digest(payload.message)) {reply(response("unknown","delivery id previously used with different content; inspect before resubmitting"));return;}
             if(record.outcome==="delivered") {
@@ -338,7 +403,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
     }
     process.stdin.on("error",()=>{inputReadable=false;hold=true;status("needs-attention","Antigravity operator input unreadable; queued work held");});
     const args=["--input-format","stream-json","--output-format","stream-json","--model",opts.model,"--print-timeout","5m",...(opts.effort?["--effort",opts.effort]:[]),...(typeof opts.resume==="string"?["--conversation",opts.resume]:opts.continue?["--continue"]:[])];
-    child=spawn("agy",args,{cwd:initial.dir,env:{...process.env,AGENTMGR_AGENT:name},stdio:["pipe","pipe","pipe"]});
+    child=spawn("agy",args,{cwd:initial.dir,env:{...process.env,AGENTMGR_AGENT:name},stdio:["pipe","pipe","pipe"],detached:true});
     child.stdin.on("error",()=>fail("stdin closed; delivery outcome unknown"));
     const decoder=new StringDecoder("utf8");let buffer="";
     child.stdout.on("data",chunk=>{
@@ -367,27 +432,21 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions):
         status("needs-attention","Antigravity tool requires permission or was soft-denied; native approval relay is unsupported. Review agy permission policy locally.");
       }
     });
-    child.on("error",()=>{fail("could not start agy; install/authenticate agy separately and verify PATH");finishResolve();});
+    child.on("error",()=>fail("could not start agy; install/authenticate agy separately and verify PATH"));
     child.on("exit",(code,signal)=>{
-      exitDrainTimer=setTimeout(()=>{
-        if(!ended)fail(authFailed?"authentication required; authenticate agy separately before resuming":`child exited (${signal ?? code ?? "unknown"}); inspect agy before resuming`);
-        child?.stdin.destroy();child?.stdout.destroy();child?.stderr.destroy();
-        clearTimeout(killTimer);finishResolve();
-      },100);
+      if(!ended)exitDrainTimer=setTimeout(()=>fail(authFailed?"authentication required; authenticate agy separately before resuming":`child exited (${signal ?? code ?? "unknown"}); inspect agy before resuming`),100);
     });
     child.on("close",(code,signal)=>{
-      clearTimeout(killTimer);clearTimeout(exitDrainTimer);
+      clearTimeout(exitDrainTimer);
       if(!ended)fail(authFailed?"authentication required; authenticate agy separately before resuming":`child exited (${signal ?? code ?? "unknown"}); ${interrupted?"interrupted work is held":"inspect agy model/authentication/permission policy before resuming"}`);
-      finishResolve();
     });
     startupTimer=setTimeout(()=>fail(authFailed?"authentication required; authenticate agy separately":"startup/auth/init timed out; authenticate agy separately and verify CLI stream support"),antigravityTimeout("ANTIGRAVITY_STARTUP_TIMEOUT_MS",20_000));
-    if(opts.message)send(opts.message);
-    else if(opts.roleInstructions)send(`Apply these role instructions for this session: ${opts.role ?? "managed agent"}.`);
     const onSignal=()=>shutdown("Antigravity runner stopped; unfinished deliveries require inspection before resubmission");
     process.on("SIGTERM",onSignal);process.on("SIGHUP",onSignal);process.on("SIGINT",onSignal);
     try {await finished;} finally {process.removeListener("SIGTERM",onSignal);process.removeListener("SIGHUP",onSignal);process.removeListener("SIGINT",onSignal);}
   } catch(error) {
     shutdown(error instanceof Error && error.message.startsWith("Antigravity")?error.message:"Antigravity runner startup failed; verify private state storage and agy installation");
+    await finished;
     throw error;
   }
 }

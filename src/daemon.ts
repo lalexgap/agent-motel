@@ -35,6 +35,8 @@ export function stuckDeliveryReason(result: DeliveryResult): string | null {
   switch (result.reason) {
     case "composing":
       return "text is sitting in its input box";
+    case "invalid":
+      return "queued input exceeds the provider limit; inspect the agent status for recovery instructions";
     case "unavailable":
       return "its input box isn't recognisable on screen";
     case "unverified":

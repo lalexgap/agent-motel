@@ -3,8 +3,11 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, st
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { connect } from "node:net";
-import { antigravityCommand, antigravityRequest, ANTIGRAVITY_DEFAULT_MODEL, antigravityTranscriptPath, antigravitySocketPath, antigravityDeliveryPath } from "../src/antigravity";
+import { antigravityCommand, antigravityRequest, ANTIGRAVITY_DEFAULT_MODEL, antigravityTranscriptPath, antigravitySocketPath, antigravityDeliveryPath, stopAntigravity } from "../src/antigravity";
 import { readMessage, queueTrackedMessage } from "../src/messages";
+import { locateTranscript, parseTranscript } from "../src/transcript";
+import { trashState, readTrashedState } from "../src/trash";
+import { removeAgent } from "../src/state";
 import { queueDepth, queueAppendLocked } from "../src/queue";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
@@ -22,12 +25,14 @@ beforeEach(() => {
   chmodSync(join(home,'bin','agy'),0o700);
   process.env.PATH = join(home,'bin');
   process.env.AGY_FIXTURE_CAPTURE = join(home,'capture.jsonl');
+  process.env.AGY_FIXTURE_HEARTBEAT = join(home,'heartbeat');
   process.env.ANTIGRAVITY_STARTUP_TIMEOUT_MS = '700';
   process.env.ANTIGRAVITY_ACK_TIMEOUT_MS = '400';
   process.env.ANTIGRAVITY_REQUEST_TIMEOUT_MS = '900';
 });
 afterEach(async () => {
   for (const p of processes.splice(0)) { p.kill('SIGTERM'); await p.exited; }
+  for(const record of capture()) if(record.ownedWorker) {try{process.kill(record.ownedWorker,'SIGKILL');}catch{}}
   process.env = saved;
   rmSync(home,{recursive:true,force:true});
 });
@@ -276,8 +281,8 @@ test('acknowledged delivery marker repairs a receipt and queue without submittin
 });
 
 test('dangling transcript symlink fails closed without creating its target',async()=>{
-  const transcript=antigravityTranscriptPath('api');
-  mkdirSync(join(process.env.AGENTMGR_HOME!,'antigravity','api'),{recursive:true});
+  const transcript=antigravityTranscriptPath('api','fixture-created','fixture-session');
+  mkdirSync(join(transcript,'..'),{recursive:true});
   const target=join(home,'must-not-create');symlinkSync(target,transcript);
   const p=await launch('normal',{message:'task'});
   await until(()=>readAgent('api')?.status==='exited');await p.exited;
@@ -290,4 +295,67 @@ test('terminal output strips untrusted ANSI, OSC, and control bytes',async()=>{
   expect(output).toContain('visible');
   expect(output).not.toContain('\x1b');expect(output).not.toContain('\x07');
   expect(output).not.toContain('malicious-title');
+});
+
+
+for(const mode of ['wrong-model','missing-model','wrong-session']) for(const role of [false,true]) test('F2 rejected init receives zero user frames: '+mode+' role='+role,async()=>{
+  const p=await launch(mode,{...(role?{role:'engineer',roleInstructions:'private role task'}:{message:'private initial task'}),...(mode==='wrong-session'?{resume:'expected'}:{})});
+  await until(()=>readAgent('api')?.status==='exited');await p.exited;
+  expect(capture().filter(x=>x.input)).toEqual([]);
+});
+
+test('F2 delayed init holds the initial task until exact validation',async()=>{
+  await launch('delayed-init',{message:'held task'});
+  await delay(80);expect(capture().filter(x=>x.input)).toEqual([]);
+  await idle();expect(capture().filter(x=>x.input).length).toBe(1);
+});
+
+for(const mode of ['group-crash','group-silent','group-normal']) test('SEC1 owned grandchild stops before exited is reported: '+mode,async()=>{
+  const p=await launch(mode,mode==='group-crash'?{message:'crash'}:{});
+  await until(()=>capture().some(x=>x.heartbeat && existsSync(x.heartbeat)));
+  const heartbeat=capture().find(x=>x.heartbeat).heartbeat;
+  if(mode==='group-normal')p.kill('SIGTERM');
+  await until(()=>readAgent('api')?.status==='exited',4000);await p.exited;
+  const before=readFileSync(heartbeat,'utf8');await delay(100);
+  expect(readFileSync(heartbeat,'utf8')).toBe(before);
+});
+
+test('SEC2/F1 replacement startup failure cannot read old task output and restore retains old namespace',async()=>{
+  const p=await launch('normal',{message:'old task'});await idle();
+  const old=readAgent('api')!;trashState(old);p.kill();await p.exited;removeAgent('api');
+  const other=join(home,'other-project');mkdirSync(other);
+  writeAgent(state({createdAt:'new-incarnation',dir:other}));
+  expect(()=>locateTranscript(readAgent('api')!)).toThrow();
+  process.env.AGY_FIXTURE_MODE='auth';
+  const replacement=Bun.spawn(antigravityCommand('api',{}).command,{env:{...process.env},cwd:other,stdin:'pipe',stdout:'pipe',stderr:'pipe'});processes.push(replacement);
+  await until(()=>readAgent('api')?.status==='exited');await replacement.exited;
+  expect(()=>locateTranscript(readAgent('api')!)).toThrow();
+  removeAgent('api');writeAgent(readTrashedState('api')!);
+  expect(locateTranscript(readAgent('api')!)).toBe(old.transcriptPath!);
+  expect(parseTranscript('antigravity',readFileSync(locateTranscript(readAgent('api')!),'utf8')).turns.some(t=>t.kind==='assistant')).toBe(true);
+});
+
+
+test('SEC1 synchronous stop waits for owned-group cleanup, persists evidence, and fails closed when evidence is missing',async()=>{
+  const p=await launch('group-normal');await idle();
+  await until(()=>capture().some(x=>x.heartbeat && existsSync(x.heartbeat)));
+  const heartbeat=capture().find(x=>x.heartbeat).heartbeat;
+  stopAntigravity(readAgent('api')!);
+  const stopped=readAgent('api')!;
+  expect(stopped.status).toBe('exited');expect(stopped.antigravityCleanupRunId).toBe(stopped.antigravityRunId);
+  const before=readFileSync(heartbeat,'utf8');await delay(100);expect(readFileSync(heartbeat,'utf8')).toBe(before);
+  await p.exited;
+  expect(()=>stopAntigravity(stopped)).not.toThrow();
+  writeAgent({...stopped,antigravityCleanupRunId:undefined});
+  expect(()=>stopAntigravity(readAgent('api')!)).toThrow(/unverified|refused/);
+});
+
+test('SEC2/F1 readers reject a forged path or foreign conversation record',async()=>{
+  await launch('normal',{message:'task'});await idle();
+  const current=readAgent('api')!;
+  expect(()=>locateTranscript({...current,sessionId:'foreign-session'})).toThrow();
+  expect(()=>locateTranscript({...current,createdAt:'replacement-incarnation'})).toThrow();
+  const text=readFileSync(current.transcriptPath!,'utf8');
+  writeFileSync(current.transcriptPath!,text+JSON.stringify({kind:'assistant',text:'foreign result',sessionId:'foreign',createdAt:current.createdAt})+'\n');
+  expect(()=>locateTranscript(current)).toThrow(/provenance/);
 });

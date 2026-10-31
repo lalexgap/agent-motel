@@ -1,3 +1,5 @@
+import { restoreCommand } from "../src/commands/restore";
+import { locateTranscript } from "../src/transcript";
 import { afterEach, beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,7 +9,7 @@ import { queueAppendForAgent, queueDepth } from '../src/queue';
 import { newCommand } from '../src/commands/new';
 import { reviveAgent } from '../src/commands/resume';
 import { restartAgent } from '../src/commands/restart';
-import { stopAgent } from '../src/commands/rm';
+import { stopAgent, destroyAgent } from '../src/commands/rm';
 import { sendCommand } from '../src/commands/send';
 import { startDaemonServer } from '../src/daemon';
 import { shQuote } from '../src/tmux';
@@ -109,7 +111,8 @@ exec ${shQuote(tmux)} -L ${shQuote(socket)} "$@"
   chmodSync(join(bin, 'tmux'), 0o700); chmodSync(join(bin, 'agy'), 0o700);
   process.env.PATH = `${bin}:${process.env.PATH}`;
   process.env.AGENTMGR_SYSTEMD = '0';
-  process.env.AGY_FIXTURE_MODE = 'normal';
+  process.env.AGY_FIXTURE_MODE = 'group-normal';
+  process.env.AGY_FIXTURE_HEARTBEAT = join(isolated,'heartbeat');
   process.env.AGY_FIXTURE_CAPTURE = join(isolated, 'capture.jsonl');
   const spawnSync = Bun.spawnSync;
   const spawnSpy = spyOn(Bun, 'spawnSync').mockImplementation((command: any, opts?: any) => spawnSync(command, {...opts,env:{...process.env,...opts?.env}}));
@@ -124,6 +127,7 @@ exec ${shQuote(tmux)} -L ${shQuote(socket)} "$@"
     Bun.spawnSync([tmux,'-L',socket,'set-environment','-g','PATH',process.env.PATH!],{env:{...process.env}});
     Bun.spawnSync([tmux,'-L',socket,'set-environment','-g','HOME',isolated],{env:{...process.env}});
     Bun.spawnSync([tmux,'-L',socket,'set-environment','-g','AGY_FIXTURE_CAPTURE',process.env.AGY_FIXTURE_CAPTURE!],{env:{...process.env}});
+    for(const key of ['AGY_FIXTURE_MODE','AGY_FIXTURE_HEARTBEAT'])Bun.spawnSync([tmux,'-L',socket,'set-environment','-g',key,process.env[key]!],{env:{...process.env}});
     await newCommand({name:'argon-life',provider:'antigravity',message:'first task',dir:isolated,inPlace:true,jump:false,quiet:true});
     await waitFor(() => readAgent('argon-life')?.status === 'idle');
     const first = readAgent('argon-life')!;
@@ -132,23 +136,35 @@ exec ${shQuote(tmux)} -L ${shQuote(socket)} "$@"
     const sent = await sendCommand(first.name, 'second task', {now:false,quiet:true,track:true});
     expect(sent.id).toBeTruthy();
     await waitFor(() => queueDepth(first.name) === 0 && readAgent(first.name)?.status === 'idle');
-    expect(parseTranscript('antigravity',readFileSync(join(isolated,'state','antigravity',first.name,'transcript.jsonl'),'utf8')).turns.filter(x=>x.kind==='user').map(x=>x.text)).toEqual(['first task','second task']);
+    expect(parseTranscript('antigravity',readFileSync(readAgent(first.name)!.transcriptPath!,'utf8')).turns.filter(x=>x.kind==='user').map(x=>x.text)).toEqual(['first task','second task']);
+    const roots=()=>readFileSync(process.env.AGY_FIXTURE_CAPTURE!,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(x=>x.heartbeat);
+    const firstWorker=roots()[0];
     stopAgent(readAgent(first.name)!);
+    const firstWrites=readFileSync(firstWorker.heartbeat,'utf8');await Bun.sleep(100);expect(readFileSync(firstWorker.heartbeat,'utf8')).toBe(firstWrites);
     expect(readAgent(first.name)?.status).toBe('exited');
     await reviveAgent(readAgent(first.name)!, {message:'third task'});
     await waitFor(() => readAgent(first.name)?.status === 'idle');
     expect(readAgent(first.name)?.sessionId).toBe(first.sessionId);
+    const secondWorker=roots()[1];
     await restartAgent(first.name, {message:'fourth task',model:'gemini-4-argon-medium'});
     await waitFor(() => readAgent(first.name)?.status === 'idle');
     expect(readAgent(first.name)?.sessionId).toBe(first.sessionId);
     expect(readAgent(first.name)?.model).toBe('gemini-4-argon-medium');
+    const secondWrites=readFileSync(secondWorker.heartbeat,'utf8');await Bun.sleep(100);expect(readFileSync(secondWorker.heartbeat,'utf8')).toBe(secondWrites);
     const captures = readFileSync(process.env.AGY_FIXTURE_CAPTURE!, 'utf8').trim().split('\n').map(line=>JSON.parse(line));
     expect(captures.filter(x=>x.args?.includes('--input-format')).slice(1).every(x=>x.args.includes('--conversation') && x.args.includes(first.sessionId))).toBe(true);
     expect(captures.filter(x=>x.input).length).toBe(4);
+    const last=readAgent(first.name)!;
+    destroyAgent(last,{clean:false});expect(readAgent(first.name)).toBeNull();
+    const thirdWorker=roots()[2];const thirdWrites=readFileSync(thirdWorker.heartbeat,'utf8');
+    await Bun.sleep(100);expect(readFileSync(thirdWorker.heartbeat,'utf8')).toBe(thirdWrites);
+    await restoreCommand(first.name,{resume:false});
+    expect(locateTranscript(readAgent(first.name)!)).toBe(last.transcriptPath!);
+    if(process.platform==='linux') for(const root of roots())for(const pid of [root.ownedRoot,root.ownedWorker,root.ownedRunner]) {
+      await waitFor(()=>{try {const stat=readFileSync(`/proc/${pid}/stat`,'utf8');return ['Z','X'].includes(stat.slice(stat.lastIndexOf(')')+2).split(' ')[0]!);}catch{return true;}});
+    }
   } finally {
-    const agent=readAgent('argon-life'); if(agent) stopAgent(agent);
-    daemon.stop();
-    Bun.spawnSync([tmux,'-L',socket,'kill-server'],{stdout:'ignore',stderr:'ignore'});
-    spawnSpy.mockRestore();
+    try {const agent=readAgent('argon-life'); if(agent) stopAgent(agent);}
+    finally {daemon.stop();Bun.spawnSync([tmux,'-L',socket,'kill-server'],{stdout:'ignore',stderr:'ignore'});spawnSpy.mockRestore();}
   }
 }, 15000);

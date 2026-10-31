@@ -43,6 +43,8 @@ export interface AgentState {
   provider?: Provider;
   // Exact runner incarnation; socket requests cannot target a replaced process.
   antigravityRunId?: string;
+  // Only the owning runner sets this after verifying no live owned-group work.
+  antigravityCleanupRunId?: string;
   // Explicit model and reasoning effort; absent = the provider default. Set by
   // `am new` and `am restart --model/--effort`, reused by every resume.
   model?: string;
