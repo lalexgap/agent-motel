@@ -479,8 +479,8 @@ main {
   border: 0;
   background: none;
   padding: 3px;
-  font-size: 17px;
-  color: var(--fg-muted);
+  font-size: 12px;
+  color: var(--accent-text);
 }
 #dock-transcript {
   height: calc(100vh - 365px);

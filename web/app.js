@@ -250,6 +250,8 @@ function lock() {
   $("dock-transcript").replaceChildren();
   $("dock-message").value = "";
   delete $("dock-transcript").dataset.content;
+  delete $("dock-transcript").dataset.historySession;
+  delete $("dock-transcript").dataset.historyStart;
   $("chat-working").hidden = $("dock-working").hidden = true;
   $("app").hidden = true;
   $("login").hidden = false;
@@ -600,12 +602,12 @@ moreActions.addEventListener("keydown", (event) => {
     moreActions.querySelector("summary").focus();
   }
 });
-async function openConcierge(question) {
+async function openConcierge(question, mode) {
   try {
     notice("Opening the front desk…");
     const result = await api("/api/concierge", {});
     notice("");
-    await selectAgent(result.key, question ? "chat" : undefined);
+    await selectAgent(result.key, question ? "chat" : mode);
     if (question) {
       $("message").value = question;
       $("message").focus();
@@ -615,7 +617,7 @@ async function openConcierge(question) {
   }
 }
 $("concierge-nav").onclick = () => openConcierge();
-$("expand-concierge").onclick = () => openConcierge();
+$("expand-concierge").onclick = () => openConcierge(undefined, "chat");
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
@@ -1632,6 +1634,17 @@ setInterval(() => {
 }, 4000);
 unlock().catch(() => {});
 
+function dockHistoryEntries(view, transcript, name) {
+  const messages = transcript.entries.filter((entry) => entry.kind !== "tool");
+  const session = JSON.stringify([name, transcript.sessionId]);
+  const previous = view.dataset.historySession === session ? Number(view.dataset.historyStart) : NaN;
+  const start = messages.some((entry) => entry.index === previous)
+    ? previous : messages[Math.max(0, messages.length - 20)]?.index;
+  view.dataset.historySession = session;
+  if (start === undefined) delete view.dataset.historyStart;
+  else view.dataset.historyStart = String(start);
+  return messages.filter((entry) => entry.index >= start);
+}
 async function refreshDock() {
   const name = state.conciergeKey;
   if (!state.rows.some((row) => key(row) === name)) $("dock-working").hidden = true;
@@ -1655,9 +1668,7 @@ async function refreshDock() {
   const row = state.rows.find((row) => key(row) === name);
   showWorking("dock-working", row?.status, row?.statusChangedAt);
   const view = $("dock-transcript");
-  const entries = transcript.entries
-    .filter((entry) => entry.kind !== "tool")
-    .slice(-20);
+  const entries = dockHistoryEntries(view, transcript, name);
   const pending = pendingFor(name, transcript.entries);
   const fingerprint = JSON.stringify([entries, pending.map((item) => item.text)]);
   if (view.dataset.content === fingerprint) return;
