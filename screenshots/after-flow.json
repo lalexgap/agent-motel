@@ -1,0 +1,13 @@
+{
+  "retained": true,
+  "offsetBefore": 16,
+  "offsetAfter": 16,
+  "count": 21,
+  "scrollTop": 0,
+  "innerWidth": 390,
+  "scrollWidth": 390,
+  "buttonText": "Full conversation ↗",
+  "buttonColor": "rgb(154, 168, 255)",
+  "buttonBackground": "rgba(0, 0, 0, 0)",
+  "headingBackground": "rgb(25, 25, 28)"
+}

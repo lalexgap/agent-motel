@@ -1,0 +1,13 @@
+{
+  "retained": false,
+  "offsetBefore": 16,
+  "offsetAfter": null,
+  "count": 20,
+  "scrollTop": 0,
+  "innerWidth": 390,
+  "scrollWidth": 390,
+  "buttonText": "↗",
+  "buttonColor": "rgb(161, 161, 170)",
+  "buttonBackground": "rgba(0, 0, 0, 0)",
+  "headingBackground": "rgb(25, 25, 28)"
+}
