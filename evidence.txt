@@ -1,0 +1,1 @@
+Fixture evidence at source head7c19030; baseline790dc2f. Synthetic JSONL parent31messages, child2messages, same recorded parent session with bad child transcriptPath. Actual transcriptJson output rendered with production Chat renderer and CSS at390CSSpx. Native image checker passed visible layout; DOM count assertions verified31recovered messages. Not a live fleet capture.
