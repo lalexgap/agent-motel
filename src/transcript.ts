@@ -1,7 +1,7 @@
 import { antigravityTranscriptPath } from "./antigravity";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
 import { codexHome } from "./codexHooks";
 import { readFileTail } from "./fsutil";
@@ -412,6 +412,22 @@ function codexEntryFragments(entry: Record<string, any>): Fragment[] {
   return out;
 }
 
+function codexTranscriptMatchesSession(file: string, sessionId: string): boolean {
+  const namedId = basename(file).match(/^rollout-.*-([0-9a-f-]{36})\.jsonl$/i)?.[1];
+  if (namedId && namedId !== sessionId) return false;
+  const fd = openSync(file, "r");
+  try {
+    // Session metadata is at the start; tool output can make the tail enormous.
+    const buffer = Buffer.alloc(128 * 1024);
+    const length = readSync(fd, buffer, 0, buffer.length, 0);
+    const metadata = parseLines(buffer.subarray(0, length).toString("utf8"))
+      .find((entry) => entry?.type === "session_meta" && typeof entry.payload?.id === "string");
+    return !metadata || metadata.payload.id === sessionId;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // Find the agent's native session file. Hook payloads from both providers
 // include transcript_path; reject a known wrong-provider file left by a
 // stale hook before falling back to the recorded session id.
@@ -435,7 +451,10 @@ export function locateTranscript(agent: AgentState): string {
     const provider = native
       ? (["user", "assistant"].includes(native.type) ? "claude" : "codex")
       : undefined;
-    if (!provider || provider === agentProvider(agent)) return agent.transcriptPath;
+    const sessionId = agentSessionId(agent);
+    const matchesSession = agentProvider(agent) !== "codex" || !sessionId ||
+      codexTranscriptMatchesSession(agent.transcriptPath, sessionId);
+    if ((!provider || provider === agentProvider(agent)) && matchesSession) return agent.transcriptPath;
   }
 
   const sessionId = agentSessionId(agent);

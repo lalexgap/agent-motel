@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { transcriptJson } from "../src/commands/transcript";
 import { sourceTranscript } from "../src/commands/move";
 import {
   locateTranscript,
@@ -316,6 +317,66 @@ describe("locateTranscript stale provider metadata", () => {
       expect(locateTranscript({ ...agent, transcriptPath: rollout })).toBe(rollout);
       expect(() => locateTranscript({ ...agent, sessionId: "old-claude-id" })).toThrow("no codex rollout found");
       expect(locateTranscript({ ...agent, provider: "claude" })).toBe(wrong);
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("Codex parent transcript identity", () => {
+  test("recovers full parent history when a child hook leaves another Codex path", () => {
+    const root = mkdtempSync(join(tmpdir(), "am-transcript-identity-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = root;
+    try {
+      mkdirSync(join(root, "sessions"));
+      const parent = join(root, "sessions", "rollout-parent.jsonl");
+      const child = join(root, "child.jsonl");
+      const meta = (id: string) => JSON.stringify({ type: "session_meta", payload: { id } });
+      const message = (text: string) => JSON.stringify({ type: "response_item", payload: {
+        type: "message", role: "assistant", content: [{ type: "output_text", text }],
+      } });
+      const history = Array.from({ length: 30 }, (_, index) => message(`Parent reply ${index}`));
+      writeFileSync(parent, [meta("parent"), ...history].join("\n"));
+      // Keep session_meta outside the old 64 KiB tail used for provider checks.
+      writeFileSync(child, [meta("child"), message("Child report"), JSON.stringify({ type: "event_msg", padding: "x".repeat(150000) })].join("\n"));
+      const agent = { name: "newsletter", provider: "codex" as const, status: "idle" as const,
+        dir: root, tmuxSession: "test", createdAt: "now", updatedAt: "now",
+        sessionId: "parent", transcriptPath: child };
+      expect(locateTranscript(agent)).toBe(parent);
+      expect(transcriptJson(agent).entries.map(entry => entry.kind === "assistant" ? entry.text : "")).toEqual(
+        Array.from({ length: 30 }, (_, index) => `Parent reply ${index}`));
+      writeFileSync(parent, [meta("parent"), ...history, message("New parent reply")].join("\n"));
+      expect(transcriptJson(agent).total).toBe(31);
+      expect(agent.transcriptPath).toBe(child);
+      expect(agent.sessionId).toBe("parent");
+      expect(locateTranscript({ ...agent, transcriptPath: parent })).toBe(parent);
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a named child rollout even when its metadata header exceeds the probe", () => {
+    const root = mkdtempSync(join(tmpdir(), "am-transcript-large-meta-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = root;
+    try {
+      mkdirSync(join(root, "sessions"));
+      const parentId = "00000000-0000-0000-0000-000000000001";
+      const childId = "00000000-0000-0000-0000-000000000002";
+      const parent = join(root, "sessions", `rollout-date-${parentId}.jsonl`);
+      const child = join(root, "sessions", `rollout-date-${childId}.jsonl`);
+      writeFileSync(parent, JSON.stringify({ type: "session_meta", payload: { id: parentId } }) + "\n");
+      writeFileSync(child, JSON.stringify({ type: "session_meta", payload: { id: childId, instructions: "x".repeat(200000) } }) + "\n");
+      const agent = { name: "newsletter", provider: "codex" as const, status: "idle" as const,
+        dir: root, tmuxSession: "test", createdAt: "now", updatedAt: "now",
+        sessionId: parentId, transcriptPath: child };
+      expect(locateTranscript(agent)).toBe(parent);
     } finally {
       if (previousHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousHome;
