@@ -602,12 +602,12 @@ moreActions.addEventListener("keydown", (event) => {
     moreActions.querySelector("summary").focus();
   }
 });
-async function openConcierge(question) {
+async function openConcierge(question, mode) {
   try {
     notice("Opening the front desk…");
     const result = await api("/api/concierge", {});
     notice("");
-    await selectAgent(result.key, question ? "chat" : undefined);
+    await selectAgent(result.key, question ? "chat" : mode);
     if (question) {
       $("message").value = question;
       $("message").focus();
@@ -617,7 +617,7 @@ async function openConcierge(question) {
   }
 }
 $("concierge-nav").onclick = () => openConcierge();
-$("expand-concierge").onclick = () => openConcierge();
+$("expand-concierge").onclick = () => openConcierge(undefined, "chat");
 document
   .querySelectorAll("[data-ask]")
   .forEach((b) => (b.onclick = () => openConcierge(b.dataset.ask)));
