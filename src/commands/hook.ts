@@ -728,11 +728,11 @@ export async function hookCommand(event: string): Promise<void> {
     agent.promptAt = new Date().toISOString();
     agent.promptKey = typeof payload.prompt === "string" ? promptKey(inbox?.content ?? prompt) : undefined;
   }
-  // Subagent events describe the SUBAGENT, and both providers now give their
-  // subagents transcripts of their own — so never let one repoint the parent's
+  // Subagent events and hooks from within a subagent describe the SUBAGENT.
+  // Both providers give subagents transcripts of their own, so never repoint the parent's
   // conversation, which `am transcript`, `am search` and the activity reader
   // all follow.
-  if (!event.startsWith("subagent-")) {
+  if (!fromSubagent && !event.startsWith("subagent-")) {
     if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
     // Codex includes the rollout file path; saves `am transcript` a search.
     if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
