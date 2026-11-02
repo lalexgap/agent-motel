@@ -265,8 +265,16 @@ function lock() {
     "detail-name",
     "detail-status",
     "detail-meta",
+    "usage-quota",
+    "usage-kpis",
+    "usage-roles",
+    "usage-agents",
+    "usage-workflows",
+    "usage-tools",
+    "usage-anomalies",
   ])
-    $(id).replaceChildren();
+    $(id)?.replaceChildren();
+  if ($("usage-page")) $("usage-page").hidden = true;
   $("pane").textContent = "";
   $("workspace-count").textContent = "";
   $("workspace-summary").textContent = "";
@@ -311,6 +319,8 @@ $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "live") {
   $("search-page").hidden = true;
   $("search-nav").classList.remove("active");
+  if ($("usage-page")) $("usage-page").hidden = true;
+  $("usage-nav")?.classList.remove("active");
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -528,6 +538,7 @@ function saveDraft() {
 }
 async function selectAgent(name, mode) {
   $("search-page").hidden = true;
+  if ($("usage-page")) $("usage-page").hidden = true;
   saveDraft();
   agentTerminal.close();
   state.selected = name;
@@ -1027,10 +1038,11 @@ async function refreshDetail() {
   if (!name) return;
   const base = "/api/agents/" + encodeURIComponent(name);
   const detail = await api(base);
-  const [transcript, permissions, subagents] = await Promise.all([
+  const [transcript, permissions, subagents, tokenUsage] = await Promise.all([
     api(base + "/transcript"),
     capabilityAvailable(detail, "approvalRelay") ? api(base + "/permissions") : { requests: [] },
     capabilityAvailable(detail, "subagents") ? api(base + "/subagents").catch((error) => ({ records: [], error: error.message })) : { records: [] },
+    !name.includes(":") ? api(base + "/usage").catch(() => null) : null,
   ]);
   if (
     name !== state.selected ||
@@ -1067,8 +1079,36 @@ async function refreshDetail() {
     });
     room.append(el("dt", "", title), dd);
   }
+  if (tokenUsage?.combined?.totalTokens > 0) {
+    const subShare = tokenUsage.combined.budgetTokens > 0
+      ? Math.round((tokenUsage.subagentTotals.budgetTokens / tokenUsage.combined.budgetTokens) * 100)
+      : 0;
+    const dd = el("dd", "room-tokens");
+    dd.append(
+      el("span", "", `${formatCompactTokens(tokenUsage.combined.activeTokens)} active · ${formatCompactTokens(tokenUsage.combined.cacheReadTokens)} cache` + (tokenUsage.subagents?.length ? ` · ${subShare}% subagents` : "")),
+    );
+    const link = el("button", "text-button room-tokens-link", "Breakdown →");
+    link.type = "button";
+    link.onclick = () => showUsage(detail.name);
+    dd.append(link);
+    room.append(el("dt", "", "Token usage"), dd);
+  }
   window.agentLinks.render($("pane"), detail.pane || "No active terminal.");
-  renderRelated(name, subagents);
+  const effectiveSubagents =
+    (!subagents.records || subagents.records.length === 0) && tokenUsage?.subagents?.length
+      ? {
+          records: tokenUsage.subagents.map((s) => ({
+            id: s.id,
+            type: s.type,
+            description: s.label,
+            startedAt: s.startedAt,
+            endedAt: s.endedAt,
+            stale: s.status === "stale",
+            tokens: s.tokens,
+          })),
+        }
+      : subagents;
+  renderRelated(name, effectiveSubagents);
 
   const cancelQueued = (item) => async () => {
     try {
@@ -1508,7 +1548,12 @@ async function refresh() {
   state.refreshing = true;
   state.refreshPending = false;
   try {
-    const detailResults = Promise.allSettled([refreshDetail(), refreshDock(), refreshSubagent()]);
+    const detailResults = Promise.allSettled([
+      refreshDetail(),
+      refreshDock(),
+      refreshSubagent(),
+      !$("usage-page")?.hidden ? refreshUsage() : Promise.resolve(),
+    ]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
     state.rows = fleet.rows;
@@ -1755,10 +1800,14 @@ function renderRelated(name, subagents) {
       : sub.endedAt
         ? "Finished"
         : "Running";
+    const tokActive = sub.tokens
+      ? (sub.tokens.inputTokens || 0) + (sub.tokens.cacheCreationTokens || 0) + (sub.tokens.outputTokens || 0)
+      : 0;
+    const tokSuffix = tokActive > 0 ? ` · ${formatCompactTokens(tokActive)} tok` : "";
     const link = el(
       "button",
       "related-link",
-      `↳ ${label} · built-in · ${status}`,
+      `↳ ${label} · built-in${tokSuffix} · ${status}`,
     );
     link.onclick = () => openSubagent(name, sub.id, label, sub.message, status);
     view.append(link);
@@ -1828,3 +1877,518 @@ async function refreshSubagent() {
     );
   }
 }
+
+// --- Token Usage Page --------------------------------------------------------
+
+let usageRequestSeq = 0;
+let lastUsageQuota = null;
+const expandedUsageAgents = new Set();
+
+function formatCompactTokens(n) {
+  const num = Number(n) || 0;
+  if (num <= 0) return "0";
+  if (num >= 1e9) return `${(num / 1e9).toFixed(1)}B`;
+  if (num >= 1e7) return `${Math.round(num / 1e6)}M`;
+  if (num >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
+  if (num >= 1e4) return `${Math.round(num / 1e3)}k`;
+  if (num >= 1e3) return `${(num / 1e3).toFixed(1)}k`;
+  return String(Math.round(num));
+}
+
+function formatResetCountdown(iso) {
+  if (!iso) return "";
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return "resets soon";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `resets in ${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `resets in ${hours}h ${mins % 60}m`;
+  return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function populateUsageAgentSelect(reportAgents = []) {
+  const select = $("usage-agent");
+  if (!select) return;
+  const previous = select.value;
+  const names = new Set();
+  for (const row of state.rows) {
+    if (!row.host && row.name !== "concierge") names.add(row.name);
+  }
+  for (const a of reportAgents) {
+    if (a?.name) names.add(a.name);
+  }
+  const sorted = [...names].sort();
+  if (previous && !sorted.includes(previous)) sorted.unshift(previous);
+  const sig = JSON.stringify(sorted);
+  if (select.dataset.options !== sig) {
+    select.replaceChildren(
+      new Option("All local agents", ""),
+      ...sorted.map((name) => new Option(name, name)),
+    );
+    select.dataset.options = sig;
+  }
+  select.value = previous;
+  $("usage-clear-agent").hidden = !select.value;
+}
+
+function showUsage(agentName) {
+  saveDraft();
+  agentTerminal.close();
+  state.selected = null;
+  state.detailVersion++;
+  connectEvents();
+  $("overview").hidden = true;
+  $("detail").hidden = true;
+  $("search-page").hidden = true;
+  $("usage-page").hidden = false;
+  document.querySelector(".page-heading").hidden = false;
+  $("new-agent").hidden = false;
+  $("page-title").textContent = "Token usage";
+  $("page-title").classList.remove("agent-title");
+  $("page-subtitle").textContent =
+    "Attribution across agents, subagents, workflows, tools, and cache anomalies.";
+  $("breadcrumb").textContent = "Token usage";
+  document
+    .querySelectorAll(".nav")
+    .forEach((button) => button.classList.toggle("active", button.id === "usage-nav"));
+  populateUsageAgentSelect();
+  if (typeof agentName === "string") {
+    if (agentName && ![...$("usage-agent").options].some((o) => o.value === agentName)) {
+      $("usage-agent").add(new Option(agentName, agentName));
+    }
+    $("usage-agent").value = agentName;
+  }
+  $("usage-clear-agent").hidden = !$("usage-agent").value;
+  renderFleet();
+  refreshUsage();
+}
+
+async function refreshUsage(forceQuota = false) {
+  if (!state.authenticated || $("usage-page")?.hidden) return;
+  const reqId = ++usageRequestSeq;
+  const epoch = state.sessionEpoch;
+  const agent = $("usage-agent").value;
+  const provider = $("usage-provider").value;
+  $("usage-clear-agent").hidden = !agent;
+  $("usage-status").textContent = "Loading token usage…";
+  const params = new URLSearchParams();
+  if (agent) params.set("agent", agent);
+  if (provider) params.set("provider", provider);
+  if (forceQuota) params.set("refresh", "1");
+  else if (lastUsageQuota) params.set("quota", "0");
+  try {
+    const data = await api("/api/usage" + (params.toString() ? "?" + params.toString() : ""));
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageRequestSeq) return;
+    if (data.quota) lastUsageQuota = data.quota;
+    renderUsage(data.tokens, lastUsageQuota);
+    $("usage-status").textContent = agent
+      ? `Filtered to ${agent}`
+      : `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+  } catch (error) {
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageRequestSeq) return;
+    $("usage-status").textContent = error.message;
+  }
+}
+
+function renderUsageQuota(quotaList) {
+  const wrap = $("usage-quota");
+  wrap.replaceChildren();
+  if (!Array.isArray(quotaList) || !quotaList.length) return;
+  for (const item of quotaList) {
+    const card = el("div", "usage-quota-card");
+    const head = el("div", "usage-quota-head");
+    const title = el("strong", "", item.provider === "codex" ? "Codex quota" : "Claude quota");
+    const plan = el("span", "usage-pill", item.plan || item.status);
+    head.append(title, plan);
+    card.append(head);
+    if (item.error && (!item.windows || !item.windows.length)) {
+      card.append(el("p", "muted", item.error));
+    } else {
+      for (const win of item.windows || []) {
+        const pct = Math.max(0, Math.min(100, Math.round(win.utilization || 0)));
+        const row = el("div", "usage-window-row");
+        const meta = el("div", "usage-window-meta");
+        meta.append(
+          el("span", "mono", `${win.label} · ${pct}% used`),
+          el("small", "muted", formatResetCountdown(win.resetsAt)),
+        );
+        const track = el("div", "usage-bar-track");
+        const fill = el("div", "usage-bar-fill" + (pct >= 90 ? " danger" : pct >= 75 ? " warn" : ""));
+        fill.style.width = `${pct}%`;
+        track.append(fill);
+        row.append(meta, track);
+        card.append(row);
+      }
+    }
+    wrap.append(card);
+  }
+}
+
+function renderUsage(report, quotaList) {
+  if (!report) return;
+  populateUsageAgentSelect(report.agents || []);
+  renderUsageQuota(quotaList);
+
+  const { main, subagents, combined } = report.totals || {
+    main: {},
+    subagents: {},
+    combined: {},
+  };
+  const subShare = combined.budgetTokens > 0
+    ? Math.round((subagents.budgetTokens / combined.budgetTokens) * 100)
+    : 0;
+  const totalSubs = (report.agents || []).reduce((acc, a) => acc + (a.subagents?.length || 0), 0);
+
+  // KPI strip
+  const kpis = $("usage-kpis");
+  kpis.replaceChildren();
+  const newInput = (combined.inputTokens || 0) + (combined.cacheCreationTokens || 0);
+  for (const [label, value, detail] of [
+    [
+      "Active tokens (new + out)",
+      formatCompactTokens(combined.activeTokens),
+      `${formatCompactTokens(newInput)} new context · ${formatCompactTokens(combined.outputTokens)} output`,
+    ],
+    [
+      "Cached context reads",
+      formatCompactTokens(combined.cacheReadTokens),
+      `${combined.steps ? formatCompactTokens(Math.round((combined.cacheReadTokens || 0) / combined.steps)) : "0"} avg context / step`,
+    ],
+    [
+      "Output tokens",
+      formatCompactTokens(combined.outputTokens),
+      combined.thinkingTokens > 0
+        ? `Includes ${formatCompactTokens(combined.thinkingTokens)} reasoning tokens`
+        : `Main ${formatCompactTokens(main.outputTokens)} · Subagents ${formatCompactTokens(subagents.outputTokens)}`,
+    ],
+    [
+      "Subagent budget share",
+      `${subShare}%`,
+      `${totalSubs} subagent${totalSubs === 1 ? "" : "s"} · ${formatCompactTokens(subagents.activeTokens)} active tokens`,
+    ],
+    [
+      "Total API turns",
+      String(combined.steps || 0),
+      `Main ${main.steps || 0} · Subagents ${subagents.steps || 0}`,
+    ],
+  ]) {
+    const card = el("div", "usage-kpi-card");
+    card.append(
+      el("span", "usage-kpi-label", label),
+      el("strong", "usage-kpi-value", value),
+      el("small", "muted", detail),
+    );
+    kpis.append(card);
+  }
+
+  // 1a. Role pills
+  const rolesWrap = $("usage-roles");
+  rolesWrap.replaceChildren();
+  for (const role of report.byRole || []) {
+    const share = combined.budgetTokens > 0
+      ? Math.round((role.tokens.budgetTokens / combined.budgetTokens) * 100)
+      : 0;
+    const pill = el("div", "usage-role-pill");
+    pill.append(
+      el("span", "usage-role-name", role.role),
+      el("span", "usage-pill", `${role.runs} ${role.scope === "main" ? (role.runs === 1 ? "agent" : "agents") : (role.runs === 1 ? "subagent" : "subagents")}`),
+      el("strong", "mono", `${formatCompactTokens(role.tokens.activeTokens)} active`),
+      el("small", "muted", `${formatCompactTokens(role.tokens.cacheReadTokens)} cache · ${share}%`),
+    );
+    rolesWrap.append(pill);
+  }
+
+  // 1b. Agents & subagents table
+  const agentsWrap = $("usage-agents");
+  agentsWrap.replaceChildren();
+  const agents = report.agents || [];
+  if (!agents.length) {
+    agentsWrap.append(el("p", "empty", "No token usage recorded for matching agents."));
+  } else {
+    const maxBudget = Math.max(1, ...agents.map((a) => a.combined.budgetTokens || 0));
+    const table = el("table", "usage-table");
+    const thead = el("thead");
+    const htr = el("tr");
+    for (const [col, cls] of [
+      ["Agent / Subagent", ""],
+      ["Quota share", ""],
+      ["Steps", "num"],
+      ["Active (new+out)", "num"],
+      ["Cache read", "num"],
+      ["Output", "num"],
+      ["Subagents", ""],
+      ["", "actions-col"],
+    ]) {
+      htr.append(el("th", cls, col));
+    }
+    thead.append(htr);
+    const tbody = el("tbody");
+    const singleAgentMode = Boolean($("usage-agent").value) || agents.length === 1;
+
+    for (const agent of agents) {
+      const tr = el("tr", "usage-agent-row");
+      const nameCell = el("td", "usage-entity-cell");
+      const nameBtn = el("button", "usage-entity-btn");
+      nameBtn.type = "button";
+      nameBtn.append(dot(agent.status), el("strong", "", agent.name));
+      nameBtn.onclick = () => selectAgent(agent.name);
+      const providerTag = el("span", "side-agent-provider", agent.provider);
+      providerTag.dataset.provider = agent.provider;
+      nameCell.append(nameBtn, providerTag);
+      if (agent.role) nameCell.append(el("span", "usage-pill", agent.role));
+
+      const shareCell = el("td", "usage-share-cell");
+      const pct = Math.max(2, Math.round(((agent.combined.budgetTokens || 0) / maxBudget) * 100));
+      const fleetPct = combined.budgetTokens > 0
+        ? Math.round(((agent.combined.budgetTokens || 0) / combined.budgetTokens) * 100)
+        : 0;
+      const track = el("div", "usage-bar-track");
+      const fill = el("div", "usage-bar-fill");
+      fill.style.width = `${pct}%`;
+      track.append(fill);
+      shareCell.append(track, el("small", "mono muted", `${fleetPct}%`));
+
+      const subCount = agent.subagents?.length || 0;
+      const subCellText = subCount > 0
+        ? `${subCount} (${formatCompactTokens(agent.subagentTotals.activeTokens)} active)`
+        : "—";
+
+      const actionsCell = el("td", "actions-col");
+      if (!singleAgentMode) {
+        const filterBtn = el("button", "text-button", "Filter");
+        filterBtn.type = "button";
+        filterBtn.title = `Filter all 4 breakdowns to ${agent.name}`;
+        filterBtn.onclick = () => {
+          $("usage-agent").value = agent.name;
+          refreshUsage();
+        };
+        actionsCell.append(filterBtn);
+      } else if ($("usage-agent").value) {
+        const allBtn = el("button", "text-button", "All agents");
+        allBtn.type = "button";
+        allBtn.onclick = () => {
+          $("usage-agent").value = "";
+          refreshUsage();
+        };
+        actionsCell.append(allBtn);
+      }
+
+      tr.append(
+        nameCell,
+        shareCell,
+        el("td", "num mono", String(agent.combined.steps || 0)),
+        el("td", "num mono strong", formatCompactTokens(agent.combined.activeTokens)),
+        el("td", "num mono muted", formatCompactTokens(agent.combined.cacheReadTokens)),
+        el("td", "num mono", formatCompactTokens(agent.combined.outputTokens)),
+        el("td", "muted", subCellText),
+        actionsCell,
+      );
+      tbody.append(tr);
+
+      const subsWithTokens = (agent.subagents || []).filter((s) => (s.tokens?.totalTokens || 0) > 0);
+      const isExpanded = singleAgentMode || expandedUsageAgents.has(agent.name);
+      const visibleSubs = isExpanded ? subsWithTokens : subsWithTokens.slice(0, 4);
+
+      for (const sub of visibleSubs) {
+        const str = el("tr", "usage-subagent-row");
+        const sNameCell = el("td", "usage-entity-cell usage-subagent-cell");
+        const sBtn = el("button", "usage-subagent-btn");
+        sBtn.type = "button";
+        sBtn.append(
+          el("span", "muted", "⤷"),
+          el("span", "usage-pill role", sub.role || sub.type),
+          el("span", "usage-subagent-label", sub.label),
+        );
+        if (sub.workflow) sBtn.append(el("span", "usage-pill workflow", sub.workflow));
+        if (sub.cacheBusts > 0) {
+          sBtn.append(el("span", "usage-pill warn", `${sub.cacheBusts} cache-bust${sub.cacheBusts === 1 ? "" : "s"}`));
+        }
+        const statusLabel = sub.status === "running" ? "Running" : sub.status === "stale" ? "Session ended" : "Finished";
+        sBtn.onclick = () => openSubagent(agent.name, sub.id, sub.label, "", statusLabel);
+        sNameCell.append(sBtn);
+
+        const sShareCell = el("td", "usage-share-cell");
+        const sPct = agent.combined.budgetTokens > 0
+          ? Math.round(((sub.tokens.budgetTokens || 0) / agent.combined.budgetTokens) * 100)
+          : 0;
+        sShareCell.append(el("small", "mono muted", `${sPct}% of agent`));
+
+        str.append(
+          sNameCell,
+          sShareCell,
+          el("td", "num mono muted", String(sub.tokens.steps || 0)),
+          el("td", "num mono", formatCompactTokens(sub.tokens.activeTokens)),
+          el("td", "num mono muted", formatCompactTokens(sub.tokens.cacheReadTokens)),
+          el("td", "num mono muted", formatCompactTokens(sub.tokens.outputTokens)),
+          el("td", "muted", statusLabel),
+          el("td", "actions-col"),
+        );
+        tbody.append(str);
+      }
+
+      if (!singleAgentMode && subsWithTokens.length > 4) {
+        const moreTr = el("tr", "usage-subagent-more");
+        const moreTd = el("td");
+        moreTd.colSpan = 8;
+        const toggleBtn = el(
+          "button",
+          "text-button",
+          isExpanded
+            ? "Show fewer subagents"
+            : `Show all ${subsWithTokens.length} subagents (+${subsWithTokens.length - 4} more)`,
+        );
+        toggleBtn.type = "button";
+        toggleBtn.onclick = () => {
+          if (expandedUsageAgents.has(agent.name)) expandedUsageAgents.delete(agent.name);
+          else expandedUsageAgents.add(agent.name);
+          renderUsage(report, quotaList);
+        };
+        moreTd.append(toggleBtn);
+        moreTr.append(moreTd);
+        tbody.append(moreTr);
+      }
+    }
+    table.append(thead, tbody);
+    agentsWrap.append(table);
+  }
+
+  // 2. Workflows table
+  const wfWrap = $("usage-workflows");
+  wfWrap.replaceChildren();
+  const workflows = report.workflows || [];
+  if (!workflows.length) {
+    wfWrap.append(el("p", "empty", "No workflow activity recorded."));
+  } else {
+    const maxWf = Math.max(1, ...workflows.map((w) => w.tokens.budgetTokens || 0));
+    const table = el("table", "usage-table compact");
+    const thead = el("thead");
+    const htr = el("tr");
+    for (const [col, cls] of [
+      ["Workflow / Skill", ""],
+      ["Share", ""],
+      ["Runs", "num"],
+      ["Steps", "num"],
+      ["Active", "num"],
+      ["Cache read", "num"],
+      ["Out", "num"],
+    ]) {
+      htr.append(el("th", cls, col));
+    }
+    thead.append(htr);
+    const tbody = el("tbody");
+    for (const wf of workflows.slice(0, 12)) {
+      const tr = el("tr");
+      const pct = Math.max(2, Math.round(((wf.tokens.budgetTokens || 0) / maxWf) * 100));
+      const shareCell = el("td", "usage-share-cell");
+      const track = el("div", "usage-bar-track");
+      const fill = el("div", "usage-bar-fill");
+      fill.style.width = `${pct}%`;
+      track.append(fill);
+      shareCell.append(track);
+      tr.append(
+        el("td", "mono strong", wf.workflow),
+        shareCell,
+        el("td", "num mono muted", String(wf.runs)),
+        el("td", "num mono muted", String(wf.tokens.steps)),
+        el("td", "num mono strong", formatCompactTokens(wf.tokens.activeTokens)),
+        el("td", "num mono muted", formatCompactTokens(wf.tokens.cacheReadTokens)),
+        el("td", "num mono muted", formatCompactTokens(wf.tokens.outputTokens)),
+      );
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    wfWrap.append(table);
+  }
+
+  // 3. Tools & command categories table
+  const toolsWrap = $("usage-tools");
+  toolsWrap.replaceChildren();
+  const tools = report.tools || [];
+  if (!tools.length) {
+    toolsWrap.append(el("p", "empty", "No tool calls recorded."));
+  } else {
+    const maxTool = Math.max(1, ...tools.map((t) => t.tokens.budgetTokens || 0));
+    const table = el("table", "usage-table compact");
+    const thead = el("thead");
+    const htr = el("tr");
+    for (const [col, cls] of [
+      ["Category", ""],
+      ["Share", ""],
+      ["Calls", "num"],
+      ["Steps", "num"],
+      ["Active", "num"],
+      ["Cache read", "num"],
+      ["Out", "num"],
+    ]) {
+      htr.append(el("th", cls, col));
+    }
+    thead.append(htr);
+    const tbody = el("tbody");
+    for (const tool of tools.slice(0, 12)) {
+      const tr = el("tr");
+      const pct = Math.max(2, Math.round(((tool.tokens.budgetTokens || 0) / maxTool) * 100));
+      const shareCell = el("td", "usage-share-cell");
+      const track = el("div", "usage-bar-track");
+      const fill = el("div", "usage-bar-fill");
+      fill.style.width = `${pct}%`;
+      track.append(fill);
+      shareCell.append(track);
+      tr.append(
+        el("td", "strong", tool.category),
+        shareCell,
+        el("td", "num mono muted", String(tool.calls)),
+        el("td", "num mono muted", String(tool.tokens.steps)),
+        el("td", "num mono strong", formatCompactTokens(tool.tokens.activeTokens)),
+        el("td", "num mono muted", formatCompactTokens(tool.tokens.cacheReadTokens)),
+        el("td", "num mono muted", formatCompactTokens(tool.tokens.outputTokens)),
+      );
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    toolsWrap.append(table);
+  }
+
+  // 4. Anomalies list
+  const anomWrap = $("usage-anomalies");
+  anomWrap.replaceChildren();
+  const anomalies = report.anomalies || [];
+  if (!anomalies.length) {
+    anomWrap.append(el("p", "empty", "No major token budget anomalies detected."));
+  } else {
+    for (const item of anomalies) {
+      const card = el("div", "usage-anomaly-card");
+      const top = el("div", "usage-anomaly-top");
+      const kindBadge = el("span", `usage-pill anomaly-${item.kind}`, item.kind);
+      const targetBtn = el(
+        "button",
+        "text-button usage-anomaly-target",
+        item.subagentLabel ? `${item.agent} › ${item.subagentLabel}` : item.agent,
+      );
+      targetBtn.type = "button";
+      targetBtn.onclick = () => {
+        if (item.subagentId) {
+          openSubagent(item.agent, item.subagentId, item.subagentLabel || item.subagentId, "", "Finished");
+        } else {
+          selectAgent(item.agent);
+        }
+      };
+      const impact = el("span", "mono usage-anomaly-impact", `${formatCompactTokens(item.tokens)} tok`);
+      top.append(kindBadge, targetBtn, impact);
+      card.append(
+        top,
+        el("p", "usage-anomaly-title", item.title),
+        el("small", "muted", item.detail),
+      );
+      anomWrap.append(card);
+    }
+  }
+}
+
+$("usage-nav").onclick = () => showUsage();
+$("usage-agent").onchange = () => refreshUsage();
+$("usage-provider").onchange = () => refreshUsage();
+$("usage-refresh").onclick = () => refreshUsage(true);
+$("usage-clear-agent").onclick = () => {
+  $("usage-agent").value = "";
+  refreshUsage();
+};

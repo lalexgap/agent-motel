@@ -57,7 +57,9 @@ import {
   recordSubagentStart,
   recordSubagentStop,
   subagentDescription,
+  subagentTranscriptFile,
 } from "../subagents";
+import { snapshotSubagentTokens } from "../tokenUsage";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -372,12 +374,15 @@ export function recordSubagentEvent(
     if (id) {
       const transcriptPath =
         typeof payload.agent_transcript_path === "string" ? payload.agent_transcript_path : undefined;
+      const resolvedTranscript =
+        transcriptPath ?? (agentProvider(agent) === "claude" ? (subagentTranscriptFile(agent, id) ?? undefined) : undefined);
       recordSubagentStop(name, {
         id,
         type,
         description: subagentDescription(agent, id, transcriptPath),
         message: typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : undefined,
         transcriptPath,
+        tokens: snapshotSubagentTokens(agentProvider(agent), resolvedTranscript),
       });
     }
     return;

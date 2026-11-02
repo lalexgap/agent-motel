@@ -50,6 +50,8 @@
           ><button id="attention-nav" class="nav" data-short="Attention">
             ◉ <span>Needs attention</span><b id="attention-count">0</b></button
           ><button id="search-nav" class="nav" data-short="Search">⌕ <span>Search</span></button
+          ><button id="usage-nav" class="nav" data-short="Usage">
+            ◔ <span>Token usage</span></button
           ><button id="concierge-nav" class="nav" data-short="Concierge">
             ✳ <span>Concierge</span>
           </button>
@@ -102,6 +104,62 @@
             </form>
             <p id="advanced-summary" role="status"></p>
             <div id="advanced-results" class="advanced-results"></div>
+          </section>
+          <section id="usage-page" hidden aria-label="Token usage">
+            <div class="usage-toolbar">
+              <div class="usage-filters">
+                <label>Scope<select id="usage-agent"><option value="">All local agents</option></select></label>
+                <label>Provider<select id="usage-provider"><option value="">All providers</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="antigravity">Antigravity</option></select></label>
+                <button id="usage-refresh" type="button">Refresh</button>
+                <button id="usage-clear-agent" type="button" hidden>All agents</button>
+              </div>
+              <span id="usage-status" class="muted" role="status"></span>
+            </div>
+            <div id="usage-quota" class="usage-quota-grid" aria-label="Provider rate limit headroom"></div>
+            <div id="usage-kpis" class="usage-kpi-grid" aria-label="Token summary metrics"></div>
+            <div class="usage-grid">
+              <section class="usage-card usage-span-full" aria-labelledby="usage-agents-heading">
+                <div class="usage-card-header">
+                  <div>
+                    <p class="eyebrow">OPTION 1 · HIERARCHY &amp; ROLES</p>
+                    <h2 id="usage-agents-heading">By agent, subagent &amp; role</h2>
+                  </div>
+                  <small class="muted">Ranked by quota weight (1× new input · 1.25× cache write · 0.1× cache read · 5× output)</small>
+                </div>
+                <div id="usage-roles" class="usage-role-pills"></div>
+                <div id="usage-agents" class="usage-table-wrap"></div>
+              </section>
+              <section class="usage-card" aria-labelledby="usage-workflows-heading">
+                <div class="usage-card-header">
+                  <div>
+                    <p class="eyebrow">OPTION 2 · SKILLS &amp; WORKFLOWS</p>
+                    <h2 id="usage-workflows-heading">By workflow / skill</h2>
+                  </div>
+                  <small class="muted">Attributed from skill preambles, prompts &amp; tool calls</small>
+                </div>
+                <div id="usage-workflows" class="usage-table-wrap"></div>
+              </section>
+              <section class="usage-card" aria-labelledby="usage-tools-heading">
+                <div class="usage-card-header">
+                  <div>
+                    <p class="eyebrow">OPTION 3 · TOOL &amp; COMMAND ATTRIBUTION</p>
+                    <h2 id="usage-tools-heading">By tool &amp; command category</h2>
+                  </div>
+                  <small class="muted">Includes dev-server (stack.sh), verify-ui, git, CI, tests &amp; MCP</small>
+                </div>
+                <div id="usage-tools" class="usage-table-wrap"></div>
+              </section>
+              <section class="usage-card usage-span-full" aria-labelledby="usage-anomalies-heading">
+                <div class="usage-card-header">
+                  <div>
+                    <p class="eyebrow">OPTION 4 · DIAGNOSTICS</p>
+                    <h2 id="usage-anomalies-heading">Top budget offenders &amp; anomalies</h2>
+                  </div>
+                  <small class="muted">Cache-bust pauses (&gt;5m idle), bloated tool outputs, high-step polling loops &amp; subagent cold-start tax</small>
+                </div>
+                <div id="usage-anomalies" class="usage-anomaly-list"></div>
+              </section>
+            </div>
           </section>
           <section id="overview">
             <div class="overview-layout">
