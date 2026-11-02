@@ -14,6 +14,7 @@ import { codexResumeDaemon, type ResumeOpts } from "./resume";
 import { runIfIdle, type IdleRefusal } from "./rm";
 import { CODEX_LAUNCH_BUDGET_MS, CODEX_STOP_BUDGET_MS, codexDeadline, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
+import { ensureAgentPlan } from "../plan";
 
 export interface RestartOpts extends ResumeOpts {
   // undefined keeps the agent's current value; null returns to the provider
@@ -62,6 +63,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   // Re-checked on the re-read agent: a concurrent restart may have changed the half this one keeps.
   validateChange(agent, opts);
   if (provider === "codex") ensureCodexHooks();
+  ensureAgentPlan(agent);
   const previous = { model: agent.model, effort: agent.effort, status: agent.status, reason: agent.statusReason };
   // Saved on the agent, so every later resume launches with them too.
   Object.assign(agent, nextSelection(agent, opts));

@@ -123,6 +123,16 @@ export function outboxBouncesFile(): string {
   return join(baseDir(), "outbox-bounces.jsonl");
 }
 
+// One running plan per agent (see plan.ts): what it is working on, kept
+// current by the agent itself so the operator always has a readable status.
+export function plansDir(): string {
+  return join(baseDir(), "plans");
+}
+
+export function planFile(name: string): string {
+  return join(plansDir(), `${name}.md`);
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }
@@ -157,7 +167,7 @@ export function apiTokenFile(): string {
 }
 
 export function ensureDirs(): void {
-  for (const dir of [agentsDir(), rolesDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir()]) {
+  for (const dir of [agentsDir(), rolesDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir(), plansDir()]) {
     mkdirSync(dir, { recursive: true });
   }
 }

@@ -1,7 +1,7 @@
 import { loadConfig } from "../config";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureDirs, handoffsDir } from "../paths";
+import { ensureDirs, handoffsDir, planFile } from "../paths";
 import { agentProvider, readAgent, resolveAgent, type Provider } from "../state";
 import { locateTranscript, parseTranscript, renderTranscript } from "../transcript";
 import { newCommand } from "./new";
@@ -47,6 +47,7 @@ export async function handoffAgent(
   writeFileSync(handoffFile, markdown, { mode: 0o600 });
 
   const name = uniqueName(opts.newName ?? `${agent.name}-${target}`);
+  const sourcePlan = existsSync(planFile(agent.name)) ? planFile(agent.name) : undefined;
   const message = [
     `You are taking over work from the agent "${agent.name}" (running on ${source}). The full transcript of its conversation is at:`,
     "",
@@ -54,6 +55,7 @@ export async function handoffAgent(
     "",
     "Read it first. Tool outputs in a transcript can be stale — re-verify the actual state of the files/repo before continuing the work.",
     ...(agent.task ? ["", `The original task was: ${agent.task}`] : []),
+    ...(sourcePlan ? ["", `${agent.name}'s running plan carries over as your own at ${planFile(name)}: read it, then keep it current as you go.`] : []),
   ].join("\n");
 
   const revision = Bun.spawnSync(["git", "-C", agent.dir, "rev-parse", "--verify", "HEAD"], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
@@ -75,6 +77,8 @@ export async function handoffAgent(
     provider: target,
     role: agent.role,
     roleInstructions: agent.roleInstructions,
+    noPlan: agent.noPlan,
+    planFrom: sourcePlan,
     jump: opts.jump,
     quiet: opts.quiet,
   });

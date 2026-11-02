@@ -10,7 +10,8 @@ import {
   writeAgent,
   type AgentState,
 } from "../state";
-import { inboxDir, sharedDir } from "../paths";
+import { inboxDir, planFile, sharedDir } from "../paths";
+import { renamePlan } from "../plan";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { acquireProducerLock, releaseProducerLock } from "../mailbox";
 import { queueAppendForAgent, queueStorageExists, renameQueue } from "../queue";
@@ -125,6 +126,9 @@ async function renameAgentLocked(
   if (existsSync(sharedDir(newName))) {
     throw new Error(`shared-artifact storage already exists for "${newName}" — run \`am gc\` or choose another name`);
   }
+  if (existsSync(planFile(newName))) {
+    throw new Error(`a plan file already exists for "${newName}" (${planFile(newName)}) — remove it or choose another name`);
+  }
 
   if (!acquireDeliverLock(oldName)) {
     throw new Error(`agent "${oldName}" is receiving a queued message — retry the rename in a moment`);
@@ -144,6 +148,7 @@ async function renameAgentLocked(
   const hadInbox = existsSync(inboxDir(oldName));
   const hadSubagents = subagentsExist(oldName);
   const hadShared = existsSync(sharedDir(oldName));
+  const hadPlan = existsSync(planFile(oldName));
   let stateRenamed = false;
   let sessionRenamed = false;
   try {
@@ -153,6 +158,7 @@ async function renameAgentLocked(
     renameSubagents(oldName, newName);
     if (hadInbox) renameSync(inboxDir(oldName), inboxDir(newName));
     if (hadShared) renameSync(sharedDir(oldName), sharedDir(newName));
+    if (hadPlan) renamePlan(oldName, newName);
     if (live) {
       renameSession(oldSession, newSession);
       sessionRenamed = true;
@@ -171,6 +177,7 @@ async function renameAgentLocked(
     // Before the state file changes, every artifact move is safely reversible.
     if (!stateRenamed) {
       try {
+        if (hadPlan && existsSync(planFile(newName))) renamePlan(newName, oldName);
         if (hadShared && existsSync(sharedDir(newName))) renameSync(sharedDir(newName), sharedDir(oldName));
         if (hadInbox && existsSync(inboxDir(newName))) renameSync(inboxDir(newName), inboxDir(oldName));
         if (hadSnapshot && snapshotExists(newName)) renameSnapshot(newName, oldName);
@@ -202,7 +209,7 @@ async function renameAgentLocked(
   // Exited Codex sessions need the same notice because resume cannot append a
   // fresh system prompt (Claude can).
   if (live || agentProvider(agent) === "codex") {
-    const notice = `[am] Your managed agent identity was renamed from "${oldName}" to "${newName}". Use the new name for am commands and peer messages. Your worktree and branch are unchanged.`;
+    const notice = `[am] Your managed agent identity was renamed from "${oldName}" to "${newName}". Use the new name for am commands and peer messages. Your worktree and branch are unchanged.${hadPlan ? ` Your plan file is now ${planFile(newName)}.` : ""}`;
     queueAppendForAgent(newName, notice);
   }
 

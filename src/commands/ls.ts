@@ -3,6 +3,7 @@ import { closeSync, existsSync, lstatSync, openSync, readdirSync, readlinkSync, 
 import { join } from "node:path";
 import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "../state";
 import { claudeProjectSlug } from "../transcript";
+import { planFile } from "../paths";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
@@ -266,6 +267,8 @@ export interface AgentRow {
   repoRoot?: string;
   // null = checked, dir is not a git checkout; undefined = not checked yet.
   diff?: DiffSummary | null;
+  // The agent's running plan file (am plan), when it has one. JSON only.
+  planFile?: string;
 }
 
 export interface DiffSummary {
@@ -449,6 +452,7 @@ export function lsCommand(opts: { json: boolean; localOnly?: boolean; role?: str
       if (local && row.status !== "exited" && row.diff === undefined) {
         row.diff = gitDiffSummary(row.dir);
       }
+      if (local && existsSync(planFile(row.name))) row.planFile = planFile(row.name);
     }
     console.log(JSON.stringify(fleet.rows, null, 2));
     return;

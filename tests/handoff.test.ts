@@ -80,3 +80,13 @@ test("handover preserves a retained destination branch and chooses a fresh branc
   expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ name: "replacement", base: head, worktree: expect.stringMatching(/^am\/replacement-handoff-/) }));
   expect(git("rev-parse", "am/replacement")).toBe(retained);
 });
+
+test("handover carries the source plan over and points the brief at it", async () => {
+  const { ensurePlan } = await import("../src/plan");
+  const { planFile } = await import("../src/paths");
+  ensurePlan("source-long", "the task");
+  await handoffAgent("source-long", { to: "codex", newName: "replacement", exact: true, jump: false, quiet: true });
+  const opts = spawn.mock.calls[0]![0] as { message: string; planFrom?: string };
+  expect(opts.planFrom).toBe(planFile("source-long"));
+  expect(opts.message).toContain(`running plan carries over as your own at ${planFile("replacement")}`);
+});

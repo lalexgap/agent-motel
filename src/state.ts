@@ -106,6 +106,13 @@ export interface AgentState {
   // The agent that ran `am new` to create this one (AGENTMGR_AGENT at spawn).
   // Lets `--report` / a bare report target default to "whoever made me".
   spawnedBy?: string;
+  // Created with --no-plan: never give it a plan file, even on resume.
+  noPlan?: boolean;
+  // Set at every main-session start (startup, resume, compaction, /clear): the
+  // next prompt injects the plan head once, then clears it.
+  planPending?: boolean;
+  // A long turn ended without touching the plan; the next prompt nudges once.
+  planNudge?: boolean;
   createdAt: string;
   updatedAt: string;
 }

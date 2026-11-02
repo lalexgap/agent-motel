@@ -28,6 +28,7 @@ import { loadConfig } from "../config";
 import { createWorktree, isGitRepo } from "./new";
 import { newMsgId } from "../msgid";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
+import { importPlan, readPlan } from "../plan";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -39,6 +40,8 @@ export interface MovePayload {
   queue: string[];
   queueIds?: (string | null | undefined)[];
   receivedMsgIds?: string[];
+  // The agent's running plan file; absent from older am versions.
+  plan?: string;
 }
 
 interface MoveHooks {
@@ -232,6 +235,11 @@ export function importPayload(raw: string, handoffToken?: string): string {
       queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined);
     }
     for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
+    try {
+      importPlan(state.name, payload.plan);
+    } catch {
+      // the plan is advisory; the agent gets a fresh one on resume
+    }
     if (handoffToken) beginDeliveryHandoff(state.name, handoffToken);
     return state.name;
   } finally {
@@ -480,6 +488,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
         ],
         queueIds: [undefined, ...backlog.map((m) => m.msgId)],
         receivedMsgIds: queueReceiptIds(agent.name),
+        plan: readPlan(agent.name) ?? undefined,
       };
       const imported = await sshAm(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
       if (imported.exitCode !== 0) {
@@ -562,6 +571,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       handoffToken?: string;
       home: string;
       transcript: { path: string; codexRelative: string | null } | null;
+      plan?: unknown;
     };
 
     validateRemoteExport(remote, opts.exact ? name : undefined);
@@ -677,6 +687,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
         ],
         queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
         receivedMsgIds: remote.receivedMsgIds,
+        plan: typeof remote.plan === "string" ? remote.plan : undefined,
       });
 
     await importAfterRenew(importRaw, renew, handoff);
@@ -801,6 +812,7 @@ export function exportCommand(name: string, mode?: string, token?: string): void
         receivedMsgIds: queueReceiptIds(agent.name),
         home: homedir(),
         transcript: sourceTranscript(agent),
+        plan: readPlan(agent.name) ?? undefined,
         ...(mode === "handoff" ? { handoffToken: token } : {}),
       }),
     );

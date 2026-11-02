@@ -267,6 +267,14 @@ describe("importPayload", () => {
     expect(queueList("migrated").map((m) => m.message)).toEqual(["pending one", "pending two"]);
   });
 
+  test("carries the plan file along", async () => {
+    const { planFile } = await import("../src/paths");
+    const { readFileSync } = await import("node:fs");
+    const raw = JSON.parse(payload(home));
+    importPayload(JSON.stringify({ ...raw, plan: "# Plan: migrated\n\nhalfway" }));
+    expect(readFileSync(planFile("migrated"), "utf8")).toBe("# Plan: migrated\n\nhalfway");
+  });
+
   test("refuses name collisions and missing dirs", () => {
     const dir = join(home, "workdir");
     mkdirSync(dir, { recursive: true });

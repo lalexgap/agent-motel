@@ -1,8 +1,9 @@
 import { acquireLifecycleLock, releaseLifecycleLock } from "../lifecycle";
 import { ANTIGRAVITY_DEFAULT_MODEL, findLatestAntigravitySession, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { ensureDirs, worktreesDir, expandHome } from "../paths";
+import { ensureDirs, worktreesDir, expandHome, planFile } from "../paths";
+import { ensurePlan, planWanted } from "../plan";
 import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider, providerBinary } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
@@ -169,6 +170,11 @@ export interface NewOptions {
   quiet?: boolean;
   // Set only by ensureConcierge: allows creating the reserved concierge agent.
   concierge?: boolean;
+  // Skip the running plan file (see plan.ts) for this agent, for good.
+  noPlan?: boolean;
+  // Seed the plan from this file instead of the template (handoff carries the
+  // source agent's plan over).
+  planFrom?: string;
 }
 
 // Without a thread up front, hooks fall back to matching the launch by dir.
@@ -349,6 +355,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     roleInstructions,
     reportTo,
     spawnedBy,
+    ...(opts.noPlan ? { noPlan: true } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -361,6 +368,15 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   try {
     if (runnerLaunch) reserveAntigravityLaunch(state, plan, true);
     else writeAgent(state);
+    // Before the session starts, so its first prompt finds the plan to inject.
+    const planCreated = planWanted(state) && !existsSync(planFile(name));
+    if (planCreated) {
+      try {
+        ensurePlan(name, state.task, { from: opts.planFrom });
+      } catch (error) {
+        if (!opts.quiet) console.error(`warning: could not create the plan file: ${(error as Error).message}`);
+      }
+    }
     // Queue before the session starts so the SessionStart hook finds it.
     if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
     try {
@@ -369,6 +385,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
       if (runnerLaunch) failAntigravityLaunch(state);
       removeAgent(name);
       queueClear(name);
+      if (planCreated) rmSync(planFile(name), { force: true });
       throw error;
     }
   } finally {
