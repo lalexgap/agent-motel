@@ -36,15 +36,6 @@ export interface TokenBuckets {
   costUSD?: number;
 }
 
-export interface SubagentTokenSummary {
-  steps: number;
-  inputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  outputTokens: number;
-  thinkingTokens?: number;
-}
-
 export interface SubagentTokenRecord {
   id: string;
   type: string;

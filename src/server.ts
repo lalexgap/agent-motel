@@ -455,7 +455,7 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       return json({ ok: true, name: result.name, target: result.target, key: `${host}:${result.name}` }, 201);
     }
     if (route === "rename" && method === "POST") {
-      const body = await req.json().catch(() => null);
+      const body = (await req.json().catch(() => null)) as { name?: unknown } | null;
       if (typeof body?.name !== "string" || !AGENT_NAME_RE.test(body.name) || body.name.length > 64)
         return json({ error: "Use a name of 1–64 letters, numbers, dashes or underscores" }, 400);
       await ensureExactCapable(host, name);
@@ -647,7 +647,7 @@ async function auditedApi(req: Request, parts: string[]): Promise<Response> {
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
   if (parts.length === 1 && parts[0] === "search" && method === "POST") {
-    const body = await req.json().catch(() => null);
+    const body = (await req.json().catch(() => null)) as { query?: unknown } | null;
     const query = body?.query;
     if (!validSearchQuery(query)) return json({ error: "Search must contain 2–256 characters" }, 400);
     if (activeSearches >= 2) return json({ error: "Search is busy. Try again shortly." }, 429);
@@ -818,7 +818,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     const target = parseTarget(parts[1]!);
     if (target instanceof Response) return target;
     if (parts.length === 3 && parts[2] === "move" && method === "POST") {
-      const body = await req.json().catch(() => null);
+      const body = (await req.json().catch(() => null)) as { host?: unknown; dir?: unknown } | null;
       if (typeof body?.host !== "string" || !HOST_RE.test(body.host)) return json({ error: "destination host required" }, 400);
       const destination = resolveHost(body.host);
       if (destination === undefined) return json({ error: "unknown destination host" }, 404);

@@ -402,7 +402,7 @@ export function reconcileAntigravityAgent(
   let transitionedToIdle = false;
   let beforeIdleSnapshot: AgentState | undefined;
 
-  const updated = updateAgentIf(agent.name, (current) => {
+  updateAgentIf(agent.name, (current) => {
     if (current.provider !== "antigravity" || current.antigravityRunId || current.createdAt !== agent.createdAt) {
       return false;
     }
@@ -463,7 +463,7 @@ export function reconcileAntigravityAgent(
     return changed;
   });
 
-  const result = updated ?? readAgent(agent.name) ?? agent;
+  const result = readAgent(agent.name) ?? agent;
   if (transitionedToIdle && beforeIdleSnapshot) {
     try {
       const endedAt = new Date(Date.parse(result.statusChangedAt ?? "") || Date.now());
