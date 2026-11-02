@@ -90,3 +90,12 @@ test("handover carries the source plan over and points the brief at it", async (
   expect(opts.planFrom).toBe(planFile("source-long"));
   expect(opts.message).toContain(`running plan carries over as your own at ${planFile("replacement")}`);
 });
+
+test("handover leaves the plan out of the brief when the new agent gets no plan", async () => {
+  const { ensurePlan } = await import("../src/plan");
+  ensurePlan("source-long", "the task");
+  writeFileSync(join(home, "config.json"), JSON.stringify({ plans: false }));
+  await handoffAgent("source-long", { to: "codex", newName: "replacement", exact: true, jump: false, quiet: true });
+  const opts = spawn.mock.calls[0]![0] as { message: string };
+  expect(opts.message).not.toContain("running plan carries over");
+});

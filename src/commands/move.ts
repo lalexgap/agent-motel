@@ -28,7 +28,7 @@ import { loadConfig } from "../config";
 import { createWorktree, isGitRepo } from "./new";
 import { newMsgId } from "../msgid";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
-import { importPlan, readPlan } from "../plan";
+import { importPlan, readPlan, removePlan } from "../plan";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -50,18 +50,19 @@ interface MoveHooks {
   runAsync?: typeof runAsync;
 }
 
-export async function importAfterRenew(raw: string, renew: () => Promise<void>, handoffToken?: string): Promise<string> {
+export async function importAfterRenew(raw: string, renew: () => Promise<void>, handoffToken?: string): Promise<ImportResult> {
   await renew();
-  return importPayload(raw, handoffToken);
+  return importPayloadResult(raw, handoffToken);
 }
 
-function rollbackImportedAgent(name: string, imported: AgentState, queue: ReturnType<typeof queueList>): boolean {
+function rollbackImportedAgent(name: string, imported: AgentState, queue: ReturnType<typeof queueList>, planCreated: boolean): boolean {
   const current = readAgent(name);
   if (!current || current.updatedAt !== imported.updatedAt || hasSession(current.tmuxSession)) return false;
   const currentQueue = queueList(name);
   if (JSON.stringify(currentQueue) !== JSON.stringify(queue)) return false;
   queueClear(name);
   removeAgent(name);
+  if (planCreated) removePlan(name);
   return true;
 }
 
@@ -91,9 +92,10 @@ export function resolveSourceRemovalFailure(
   importedQueue: ReturnType<typeof queueList>,
   original: AgentState,
   probe: SourceProbe,
+  planCreated = false,
 ): { source: "present" | "gone" | "uncertain"; rolledBack: boolean } {
   const source = sourcePresence(probe, original);
-  return { source, rolledBack: source === "present" && rollbackImportedAgent(name, imported, importedQueue) };
+  return { source, rolledBack: source === "present" && rollbackImportedAgent(name, imported, importedQueue, planCreated) };
 }
 
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
@@ -219,11 +221,21 @@ export function sourceTranscript(agent: AgentState): { path: string; codexRelati
   }
 }
 
+export interface ImportResult {
+  name: string;
+  planCreated: boolean;
+}
+
 export function importPayload(raw: string, handoffToken?: string): string {
+  return importPayloadResult(raw, handoffToken).name;
+}
+
+function importPayloadResult(raw: string, handoffToken?: string): ImportResult {
   const payload = JSON.parse(raw) as MovePayload;
   const state = payload.state;
   if (state?.provider === "antigravity") throw new Error("Antigravity import/move is unsupported: native conversation storage has not been verified");
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
+  if (typeof state.name !== "string" || !/^[A-Za-z0-9_-]+$/.test(state.name)) throw new Error(`invalid agent name in move payload: ${JSON.stringify(state.name)}`);
   if (!existsSync(state.dir)) throw new Error(`target dir does not exist: ${state.dir}`);
   if (!acquireDeliverLock(state.name)) throw new Error(`agent "${state.name}" is receiving a message — retry the import`);
   try {
@@ -235,13 +247,14 @@ export function importPayload(raw: string, handoffToken?: string): string {
       queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined);
     }
     for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
+    let planCreated = false;
     try {
-      importPlan(state.name, payload.plan);
+      planCreated = importPlan(state.name, payload.plan);
     } catch {
       // the plan is advisory; the agent gets a fresh one on resume
     }
     if (handoffToken) beginDeliveryHandoff(state.name, handoffToken);
-    return state.name;
+    return { name: state.name, planCreated };
   } finally {
     releaseDeliverLock(state.name);
   }
@@ -690,7 +703,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
         plan: typeof remote.plan === "string" ? remote.plan : undefined,
       });
 
-    await importAfterRenew(importRaw, renew, handoff);
+    const { planCreated } = await importAfterRenew(importRaw, renew, handoff);
     const imported = readAgent(name)!;
     const importedQueue = queueList(name);
     try {
@@ -698,7 +711,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
         const removed = await sshAm(host, ["rm", name, "--for-move"], { timeoutMs: 15000 });
         if (removed.exitCode !== 0) {
           const probe = await sshAm(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
-          const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe);
+          const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe, planCreated);
           const detail = (removed.stderr + removed.stdout).trim();
           const outcome = recovery.rolledBack
             ? "source is still present; local import rolled back"
