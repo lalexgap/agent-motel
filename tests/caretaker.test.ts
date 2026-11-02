@@ -84,7 +84,8 @@ test("idle scan is admitted under delivery locks without steering", async () => 
   seed("idle");
   spies.push(spyOn(tmux, "hasSession").mockReturnValue(true));
   const delivered = spyOn(deliver, "deliverNext").mockResolvedValue({
-    status: "empty",
+    status: "queued",
+    reason: "empty",
   });
   spies.push(delivered);
   await caretakerCommand({ scan: true });

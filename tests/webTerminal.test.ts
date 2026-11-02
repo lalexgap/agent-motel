@@ -224,6 +224,11 @@ describe("real Bun PTY", () => {
     } finally { attached.terminal!.close(); attached.kill(); }
   });
   test("missing tmux session after selection cannot attach replacement by name", () => {
+    // Session ids are only unique within one tmux server; keep it alive so killing the
+    // last session (e.g. on the isolated runner's private socket) cannot restart ids at $0.
+    const keepalive = `am-terminal-test-${process.pid}-replaced-keepalive`;
+    expect(tmux("new-session", "-d", "-s", keepalive, "cat").exitCode).toBe(0);
+    sessions.push(keepalive);
     const session = live("replaced");
     const first = terminalTarget("replaced") as TerminalTarget;
     tmux("kill-session", "-t", `=${session}`);

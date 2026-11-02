@@ -1270,7 +1270,7 @@ describe("subagent API", () => {
     recordSubagentStart("parent", { id: "child-1", type: "reviewer" });
     const result = await fetch(url("/api/agents/parent/subagents"), auth());
     expect(result.status).toBe(200);
-    expect((await result.json()).records[0]).toMatchObject({ id: "child-1", stale: true });
+    expect(((await result.json()) as { records: unknown[] }).records[0]).toMatchObject({ id: "child-1", stale: true });
     expect((await fetch(url("/api/agents/missing/subagents"), auth())).status).toBe(404);
   });
   test("reads a completed built-in transcript and rejects invalid selectors", async () => {
@@ -1283,7 +1283,7 @@ describe("subagent API", () => {
     recordSubagentStop("parent", { id: "child-1", transcriptPath: file });
     const response = await fetch(url("/api/agents/parent/transcript?subagent=child-1"), auth());
     expect(response.status).toBe(200);
-    expect((await response.json()).entries[0].text).toBe("Child result");
+    expect(((await response.json()) as { entries: { text: string }[] }).entries[0]!.text).toBe("Child result");
     expect((await fetch(url("/api/agents/parent/transcript?subagent=../../etc/passwd"), auth())).status).toBe(400);
     expect((await fetch(url("/api/agents/parent/transcript?subagent=unknown"), auth())).status).toBe(409);
     expect((await fetch(url("/api/agents/parent/subagents"))).status).toBe(401);
@@ -1302,7 +1302,7 @@ test("conversation search requires authentication, validates query and federates
   try {
     const response = await fetch(url("/api/search"), auth({ method: "POST", body: JSON.stringify({ query: "--needle" }) }));
     expect(response.status).toBe(200);
-    expect((await response.json()).matches[0]).toMatchObject({ name: "child", host: "laptop" });
+    expect(((await response.json()) as { matches: unknown[] }).matches[0]).toMatchObject({ name: "child", host: "laptop" });
     expect(calls[0].args).toEqual(["__web-search", "--local", "--exact"]);
     expect(calls[0].opts.stdin).toBe(JSON.stringify("--needle"));
   } finally { setRemoteRunnersForTests(); }
