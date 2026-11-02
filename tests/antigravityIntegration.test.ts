@@ -1,4 +1,5 @@
 import { restoreCommand } from "../src/commands/restore";
+import { displayStatus } from "../src/commands/ls";
 import { locateTranscript } from "../src/transcript";
 import { afterEach, beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { chmodSync, mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -26,6 +27,8 @@ beforeEach(() => {
   process.env.HOME = isolated;
   process.env.CODEX_HOME = join(isolated, '.codex');
   process.env.AGENTMGR_HOME = join(isolated, 'state');
+  delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+  delete process.env.ANTIGRAVITY_GEMINI_DIR;
 });
 afterEach(() => { process.env = savedEnv; rmSync(isolated, {recursive:true,force:true}); });
 function agyState(): AgentState {
@@ -44,10 +47,14 @@ describe('Antigravity provider integration', () => {
     expect(providerBinary('claude')).toBe('claude');
     expect(providerBinary('codex')).toBe('codex');
   });
-  test('launch uses native stream runner and maps global permission bypass', () => {
-    const launch = buildLaunchCommand('antigravity', 'argon-test', {message:'hello'});
-    expect(launch.command.join(' ')).toContain('antigravityRunner.ts');
-    expect(launch.command.join(' ')).not.toContain('--dangerously');
+  test('launch uses native agy TUI and maps global permission bypass', () => {
+    const launch = buildLaunchCommand('antigravity', 'argon-test', {message:'hello', dir: isolated});
+    expect(launch.command[0]).toBe('agy');
+    expect(launch.command).toContain('--dangerously-skip-permissions');
+    expect(launch.command).toContain('--settings');
+    expect(launch.command).toContain('--model');
+    expect(launch.command).toContain('gemini-4-argon-high');
+    expect(launch.command).toContain('-i');
     expect(permissionArgs('antigravity')).toEqual(['--dangerously-skip-permissions']);
   });
   test('resume never guesses latest when the saved conversation is missing', () => {
@@ -118,7 +125,12 @@ exec ${shQuote(tmux)} -L ${shQuote(socket)} "$@"
   const spawnSpy = spyOn(Bun, 'spawnSync').mockImplementation((command: any, opts?: any) => spawnSync(command, {...opts,env:{...process.env,...opts?.env}}));
   const daemon = startDaemonServer();
   const waitFor = async (check: () => boolean) => {
-    for (let tries=0; tries<150; tries++) { if (check()) return; await Bun.sleep(20); }
+    for (let tries=0; tries<150; tries++) {
+      const current = readAgent('argon-life');
+      if (current) displayStatus(current);
+      if (check()) return;
+      await Bun.sleep(20);
+    }
     const pane=Bun.spawnSync([tmux,'-L',socket,'capture-pane','-p','-t','=agentmgr-argon-life:'],{env:{...process.env}}).stdout.toString();
     throw new Error(`lifecycle fixture timeout: ${JSON.stringify(readAgent('argon-life'))}; pane=${pane}`);
   };
@@ -152,7 +164,7 @@ exec ${shQuote(tmux)} -L ${shQuote(socket)} "$@"
     expect(readAgent(first.name)?.model).toBe('gemini-4-argon-medium');
     const secondWrites=readFileSync(secondWorker.heartbeat,'utf8');await Bun.sleep(100);expect(readFileSync(secondWorker.heartbeat,'utf8')).toBe(secondWrites);
     const captures = readFileSync(process.env.AGY_FIXTURE_CAPTURE!, 'utf8').trim().split('\n').map(line=>JSON.parse(line));
-    expect(captures.filter(x=>x.args?.includes('--input-format')).slice(1).every(x=>x.args.includes('--conversation') && x.args.includes(first.sessionId))).toBe(true);
+    expect(captures.filter(x=>x.args?.includes('--model')).slice(1).every(x=>x.args.includes('--conversation') && x.args.includes(first.sessionId))).toBe(true);
     expect(captures.filter(x=>x.input).length).toBe(4);
     const last=readAgent(first.name)!;
     destroyAgent(last,{clean:false});expect(readAgent(first.name)).toBeNull();

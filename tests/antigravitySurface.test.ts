@@ -40,12 +40,14 @@ test("provider parsing accepts the exact id and rejects conflicts uniformly", ()
 
 test("catalog probes agy models only and parses documented plain model rows", () => {
   const commands: string[][] = [];
-  const catalog = providerCatalog("antigravity", { run: command => { commands.push(command); return { exitCode: 0, stdout: listing }; } });
+  const spinnerListing = "\r⠋ Fetching available models...\r\r" + listing + "gpt-oss-120b-medium       GPT-OSS 120B (Medium)\n";
+  const catalog = providerCatalog("antigravity", { run: command => { commands.push(command); return { exitCode: 0, stdout: spinnerListing }; } });
   expect(commands).toEqual([["agy", "models"]]);
   expect(catalog).toMatchObject({ provider: "antigravity", modelsExhaustive: true, efforts: ["low", "medium", "high"], effortsExhaustive: false });
   expect(catalog?.models).toEqual([
     { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", efforts: [] },
     { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", efforts: [] },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", efforts: [] },
   ]);
   expect(validateSelection(catalog, { model: "invented" })[0]?.fatal).toBe(true);
   expect(validateSelection(catalog, { model: "gemini-4-argon-high", effort: "future" })[0]?.fatal).toBe(false);

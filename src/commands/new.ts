@@ -1,5 +1,5 @@
 import { acquireLifecycleLock, releaseLifecycleLock } from "../lifecycle";
-import { ANTIGRAVITY_DEFAULT_MODEL, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
+import { ANTIGRAVITY_DEFAULT_MODEL, findLatestAntigravitySession, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
@@ -210,7 +210,9 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const provider = providerForRole(opts.role, loadConfig().defaultProvider, opts.provider);
   let model = modelForRole(opts.role, provider, opts.model);
   if (provider === "antigravity") {
-    model ??= ANTIGRAVITY_DEFAULT_MODEL;
+    model ??= opts.effort && ["low", "medium", "high"].includes(opts.effort)
+      ? `gemini-4-argon-${opts.effort}`
+      : ANTIGRAVITY_DEFAULT_MODEL;
     // Validate unsupported options before daemon/config/worktree side effects.
     buildLaunchCommand(provider, name, { ...opts, model });
   }
@@ -299,6 +301,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   const plan = buildLaunchCommand(provider, name, {
     ...opts,
+    dir,
     resume: codexThreadId ?? opts.resume,
     // The thread carries these too, but an attached TUI starts each turn
     // with its own model and effort, so it needs them as well.
@@ -326,11 +329,22 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     codexDaemon,
     codexDaemonAttached,
     codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,
-    sessionId: codexThreadId,
+    sessionId:
+      codexThreadId ??
+      (provider === "antigravity"
+        ? typeof opts.resume === "string"
+          ? opts.resume
+          : opts.continue && !plan.antigravityRunId
+            ? findLatestAntigravitySession(dir, name)
+            : undefined
+        : undefined),
     worktreePath,
     worktreeBranch,
     repoRoot,
     task: opts.message,
+    ...(provider === "antigravity" && !plan.antigravityRunId && plan.command.includes("-i")
+      ? { lastHandoffAt: now, promptAt: now }
+      : {}),
     role: role?.name,
     roleInstructions,
     reportTo,
@@ -341,23 +355,24 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // Register the agent BEFORE its queue and session exist: the SessionStart
   // hook reads the state file to drain the queue, and gc's orphan scan treats
   // a queue without a registered owner as garbage.
-  const nativeLaunch=provider==="antigravity";
-  if(nativeLaunch && !acquireLifecycleLock(name))throw new Error(`agent "${name}" lifecycle is busy — retry creation`);
+  const antigravityLaunch = provider === "antigravity";
+  const runnerLaunch = Boolean(plan.antigravityRunId);
+  if (antigravityLaunch && !acquireLifecycleLock(name)) throw new Error(`agent "${name}" lifecycle is busy — retry creation`);
   try {
-    if(nativeLaunch)reserveAntigravityLaunch(state,plan,true);
+    if (runnerLaunch) reserveAntigravityLaunch(state, plan, true);
     else writeAgent(state);
     // Queue before the session starts so the SessionStart hook finds it.
     if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
     try {
       newSession({ session, dir, env: agentEnv(name, provider), command: scrubNestedSessionEnv(plan.command) });
     } catch (error) {
-      if(nativeLaunch)failAntigravityLaunch(state);
+      if (runnerLaunch) failAntigravityLaunch(state);
       removeAgent(name);
       queueClear(name);
       throw error;
     }
   } finally {
-    if(nativeLaunch)releaseLifecycleLock(name);
+    if (antigravityLaunch) releaseLifecycleLock(name);
   }
 
   if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);

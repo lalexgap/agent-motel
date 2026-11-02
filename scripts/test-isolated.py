@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix='am-isolated-') as directory:
                CLAUDE_CONFIG_DIR=str(user / '.claude'),
                XDG_CONFIG_HOME=str(user / '.config'),
                AGENTMGR_HOME=str(root / 'am'), AGENTMGR_SYSTEMD='0',
+               ANTIGRAVITY_APP_DATA_DIR='', ANTIGRAVITY_GEMINI_DIR='',
                PATH=str(bindir) + ':' + env.get('PATH', ''),
                AM_TEST_SYSTEMD='0', AGENTMGR_AGENT='', AM_HOST='', TMUX='')
     try:

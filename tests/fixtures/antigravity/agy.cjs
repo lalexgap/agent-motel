@@ -1,20 +1,78 @@
 const fs = require('node:fs');
+const path = require('node:path');
 const readline = require('node:readline');
 const mode = process.env.AGY_FIXTURE_MODE || 'normal';
 const args = process.argv.slice(2);
-const capture = (x) => fs.appendFileSync(process.env.AGY_FIXTURE_CAPTURE, JSON.stringify(x) + '\n');
+const capture = (x) => {
+  if (process.env.AGY_FIXTURE_CAPTURE) {
+    fs.appendFileSync(process.env.AGY_FIXTURE_CAPTURE, JSON.stringify(x) + '\n');
+  }
+};
 const emit = (x) => { if(mode==='flat') x=x.step_update ? {...x.step_update,event:x.event} : x.result ? {...x.result,event:x.event} : x; process.stdout.write(JSON.stringify(x) + '\n'); };
 capture({args});
-if(args[0]==='models') { console.log('gemini-4-argon-high Gemini 4 Argon High\ngemini-4-argon-medium Gemini 4 Argon Medium');process.exit(0); }
+if(args[0]==='models') { console.log('gemini-4-argon-high  Gemini 4 Argon High\ngemini-4-argon-medium  Gemini 4 Argon Medium');process.exit(0); }
 const conversation = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'fixture-session';
 const model = args[args.indexOf('--model') + 1];
 let turn = 0;
+let worker;
 if(mode.startsWith('group-')) {
   const workerCode = `const fs=require('node:fs'); for(const s of ['SIGTERM','SIGHUP','SIGINT'])process.on(s,()=>{}); setInterval(()=>fs.appendFileSync(process.env.AGY_FIXTURE_HEARTBEAT,'x'),10);`;
   const heartbeat=process.env.AGY_FIXTURE_HEARTBEAT+'.'+process.pid;
-  const worker=require('node:child_process').spawn(process.execPath,['-e',workerCode],{env:{...process.env,AGY_FIXTURE_HEARTBEAT:heartbeat},stdio:'ignore'});
-  capture({ownedRoot:process.pid,ownedWorker:worker.pid,ownedRunner:process.ppid,heartbeat});
-  process.on('SIGTERM',()=>process.exit(0));process.on('SIGHUP',()=>process.exit(0));
+  worker=require('node:child_process').spawn(process.execPath,['-e',workerCode],{env:{...process.env,AGY_FIXTURE_HEARTBEAT:heartbeat},stdio:'ignore'});
+  capture({ownedRoot:process.pid,ownedWorker:worker.pid,ownedRunner:args.includes('--input-format')?process.ppid:process.pid,heartbeat});
+  const cleanupAndExit = () => {
+    if (!args.includes('--input-format') && worker?.pid) {
+      try { process.kill(worker.pid, 'SIGKILL'); } catch {}
+    }
+    process.exit(0);
+  };
+  process.on('SIGTERM', cleanupAndExit);
+  process.on('SIGHUP', cleanupAndExit);
+}
+
+if (!args.includes('--input-format')) {
+  const appDataDir = process.env.ANTIGRAVITY_APP_DATA_DIR || path.join(process.env.ANTIGRAVITY_GEMINI_DIR || path.join(process.env.HOME || '/tmp', '.gemini'), 'antigravity-cli');
+  const cacheDir = path.join(appDataDir, 'cache');
+  const cacheFile = path.join(cacheDir, 'last_conversations.json');
+  const transcriptFile = path.join(appDataDir, 'brain', conversation, '.system_generated', 'logs', 'transcript.jsonl');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
+  let map = {};
+  try { map = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch {}
+  map[process.cwd()] = conversation;
+  try { map[fs.realpathSync(process.cwd())] = conversation; } catch {}
+  fs.writeFileSync(cacheFile, JSON.stringify(map));
+
+  const renderIdle = () => {
+    process.stdout.write('\x1b[2J\x1b[H\n────────────────────────────────────────\n> \n────────────────────────────────────────\n  ? for shortcuts\n');
+  };
+  const runTuiTurn = (promptText) => {
+    capture({ input: { event: 'user', message: { content: promptText } } });
+    turn++;
+    const now = new Date().toISOString();
+    fs.appendFileSync(transcriptFile, JSON.stringify({ step_index: turn * 2 - 1, type: 'USER_INPUT', status: 'DONE', created_at: now, content: promptText }) + '\n');
+    fs.appendFileSync(transcriptFile, JSON.stringify({ step_index: turn * 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(Date.now() + 5).toISOString(), content: 'hello ' + turn }) + '\n');
+    renderIdle();
+  };
+
+  if (args.includes('-i')) {
+    const initial = args[args.indexOf('-i') + 1];
+    if (initial) runTuiTurn(initial);
+    else renderIdle();
+  } else {
+    renderIdle();
+  }
+  const tuiRl = readline.createInterface({ input: process.stdin });
+  tuiRl.on('line', (line) => {
+    const text = line.replace(/^\s*>\s?/, '').trim();
+    if (!text) {
+      renderIdle();
+      return;
+    }
+    runTuiTurn(text);
+  });
+  setInterval(() => {}, 1000);
+  return;
 }
 
 process.on('SIGINT', () => { capture({signal: 'SIGINT'}); if (mode === 'survive-interrupt') return; process.exit(130); });

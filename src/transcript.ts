@@ -1,4 +1,4 @@
-import { antigravityTranscriptPath } from "./antigravity";
+import { antigravityTranscriptPath, nativeAntigravityTranscriptPath, reconcileAntigravityAgent } from "./antigravity";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -270,11 +270,55 @@ function antigravityRecord(value: unknown): AntigravityRecord | undefined {
   return entry as AntigravityRecord;
 }
 
+const ANTIGRAVITY_TASK_MARKER = "\n\n# Your task\n\n";
+
+function stripAntigravitySystemPrompt(text: string): string {
+  if (!text.startsWith("You are running as a managed agent named ")) return text;
+  const idx = text.indexOf(ANTIGRAVITY_TASK_MARKER);
+  return idx >= 0 ? text.slice(idx + ANTIGRAVITY_TASK_MARKER.length) : text;
+}
+
 function parseAntigravityTranscript(jsonl: string): Transcript {
   const transcript: Transcript = { source: "antigravity", turns: [] };
   const responses = new Map<string, { turn: Extract<Turn, { kind: "assistant" }>; bytes: number; final: boolean }>();
   const tools = new Map<string, Extract<Turn, { kind: "tool" }>>();
+  const pendingNativeTools: Array<Extract<Turn, { kind: "tool" }>> = [];
   for (const value of parseLines(jsonl)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (value.type === "USER_INPUT" && typeof value.content === "string") {
+        transcript.startedAt ??= typeof value.created_at === "string" ? value.created_at : undefined;
+        const text = stripAntigravitySystemPrompt(value.content);
+        if (text.trim()) transcript.turns.push({ kind: "user", text });
+        continue;
+      }
+      if (value.type === "PLANNER_RESPONSE") {
+        transcript.startedAt ??= typeof value.created_at === "string" ? value.created_at : undefined;
+        if (typeof value.content === "string" && value.content.trim()) {
+          transcript.turns.push({ kind: "assistant", text: value.content.trimEnd() });
+        }
+        if (Array.isArray(value.tool_calls)) {
+          for (const call of value.tool_calls) {
+            if (!call || typeof call !== "object") continue;
+            const tool: Extract<Turn, { kind: "tool" }> = {
+              kind: "tool",
+              name: typeof call.name === "string" && call.name.trim() ? call.name : "tool",
+              input: compactValue(call.arguments ?? call.input ?? ""),
+            };
+            pendingNativeTools.push(tool);
+            transcript.turns.push(tool);
+          }
+        }
+        continue;
+      }
+      if (value.type === "GENERIC") {
+        const tool = pendingNativeTools.shift();
+        if (tool) {
+          if (typeof value.content === "string" && value.content.trim()) tool.output = value.content;
+          if (value.status === "ERROR" || value.status === "CANCELED") tool.error = true;
+        }
+        continue;
+      }
+    }
     const entry = antigravityRecord(value);
     if (!entry) continue;
     transcript.sessionId ??= typeof entry.sessionId === "string" ? entry.sessionId : undefined;
@@ -332,6 +376,28 @@ export interface Fragment {
 
 export function entryFragments(provider: Provider, entry: Record<string, any>): Fragment[] {
   if (provider === "antigravity") {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      if (entry.type === "USER_INPUT" && typeof entry.content === "string") {
+        const text = stripAntigravitySystemPrompt(entry.content);
+        return text.trim() ? [{ kind: "user", text }] : [];
+      }
+      if (entry.type === "PLANNER_RESPONSE") {
+        const out: Fragment[] = [];
+        if (typeof entry.content === "string" && entry.content.trim()) {
+          out.push({ kind: "assistant", text: entry.content });
+        }
+        if (Array.isArray(entry.tool_calls)) {
+          for (const call of entry.tool_calls) {
+            const input = compactValue(call?.arguments ?? call?.input);
+            if (input.trim()) out.push({ kind: "tool", text: `${call?.name ?? "tool"} ${input}` });
+          }
+        }
+        return out;
+      }
+      if (entry.type === "GENERIC" && typeof entry.content === "string" && entry.content.trim()) {
+        return [{ kind: "tool", text: entry.content }];
+      }
+    }
     const record = antigravityRecord(entry);
     if (!record) return [];
     if (record.kind === "user" || record.kind === "assistant") return [{ kind: record.kind, text: record.text }];
@@ -433,15 +499,41 @@ function codexTranscriptMatchesSession(file: string, sessionId: string): boolean
 // stale hook before falling back to the recorded session id.
 export function locateTranscript(agent: AgentState): string {
   if (agentProvider(agent) === "antigravity") {
-    if(!agent.sessionId)throw new Error("Antigravity transcript requires a validated conversation identity");
-    const expected=antigravityTranscriptPath(agent.name,agent.createdAt,agent.sessionId);
-    if(!agent.transcriptPath || agent.transcriptPath!==expected)throw new Error("no transcript bound to this Antigravity incarnation and conversation");
-    if(!existsSync(expected))throw new Error("no AM-recorded Antigravity transcript yet; native agy storage is not imported");
-    if(lstatSync(expected).isSymbolicLink() || realpathSync(expected)!==expected)throw new Error("Antigravity transcript path must remain inside its owned namespace");
-    for(const entry of parseLines(readFileSync(expected,"utf8"))) {
-      if(entry.createdAt!==agent.createdAt || entry.sessionId!==agent.sessionId)throw new Error("Antigravity transcript provenance does not match the current incarnation and conversation");
+    if (!agent.sessionId && !agent.antigravityRunId) {
+      Object.assign(agent, reconcileAntigravityAgent(agent));
     }
-    return expected;
+    if (!agent.sessionId) throw new Error("Antigravity transcript requires a validated conversation identity");
+    const expectedLegacy = antigravityTranscriptPath(agent.name, agent.createdAt, agent.sessionId);
+    const expectedNative = nativeAntigravityTranscriptPath(agent.sessionId);
+    if (
+      agent.antigravityRunId ||
+      agent.transcriptPath === expectedLegacy ||
+      (!agent.transcriptPath && existsSync(expectedLegacy) && !existsSync(expectedNative))
+    ) {
+      if (!agent.transcriptPath || agent.transcriptPath !== expectedLegacy) {
+        throw new Error("no transcript bound to this Antigravity incarnation and conversation");
+      }
+      if (!existsSync(expectedLegacy)) throw new Error("no AM-recorded Antigravity transcript yet; native agy storage is not imported");
+      if (lstatSync(expectedLegacy).isSymbolicLink() || realpathSync(expectedLegacy) !== expectedLegacy) {
+        throw new Error("Antigravity transcript path must remain inside its owned namespace");
+      }
+      for (const entry of parseLines(readFileSync(expectedLegacy, "utf8"))) {
+        if (entry.createdAt !== agent.createdAt || entry.sessionId !== agent.sessionId) {
+          throw new Error("Antigravity transcript provenance does not match the current incarnation and conversation");
+        }
+      }
+      return expectedLegacy;
+    }
+    if (agent.transcriptPath && agent.transcriptPath !== expectedNative) {
+      throw new Error("no transcript bound to this Antigravity incarnation and conversation");
+    }
+    if (!existsSync(expectedNative)) {
+      throw new Error(`no antigravity session file at ${expectedNative}`);
+    }
+    if (lstatSync(expectedNative).isSymbolicLink()) {
+      throw new Error("Antigravity transcript path must remain inside its owned namespace");
+    }
+    return expectedNative;
   }
   if (agent.transcriptPath && existsSync(agent.transcriptPath)) {
     const entries = parseLines(readFileTail(agent.transcriptPath, 64 * 1024) ?? "");

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { reconcileAntigravityAgent } from "../antigravity";
 import { readAgent, agentProvider, type AgentState, type Provider } from "../state";
 import { queueDepth } from "../queue";
 import { hasSession } from "../tmux";
@@ -110,10 +111,13 @@ export async function waitForTurn(
   let idleSince: number | null = null;
 
   while (Date.now() - start < timeoutMs) {
-    const agent = readAgent(name);
+    let agent = readAgent(name);
     if (!agent) return "exited"; // removed out from under us
     if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
       return "exited"; // session gone (reboot, kill) — the status can't change
+    }
+    if (agentProvider(agent) === "antigravity" && !agent.antigravityRunId) {
+      agent = reconcileAntigravityAgent(agent);
     }
     const drained = queueDepth(name) === 0;
 
