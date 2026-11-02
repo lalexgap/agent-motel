@@ -139,6 +139,56 @@ describe("Antigravity append-only transcript projection", () => {
     expect(entryFragments("antigravity", null as any)).toEqual([]);
   });
 
+  test("parses native agy transcript steps (USER_INPUT, PLANNER_RESPONSE, GENERIC) and strips the managed system prompt", () => {
+    const native = [
+      {
+        step_index: 1,
+        type: "USER_INPUT",
+        status: "DONE",
+        created_at: "2026-11-02T16:00:00Z",
+        content: 'You are running as a managed agent named "argon" in a tmux session controlled by the `am` CLI.\n\n# Your task\n\nInspect the UI',
+      },
+      {
+        step_index: 2,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        created_at: "2026-11-02T16:00:02Z",
+        content: "Reading the file now.",
+        tool_calls: [
+          { id: "call-1", name: "read_file", arguments: JSON.stringify({ Path: "/tmp/app.js" }) },
+        ],
+      },
+      {
+        step_index: 3,
+        type: "GENERIC",
+        status: "DONE",
+        created_at: "2026-11-02T16:00:03Z",
+        content: "1: console.log('ok');",
+      },
+      {
+        step_index: 4,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        created_at: "2026-11-02T16:00:04Z",
+        content: "All set.",
+      },
+    ];
+    const parsed = project(native);
+    expect(parsed.startedAt).toBe("2026-11-02T16:00:00Z");
+    expect(parsed.turns).toEqual([
+      { kind: "user", text: "Inspect the UI" },
+      { kind: "assistant", text: "Reading the file now." },
+      { kind: "tool", name: "read_file", input: JSON.stringify({ Path: "/tmp/app.js" }), output: "1: console.log('ok');" },
+      { kind: "assistant", text: "All set." },
+    ]);
+    expect(entryFragments("antigravity", native[0]!)).toEqual([{ kind: "user", text: "Inspect the UI" }]);
+    expect(entryFragments("antigravity", native[1]!)).toEqual([
+      { kind: "assistant", text: "Reading the file now." },
+      { kind: "tool", text: `read_file ${JSON.stringify({ Path: "/tmp/app.js" })}` },
+    ]);
+    expect(entryFragments("antigravity", native[2]!)).toEqual([{ kind: "tool", text: "1: console.log('ok');" }]);
+  });
+
   test("new records retain existing locateTranscript provenance and namespace checks", () => {
     const previous = process.env.AGENTMGR_HOME;
     const root = mkdtempSync(join(tmpdir(), "am-projection-"));

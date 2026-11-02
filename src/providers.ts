@@ -1,4 +1,4 @@
-import { antigravityCommand, ANTIGRAVITY_DEFAULT_MODEL } from "./antigravity";
+import { antigravityTuiCommand, ANTIGRAVITY_DEFAULT_MODEL } from "./antigravity";
 import { writeHookSettings } from "./settings";
 import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
@@ -124,6 +124,8 @@ export interface LaunchOpts extends ConversationOpts {
   roleInstructions?: string;
   // Codex only: attach to the app-server daemon, running in this dir.
   codexDaemonDir?: string;
+  // Optional launch directory (used to pre-trust the workspace in Antigravity).
+  dir?: string;
 }
 
 // Codex has no --effort flag; reasoning effort is a config override.
@@ -165,7 +167,18 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
 }
 
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
-  if (provider === "antigravity") return antigravityCommand(name, { ...opts, skipPermissions: loadConfig().skipPermissions });
+  if (provider === "antigravity") {
+    const initialPrompt = !opts.resume && !opts.continue
+      ? (opts.message
+          ? `${agentSystemPrompt(name, opts)}\n\n# Your task\n\n${opts.message}`
+          : (opts.role || opts.reportTo ? agentSystemPrompt(name, opts) : undefined))
+      : opts.message;
+    return antigravityTuiCommand(name, {
+      ...opts,
+      skipPermissions: loadConfig().skipPermissions,
+      initialPrompt,
+    });
+  }
   if (provider === "codex") {
     const conversation = codexConversationArgs(opts);
     const command = [
@@ -197,10 +210,17 @@ export function buildResumeCommand(
   const sessionId = agentSessionId(agent);
   if (provider === "antigravity") {
     if (!sessionId) throw new Error("Antigravity resume requires a saved conversation ID; refusing to guess the latest session");
-    return antigravityCommand(agent.name, {
-      ...opts, resume: sessionId, model: agent.model ?? ANTIGRAVITY_DEFAULT_MODEL,
+    return antigravityTuiCommand(agent.name, {
+      ...opts,
+      dir: agent.dir,
+      resume: sessionId,
+      model: agent.model ?? ANTIGRAVITY_DEFAULT_MODEL,
       skipPermissions: loadConfig().skipPermissions,
-      effort: agent.effort, reportTo: agent.reportTo, role: roleForAgent(agent), roleInstructions: agent.roleInstructions,
+      effort: agent.effort,
+      reportTo: agent.reportTo,
+      role: roleForAgent(agent),
+      roleInstructions: agent.roleInstructions,
+      initialPrompt: opts.message,
     });
   }
   if (provider === "codex") {

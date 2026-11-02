@@ -5,15 +5,18 @@ AM's canonical provider ID is **`antigravity`**, selected with **`--antigravity`
 model served by that runtime; it is not a provider alias. Existing Claude/Codex
 launches and AM's Codex defaults are unchanged.
 
-This integration uses Google's documented **headless bidirectional stream**,
-wrapped in an AM terminal runner. It does not launch the native agy TUI. This
-matters because Google documents strict model rejection in headless mode while
-interactive model selection can fall back. Every launch pins a model; the AM
-default for this provider is `gemini-4-argon-high`. AM verifies the stream's
-model echo and conversation identity before reporting readiness or submitting
-initial task/role input. An unavailable
-model is an error, including a model configured on a role. AM never retries with
-a different model.
+This integration launches Google's native interactive **`agy` TUI** directly in
+the agent's tmux session (just like Claude Code and Codex), pre-trusting the
+agent directory via `--settings '{"trustedWorkspaces":[...]}'` and passing an
+exact `--model` (default `gemini-4-argon-high`), optional `--effort`,
+`--conversation` / `--continue`, and `-i <prompt>`. AM discovers the conversation
+identity from `~/.gemini/antigravity-cli/cache/last_conversations.json` or its
+SQLite `conversations` store, reconciles live `working`/`idle` status from the
+tmux pane (`esc to cancel` / `Generating...`), native transcript
+(`~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl`),
+and SQLite `running` state, and delivers queued prompts through the TUI composer.
+Legacy headless stream-json runner helpers remain available for existing runner
+tests and backward compatibility.
 
 ## Prerequisites and billing
 

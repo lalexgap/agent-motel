@@ -160,18 +160,22 @@ function claudeAdditionalModels(): unknown {
   return config?.additionalModelOptionsCache;
 }
 
-// `agy models` prints slug + display label. Require complete, bounded rows;
-// auth prompts and errors must never become an exhaustive model catalog.
+// `agy models` prints slug + display label (preceded on stdout by `\r` spinner
+// frames). Require complete, bounded rows; auth prompts and errors must never
+// become an exhaustive model catalog.
 export function parseAntigravityCatalog(output: string): ProviderCatalog | null {
   if (output.length > 1024 * 1024) return null;
-  const rows = output.trim().split(/\r?\n/);
-  if (!output.trim() || rows.length > 1000) return null;
+  const rows = output
+    .split(/\r?\n/)
+    .map((row) => row.replace(/^[\s\S]*\r/, "").trim())
+    .filter(Boolean);
+  if (!rows.length || rows.length > 1000) return null;
   const models: ModelOption[] = [];
   for (const row of rows) {
     const match = row.match(/^([a-z][a-z0-9]*(?:[.-][a-z0-9]+)+)[ \t]{2,}([A-Z][^\x00-\x1f\x7f]*)$/);
     if (!match || !/\d/.test(match[1]!)) return null;
     const [, id, label] = match;
-    if (label!.split(/[ \t]/)[0]!.toLowerCase() !== id!.split(/[.-]/)[0]) return null;
+    if (label!.split(/[ \t-]/)[0]!.toLowerCase() !== id!.split(/[.-]/)[0]) return null;
     if (!models.some(model => model.id === id)) models.push({ id: id!, label: label!.trim(), efforts: [] });
   }
   return {

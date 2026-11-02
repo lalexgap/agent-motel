@@ -1,3 +1,4 @@
+import { reconcileAntigravityAgent } from "./antigravity";
 import { recordAudit, withAuditContext } from "./audit";
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -350,6 +351,9 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       }
       // The state-file watcher publishes the change.
       if (settleCodexStart(agent)) agent.status = "idle";
+      if (agentProvider(agent) === "antigravity" && !agent.antigravityRunId) {
+        Object.assign(agent, reconcileAntigravityAgent(agent, { force: true }));
+      }
       const draining = drainStranded(agent);
       if (draining) {
         waiting.add(agent.name);

@@ -95,12 +95,25 @@ async function reviveAntigravity(expected:AgentState, opts:ResumeOpts, locked:bo
     try {
       stopAntigravity(agent);
       await ensureDaemon();
-      agent=reserveAntigravityLaunch(agent,plan);
-      updateAgentStatus(agent,"starting","resuming reserved Antigravity generation");writeAgent(agent);
+      if (plan.antigravityRunId) {
+        agent=reserveAntigravityLaunch(agent,plan);
+        updateAgentStatus(agent,"starting","resuming reserved Antigravity generation");writeAgent(agent);
+      } else {
+        delete agent.antigravityRunId;
+        delete agent.antigravityRunPhase;
+        delete agent.antigravityCleanupRunId;
+        if (opts.message) agent.lastHandoffAt = new Date().toISOString();
+        updateAgentStatus(agent, "starting", "resuming");
+        writeAgent(agent);
+      }
       try {
         newSession({session:agent.tmuxSession,dir:agent.dir,env:agentEnv(agent.name,"antigravity"),command:scrubNestedSessionEnv(plan.command)});
       } catch(error) {
-        failAntigravityLaunch(agent);
+        if (plan.antigravityRunId) failAntigravityLaunch(agent);
+        else {
+          updateAgentStatus(agent, "exited", "resume launch failed");
+          writeAgent(agent);
+        }
         throw error;
       }
     } finally {releaseDeliverLock(agent.name);}

@@ -158,7 +158,7 @@ export async function interruptCommand(
 
 export async function abortTurn(name: string): Promise<void> {
   const agent = requireLiveSession(name, true);
-  if (agentProvider(agent) === "antigravity") {
+  if (agentProvider(agent) === "antigravity" && agent.antigravityRunId) {
     const response = await antigravityRequest(agent, "interrupt");
     if (!response.ok) throw new Error(response.reason ?? "Antigravity runner could not interrupt");
     console.log(`interrupted "${agent.name}"; queued messages remain held until resumed`);

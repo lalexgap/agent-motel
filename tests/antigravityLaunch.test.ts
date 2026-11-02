@@ -53,21 +53,16 @@ test('SEC1/F4 SIGKILL owner death refuses resume and retains the exact unverifie
  expect(tmux.newSession).not.toHaveBeenCalled();
 });
 
-for(const action of ['stop','remove'] as const)test('SEC1 pending relaunch cannot use previous cleanup for '+action,async()=>{
+for(const action of ['stop','remove'] as const)test('SEC1 relaunch migrates cleaned legacy runner to native TUI and supports '+action,async()=>{
  const old='a'.repeat(32);writeAgent(state({antigravityRunId:old,antigravityCleanupRunId:old}));
  await reviveAgent(readAgent('launch-race')!);
  const pending=readAgent('launch-race')!;
- expect(pending.antigravityRunId).not.toBe(old);
+ expect(pending.antigravityRunId).toBeUndefined();
  expect(pending.antigravityCleanupRunId).toBeUndefined();
- // newSession is paused before the runner can claim: this is the exact handoff window.
  if(action==='stop')stopAgent(pending);else destroyAgent(pending,{clean:false});
  const current=readAgent('launch-race');
- if(action==='stop'){expect(current?.antigravityCleanupRunId).toBe(pending.antigravityRunId);expect(current?.antigravityRunPhase).toBe('cancelled');}
+ if(action==='stop'){expect(current?.status).toBe('exited');}
  else expect(current).toBeNull();
- const command=(tmux.newSession as any).mock.calls[0][0].command as string[];
- const late=start(command.slice(command.indexOf(process.execPath)));
- expect(await late.exited).not.toBe(0);
- expect(capture().filter(x=>x.args?.includes('--input-format')).length).toBe(0);
 });
 
 
@@ -123,7 +118,7 @@ test('SEC1/F4 restore revival also refuses unverified owner death',async()=>{
 test('SEC1 resume lifecycle lock rejects concurrent process stop during reservation handoff',async()=>{
  const old='b'.repeat(32);writeAgent(state({antigravityRunId:old,antigravityCleanupRunId:old}));
  (tmux.newSession as any).mockImplementation(()=>{
-   const pending=readAgent('launch-race')!;expect(pending.antigravityRunId).not.toBe(old);expect(pending.antigravityCleanupRunId).toBeUndefined();
+   const pending=readAgent('launch-race')!;expect(pending.antigravityRunId).toBeUndefined();expect(pending.antigravityCleanupRunId).toBeUndefined();
    const competitor=Bun.spawnSync([process.execPath,join(import.meta.dir,'../src/index.ts'),'stop','launch-race'],{env:{...process.env},stdin:'ignore',stdout:'pipe',stderr:'pipe',timeout:2000});
    expect(competitor.exitCode).not.toBe(0);expect(competitor.stderr.toString()).toMatch(/stopped|restarted|retry|busy/);
    expect(readAgent('launch-race')).toEqual(pending);
@@ -131,47 +126,27 @@ test('SEC1 resume lifecycle lock rejects concurrent process stop during reservat
  await reviveAgent(readAgent('launch-race')!);stopAgent(readAgent('launch-race')!);
 });
 
-for(const operation of ['resume','restart'] as const)test('SEC1 failed '+operation+' cancels its own generation without rolling back the old cleanup token',async()=>{
+for(const operation of ['resume','restart'] as const)test('SEC1 failed '+operation+' marks agent exited cleanly',async()=>{
  const old='c'.repeat(32);writeAgent(state({antigravityRunId:old,antigravityCleanupRunId:old}));
  (tmux.newSession as any).mockImplementation(()=>{throw new Error('fixture tmux launch failure');});
  const action=operation==='resume'?reviveAgent(readAgent('launch-race')!):restartAgent('launch-race');
  await expect(action).rejects.toThrow(/fixture tmux/);
- const failed=readAgent('launch-race')!;expect(failed.antigravityRunId).not.toBe(old);expect(failed.antigravityRunPhase).toBe('cancelled');expect(failed.antigravityCleanupRunId).toBe(failed.antigravityRunId);
- const command=rawLaunch((tmux.newSession as any).mock.calls[0][0].command);
- expect(await start(command).exited).not.toBe(0);expect(nativeCommands()).toEqual([]);
+ const failed=readAgent('launch-race')!;expect(failed.antigravityRunId).toBeUndefined();expect(failed.status).toBe('exited');
 });
 
-for(const claimed of [false,true])test('SEC1 failed new launch cleans only its reserved generation, claimed='+claimed,async()=>{
- process.env.AGY_FIXTURE_MODE='group-normal';let worker:any;
- (tmux.newSession as any).mockImplementation((opts:any)=>{
-   const pending=readAgent('launch-race')!;expect(pending.antigravityRunPhase).toBe('pending');expect(pending.antigravityCleanupRunId).toBeUndefined();
-   if(claimed){start(rawLaunch(opts.command));waitSync(()=>capture().some(x=>x.heartbeat && existsSync(x.heartbeat)));worker=capture().find(x=>x.heartbeat);}
+test('SEC1 failed new launch removes unstarted state',async()=>{
+ (tmux.newSession as any).mockImplementation(()=>{
+   const pending=readAgent('launch-race')!;expect(pending.status).toBe('starting');
    throw new Error('fixture tmux launch failure');
  });
  await expect(newCommand({name:'launch-race',provider:'antigravity',dir:home,inPlace:true,jump:false,quiet:true})).rejects.toThrow(/fixture tmux/);
  expect(readAgent('launch-race')).toBeNull();
- if(worker){const before=readFileSync(worker.heartbeat,'utf8');await Bun.sleep(50);expect(readFileSync(worker.heartbeat,'utf8')).toBe(before);}
 });
 
-test('SEC1 failed new launch with killed owner preserves unverified generation and queued work',async()=>{
- process.env.AGY_FIXTURE_MODE='group-normal';let reserved:string|undefined;
- (tmux.newSession as any).mockImplementation((opts:any)=>{
-   reserved=readAgent('launch-race')?.antigravityRunId;const owner=start(rawLaunch(opts.command));
-   waitSync(()=>capture().some(x=>x.heartbeat && existsSync(x.heartbeat)));
-   queueAppendForAgent('launch-race','preserved after failed startup');
-   owner.kill('SIGKILL');
-   if(process.platform==='linux')waitSync(()=>{try{const stat=readFileSync(`/proc/${owner.pid}/stat`,'utf8');return ['Z','X'].includes(stat.slice(stat.lastIndexOf(')')+2).split(' ')[0]!);}catch{return true;}});
-   throw new Error('fixture tmux launch failure after owner loss');
- });
- await expect(newCommand({name:'launch-race',provider:'antigravity',dir:home,inPlace:true,jump:false,quiet:true})).rejects.toThrow(/cleanup.*unverified/);
- const failed=readAgent('launch-race')!;expect(failed.antigravityRunId).toBe(reserved);expect(failed.antigravityCleanupRunId).toBeUndefined();expect(failed.status).toBe('needs-attention');expect(queueDepth('launch-race')).toBe(1);expect(queuePeek('launch-race')).toBe('preserved after failed startup');
-});
-
-
-test('SEC1 restore holds one lifecycle lock through registration and revived launch reservation',async()=>{
+test('SEC1 restore holds one lifecycle lock through registration and revived launch',async()=>{
  const old='d'.repeat(32);trashState(state({antigravityRunId:old,antigravityCleanupRunId:old}));
  (tmux.newSession as any).mockImplementation(()=>{
-   const pending=readAgent('launch-race')!;expect(pending.antigravityRunId).not.toBe(old);expect(pending.antigravityRunPhase).toBe('pending');
+   const pending=readAgent('launch-race')!;expect(pending.antigravityRunId).toBeUndefined();expect(pending.status).toBe('starting');
    expect(()=>stopAgent(pending)).toThrow(/retry|busy/);expect(()=>destroyAgent(pending,{clean:false})).toThrow(/retry|busy/);
  });
  await restoreCommand('launch-race');stopAgent(readAgent('launch-race')!);

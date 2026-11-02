@@ -7,6 +7,7 @@ import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
 import { describeRunning, reconcileOpenSubagents, subagentSummary, type SubagentSummary } from "../subagents";
+import { reconcileAntigravityAgent } from "../antigravity";
 import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
@@ -192,10 +193,11 @@ export function waitingInfo(agent: AgentState): WaitingInfo {
 
 const trustPromptCache = new Map<string, { shown: boolean; at: number }>();
 
-// A Claude agent still at the folder-trust prompt fires no hooks, so it
-// would read as "starting" forever.
+// A Claude or Antigravity agent still at the folder-trust prompt fires no hooks,
+// so it would read as "starting" forever.
 export function atClaudeTrustPrompt(agent: AgentState): boolean {
-  if (agent.status !== "starting" || agentProvider(agent) !== "claude") return false;
+  const provider = agentProvider(agent);
+  if (agent.status !== "starting" || (provider !== "claude" && provider !== "antigravity")) return false;
   const cached = trustPromptCache.get(agent.tmuxSession);
   if (cached && Date.now() - cached.at < WAITING_CACHE_MS) return cached.shown;
   const pane = capturePane(agent.tmuxSession);
@@ -206,6 +208,9 @@ export function atClaudeTrustPrompt(agent: AgentState): boolean {
 
 // State files can outlive their tmux session (machine reboot, manual kill).
 export function displayStatus(agent: AgentState): DisplayStatus {
+  if (agentProvider(agent) === "antigravity" && !agent.antigravityRunId) {
+    Object.assign(agent, reconcileAntigravityAgent(agent));
+  }
   if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) return "dead";
   if (agent.status === "idle" && waitingInfo(agent).waiting) return "waiting";
   if (atClaudeTrustPrompt(agent)) return "needs-attention";

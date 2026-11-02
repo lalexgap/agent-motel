@@ -731,14 +731,15 @@ function icon(name, className = "icon") {
   }
   return svg;
 }
-// Claude names its tools; Codex runs commands as `exec` code cells, `shell` or `exec_command`.
+// Claude names its tools; Codex runs commands as `exec` code cells, `shell` or
+// `exec_command`; Antigravity uses snake_case tool names (`run_command`, `read_file`, `edit_file`, etc.).
 function toolKind(entry) {
   const name = entry.name || "";
-  if (/^(Bash|BashOutput|KillShell|shell|local_shell|exec_command|unified_exec|write_stdin)$/.test(name)) return "command";
+  if (/^(Bash|BashOutput|KillShell|shell|local_shell|exec_command|unified_exec|write_stdin|run_command|manage_task)$/.test(name)) return "command";
   if (name === "exec") return /apply_patch/.test(entry.input || "") && !/exec_command/.test(entry.input || "") ? "edit" : "command";
-  if (/^(Read|NotebookRead|view_image|read_file)$/.test(name)) return "read";
-  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|write_file)$/.test(name)) return "edit";
-  if (/^(Grep|Glob|LS|WebSearch|web_search|grep_files|list_dir|tool_search|ToolSearch)$/.test(name)) return "search";
+  if (/^(Read|NotebookRead|view_image|read_file|read_resource)$/.test(name)) return "read";
+  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch|write_file|edit_file)$/.test(name)) return "edit";
+  if (/^(Grep|Glob|LS|WebSearch|web_search|search_web|grep_files|grep_search|find_by_name|list_dir|list_resources|tool_search|ToolSearch)$/.test(name)) return "search";
   return "other";
 }
 function toolLabel(entry, kind) {
@@ -756,7 +757,7 @@ function toolLabel(entry, kind) {
   const firstLine = (text) => text.split("\n").find((line) => line.trim())?.trim() || "";
   let detail = "";
   if (kind === "command") {
-    detail = pick("command", "cmd", "chars");
+    detail = pick("command", "cmd", "CommandLine", "toolSummary", "chars");
     if (!detail && entry.name === "exec") {
       const cmds = [...raw.matchAll(/\bcmd\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => {
         try { return JSON.parse(`"${match[1]}"`); } catch { return match[1]; }
@@ -765,10 +766,10 @@ function toolLabel(entry, kind) {
       detail = cmds.length ? cmds.join(" ; ") : calls.length ? [...new Set(calls)].join(", ") : firstLine(raw);
     }
   } else if (kind === "read" || kind === "edit") {
-    detail = pick("file_path", "notebook_path", "path");
+    detail = pick("file_path", "notebook_path", "path", "Path", "Uri");
     if (!detail) detail = [...raw.matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((match) => match[1].trim()).join(", ");
-  } else if (kind === "search") detail = [pick("pattern", "query"), pick("path", "glob")].filter(Boolean).join(" in ");
-  else detail = pick("description", "summary", "query", "url", "prompt", "action", "skill");
+  } else if (kind === "search") detail = [pick("pattern", "Pattern", "query", "Query"), pick("path", "Path", "SearchPath", "glob")].filter(Boolean).join(" in ");
+  else detail = pick("description", "summary", "toolSummary", "query", "Query", "url", "prompt", "Prompt", "Role", "ToolName", "action", "Action", "skill");
   if (!detail && kind !== "other") detail = firstLine(raw);
   if (kind === "other") return detail ? `${entry.name} · ${firstLine(detail)}` : entry.name;
   return firstLine(detail) || entry.name;

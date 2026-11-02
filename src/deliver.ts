@@ -77,6 +77,7 @@ export function enterDelayMs(agent: AgentState, message?: string): number | unde
     return Math.min(2000, 300 + Math.ceil(length / 100) * 20 + (lines - 1) * 20);
   }
   if (message?.includes("\n")) return 200;
+  if (agentProvider(agent) === "antigravity") return 100;
   return undefined;
 }
 
@@ -85,7 +86,6 @@ const PLACEHOLDER_RE = /^Try "/;
 
 // Needs a colored capture so faint suggestions aren't read as drafts.
 export function parsedInputBoxText(pane: string[], provider: Provider = "claude"): string | null {
-  if (provider === "antigravity") return null;
   const plain = pane.map(stripSgr);
   const typed = pane.map(line => stripSgr(stripFaint(line)));
   if (provider === "codex") {
@@ -110,6 +110,14 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
   const seps: number[] = [];
   for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
   if (seps.length < 2) return null;
+  if (provider === "antigravity") {
+    const boxPlain = plain.slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!);
+    if (!boxPlain.length || !/^\s*>/.test(boxPlain[0]!)) return null;
+    const boxTyped = typed.slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!);
+    boxTyped[0] = boxTyped[0]!.replace(/^\s*>\s?/, "");
+    const text = boxTyped.join(" ").replace(/\s+/g, " ").trim();
+    return PLACEHOLDER_RE.test(text) ? "" : text;
+  }
   const text = typed
     .slice(seps[seps.length - 2]! + 1, seps[seps.length - 1]!)
     .join(" ")
@@ -119,13 +127,14 @@ export function parsedInputBoxText(pane: string[], provider: Provider = "claude"
   return PLACEHOLDER_RE.test(text) ? "" : text;
 }
 
-const RUNNING_RE = /esc to interrupt/;
+const RUNNING_RE = /esc to (?:interrupt|cancel)/i;
+const ANTIGRAVITY_GENERATING_RE = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s+(?:Generating|Thinking|Running|Canceling)\b/i;
 
 // Whether the TUI shows a turn running, from the hint beside its composer:
-// Claude's footer under it, or the status line just above it (Codex, and
-// older Claude). Transcript text further up the pane can't pass for it.
+// Claude/Antigravity's footer under it, or the status line just above it
+// (Codex, Antigravity spinner, and older Claude). Transcript text further up
+// the pane can't pass for it.
 export function turnRunning(pane: string[], provider: Provider = "claude"): boolean {
-  if (provider === "antigravity") return false;
   const plain = pane.map(stripSgr);
   if (provider === "codex") {
     let prompt = -1;
@@ -136,12 +145,18 @@ export function turnRunning(pane: string[], provider: Provider = "claude"): bool
   for (let i = 0; i < plain.length; i++) if (/─{8,}/.test(plain[i]!)) seps.push(i);
   if (seps.length < 2) return false;
   const top = seps[seps.length - 2]!;
-  return plain.slice(Math.max(0, top - 3), top).concat(plain.slice(seps[seps.length - 1]! + 1)).some(line => RUNNING_RE.test(line));
+  const around = plain.slice(Math.max(0, top - 3), top).concat(plain.slice(seps[seps.length - 1]! + 1));
+  return around.some(line => RUNNING_RE.test(line) || (provider === "antigravity" && ANTIGRAVITY_GENERATING_RE.test(line)));
 }
 
 // Codex's composer is on screen with no turn running.
 export function codexReadyAtPrompt(pane: string[]): boolean {
   return parsedInputBoxText(pane, "codex") !== null && !turnRunning(pane, "codex");
+}
+
+// Antigravity's composer is on screen with no turn running.
+export function antigravityReadyAtPrompt(pane: string[]): boolean {
+  return parsedInputBoxText(pane, "antigravity") !== null && !turnRunning(pane, "antigravity");
 }
 
 export function inputBoxText(pane: string[], provider: Provider = "claude"): string {
@@ -277,12 +292,13 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
         });
         return { status: "queued", reason: "invalid" };
       }
-      // The runner acknowledges native user_input, persists the delivery and
-      // removes the exact entry before responding. Never type into its pane.
-      const response = await antigravityRequest(agent, "deliver", head);
-      if (response.outcome === "delivered") return { status: "submitted", id: head.id };
-      return { status: "queued", reason: response.outcome === "unknown" ? "unverified"
-        : response.outcome === "pending" && response.reason?.includes("compos") ? "composing" : "unavailable" };
+      if (agent.antigravityRunId) {
+        // Legacy runner mode acknowledges native user_input over its control socket.
+        const response = await antigravityRequest(agent, "deliver", head);
+        if (response.outcome === "delivered") return { status: "submitted", id: head.id };
+        return { status: "queued", reason: response.outcome === "unknown" ? "unverified"
+          : response.outcome === "pending" && response.reason?.includes("compos") ? "composing" : "unavailable" };
+      }
     }
     const incarnation = sessionIncarnation(agent);
     if (!incarnation) return { status: "queued", reason: "unavailable" };
@@ -314,11 +330,28 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     const before = capturePane(agent.tmuxSession, { colors: true });
     if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
+    if (provider === "antigravity" && turnRunning(before, provider)) return { status: "queued", reason: "unavailable" };
     let mark = pending?.id === head.id ? pending.mark : undefined;
-    if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
+    const recordSubmitted = () => {
       queuePopId(name, head.id);
-      markDelivered(name, head.id, mark);
+      if (provider === "antigravity") {
+        const promptAt = new Date(Date.now() + 1).toISOString();
+        markDelivered(name, head.id, mark, "prompt", promptAt);
+        updateAgentIf(name, (current) => {
+          if (current.createdAt !== agent.createdAt) return false;
+          current.promptAt = promptAt;
+          current.promptKey = promptKey(head.message);
+          current.workingSince ??= promptAt;
+          updateAgentStatus(current, "working", "turn in progress");
+          return true;
+        });
+      } else {
+        markDelivered(name, head.id, mark);
+      }
       rmSync(markerPath, { force: true });
+    };
+    if (!inputBoxText(before, provider) && pending?.id === head.id && pending.message === head.message && pending.typed) {
+      recordSubmitted();
       return { status: "submitted", id: head.id };
     }
     if (inputBoxText(before, provider)) {
@@ -346,9 +379,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
       if (parsedInputBoxText(pane, provider) === "") {
-        queuePopId(name, head.id);
-        markDelivered(name, head.id, mark);
-        rmSync(markerPath, { force: true });
+        recordSubmitted();
         return { status: "submitted", id: head.id };
       }
       if (!looksUnsubmitted(pane, head.message, provider)) return { status: "queued", reason: "unverified" };
@@ -386,7 +417,9 @@ function noteEscape(name: string, abortedKeys: (string | undefined)[]): void {
 
 // Esc the agent's turn, noted for codexQueueHeld. Callers hold the delivery lock.
 export function escapeTurn(agent: AgentState): void {
-  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity requires the runner interrupt protocol; terminal Escape is unsupported");
+  if (agentProvider(agent) === "antigravity" && agent.antigravityRunId) {
+    throw new Error("Antigravity requires the runner interrupt protocol; terminal Escape is unsupported");
+  }
   sendEscape(agent.tmuxSession);
   noteEscape(agent.name, [agent.promptKey, ...lateHookKeys(agent.name, agent)]);
 }

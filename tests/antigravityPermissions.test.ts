@@ -33,10 +33,33 @@ afterEach(() => {
 function configure(skipPermissions: boolean): void {
   writeFileSync(join(home, "config.json"), JSON.stringify({ skipPermissions, remoteControl: false }));
 }
-function options(plan: LaunchPlan): AntigravityOptions {
+function runnerOptions(plan: LaunchPlan): AntigravityOptions {
   expect(plan.command[0]).toBe(process.execPath);
   expect(plan.command[1]).toMatch(/\/antigravityRunner\.ts$/);
   return JSON.parse(plan.command[3]!);
+}
+function tuiOptions(plan: LaunchPlan): {
+  skipPermissions: boolean;
+  model?: string;
+  effort?: string;
+  resume?: string;
+  continue?: boolean;
+  prompt?: string;
+} {
+  const cmd = plan.command;
+  expect(cmd[0] === "agy" || cmd[0]?.endsWith("/agy")).toBe(true);
+  const argAfter = (flag: string) => {
+    const idx = cmd.indexOf(flag);
+    return idx >= 0 ? cmd[idx + 1] : undefined;
+  };
+  return {
+    skipPermissions: cmd.includes("--dangerously-skip-permissions"),
+    model: argAfter("--model"),
+    effort: argAfter("--effort"),
+    resume: argAfter("--conversation"),
+    ...(cmd.includes("--continue") ? { continue: true } : {}),
+    prompt: argAfter("-i"),
+  };
 }
 function agent(provider: AgentState["provider"] = "antigravity"): AgentState {
   const runId = "a".repeat(32);
@@ -62,23 +85,23 @@ describe("Antigravity permissions", () => {
       test(`launch ${JSON.stringify(conversation)} carries global ${skip}`, () => {
         configure(skip);
         const plan = buildLaunchCommand("antigravity", "permissions", { ...conversation, message: "task" });
-        const opts = options(plan);
+        const opts = tuiOptions(plan);
         expect(opts.skipPermissions).toBe(skip);
-        expect(opts.message).toBe("task");
+        expect(opts.prompt).toContain("task");
         if ("resume" in conversation) expect(opts.resume).toBe(conversation.resume);
         if ("continue" in conversation) expect(opts.continue).toBe(true);
-        expect(plan.command).not.toContain("--dangerously-skip-permissions");
+        expect(plan.command.includes("--dangerously-skip-permissions")).toBe(skip);
       });
     }
 
     test(`resume rereads global ${skip} and preserves exact conversation and selection`, () => {
       const saved = agent();
       configure(!skip);
-      expect(options(buildResumeCommand("antigravity", saved, {})).skipPermissions).toBe(!skip);
+      expect(tuiOptions(buildResumeCommand("antigravity", saved, {})).skipPermissions).toBe(!skip);
       configure(skip);
-      expect(options(buildResumeCommand("antigravity", saved, { message: "continue task" }))).toMatchObject({
+      expect(tuiOptions(buildResumeCommand("antigravity", saved, { message: "continue task" }))).toMatchObject({
         skipPermissions: skip, resume: "exact-conversation", model: "gemini-4-argon-high",
-        effort: "high", reportTo: "lead", message: "continue task",
+        effort: "high", prompt: "continue task",
       });
       expect(saved).not.toHaveProperty("skipPermissions");
     });
@@ -92,10 +115,10 @@ describe("Antigravity permissions", () => {
       spies.push(spyOn(tmux, "newSession").mockImplementation((launch) => { command = launch.command; }));
       await restartAgent("permissions", { message: "restart task" });
       expect(command).toBeDefined();
-      const start = command!.indexOf(process.execPath);
+      const start = command!.findIndex((arg) => arg === "agy" || arg.endsWith("/agy"));
       expect(start).toBeGreaterThanOrEqual(0);
-      expect(options({ command: command!.slice(start) })).toMatchObject({
-        skipPermissions: skip, resume: "exact-conversation", message: "restart task",
+      expect(tuiOptions({ command: command!.slice(start) })).toMatchObject({
+        skipPermissions: skip, resume: "exact-conversation", prompt: "restart task",
       });
     });
 
@@ -122,14 +145,14 @@ describe("Antigravity permissions", () => {
   test("omitted direct runner options default to false even when global bypass is enabled", () => {
     configure(true);
     expect(antigravityOptions({}).skipPermissions).toBe(false);
-    expect(options(antigravityCommand("permissions", {})).skipPermissions).toBe(false);
+    expect(runnerOptions(antigravityCommand("permissions", {})).skipPermissions).toBe(false);
   });
 
   for (const skip of [false, true]) {
     test(`direct options retain explicit ${skip} independently of global config`, () => {
       configure(!skip);
       expect(antigravityOptions({ skipPermissions: skip }).skipPermissions).toBe(skip);
-      expect(options(antigravityCommand("permissions", { skipPermissions: skip })).skipPermissions).toBe(skip);
+      expect(runnerOptions(antigravityCommand("permissions", { skipPermissions: skip })).skipPermissions).toBe(skip);
     });
   }
 

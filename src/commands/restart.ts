@@ -72,12 +72,17 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   stopAntigravity(agent);
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
-  if (provider !== "antigravity") plan.command[0] = executable;
+  if (!plan.antigravityRunId) plan.command[0] = executable;
   if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
-  if(provider==="antigravity") {
+  if (plan.antigravityRunId) {
     const selection={model:agent.model,effort:agent.effort};
     agent=reserveAntigravityLaunch(agent,plan);
     Object.assign(agent,selection);
+  } else if (provider === "antigravity") {
+    delete agent.antigravityRunId;
+    delete agent.antigravityRunPhase;
+    delete agent.antigravityCleanupRunId;
+    if (opts.message) agent.lastHandoffAt = new Date().toISOString();
   }
   const launch = {
     session: agent.tmuxSession,
@@ -96,7 +101,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
       }
     } else newSession(launch);
   } catch (error) {
-    if(provider==="antigravity")failAntigravityLaunch(agent);
+    if (plan.antigravityRunId) failAntigravityLaunch(agent);
     agent.model = previous.model;
     agent.effort = previous.effort;
     updateAgentStatus(agent, provider === "antigravity" ? "exited" : previous.status, provider === "antigravity" ? "restart launch failed after verified process-group cleanup" : previous.reason);
