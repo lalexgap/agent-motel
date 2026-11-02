@@ -32,6 +32,7 @@ export function readTrashedState(name: string): TrashedState | null {
 // Drop a trash snapshot for good (`am gc` past its retention).
 export function removeTrashed(name: string): void {
   rmSync(trashFile(name), { force: true });
+  rmSync(join(trashDir(), `${name}.plan.md`), { force: true });
 }
 
 // Removed agents available to restore, newest deletion first.

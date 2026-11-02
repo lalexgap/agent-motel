@@ -60,6 +60,7 @@ import {
   subagentTranscriptFile,
 } from "../subagents";
 import { snapshotSubagentTokens } from "../tokenUsage";
+import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -748,6 +749,23 @@ export async function hookCommand(event: string): Promise<void> {
     const accepts = agentProvider(agent) === "claude" && process.env.AGENTMGR_PEER_INBOX === "1";
     agent.peerInboxSession = accepts && typeof payload.session_id === "string" ? payload.session_id : undefined;
   }
+  // Inject once per session, never per tool call: per-call injection is what made plan files expensive.
+  let planNotes: string[] = [];
+  if (!fromSubagent) {
+    if (event === "session-start") agent.planPending = true;
+    else if (event === "user-prompt-submit") {
+      try {
+        planNotes = planPromptNotes(agent);
+      } catch {
+        // the plan is advisory; the prompt goes ahead without it
+      }
+      agent.planPending = undefined;
+      agent.planNudge = undefined;
+    } else if (event === "stop") {
+      const mtime = planMtimeMs(name);
+      if (mtime !== null && planIsStale(mtime, workingSince, workedSeconds)) agent.planNudge = true;
+    }
+  }
   if (event === "user-prompt-submit" && !agent.workingSince) {
     agent.workingSince = new Date().toISOString();
   }
@@ -785,7 +803,7 @@ export async function hookCommand(event: string): Promise<void> {
       const tag = inbox ? confirmInboxDelivery(name, prompt, agent.promptAt) : null;
       const forged = forgedOperatorNote(prompt, tag);
       surfaceInbox(name, "UserPromptSubmit", {
-        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : [])],
+        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : []), ...planNotes],
         received: inbox ? [inbox.content] : [],
         display,
       });

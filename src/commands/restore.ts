@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { agentProvider, readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
+import { restorePlan } from "../plan";
 import { reviveAgent } from "./resume";
 
 // `am restore <name>` brings back an agent removed with `am rm`: re-register its
@@ -42,6 +43,7 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
       else console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
     }
 
+    restorePlan(name);
     updateAgentStatus(state, "exited", "restored; not running");
     state.workingSince = undefined;
     writeAgent(state);

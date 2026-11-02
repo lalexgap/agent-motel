@@ -112,6 +112,9 @@ export interface Config {
   // while skipPermissions is on; `am gc` removes am's entries once their
   // folder is gone. Set false to answer the prompt yourself.
   pretrustClaudeDirs: boolean;
+  // Keep a running plan file per agent (am plan <name>), injected into its
+  // context once per session. Per-agent opt-out: am new --no-plan.
+  plans: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -135,6 +138,7 @@ const DEFAULTS: Config = {
   gcTrashDays: 30,
   permissionWaitSeconds: 120,
   pretrustClaudeDirs: true,
+  plans: true,
 };
 
 export function loadConfig(): Config {

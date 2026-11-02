@@ -33,6 +33,7 @@ import { caretakerCommand } from "./commands/caretaker";
 import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
 import { subagentsCommand } from "./commands/subagents";
+import { planCommand } from "./commands/plan";
 import { searchCommand } from "./commands/search";
 import { handoffAgent, handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
@@ -89,6 +90,7 @@ usage:
                               to start elsewhere, e.g. --base HEAD)
                               (--report-to <t> / --report make it report progress
                                to <t> / to the agent that spawned it)
+                              --no-plan skips its running plan file (am plan)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens Claude/Codex session pickers;
@@ -98,7 +100,7 @@ usage:
                               no permission bypass/approval relay or --now;
                               see docs/antigravity.md for limits and live checks
   am run <name> -m msg [--dir path] [--worktree b [--base ref] | --in-place] [--claude|--codex|--antigravity]
-                       [--role name] [--timeout secs] [--rm] [--json]
+                       [--role name] [--timeout secs] [--rm] [--json] [--no-plan]
                               spawn a real agent, wait for its turn, print its
                               final message (for fan-out: the agent stays in
                               am ls unless --rm; exit 1 if blocked/timed out;
@@ -184,6 +186,11 @@ usage:
   am peek <name> --subagent <id|type> [--follow]
                               a subagent's output instead — its own words and
                               tool calls; --follow redraws until it finishes
+  am plan <name> [--path] [--json]
+                              print the agent's running plan: what it is
+                              working on, kept current by the agent (injected
+                              into its context once per session; --path prints
+                              only the file path; config.plans=false disables)
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
@@ -312,7 +319,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek", "subagents", "usage",
+  "report", "comms", "wait", "peek", "subagents", "usage", "plan",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -564,6 +571,7 @@ async function main(): Promise<void> {
         inPlace: !!args.flags["in-place"],
         reportTo: args.flags["report-to"] as string | undefined,
         report: !!args.flags.report,
+        noPlan: !!args.flags["no-plan"],
       });
       break;
     case "run": {
@@ -580,6 +588,7 @@ async function main(): Promise<void> {
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         role: args.flags.role as string | undefined,
+        noPlan: !!args.flags["no-plan"],
         timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
@@ -748,6 +757,9 @@ async function main(): Promise<void> {
       break;
     case "subagents":
       subagentsCommand(args.positional[0], { json: !!args.flags.json });
+      break;
+    case "plan":
+      planCommand(requirePositional(args, 0, "agent name"), { path: !!args.flags.path, json: !!args.flags.json });
       break;
     case "__web-search": {
       const { runConversationSearch } = await import("./webSearch");

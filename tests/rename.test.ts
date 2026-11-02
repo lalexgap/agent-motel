@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inboxDir, sharedDir } from "../src/paths";
+import { inboxDir, planFile, sharedDir } from "../src/paths";
+import { ensurePlan } from "../src/plan";
 import { queueAppend, queueAppendForAgent, queueList } from "../src/queue";
 import { readSnapshot, writeSnapshot } from "../src/snapshots";
 import { readAgent, readLastAttached, recordAttached, resolveAgent, writeAgent, type AgentState } from "../src/state";
@@ -69,6 +70,7 @@ describe("renameAgent", () => {
     writeFileSync(join(inboxDir("alpha"), "brief.txt"), "hello");
     mkdirSync(join(sharedDir("alpha"), "files"), { recursive: true });
     writeFileSync(join(sharedDir("alpha"), "files", "shot.png"), "pixels");
+    ensurePlan("alpha", "the task");
     recordAttached("lead");
     recordAttached("alpha");
 
@@ -96,6 +98,8 @@ describe("renameAgent", () => {
     expect(existsSync(inboxDir("alpha"))).toBe(false);
     expect(existsSync(join(sharedDir("omega"), "files", "shot.png"))).toBe(true);
     expect(existsSync(sharedDir("alpha"))).toBe(false);
+    expect(readFileSync(planFile("omega"), "utf8")).toContain("# Plan: alpha");
+    expect(existsSync(planFile("alpha"))).toBe(false);
     expect(readAgent("lead")?.reportTo).toBe("omega");
     expect(readAgent("child")?.spawnedBy).toBe("omega");
     expect(readLastAttached().current).toBe("omega");

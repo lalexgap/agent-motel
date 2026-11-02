@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readSubagents, recordSubagentStart } from "../src/subagents";
+import { planFile, trashDir } from "../src/paths";
+import { ensurePlan } from "../src/plan";
 
 let home: string;
 
@@ -57,5 +59,13 @@ describe("destroyAgent", () => {
     destroyAgent(agent, { clean: false });
     expect(readAgent("alpha")).toBeNull();
     expect(queueDepth("alpha")).toBe(0);
+  });
+
+  test("moves the plan file to trash beside the state snapshot", () => {
+    const agent = makeAgent("alpha");
+    ensurePlan("alpha", "the task");
+    destroyAgent(agent, { clean: false });
+    expect(existsSync(planFile("alpha"))).toBe(false);
+    expect(readFileSync(join(trashDir(), "alpha.plan.md"), "utf8")).toContain("# Plan: alpha");
   });
 });

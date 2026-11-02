@@ -139,6 +139,8 @@ am role export --dry-run   # show what would change
 
 The export also runs after every role edit and on every `am new`, so the files track the registry. am only ever rewrites files it wrote itself: one you authored, or edited after am wrote it, is kept and reported. Claude picks a subagent by its type ("use the reviewer agent"), Codex by its `name` — the same words in an am-managed session or your own.
 
+Subagents never get the parent's [plan file](#plan-file) injected; when one needs it, the parent passes the plan path in the subagent's brief.
+
 The hub shows role tags on agent rows and detail cards. Press `r` to cycle role filters and `s` to cycle status, recent-activity, and role sorting; the command palette exposes the same controls. For scripts, use `am ls --role <name|unassigned>` and `am ls --sort <status|recent|role>`.
 
 ### Message and coordinate
@@ -186,6 +188,18 @@ am gc                              # preview cleanup (--apply to run it)
 ```
 
 Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or choosing **Restart** in the command palette. Restart interrupts its current turn and loads the installed provider binary; update Claude/Codex first to pick up a newer version. The conversation, working directory, and queued messages are preserved.
+
+### Plan file
+
+Every agent keeps one running plan, so you always have a current doc of what it is working on:
+
+```sh
+am plan api             # print it
+am plan api --path      # just the path (~/.agent-manager/plans/api.md)
+am plan api --json      # {name, path, exists, updatedAt, content}
+```
+
+`am new` writes it from a short template holding the task (Goal, Current status, Next steps, Decisions, Notes); the agent keeps it current. Its first 80 lines (6 KB at most) are injected into the agent's context once per session (at startup, resume, compaction and `/clear`), on the next prompt rather than every turn or tool call, so it costs a few hundred tokens per session. When a turn of five minutes or more ends without the plan changing, the next prompt carries a one-line nudge. The plan follows the agent through rename, move, `am rm`/`am restore` (it goes to trash with the state), and `am handoff` (the new agent inherits it). Agents created before plans existed get one on their next resume. The concierge and caretaker get none; skip one with `am new --no-plan`, or turn plans off with `"plans": false` in `~/.agent-manager/config.json`. `am ls --json` includes each local agent's `planFile`.
 
 ### Quota headroom
 

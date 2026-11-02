@@ -20,6 +20,7 @@ import {
 } from "../codexDaemon";
 import { agentEnv } from "./new";
 import { pretrustClaudeAgentDir } from "../claudeTrust";
+import { ensureAgentPlan } from "../plan";
 
 export interface ResumeOpts {
   message?: string;
@@ -65,6 +66,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, inte
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
   claudeResumeTrust(agent);
+  ensureAgentPlan(agent);
 
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.
@@ -90,6 +92,7 @@ async function reviveAntigravity(expected:AgentState, opts:ResumeOpts, locked:bo
     if(hasSession(agent.tmuxSession))return;
     if(!existsSync(agent.dir))throw new Error(`agent directory no longer exists: ${agent.dir}`);
     if(!Bun.which(providerBinary("antigravity"),{PATH:process.env.PATH}))throw new Error("agy is not installed — install Antigravity CLI and sign in first; see docs/antigravity.md");
+    ensureAgentPlan(agent);
     const plan=buildResumeCommand("antigravity",agent,opts);
     if(!acquireDeliverLock(agent.name))throw new Error(`agent "${agent.name}" mailbox is busy — retry resume`);
     try {

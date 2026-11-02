@@ -267,6 +267,42 @@ describe("importPayload", () => {
     expect(queueList("migrated").map((m) => m.message)).toEqual(["pending one", "pending two"]);
   });
 
+  test("carries the plan file along", async () => {
+    const { planFile } = await import("../src/paths");
+    const { readFileSync } = await import("node:fs");
+    const raw = JSON.parse(payload(home));
+    importPayload(JSON.stringify({ ...raw, plan: "# Plan: migrated\n\nhalfway" }));
+    expect(readFileSync(planFile("migrated"), "utf8")).toBe("# Plan: migrated\n\nhalfway");
+  });
+
+  test("rejects a payload whose agent name is not a plain name", () => {
+    const raw = JSON.parse(payload(home));
+    for (const name of ["../escape", "a/b", "has space"]) {
+      expect(() => importPayload(JSON.stringify({ ...raw, state: { ...raw.state, name } }))).toThrow(/invalid agent name/);
+    }
+  });
+
+  test("rollback removes the plan only when the import created it", async () => {
+    const { planFile, plansDir } = await import("../src/paths");
+    const raw = JSON.parse(payload(home));
+    const original = raw.state as AgentState;
+    const present = { exitCode: 0, stdout: JSON.stringify([original]), stderr: "" };
+
+    const created = await importAfterRenew(JSON.stringify({ ...raw, plan: "# carried" }), async () => {});
+    expect(created).toEqual({ name: "migrated", planCreated: true });
+    const recovery = resolveSourceRemovalFailure("migrated", readAgent("migrated")!, queueList("migrated"), original, present, created.planCreated);
+    expect(recovery.rolledBack).toBe(true);
+    expect(existsSync(planFile("migrated"))).toBe(false);
+
+    mkdirSync(plansDir(), { recursive: true });
+    writeFileSync(planFile("migrated"), "# local");
+    const kept = await importAfterRenew(JSON.stringify({ ...raw, plan: "# carried" }), async () => {});
+    expect(kept.planCreated).toBe(false);
+    resolveSourceRemovalFailure("migrated", readAgent("migrated")!, queueList("migrated"), original, present, kept.planCreated);
+    expect(readAgent("migrated")).toBeNull();
+    expect(existsSync(planFile("migrated"))).toBe(true);
+  });
+
   test("refuses name collisions and missing dirs", () => {
     const dir = join(home, "workdir");
     mkdirSync(dir, { recursive: true });
