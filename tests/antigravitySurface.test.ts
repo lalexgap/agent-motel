@@ -91,8 +91,9 @@ test("role pins and models preserve all provider entries; export fails before wr
   expect(() => roleCommand("export", undefined, { provider: "antigravity", dryRun: true })).toThrow(/antigravity.*unsupported/i);
 });
 
-test("explicit antigravity usage fails without probes; picker includes third option", async () => {
-  await expect(usageCommand({ provider: "antigravity" })).rejects.toThrow(/antigravity.*unsupported/i);
+test("explicit antigravity quota-only usage fails without probes; token usage works; picker includes third option", async () => {
+  await expect(usageCommand({ provider: "antigravity", quotaOnly: true })).rejects.toThrow(/antigravity.*unsupported/i);
+  await expect(usageCommand({ provider: "antigravity" })).resolves.toBeUndefined();
   expect(PROVIDER_OPTIONS).toEqual(["claude", "codex", "antigravity"]);
 });
 

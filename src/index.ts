@@ -114,13 +114,11 @@ usage:
                               --role unassigned selects agents without a role
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
-  am usage [--json] [--claude | --codex]
-                              quota headroom per provider — the numbers behind
-                              claude's /usage and codex's /status, read without
-                              disturbing any agent. Limits are per account, so
-                              this describes the whole fleet. Codex's reading
-                              comes from its session log and is labelled with
-                              when it was taken
+  am usage [<name>] [--tokens | --quota-only] [--json] [--claude | --codex]
+                              quota headroom per provider plus token usage
+                              by agent/subagent, workflow, tool category, and
+                              top budget anomalies (with <name>, deep-dives
+                              that agent; --tokens skips the live quota check)
   am caretaker [question...]  open the Codex housekeeping agent; asks before cleanup
                               --scan performs an inspection-only pass (no attach)
   am concierge [question...]  open the fleet concierge: a reserved agent whose
@@ -314,7 +312,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek", "subagents",
+  "report", "comms", "wait", "peek", "subagents", "usage",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -621,6 +619,9 @@ async function main(): Promise<void> {
       await usageCommand({
         json: !!args.flags.json,
         provider: selectedProvider(args.flags),
+        agent: args.positional[0],
+        tokensOnly: !!args.flags.tokens,
+        quotaOnly: !!args.flags["quota-only"],
       });
       break;
     case "caretaker":

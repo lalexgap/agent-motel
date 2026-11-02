@@ -1,8 +1,9 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { codexHome } from "./codexHooks";
 import { loadConfig, localHostIdentity } from "./config";
+import { baseDir } from "./paths";
 
 // Quota headroom for the whole fleet, the same numbers `/usage` shows inside
 // Claude Code and `/status` shows inside Codex — read WITHOUT touching any
@@ -168,7 +169,47 @@ function cachedClaudeCredentials(): CredentialRead {
   return value;
 }
 
-export async function fetchClaudeUsage(): Promise<ProviderUsage> {
+const CLAUDE_CACHE_TTL_MS = 3 * 60_000;
+const CLAUDE_RATE_LIMIT_MIN_COOLDOWN_MS = 5 * 60_000;
+const CLAUDE_RATE_LIMIT_MAX_COOLDOWN_MS = 30 * 60_000;
+
+interface ClaudeUsageDiskCache {
+  usage?: ProviderUsage;
+  fetchedAt?: string;
+  backoffUntil?: number;
+  failures?: number;
+  lastError?: string;
+}
+
+function claudeUsageCacheFile(): string {
+  return join(baseDir(), "claude-usage-cache.json");
+}
+
+export function readClaudeUsageCache(): ClaudeUsageDiskCache {
+  const file = claudeUsageCacheFile();
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeClaudeUsageCache(next: ClaudeUsageDiskCache): void {
+  const dir = baseDir();
+  const file = claudeUsageCacheFile();
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tmp, JSON.stringify(next) + "\n");
+    renameSync(tmp, file);
+  } catch {
+    // best-effort shared cache
+  }
+}
+
+export async function fetchClaudeUsage(opts: { bypassCache?: boolean } = {}): Promise<ProviderUsage> {
   const { auth, unavailable } = cachedClaudeCredentials();
   if (unavailable) {
     return { provider: "claude", windows: [], error: unavailable };
@@ -181,6 +222,34 @@ export async function fetchClaudeUsage(): Promise<ProviderUsage> {
     // Claude Code session, so report it instead of racing them for it.
     return { provider: "claude", windows: [], error: "auth token expired (open a claude session to refresh)" };
   }
+
+  const now = Date.now();
+  const diskCache = readClaudeUsageCache();
+  const cachedUsage = diskCache.usage?.windows?.length ? diskCache.usage : undefined;
+  const fetchedMs = diskCache.fetchedAt ? Date.parse(diskCache.fetchedAt) : NaN;
+
+  // Serve fresh shared disk reading so multiple local processes (__sidebar,
+  // am-web, am-serve, CLI) don't hammer Anthropic's OAuth usage endpoint.
+  if (!opts.bypassCache && cachedUsage && Number.isFinite(fetchedMs) && now - fetchedMs < CLAUDE_CACHE_TTL_MS) {
+    return now - fetchedMs >= 60_000
+      ? { ...cachedUsage, observedAt: diskCache.fetchedAt }
+      : cachedUsage;
+  }
+
+  // Respect active 429 cooldown window across all local processes.
+  if (diskCache.backoffUntil && diskCache.backoffUntil > now) {
+    if (cachedUsage && diskCache.fetchedAt) {
+      return { ...cachedUsage, observedAt: diskCache.fetchedAt };
+    }
+    const waitMin = Math.max(1, Math.ceil((diskCache.backoffUntil - now) / 60_000));
+    return {
+      provider: "claude",
+      windows: [],
+      ...(auth.subscriptionType ? { plan: auth.subscriptionType } : {}),
+      error: diskCache.lastError ?? `usage endpoint rate-limited (HTTP 429 — cooling down, ~${waitMin}m remaining)`,
+    };
+  }
+
   try {
     const response = await fetch(CLAUDE_USAGE_URL, {
       headers: {
@@ -190,10 +259,54 @@ export async function fetchClaudeUsage(): Promise<ProviderUsage> {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
+      if (response.status === 429 || response.status >= 500) {
+        const prevFailures = diskCache.failures ?? 0;
+        const retryHeader = Number(response.headers.get("retry-after"));
+        const expCooldown = Math.min(
+          CLAUDE_RATE_LIMIT_MIN_COOLDOWN_MS * 2 ** prevFailures,
+          CLAUDE_RATE_LIMIT_MAX_COOLDOWN_MS,
+        );
+        const cooldownMs =
+          Number.isFinite(retryHeader) && retryHeader > 0
+            ? Math.max(retryHeader * 1000, CLAUDE_RATE_LIMIT_MIN_COOLDOWN_MS)
+            : expCooldown;
+        const waitMin = Math.max(1, Math.ceil(cooldownMs / 60_000));
+        const errorMsg =
+          response.status === 429
+            ? `usage endpoint rate-limited (HTTP 429 — backing off ${waitMin}m)`
+            : `usage request failed (HTTP ${response.status})`;
+        writeClaudeUsageCache({
+          ...diskCache,
+          backoffUntil: Date.now() + cooldownMs,
+          failures: prevFailures + 1,
+          lastError: errorMsg,
+        });
+        if (cachedUsage && diskCache.fetchedAt) {
+          return { ...cachedUsage, observedAt: diskCache.fetchedAt };
+        }
+        return {
+          provider: "claude",
+          windows: [],
+          ...(auth.subscriptionType ? { plan: auth.subscriptionType } : {}),
+          error: errorMsg,
+        };
+      }
       return { provider: "claude", windows: [], error: `usage request failed (HTTP ${response.status})` };
     }
-    return parseClaudeUsage(await response.json(), auth.subscriptionType);
+    const parsed = parseClaudeUsage(await response.json(), auth.subscriptionType);
+    if (parsed.windows.length > 0 && !parsed.error) {
+      writeClaudeUsageCache({
+        usage: parsed,
+        fetchedAt: new Date().toISOString(),
+        backoffUntil: 0,
+        failures: 0,
+      });
+    }
+    return parsed;
   } catch (error) {
+    if (cachedUsage && diskCache.fetchedAt) {
+      return { ...cachedUsage, observedAt: diskCache.fetchedAt };
+    }
     return { provider: "claude", windows: [], error: `usage request failed (${(error as Error).message})` };
   }
 }
@@ -452,9 +565,10 @@ export function startUsagePolling(): () => void {
     void collectUsage()
       .then((report) => {
         badgeCache = formatUsageBadge(report);
-        // A null badge means no provider had anything to say — treat it as a
-        // failed reading for pacing, even though nothing threw.
-        failures = badgeCache === null ? failures + 1 : 0;
+        // Back off when no provider has data OR when any provider failed
+        // (e.g. Claude HTTP 429 while Codex has local session data).
+        const anyError = report.providers.some((p) => Boolean(p.error));
+        failures = badgeCache === null || anyError ? failures + 1 : 0;
       })
       .catch(() => {
         badgeCache = null;

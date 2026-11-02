@@ -30,6 +30,15 @@ import { locateTranscript, parseTranscript, type Turn } from "./transcript";
 // concurrently, and a small O_APPEND line can't interleave the way a
 // read-modify-write of one JSON document would.
 
+export interface SubagentTokenSummary {
+  steps: number;
+  inputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  thinkingTokens?: number;
+}
+
 export interface SubagentRecord {
   id: string;
   // "Explore", "general-purpose", a custom agent name — whatever the provider
@@ -47,11 +56,23 @@ export interface SubagentRecord {
   // agent_transcript_path: its own conversation file, when the provider gives
   // one. Absent for a subagent still running (or closed out by a turn end).
   transcriptPath?: string;
+  // Token summary snapshotted when the subagent stopped, so token attribution
+  // survives after the provider cleans up the sidecar transcript file.
+  tokens?: SubagentTokenSummary;
 }
 
 type LedgerEvent =
   | { ev: "start"; id: string; type?: string; desc?: string; at: string }
-  | { ev: "stop"; id: string; type?: string; desc?: string; at: string; msg?: string; transcript?: string }
+  | {
+      ev: "stop";
+      id: string;
+      type?: string;
+      desc?: string;
+      at: string;
+      msg?: string;
+      transcript?: string;
+      tokens?: SubagentTokenSummary;
+    }
   // A turn boundary closes the subagents still open, except the ones named in
   // `except` — forked/background subagents outlive the turn that spawned them
   // and report their own stop later.
@@ -91,7 +112,15 @@ export function recordSubagentStart(
 
 export function recordSubagentStop(
   name: string,
-  sub: { id: string; type?: string; description?: string; message?: string; transcriptPath?: string; at?: string },
+  sub: {
+    id: string;
+    type?: string;
+    description?: string;
+    message?: string;
+    transcriptPath?: string;
+    tokens?: SubagentTokenSummary;
+    at?: string;
+  },
 ): void {
   append(name, {
     ev: "stop",
@@ -101,6 +130,7 @@ export function recordSubagentStop(
     at: sub.at ?? new Date().toISOString(),
     msg: sub.message ? clipMessage(sub.message) : undefined,
     transcript: sub.transcriptPath,
+    tokens: sub.tokens,
   });
   compactIfLarge(name);
 }
@@ -161,6 +191,7 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
       record.endedAt = undefined;
       record.message = undefined;
       record.transcriptPath = undefined;
+      record.tokens = undefined;
     } else {
       record.endedAt = event.at;
       // The sidecar lands after the start hook has fired, so the stop is
@@ -168,6 +199,7 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
       if (event.desc && !record.description) record.description = event.desc;
       if (event.msg) record.message = event.msg;
       if (event.transcript) record.transcriptPath = event.transcript;
+      if (event.tokens) record.tokens = event.tokens;
     }
     byId.set(event.id, record);
   }
@@ -216,6 +248,7 @@ function compactIfLarge(name: string): void {
           at: record.endedAt,
           msg: record.message,
           transcript: record.transcriptPath,
+          tokens: record.tokens,
         }),
       );
     }

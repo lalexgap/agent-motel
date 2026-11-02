@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   claudeOAuth,
+  fetchClaudeUsage,
   formatResetIn,
   formatUsageBadge,
   formatUsageReport,
@@ -12,6 +13,7 @@ import {
   parseClaudeUsage,
   parseCodexRateLimits,
   readClaudeCredentials,
+  readClaudeUsageCache,
   readCodexUsage,
   usageBar,
   usageLevel,
@@ -287,5 +289,85 @@ describe("formatting", () => {
 
   test("no data at all yields no badge", () => {
     expect(formatUsageBadge({ generatedAt: now.toISOString(), providers: [] }, now)).toBeNull();
+  });
+});
+
+describe("fetchClaudeUsage shared disk cache and 429 cooldown", () => {
+  let home: string;
+  let prevHome: string | undefined;
+  let prevAgentHome: string | undefined;
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "am-claude-cache-"));
+    prevHome = process.env.HOME;
+    prevAgentHome = process.env.AGENTMGR_HOME;
+    process.env.HOME = home;
+    process.env.AGENTMGR_HOME = home;
+    originalFetch = globalThis.fetch;
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(
+      join(home, ".claude", ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "test-token",
+          subscriptionType: "max",
+          expiresAt: Date.now() + 3600_000,
+        },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    rmSync(home, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevAgentHome === undefined) delete process.env.AGENTMGR_HOME;
+    else process.env.AGENTMGR_HOME = prevAgentHome;
+  });
+
+  test("caches 200 response on disk and falls back to cached windows on 429 cooldown", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(
+        JSON.stringify({
+          five_hour: { utilization: 22, resets_at: "2026-11-02T22:00:00Z" },
+          seven_day: { utilization: 64, resets_at: "2026-11-06T00:00:00Z" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as any;
+
+    const first = await fetchClaudeUsage();
+    expect(fetchCalls).toBe(1);
+    expect(first.windows).toHaveLength(2);
+    expect(readClaudeUsageCache().usage?.windows).toHaveLength(2);
+
+    // Second call within TTL uses shared disk cache without hitting fetch
+    const second = await fetchClaudeUsage();
+    expect(fetchCalls).toBe(1);
+    expect(second.windows[0]?.utilization).toBe(22);
+
+    // Forced refresh receiving 429 records backoffUntil and still returns last known windows
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }) as any;
+
+    const rateLimited = await fetchClaudeUsage({ bypassCache: true });
+    expect(fetchCalls).toBe(2);
+    expect(rateLimited.windows).toHaveLength(2);
+    expect(rateLimited.observedAt).toBeTruthy();
+    expect((readClaudeUsageCache().backoffUntil ?? 0) > Date.now()).toBe(true);
+
+    // Subsequent call during cooldown does not hit fetch at all
+    const duringCooldown = await fetchClaudeUsage({ bypassCache: true });
+    expect(fetchCalls).toBe(2);
+    expect(duringCooldown.windows).toHaveLength(2);
   });
 });

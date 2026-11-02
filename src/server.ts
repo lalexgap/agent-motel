@@ -21,6 +21,8 @@ import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
 import { readSubagents, reconcileOpenSubagents } from "./subagents";
 import { jsonRecords } from "./commands/subagents";
+import { collectUsage, type ProviderUsage } from "./usage";
+import { collectAgentTokenUsage, collectFleetTokenUsage, enrichSubagentsWithTokens } from "./tokenUsage";
 import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
@@ -306,9 +308,21 @@ function restartResponse(result: RestartOutcome): Response {
 
 const MODELS_TTL_MS = 10 * 60_000;
 const modelsCache = new Map<string, { at: number; catalogs: ProviderCatalog[] }>();
+const QUOTA_TTL_MS = 30_000;
+let quotaCache: { at: number; data: ProviderUsage[] } | null = null;
 
 export function resetModelsCacheForTests(): void {
   modelsCache.clear();
+  quotaCache = null;
+}
+
+async function cachedQuotaUsage(refresh: boolean): Promise<ProviderUsage[]> {
+  if (!refresh && quotaCache && Date.now() - quotaCache.at < QUOTA_TTL_MS) {
+    return quotaCache.data;
+  }
+  const report = await collectUsage();
+  quotaCache = { at: Date.now(), data: report.providers };
+  return report.providers;
 }
 
 // `am models --json` here or on a fleet host, cached per host.
@@ -424,6 +438,10 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     if (route === "subagents" && method === "GET") {
       await ensureExactCapable(host, name);
       return json({ records: await runRemoteJson(host, ["subagents", name, "--json"]) });
+    }
+    if (route === "usage" && method === "GET") {
+      await ensureExactCapable(host, name);
+      return json(await runRemoteJson(host, ["usage", name, "--tokens", "--json"]));
     }
     if (route === "handoff" && method === "POST") {
       const body = await handoffBody(req);
@@ -597,7 +615,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "interrupt", "files", "transcript", "workspace", "diff"]);
+  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -698,6 +716,35 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   // GET /api/summary — the same prioritized fleet report as `am summary`.
   if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
     return json(buildFleetSummary(cachedFleetRows()));
+  }
+
+  // GET /api/usage[?provider=claude|codex][&agent=name][&refresh=1][&quota=0]
+  if (parts.length === 1 && parts[0] === "usage" && method === "GET") {
+    const params = new URL(req.url).searchParams;
+    const rawProvider = params.get("provider");
+    if (rawProvider !== null && !isProvider(rawProvider)) {
+      return json({ error: `unknown provider "${rawProvider}"` }, 400);
+    }
+    const agentName = params.get("agent")?.trim() || undefined;
+    if (agentName !== undefined && !AGENT_NAME_RE.test(agentName)) {
+      return json({ error: `invalid agent name "${agentName}"` }, 400);
+    }
+    try {
+      const includeQuota = params.get("quota") !== "0";
+      const refresh = params.get("refresh") === "1";
+      const [quota, tokens] = await Promise.all([
+        includeQuota ? cachedQuotaUsage(refresh) : Promise.resolve(undefined),
+        Promise.resolve(
+          collectFleetTokenUsage({
+            provider: (rawProvider as Provider | null) ?? undefined,
+            agentName,
+          }),
+        ),
+      ]);
+      return json({ ...(quota ? { quota } : {}), tokens });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 404);
+    }
   }
 
   // GET /api/events — authenticated proxy of the daemon's fleet event stream.
@@ -897,7 +944,14 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       const status = displayStatus(agent);
       const live = status !== "dead" && status !== "exited";
       if (live) reconcileOpenSubagents(agent);
-      return json({ records: jsonRecords(readSubagents(name), live) });
+      const records = enrichSubagentsWithTokens(agent, readSubagents(name));
+      return json({ records: jsonRecords(records, live) });
+    }
+
+    if (parts.length === 3 && parts[2] === "usage" && method === "GET") {
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      return json(collectAgentTokenUsage(agent));
     }
 
     // GET /api/agents/:name/transcript?after=n — see transcriptJson

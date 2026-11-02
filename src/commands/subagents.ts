@@ -1,5 +1,6 @@
 import { agentProvider, listAgents, resolveAgent, type AgentState } from "../state";
 import { readSubagents, reconcileOpenSubagents, subagentActivity, subagentLabel, type SubagentRecord } from "../subagents";
+import { enrichSubagentsWithTokens, formatTokens } from "../tokenUsage";
 import { formatDuration } from "./hook";
 import { displayStatus, relativeTime } from "./ls";
 
@@ -12,12 +13,19 @@ export interface SubagentLine {
   type: string;
   id: string;
   age: string;
+  tokens?: string;
   detail: string;
 }
 
 export function ageOf(record: SubagentRecord, now: number): string {
   const end = record.endedAt ? Date.parse(record.endedAt) : now;
   return formatDuration(Math.max(0, (end - Date.parse(record.startedAt)) / 1000));
+}
+
+function recordTokenLabel(record: SubagentRecord): string | undefined {
+  if (!record.tokens) return undefined;
+  const active = record.tokens.inputTokens + record.tokens.cacheCreationTokens + record.tokens.outputTokens;
+  return formatTokens(active);
 }
 
 // Running subagents show what they're doing (from the parent transcript);
@@ -34,16 +42,25 @@ export function subagentLines(
   const running = records.filter((r) => !r.endedAt);
   const finished = records.filter((r) => r.endedAt).reverse();
   return [...running, ...finished].map((record) => {
+    const tokens = recordTokenLabel(record);
     if (!record.endedAt && !live) {
       // Nothing recorded when it stopped, so any age would just keep climbing
       // for something that died with the session.
-      return { icon: "✕", type: subagentLabel(record), id: record.id.slice(0, 8), age: "—", detail: "ended with the session" };
+      return {
+        icon: "✕",
+        type: subagentLabel(record),
+        id: record.id.slice(0, 8),
+        age: "—",
+        ...(tokens ? { tokens } : {}),
+        detail: "ended with the session",
+      };
     }
     return {
       icon: record.endedAt ? "✔" : "●",
       type: subagentLabel(record),
       id: record.id.slice(0, 8),
       age: ageOf(record, now),
+      ...(tokens ? { tokens } : {}),
       detail: (record.endedAt ? record.message : activity.get(record.id)) ?? "—",
     };
   });
@@ -61,26 +78,31 @@ interface ColumnWidths {
   type: number;
   id: number;
   age: number;
+  tokens?: number;
 }
 
 // Widths come from every row that will be printed, so a host-wide listing's
 // single header lines up with all of its groups — not just the first.
 export function columnWidths(lines: SubagentLine[]): ColumnWidths {
+  const hasTokens = lines.some((l) => l.tokens !== undefined);
   return {
     type: Math.max(8, ...lines.map((l) => l.type.length)),
     id: Math.max(2, ...lines.map((l) => l.id.length)),
     age: Math.max(3, ...lines.map((l) => l.age.length)),
+    ...(hasTokens ? { tokens: Math.max(6, ...lines.map((l) => (l.tokens ?? "—").length)) } : {}),
   };
 }
 
 export function subagentHeader(w: ColumnWidths): string {
-  return `  ${"SUBAGENT".padEnd(w.type)}  ${"ID".padEnd(w.id)}  ${"AGE".padEnd(w.age)}  DETAIL`;
+  const tokCol = w.tokens ? `  ${"TOKENS".padStart(w.tokens)}` : "";
+  return `  ${"SUBAGENT".padEnd(w.type)}  ${"ID".padEnd(w.id)}  ${"AGE".padEnd(w.age)}${tokCol}  DETAIL`;
 }
 
 export function subagentRows(lines: SubagentLine[], w: ColumnWidths, width = 60): string[] {
   return lines.map((line) => {
     const detail = line.detail.length > width ? line.detail.slice(0, width - 1) + "…" : line.detail;
-    return `${line.icon} ${line.type.padEnd(w.type)}  ${line.id.padEnd(w.id)}  ${line.age.padEnd(w.age)}  ${detail}`;
+    const tokCol = w.tokens ? `  ${(line.tokens ?? "—").padStart(w.tokens)}` : "";
+    return `${line.icon} ${line.type.padEnd(w.type)}  ${line.id.padEnd(w.id)}  ${line.age.padEnd(w.age)}${tokCol}  ${detail}`;
   });
 }
 
@@ -98,7 +120,7 @@ function agentIsLive(agent: AgentState): boolean {
 function agentReport(agent: AgentState): string[] {
   if (agentProvider(agent) === "antigravity") return [`${agent.name}: Antigravity subagent observation is unsupported`];
   if (agentIsLive(agent)) reconcileOpenSubagents(agent);
-  const records = readSubagents(agent.name);
+  const records = enrichSubagentsWithTokens(agent, readSubagents(agent.name));
   if (records.length === 0) {
     const hint = agentProvider(agent) === "codex" ? "" : " (its Task-tool runs appear here)";
     return [`${agent.name}: no subagents recorded${hint}`];
@@ -113,9 +135,11 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
   if (prefix) {
     const agent = resolveAgent(prefix);
     if (agentProvider(agent) === "antigravity") throw new Error("Antigravity subagent observation is unsupported");
-    const records = readSubagents(agent.name);
+    const live = agentIsLive(agent);
+    if (live) reconcileOpenSubagents(agent);
+    const records = enrichSubagentsWithTokens(agent, readSubagents(agent.name));
     if (opts.json) {
-      console.log(JSON.stringify(jsonRecords(records, agentIsLive(agent)), null, 2));
+      console.log(JSON.stringify(jsonRecords(records, live), null, 2));
       return;
     }
     console.log(agentReport(agent).join("\n"));
@@ -130,7 +154,8 @@ export function subagentsCommand(prefix: string | undefined, opts: { json?: bool
     .filter(agentIsLive)
     .map((agent) => {
       reconcileOpenSubagents(agent);
-      return { agent, records: readSubagents(agent.name).filter((r) => !r.endedAt) };
+      const open = readSubagents(agent.name).filter((r) => !r.endedAt);
+      return { agent, records: enrichSubagentsWithTokens(agent, open) };
     })
     .filter((entry) => entry.records.length > 0);
   if (opts.json) {
