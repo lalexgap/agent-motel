@@ -23,7 +23,6 @@ export function planInfo(prefix: string): PlanInfo {
   };
 }
 
-// `am plan <name>`: the agent's running plan, for the operator.
 export function planCommand(prefix: string, opts: { path?: boolean; json?: boolean }): void {
   const info = planInfo(prefix);
   if (opts.json) {

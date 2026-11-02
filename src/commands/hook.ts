@@ -749,9 +749,7 @@ export async function hookCommand(event: string): Promise<void> {
     const accepts = agentProvider(agent) === "claude" && process.env.AGENTMGR_PEER_INBOX === "1";
     agent.peerInboxSession = accepts && typeof payload.session_id === "string" ? payload.session_id : undefined;
   }
-  // The plan rides the first prompt of each session (startup, resume,
-  // compaction, /clear) rather than every hook: per-turn or per-tool
-  // injection is what made plan files expensive. Subagents never get it.
+  // Inject once per session, never per tool call: per-call injection is what made plan files expensive.
   let planNotes: string[] = [];
   if (!fromSubagent) {
     if (event === "session-start") agent.planPending = true;
