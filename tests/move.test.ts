@@ -46,7 +46,7 @@ describe("move lifecycle failures", () => {
           home: "/remote", queue: ["Untrusted queued message"], transcript: null, handoffToken: args[3],
         }) };
       };
-      await expect(moveAgent("remote:missing-session", undefined, { dir: home, start, exact: true }, { sshAmAsync: sshAm }))
+      await expect(moveAgent("remote:missing-session", undefined, { dir: home, copy: false, start, exact: true }, { sshAmAsync: sshAm }))
         .rejects.toThrow("without a session id");
       expect(calls.some(args => ["stop", "rm", "resume", "__import"].includes(args[0]!))).toBe(false);
       expect(readAgent("missing-session")).toBeNull();

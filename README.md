@@ -270,6 +270,8 @@ Remote control is enabled by default. Claude agents launch with Claude Code Remo
 bun test
 ```
 
+On a machine running a live Agent Motel daemon, use `python3 scripts/test-isolated.py` instead (it takes the same arguments): it runs `bun test` with a private HOME, state directory and tmux socket, so tests cannot reach the live fleet.
+
 ## Caretaker
 
 `am caretaker` opens a Codex agent dedicated to finding unused worktrees and agents that may be ready to retire. `am caretaker --scan` requests an inspection-only pass without attaching; a busy caretaker skips scheduled scans instead of accumulating a backlog. Use `am -H host caretaker` to inspect another machine. It is one local agent per host, separate from the fleet concierge.
