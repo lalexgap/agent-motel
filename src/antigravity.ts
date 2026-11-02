@@ -194,18 +194,16 @@ function workspaceFileUris(dir: string): Set<string> {
   return uris;
 }
 
-function transcriptStartedSince(transcriptPath: string, minTimeMs: number): boolean {
-  if (minTimeMs <= 0) return true;
-  try {
-    const raw = readFileSync(transcriptPath, "utf8");
-    const firstLine = raw.split("\n").find((l) => l.trim());
-    if (!firstLine) return true;
-    const entry = JSON.parse(firstLine) as Record<string, unknown>;
-    const firstTs = Date.parse(String(entry.created_at ?? entry.timestamp ?? "")) || 0;
-    return firstTs <= 0 || firstTs >= minTimeMs;
-  } catch {
-    return false;
-  }
+export function findLatestAntigravitySession(dir: string, excludeAgentName = ""): string | undefined {
+  return queryAntigravitySummary({
+    name: excludeAgentName,
+    provider: "antigravity",
+    dir,
+    tmuxSession: "",
+    status: "starting",
+    createdAt: "",
+    updatedAt: "",
+  })?.conversationId;
 }
 
 function queryAntigravitySummary(agent: AgentState): AntigravityConversationSummary | null {
@@ -256,10 +254,6 @@ function queryAntigravitySummary(agent: AgentState): AntigravityConversationSumm
           if (!row.conversation_id || owned.has(row.conversation_id)) continue;
           const modifiedMs = Date.parse(row.last_modified_time ?? "") || 0;
           if (minTimeMs > 0 && modifiedMs < minTimeMs) continue;
-          try {
-            const candidateTranscript = nativeAntigravityTranscriptPath(row.conversation_id);
-            if (existsSync(candidateTranscript) && !transcriptStartedSince(candidateTranscript, minTimeMs)) continue;
-          } catch {}
           let rowUris: unknown;
           try {
             rowUris = JSON.parse(row.workspace_uris || "[]");
@@ -297,7 +291,7 @@ function queryAntigravitySummary(agent: AgentState): AntigravityConversationSumm
       const transcript = nativeAntigravityTranscriptPath(candidate);
       try {
         const stat = statSync(transcript);
-        if ((minTimeMs <= 0 || stat.mtimeMs >= minTimeMs) && transcriptStartedSince(transcript, minTimeMs)) {
+        if (minTimeMs <= 0 || stat.mtimeMs >= minTimeMs) {
           return {
             conversationId: candidate,
             status: "",

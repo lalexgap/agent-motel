@@ -1,5 +1,5 @@
 import { acquireLifecycleLock, releaseLifecycleLock } from "../lifecycle";
-import { ANTIGRAVITY_DEFAULT_MODEL, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
+import { ANTIGRAVITY_DEFAULT_MODEL, findLatestAntigravitySession, reserveAntigravityLaunch, failAntigravityLaunch } from "../antigravity";
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
@@ -329,12 +329,20 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     codexDaemon,
     codexDaemonAttached,
     codexTrustedDir: codexDaemonLaunched ? amTrustedCodexDir(dir) : undefined,
-    sessionId: codexThreadId ?? (provider === "antigravity" && typeof opts.resume === "string" ? opts.resume : undefined),
+    sessionId:
+      codexThreadId ??
+      (provider === "antigravity"
+        ? typeof opts.resume === "string"
+          ? opts.resume
+          : opts.continue && !plan.antigravityRunId
+            ? findLatestAntigravitySession(dir, name)
+            : undefined
+        : undefined),
     worktreePath,
     worktreeBranch,
     repoRoot,
     task: opts.message,
-    ...(provider === "antigravity" && !plan.antigravityRunId && (opts.message || roleInstructions)
+    ...(provider === "antigravity" && !plan.antigravityRunId && plan.command.includes("-i")
       ? { lastHandoffAt: now, promptAt: now }
       : {}),
     role: role?.name,
