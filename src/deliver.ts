@@ -332,16 +332,17 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
     if (provider === "antigravity" && turnRunning(before, provider)) return { status: "queued", reason: "unavailable" };
     let mark = pending?.id === head.id ? pending.mark : undefined;
+    const submitStartedAt = new Date().toISOString();
     const recordSubmitted = () => {
       queuePopId(name, head.id);
       if (provider === "antigravity") {
-        const promptAt = new Date(Date.now() + 1).toISOString();
+        const promptAt = submitStartedAt;
         markDelivered(name, head.id, mark, "prompt", promptAt);
         updateAgentIf(name, (current) => {
           if (current.createdAt !== agent.createdAt) return false;
           current.promptAt = promptAt;
           current.promptKey = promptKey(head.message);
-          current.workingSince ??= promptAt;
+          current.workingSince = promptAt;
           updateAgentStatus(current, "working", "turn in progress");
           return true;
         });

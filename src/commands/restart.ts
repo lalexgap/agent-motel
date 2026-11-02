@@ -82,7 +82,15 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
     delete agent.antigravityRunId;
     delete agent.antigravityRunPhase;
     delete agent.antigravityCleanupRunId;
-    if (opts.message) agent.lastHandoffAt = new Date().toISOString();
+    delete agent.workingSince;
+    if (opts.message) {
+      const now = new Date().toISOString();
+      agent.lastHandoffAt = now;
+      agent.promptAt = now;
+    } else {
+      delete agent.lastHandoffAt;
+      delete agent.promptAt;
+    }
   }
   const launch = {
     session: agent.tmuxSession,

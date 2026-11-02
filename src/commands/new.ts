@@ -334,6 +334,9 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     worktreeBranch,
     repoRoot,
     task: opts.message,
+    ...(provider === "antigravity" && !plan.antigravityRunId && (opts.message || roleInstructions)
+      ? { lastHandoffAt: now, promptAt: now }
+      : {}),
     role: role?.name,
     roleInstructions,
     reportTo,

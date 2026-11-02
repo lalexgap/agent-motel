@@ -194,10 +194,24 @@ function workspaceFileUris(dir: string): Set<string> {
   return uris;
 }
 
+function transcriptStartedSince(transcriptPath: string, minTimeMs: number): boolean {
+  if (minTimeMs <= 0) return true;
+  try {
+    const raw = readFileSync(transcriptPath, "utf8");
+    const firstLine = raw.split("\n").find((l) => l.trim());
+    if (!firstLine) return true;
+    const entry = JSON.parse(firstLine) as Record<string, unknown>;
+    const firstTs = Date.parse(String(entry.created_at ?? entry.timestamp ?? "")) || 0;
+    return firstTs <= 0 || firstTs >= minTimeMs;
+  } catch {
+    return false;
+  }
+}
+
 function queryAntigravitySummary(agent: AgentState): AntigravityConversationSummary | null {
   const appData = antigravityAppDataDir();
   const dbPath = join(appData, "conversation_summaries.db");
-  const minTimeMs = (Date.parse(agent.createdAt) || 0) - 5_000;
+  const minTimeMs = Date.parse(agent.createdAt) || 0;
   const owned = ownedSessionIds(agent.name);
   if (existsSync(dbPath)) {
     let db: Database | undefined;
@@ -242,6 +256,10 @@ function queryAntigravitySummary(agent: AgentState): AntigravityConversationSumm
           if (!row.conversation_id || owned.has(row.conversation_id)) continue;
           const modifiedMs = Date.parse(row.last_modified_time ?? "") || 0;
           if (minTimeMs > 0 && modifiedMs < minTimeMs) continue;
+          try {
+            const candidateTranscript = nativeAntigravityTranscriptPath(row.conversation_id);
+            if (existsSync(candidateTranscript) && !transcriptStartedSince(candidateTranscript, minTimeMs)) continue;
+          } catch {}
           let rowUris: unknown;
           try {
             rowUris = JSON.parse(row.workspace_uris || "[]");
@@ -279,7 +297,7 @@ function queryAntigravitySummary(agent: AgentState): AntigravityConversationSumm
       const transcript = nativeAntigravityTranscriptPath(candidate);
       try {
         const stat = statSync(transcript);
-        if (minTimeMs <= 0 || stat.mtimeMs >= minTimeMs) {
+        if ((minTimeMs <= 0 || stat.mtimeMs >= minTimeMs) && transcriptStartedSince(transcript, minTimeMs)) {
           return {
             conversationId: candidate,
             status: "",
@@ -407,28 +425,32 @@ export function reconcileAntigravityAgent(
     if (running) {
       if (current.status !== "working") {
         const iso = new Date().toISOString();
-        current.workingSince ??= iso;
-        current.promptAt ??= iso;
+        current.workingSince ??= current.promptAt ?? current.lastHandoffAt ?? iso;
+        current.promptAt ??= current.lastHandoffAt ?? iso;
         updateAgentStatus(current, "working", "turn in progress");
         changed = true;
       }
       return changed;
     }
 
-    const turnStartMs = Math.max(
-      Date.parse(current.promptAt ?? "") || 0,
-      Date.parse(current.lastHandoffAt ?? "") || 0,
-      Date.parse(current.workingSince ?? "") || 0,
-      Date.parse(current.statusChangedAt ?? "") || 0,
-    );
+    const turnStartMs =
+      Math.max(
+        Date.parse(current.promptAt ?? "") || 0,
+        Date.parse(current.lastHandoffAt ?? "") || 0,
+        Date.parse(current.workingSince ?? "") || 0,
+      ) ||
+      Date.parse(current.statusChangedAt ?? current.createdAt) ||
+      0;
     const hasCompletedTurn =
       (nativeTranscript ? transcriptCompletedSince(nativeTranscript, turnStartMs) : false) ||
       (dbIdle && (Date.parse(summary?.lastModifiedTime ?? "") || 0) >= turnStartMs && summary!.stepCount > 0);
 
     if (current.status === "starting") {
-      const expectsInitialPrompt = Boolean(current.task || current.lastHandoffAt);
-      const ageMs = nowMs - (Date.parse(current.statusChangedAt ?? current.createdAt) || 0);
-      if (paneState.ready && (!expectsInitialPrompt || hasCompletedTurn || ageMs >= 2_500)) {
+      const startChangeMs = Date.parse(current.statusChangedAt ?? current.createdAt) || 0;
+      const expectsInitialPrompt = Boolean(
+        current.lastHandoffAt && (Date.parse(current.lastHandoffAt) || 0) >= startChangeMs - 1_000,
+      );
+      if (paneState.ready && (!expectsInitialPrompt || hasCompletedTurn)) {
         beforeIdleSnapshot = { ...current };
         delete current.workingSince;
         updateAgentStatus(current, "idle", "ready at prompt");
@@ -436,8 +458,7 @@ export function reconcileAntigravityAgent(
         changed = true;
       }
     } else if (current.status === "working") {
-      const ageMs = nowMs - turnStartMs;
-      if (paneState.ready && (hasCompletedTurn || ageMs >= 1_500)) {
+      if (paneState.ready && hasCompletedTurn) {
         beforeIdleSnapshot = { ...current };
         delete current.workingSince;
         updateAgentStatus(current, "idle", "turn ended");
