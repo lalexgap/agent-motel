@@ -2007,3 +2007,6 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   font-size: 12px;
   padding: 0;
 }
+
+.prompt-other { width: 100%; margin-top: 8px; }
+.prompt-other input { flex: 1; min-width: 100px; padding: 8px; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; }
