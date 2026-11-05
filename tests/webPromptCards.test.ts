@@ -7,6 +7,7 @@ class Element {
   children: Element[] = [];
   dataset: Record<string, string> = {};
   disabled = false;
+  open = false;
   value = "";
   onclick?: () => Promise<void>;
   onsubmit?: (event: { preventDefault(): void }) => void;
@@ -20,7 +21,7 @@ class Element {
     ]);
   }
   querySelector(selector: string): Element | undefined {
-    return this.children.find(node => node.className === selector.slice(1)) ?? this.children.flatMap(node => node.querySelector(selector) ?? [])[0];
+    return this.children.find(node => node.className.split(" ").includes(selector.slice(1))) ?? this.children.flatMap(node => node.querySelector(selector) ?? [])[0];
   }
 }
 function fixture(fail = false) {
@@ -34,7 +35,7 @@ function fixture(fail = false) {
   runInNewContext(source.slice(source.indexOf("function promptTerminalButton"), source.indexOf("// AskUserQuestion arrives")), context);
   const prompt = { id: "token", kind: "question", title: "Pick a color", options: [{ id: "1", label: "Blue" }, { id: "2", label: "Other", other: true }] };
   const pending = new Element("div");
-  const detail = { panePrompt: prompt, status: "working" };
+  const detail: { panePrompt: typeof prompt | null; status: string; pane?: string } = { panePrompt: prompt, status: "working" };
   const render = () => context.renderPromptCards(pending, detail, { requests: [] }, "/api/agents/test");
   render();
   return { calls, pending, detail, render, box: () => pending.children[0]! };
@@ -57,10 +58,32 @@ test("choice buttons submit the displayed prompt token; failure leaves terminal 
   expect(f.box().querySelectorAll("button")[0]!.disabled).toBe(true);
   expect(f.box().querySelector(".text-button")!.disabled).toBe(false);
 });
+test("choice labels use the indexed option grid", () => {
+  const f = fixture();
+  const choice = f.box().querySelectorAll("button")[0]!;
+  expect(choice.children.map(child => [child.className, child.textContent])).toEqual([
+    ["question-index", "1"], ["question-label", "Blue"],
+  ]);
+});
 test("a new prompt replaces the old form", () => {
   const f = fixture();
   const old = f.box();
-  f.detail.panePrompt = { ...f.detail.panePrompt, id: "next" };
+  f.detail.panePrompt = { ...f.detail.panePrompt!, id: "next" };
   f.render();
   expect(f.box()).not.toBe(old);
+});
+test("fallback raw pane text updates without replacing its open disclosure", () => {
+  const f = fixture();
+  f.detail.panePrompt = null;
+  f.detail.status = "needs-attention";
+  f.detail.pane = "first live screen";
+  f.render();
+  const box = f.box();
+  const disclosure = box.querySelectorAll("details")[0]!;
+  disclosure.open = true;
+  f.detail.pane = "second live screen";
+  f.render();
+  expect(f.box()).toBe(box);
+  expect(disclosure.open).toBe(true);
+  expect(disclosure.querySelector(".prompt-raw-pane")?.textContent).toBe("second live screen");
 });

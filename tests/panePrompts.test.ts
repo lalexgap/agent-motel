@@ -104,11 +104,21 @@ describe("detectClaudePrompt", () => {
     ["markdown quotation", question.split("\n").map(line => "> " + line).join("\n")],
     ["ordinary list", "Choose one:\n1. Blue\n2. Green"],
     ["unknown permission heading", permission.replace("Do you want to proceed?", "Choose a theme")],
+    ["permission missing operation context", permission.slice(permission.indexOf("Do you want to proceed?"))],
+    ["permission missing dialog boundary", permission.replace("──────────────────────────────\n", "")],
+    ["permission missing type header", permission.replace("Bash command\n\n", "")],
+    ["permission missing command body", permission.replace("  pwd\n", "")],
+    ["permission with ambiguous operation boundary", permission.replace("  pwd", "  printf '%s\\n' x\n──────────────────────────────\nBash command\n\n  pwd")],
     ["disabled permission", permission.replace("1. Yes", "1. Yes (disabled)")],
     ["clipped permission", permission.replace("Do you want to proceed?", "This terminal is too small. Do you want to proceed?")],
     ["feedback input", permission.replace("3. No", "3. tell Claude what to do differently")],
   ])("rejects %s", (_name, pane) => {
     expect(detectClaudePrompt(pane)).toBeNull();
+  });
+
+  test("keeps rule-like command fragments inside complete permission context", () => {
+    const prompt = parse(permission.replace("  pwd", "  printf '%s\\n' '-----'"));
+    expect(prompt.raw).toContain("Bash command\n\n  printf");
   });
 });
 

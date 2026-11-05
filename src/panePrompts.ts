@@ -49,7 +49,16 @@ export function detectClaudePrompt(pane: string): ClaudePrompt | null {
   if (first < 1) return null;
 
   let start = first - 1;
-  while (start > 0 && !rulePattern.test(lines[start]!)) start--;
+  if (kind === "permission") {
+    const boundaries: number[] = [];
+    for (let i = 0; i < first - 1; i++) {
+      if (rulePattern.test(lines[i]!) && lines[i + 1]?.trim() === "Bash command") boundaries.push(i);
+    }
+    if (boundaries.length !== 1) return null;
+    start = boundaries[0]!;
+  } else {
+    while (start > 0 && !rulePattern.test(lines[start]!)) start--;
+  }
   const raw = lines.slice(start, end + 1).join("\n");
   // Checkbox rows, clipped menus, preview layouts and feedback editors have
   // different focus/submit semantics; leave them to the raw terminal.
@@ -98,15 +107,21 @@ export function detectClaudePrompt(pane: string): ClaudePrompt | null {
     || !options.some(o => /^No(?:$|[, .])/.test(o.label)))) return null;
 
   const heading: string[] = [];
+  let headingStart = first;
   for (let i = first - 1; i >= start; i--) {
     const line = lines[i]!.trim();
     if (!line) { if (heading.length) break; continue; }
     if (rulePattern.test(line) || /[☐☑☒□■]|[←→].*Submit|^[❯>]/.test(line)) break;
     heading.unshift(line);
+    headingStart = i;
   }
   const title = heading.join("\n");
   if (!title || title.length > 4000) return null;
-  if (kind === "permission" && !/(?:Do you want to |Allow |trust (?:this|the) |Would you like to )[^\n]*\?/i.test(title)) return null;
+  if (kind === "permission") {
+    if (!/(?:Do you want to |Allow |trust (?:this|the) |Would you like to )[^\n]*\?/i.test(title)) return null;
+    const command = lines.slice(start + 2, headingStart).map(line => line.trim()).filter(Boolean);
+    if (!command.length) return null;
+  }
   return { id: createHash("sha256").update(raw).digest("hex"), kind, title, options, selected, raw };
 }
 

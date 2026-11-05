@@ -890,7 +890,7 @@ function panePromptBox(prompt, base) {
       scheduleRefresh();
     }
   };
-  for (const option of prompt.options) {
+  for (const [index, option] of prompt.options.entries()) {
     if (option.other) {
       const form = el("form", "permission-actions prompt-other");
       const input = el("input");
@@ -905,7 +905,10 @@ function panePromptBox(prompt, base) {
       form.onsubmit = (event) => { event.preventDefault(); if (input.value.trim()) submit(option.id, input.value); };
       actions.append(form);
     } else {
-      const button = el("button", "question-option", option.label);
+      const button = el("button", "question-option");
+      const number = el("span", "question-index", String(index + 1));
+      number.setAttribute("aria-hidden", "true");
+      button.append(number, el("span", "question-label", option.label));
       if (option.description) button.append(el("span", "question-description", option.description));
       button.onclick = () => submit(option.id);
       actions.append(button);
@@ -916,7 +919,11 @@ function panePromptBox(prompt, base) {
 }
 function renderPromptCards(pending, detail, permissions, base) {
   const content = JSON.stringify([base, detail.panePrompt, permissions.requests, detail.status]);
-  if (pending.dataset.content === content) return;
+  if (pending.dataset.content === content) {
+    const rawPane = pending.querySelector(".prompt-raw-pane");
+    if (rawPane) rawPane.textContent = detail.pane || "No active terminal.";
+    return;
+  }
   pending.dataset.content = content;
   pending.replaceChildren();
   if (detail.panePrompt) {
@@ -927,7 +934,7 @@ function renderPromptCards(pending, detail, permissions, base) {
       const box = el("section", "permission");
       box.append(el("h3", "", "Agent needs attention"), el("p", "question-note", "This prompt could not be recognized. Answer it in the web terminal."));
       const raw = el("details");
-      raw.append(el("summary", "", "Show raw pane"), el("pre", "permission-call", detail.pane || "No active terminal."));
+      raw.append(el("summary", "", "Show raw pane"), el("pre", "permission-call prompt-raw-pane", detail.pane || "No active terminal."));
       box.append(raw, promptTerminalButton());
       pending.append(box);
     }
