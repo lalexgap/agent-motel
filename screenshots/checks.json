@@ -1,0 +1,13 @@
+{
+  "scope": "Isolated actual renderer and CSS with fixture data; mocked API; no live pane writes",
+  "passed": [
+    "Other draft survives refresh",
+    "Other answer payload",
+    "permission No payload",
+    "stale disables answers and keeps terminal usable",
+    "terminal fallback opens",
+    "fallback raw pane updates without closing disclosure",
+    "no JS errors"
+  ],
+  "errors": []
+}
