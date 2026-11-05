@@ -572,6 +572,7 @@ async function selectAgent(name, mode) {
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
   $("chat-working").hidden = true;
   $("permissions").replaceChildren();
+  delete $("permissions").dataset.content;
   $("queue").replaceChildren();
   $("related-agents").replaceChildren();
   state.related = null;
@@ -862,6 +863,77 @@ setInterval(() => {
   for (const box of document.querySelectorAll(".working-indicator:not([hidden])")) tickWorking(box);
 }, 1000);
 const transcriptQueue = el("div", "transcript-queue");
+function promptTerminalButton() {
+  const button = el("button", "text-button", "Open terminal");
+  button.onclick = () => { setDetailMode("terminal"); updateAgentView(); };
+  return button;
+}
+function panePromptBox(prompt, base) {
+  const box = el("section", "permission question");
+  box.setAttribute("aria-label", "Agent prompt");
+  box.append(el("h3", "", prompt.kind === "permission" ? "Permission requested" : "Question from agent"));
+  box.append(el("pre", "permission-call", prompt.kind === "permission" ? prompt.raw : prompt.title));
+  const actions = el("div", "question-options");
+  const error = el("p", "question-note");
+  error.setAttribute("role", "status");
+  const submit = async (optionId, text) => {
+    for (const control of box.querySelectorAll("button, input")) control.disabled = true;
+    try {
+      await api(base + "/prompt", { id: prompt.id, optionId, ...(text !== undefined ? { text } : {}) });
+      error.textContent = "Answer sent. Waiting for the agent…";
+      await refreshDetail();
+    } catch (e) {
+      error.textContent = e.message;
+      // A failed request may have written some keys. Inspect before retrying.
+      const terminal = box.querySelector(".text-button");
+      if (terminal) terminal.disabled = false;
+      scheduleRefresh();
+    }
+  };
+  for (const option of prompt.options) {
+    if (option.other) {
+      const form = el("form", "permission-actions prompt-other");
+      const input = el("input");
+      input.type = "text";
+      input.placeholder = "Other — type your answer";
+      input.setAttribute("aria-label", "Other answer");
+      input.maxLength = 2000;
+      input.required = true;
+      const button = el("button", "", "Send answer");
+      button.type = "submit";
+      form.append(input, button);
+      form.onsubmit = (event) => { event.preventDefault(); if (input.value.trim()) submit(option.id, input.value); };
+      actions.append(form);
+    } else {
+      const button = el("button", "question-option", option.label);
+      if (option.description) button.append(el("span", "question-description", option.description));
+      button.onclick = () => submit(option.id);
+      actions.append(button);
+    }
+  }
+  box.append(actions, error, promptTerminalButton());
+  return box;
+}
+function renderPromptCards(pending, detail, permissions, base) {
+  const content = JSON.stringify([base, detail.panePrompt, permissions.requests, detail.status]);
+  if (pending.dataset.content === content) return;
+  pending.dataset.content = content;
+  pending.replaceChildren();
+  if (detail.panePrompt) {
+    pending.append(panePromptBox(detail.panePrompt, base));
+  } else {
+    for (const request of permissions.requests) pending.append(permissionBox(request, base));
+    if (detail.status === "needs-attention" && !permissions.requests.length) {
+      const box = el("section", "permission");
+      box.append(el("h3", "", "Agent needs attention"), el("p", "question-note", "This prompt could not be recognized. Answer it in the web terminal."));
+      const raw = el("details");
+      raw.append(el("summary", "", "Show raw pane"), el("pre", "permission-call", detail.pane || "No active terminal."));
+      box.append(raw, promptTerminalButton());
+      pending.append(box);
+    }
+  }
+}
+
 // AskUserQuestion arrives as a permission request; render its questions.
 function permissionBox(request, base) {
   const asked = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions)
@@ -919,6 +991,7 @@ function permissionBox(request, base) {
     button.onclick = answer(option);
     footer.append(button);
   }
+  footer.append(promptTerminalButton());
   box.append(footer);
   return box;
 }
@@ -1135,8 +1208,7 @@ async function refreshDetail() {
     queue.append(line);
   }
   const pending = $("permissions");
-  pending.replaceChildren();
-  for (const request of permissions.requests) pending.append(permissionBox(request, base));
+  renderPromptCards(pending, detail, permissions, base);
   showWorking("chat-working", detail.status, detail.statusChangedAt);
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;

@@ -1,3 +1,4 @@
+import { agentPanePrompt, answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { runConversationSearch, validSearchQuery, type ConversationMatches } from "./webSearch";
 import { recordAudit, withAuditContext } from "./audit";
 import { agentRuntimeSettings } from "./runtimeSettings";
@@ -163,6 +164,7 @@ export function agentDetail(name: string) {
     // Tells a serve on another host that this am returns ids from send --json.
     messageReceipts: true,
     terminalAttach: 1,
+    panePrompt: agentProvider(agent) === "claude" ? agentPanePrompt(name) : null,
     // ...and that `am stop --if-idle` refuses rather than stopping regardless.
     stopIfIdle: true,
     permissionRequests: nativeControls,
@@ -419,6 +421,12 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       if (!isPermissionId(id)) return permissionNotFound(name, id);
       return permissionResponse(await runRemoteJson<AnswerResult>(host, ["__permission", name, id, body.optionId], { timeoutMs: 30_000 }));
     }
+    if (route === "prompt" && rest.length === 1 && method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!validPromptAnswer(body)) return json({ error: "Invalid prompt answer" }, 400);
+      const result = await runRemoteJson<{ ok: boolean; error?: string }>(host, ["__prompt-answer", name], { stdin: JSON.stringify(body) });
+      return json(result, result.ok ? 200 : 409);
+    }
     if (rest.length > 1) return json({ error: "not found" }, 404);
     if (!route && method === "GET") return json(await runRemoteJson(host, ["__detail", name]));
     if (route === "workspace" && method === "GET") {
@@ -615,7 +623,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
+  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -914,6 +922,14 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
       const result = await cancelMessage(name, id);
       return result ? cancelResponse(result) : messageNotFound(name, id);
+    }
+
+    if (parts.length === 3 && parts[2] === "prompt" && method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (!validPromptAnswer(body)) return json({ error: "Invalid prompt answer" }, 400);
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      const result = answerPanePrompt(name, body);
+      return json(result, result.ok ? 200 : 409);
     }
 
     // GET /api/agents/:name/permissions — prompts waiting on an answer

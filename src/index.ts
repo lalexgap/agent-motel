@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
 import { parseArgs, selectedProvider, type ParsedArgs } from "./args";
 import { agentWorkspace, agentWorkspaceDiff } from "./workspace";
@@ -949,6 +950,13 @@ async function main(): Promise<void> {
       const result = await interruptMessage(name, id);
       if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
       console.log(JSON.stringify(result));
+      break;
+    }
+    case "__prompt-answer": {
+      const name = requirePositional(args, 0, "agent name");
+      const body = JSON.parse(await Bun.stdin.text());
+      if (!validPromptAnswer(body)) throw new Error("Invalid prompt answer");
+      console.log(JSON.stringify(answerPanePrompt(name, body)));
       break;
     }
     case "__permissions": {
