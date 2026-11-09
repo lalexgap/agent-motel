@@ -9,8 +9,7 @@ import { recordNotification, type NotificationKind } from "./notifications";
 //      focuses it), else osascript (Script Editor icon)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
-// Every notification is also journaled (see notifications.ts) so a daemon on
-// another machine can relay it — how a headless server reaches the laptop.
+// Every notification is also journaled so remote daemons can relay it.
 
 export interface NotifyEnv {
   platform: NodeJS.Platform;
@@ -48,8 +47,7 @@ export function canShowNotifications(config: Config = loadConfig()): boolean {
   return buildNotifyCommand("", "", config, { platform: process.platform, has: (binary) => !!Bun.which(binary) }) !== null;
 }
 
-// Display only, without journaling — for relayed notifications, which would
-// otherwise bounce back to the host they came from.
+// Display without journaling, so relayed notifications don't bounce back.
 export function showNotification(title: string, message: string): void {
   const cmd = buildNotifyCommand(title, message, loadConfig(), {
     platform: process.platform,

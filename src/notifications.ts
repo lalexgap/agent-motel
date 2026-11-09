@@ -5,11 +5,6 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { baseDir } from "./paths";
 import { newMsgId } from "./msgid";
 
-// Per-host notification journal. Every notify() lands here as well as on the
-// local notifier, so another machine's daemon can relay it: the laptop
-// long-polls `am __notifications` on each remote and shows what it finds, which
-// is how a headless server's agents reach the operator's desktop.
-
 export type NotificationKind = "attention" | "idle" | "share";
 
 export interface NotificationEntry {
@@ -24,8 +19,7 @@ export interface NotificationEntry {
 
 export interface NotificationBatch {
   entries: NotificationEntry[];
-  // Newest id in the journal (or the caller's cursor when it's empty): the
-  // caller's next --after.
+  // The caller's next --after.
   cursor?: string;
 }
 
@@ -58,9 +52,7 @@ export function readNotifications(): NotificationEntry[] {
     try {
       const entry = JSON.parse(line) as NotificationEntry;
       if (typeof entry?.id === "string" && typeof entry.message === "string") entries.push(entry);
-    } catch {
-      // torn or foreign line — skip it
-    }
+    } catch {}
   }
   return entries;
 }
@@ -81,10 +73,8 @@ export function recordNotification(entry: Omit<NotificationEntry, "id" | "at"> &
   return full;
 }
 
-// Entries recorded after `after`. With no cursor, the caller is subscribing
-// fresh: hand back only the current position so it doesn't replay history.
-// A cursor that's no longer in the journal (trimmed away) returns the oldest
-// survivors — at most MAX_BATCH, newest last.
+// No cursor means a fresh subscriber: return only the position, not history.
+// A trimmed-away cursor returns the survivors (at most MAX_BATCH).
 export function notificationsAfter(entries: NotificationEntry[], after: string | undefined): NotificationBatch {
   const last = entries.at(-1)?.id;
   if (!after) return { entries: [], cursor: last };
@@ -103,10 +93,6 @@ function journalSignature(): string {
   }
 }
 
-// `am __notifications [--after <id>] [--wait <seconds>]`: the remote end of
-// the relay. With --wait it long-polls — returns as soon as something new is
-// recorded, or empty-handed at the deadline — so one ssh round trip per wait
-// window carries every notification with ~a second of latency.
 export async function notificationsPollCommand(opts: { after?: string; waitSeconds?: number }): Promise<void> {
   const deadline = Date.now() + Math.min(Math.max(opts.waitSeconds ?? 0, 0), 60) * 1000;
   let batch = notificationsAfter(readNotifications(), opts.after);
@@ -121,7 +107,6 @@ export async function notificationsPollCommand(opts: { after?: string; waitSecon
   console.log(JSON.stringify(batch));
 }
 
-// `am notifications`: the recent journal on this host, newest last.
 export function notificationsListCommand(opts: { json?: boolean; limit?: number }): void {
   const entries = readNotifications().slice(-(opts.limit ?? 20));
   if (opts.json) {
@@ -153,10 +138,7 @@ export interface Display {
   message: string;
 }
 
-// What to show for one relayed batch. Recent entries show individually (up to
-// a few); anything older than staleMs — the laptop was asleep or offline —
-// or past the cap collapses into one "while away" summary so waking up
-// doesn't fire a burst of stale banners.
+// Stale or over-cap entries (the laptop slept) collapse into one summary.
 export function planRelayDisplay(
   host: string,
   entries: NotificationEntry[],

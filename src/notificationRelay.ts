@@ -3,12 +3,8 @@ import { planRelayDisplay, readRelayCursors, writeRelayCursor, type Notification
 import { canShowNotifications, showNotification } from "./notify";
 import { sshAmAsync, type SshResult } from "./remote";
 
-// The daemon half of cross-host notifications: long-poll each remote's
-// journal (`am __notifications --after <cursor> --wait N`) and show what
-// arrives on this machine's notifier. Runs only where something can actually
-// display them (a desktop, or a notifyCommand), so a headless server doesn't
-// relay into the void — and relayed entries are shown, never re-journaled, so
-// two hosts listing each other as remotes can't bounce notifications back.
+// Relayed entries are shown, never re-journaled, so two hosts listing each
+// other as remotes can't bounce notifications back.
 
 const WAIT_SECONDS = 25;
 const MIN_BACKOFF_MS = 5_000;
@@ -31,9 +27,7 @@ const defaultDeps: RelayDeps = {
   now: Date.now,
 };
 
-// One long-poll round against one host. Returns false when the host couldn't
-// be read (unreachable, or an am that predates __notifications) so the caller
-// backs off.
+// False when the host is unreachable or its am predates __notifications.
 export async function relayOnce(host: string, deps: RelayDeps = defaultDeps, waitSeconds = WAIT_SECONDS): Promise<boolean> {
   const after = deps.cursor(host);
   const args = ["__notifications", ...(after ? ["--after", after] : []), "--wait", String(waitSeconds)];
