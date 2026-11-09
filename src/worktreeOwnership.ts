@@ -124,10 +124,16 @@ export function worktreeOwnerReason(path: string, removing?: Owner): string | nu
       throw error;
     }
     for (let id = 1; id <= 3; id++) {
+      const record = join(pool, "state", `slot-${id}.json`);
       let raw: string;
-      try { raw = readFileSync(join(pool, "state", `slot-${id}.json`), "utf8"); }
+      try { raw = readFileSync(record, "utf8"); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        try { lstatSync(record); }
+        catch (entryError) {
+          if ((entryError as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw entryError;
+        }
         throw error;
       }
       const state = JSON.parse(raw);

@@ -101,6 +101,21 @@ test("invalid lease data fails safe", () => {
   expect(planGc(retention).worktrees).toEqual([]);
 });
 
+for (const mode of ["gc", "rm"] as const) test(`dangling pool slot record preserves checkout during ${mode}`, () => {
+  const plan = planGc(retention);
+  mkdirSync(join(home, "pool", "state"), { recursive: true });
+  symlinkSync(join(home, "missing-slot-record"), join(home, "pool", "state", "slot-1.json"));
+  if (mode === "gc") {
+    applyGc(plan);
+    expect(planGc(retention).worktrees).toEqual([]);
+  } else {
+    const owner = { ...agent("dangling-slot"), worktreePath: wt, repoRoot: repo };
+    writeAgent(owner);
+    destroyAgent(owner, { clean: true });
+  }
+  expect(existsSync(wt)).toBe(true);
+});
+
 test("invalid agent ownership fails safe", () => {
   mkdirSync(join(home, "agents"), { recursive: true });
   writeFileSync(join(home, "agents", "broken.json"), "{broken");
