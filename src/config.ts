@@ -28,6 +28,9 @@ export interface Config {
   // does not support remote control. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
+  // macOS: post through iTerm2 (OSC 9 to an attached tmux client in iTerm2)
+  // when one exists, for the iTerm2 icon. Default on; false keeps osascript.
+  itermNotifications?: boolean;
   // Overrides the built-in notifiers on any platform: run via `sh -c` with
   // $AM_TITLE and $AM_MESSAGE set. On a headless server, point this at a
   // push service (e.g. curl -d "$AM_MESSAGE" ntfy.sh/<topic>).
