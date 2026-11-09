@@ -1221,7 +1221,6 @@ export async function pick(
 
   const paletteTotal = () => paletteMatches().length + paletteAgentMatches().length;
 
-  // Keep per-keystroke chat searches within a short scan budget.
   const runChatSearch = () => {
     const query = chatQuery.trim();
     chatPartial = false;

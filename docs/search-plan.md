@@ -43,6 +43,13 @@ filesystem/agent discovery operations can overrun the wall-clock deadline;
 checks between operations stop further work. This is a work budget, not a
 hard real-time guarantee for slow disks.
 
+Transcript lookup rejects nonregular explicit paths before probing them. Legacy
+Antigravity provenance validation is capped at 1 MiB (or a lower requested
+line/byte budget); larger legacy files are skipped with `lookup-bytes`, without
+relaxing incarnation/conversation checks. Missing known transcripts and failed
+provenance checks report `transcript-unavailable`. Scan byte counters exclude
+lookup probes; agents with no recorded transcript or session yet are skipped.
+
 `--limit` caps returned results (default 20, maximum 1,000), **not scan work**.
 The separate budgets above cap scan work. Each file also stops after 50 raw
 matching records by default. Ranking remains live agents, scope, recency, then
@@ -76,14 +83,16 @@ There are no date/role indexes or ranking redesign in this change.
 
 ## Ranked approaches
 
-### Tier 1b — picker `/` chat-search mode  (same PR, separable)
-A `/` mode in `picker.ts` that shells `am search --json <q>` async (debounced),
-maps results → `PickerItem` with the snippet in `meta`, and on Enter runs the
-result's action (jump/resume/restore/`new --resume`). Turns the hub into a
-chat-searchable picker **without an index**. Medium risk (picker is the most
-complex file); ship only if the CLI lands clean, else split to a follow-up.
-Note: we do NOT make the live `visibleItems` filter run rg per keystroke — that
-mode is explicit and async.
+### Tier 1b — picker `/` chat-search mode (implemented)
+
+The explicit `/` mode calls the local scanner synchronously as the query changes,
+with a 100 ms scan budget and a 100-result cap. It filters the picker's current
+items to matching local registered agents, preserves search rank, and displays
+the lead snippet. It does not shell out or search remote/history rows. The
+prompt shows `partial` during entry and after Enter when a budget or lookup
+failure limits coverage. Enter keeps the matched list for normal picker
+selection; Escape clears the chat query. Filesystem calls can still overrun
+the scan deadline as described above.
 
 ### Tier 2 — semantic search  ⏸ follow-up PR, only if full-text proves thin
 - Embedder, pluggable via config: **API-first** (`voyage-3-lite` or OpenAI
@@ -101,15 +110,8 @@ mode is explicit and async.
 - **Why defer:** recurring API cost or a heavy local dep, plus index-freshness
   and complexity, until bounded full-text search proves insufficient.
 
-## Recommendation
+## Follow-up
 
-Ship **Tier 1** (`am search`, bounded scanning, zero deps, local + `--all` + `--fleet`)
-now; include **Tier 1b** (picker `/`) in the same PR if it lands cleanly, else as
-a fast follow. Hold **Tier 2** (semantic) until we see full-text fall short.
-
-## Open questions for sign-off
-
-1. Default scope — registered+trash with `--all` opt-in (my pick), or search all
-   history by default?
-2. Picker `/` mode in this PR, or CLI-only first?
-3. Semantic later at all, and if so API (cost) vs local (dep) for the embedder?
+The CLI and picker full-text search are implemented. Keep semantic search
+deferred until bounded full-text search proves insufficient. Default scope
+remains registered agents plus trash, with history and fleet queries opt-in.

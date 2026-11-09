@@ -6,9 +6,9 @@ import { displayStatus, type DisplayStatus } from "./commands/ls";
 import { loadConfig } from "./config";
 import { claudeProjectsDir } from "./paths";
 import { sshAmStreamArgv } from "./remote";
-import { agentProvider, listAgents, type Provider } from "./state";
+import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "./state";
 import { listTrashed } from "./trash";
-import { entryFragments, locateTranscript } from "./transcript";
+import { entryFragments, locateTranscript, TranscriptLookupLimitError } from "./transcript";
 
 export type SearchScope = "agent" | "trash" | "history";
 export type SearchAction = "jump" | "resume" | "restore" | "adopt";
@@ -113,6 +113,22 @@ const DEFAULT_PER_FILE_CAP = 50;
 
 const LIVE_STATUSES = new Set<DisplayStatus>(["starting", "idle", "working", "waiting", "needs-attention"]);
 
+function searchTranscript(agent: AgentState, ctx: SearchContext): string | undefined {
+  try {
+    if (agent.transcriptPath) {
+      try {
+        if (!statSync(agent.transcriptPath).isFile()) { note(ctx, "unreadable-file"); return; }
+      } catch (error: any) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    return locateTranscript(agent, { maxLegacyBytes: Math.min(ctx.budgets.maxLineBytes, ctx.budgets.maxBytes) });
+  } catch (error) {
+    if (error instanceof TranscriptLookupLimitError) note(ctx, "lookup-bytes");
+    else if (agent.transcriptPath || agentSessionId(agent) || agent.antigravityRunId) note(ctx, "transcript-unavailable");
+  }
+}
+
 // Build the file→metadata map the search ranges over. Registered agents and
 // trashed agents come first (they carry a name and a direct pick-up command);
 // with --all, every other session on disk is added as an adoptable history hit.
@@ -122,12 +138,8 @@ function buildCorpus(opts: SearchOptions, ctx: SearchContext): Map<string, Corpu
   for (const agent of listAgents()) {
     if (timedOut(ctx)) break;
     if (corpus.size >= ctx.budgets.maxFiles) { note(ctx, "files"); break; }
-    let file: string;
-    try {
-      file = locateTranscript(agent);
-    } catch {
-      continue; // no session captured yet
-    }
+    const file = searchTranscript(agent, ctx);
+    if (!file) continue;
     const status = displayStatus(agent);
     const live = LIVE_STATUSES.has(status);
     corpus.set(file, {
@@ -146,12 +158,8 @@ function buildCorpus(opts: SearchOptions, ctx: SearchContext): Map<string, Corpu
   for (const trashed of listTrashed()) {
     if (timedOut(ctx)) break;
     if (corpus.size >= ctx.budgets.maxFiles) { note(ctx, "files"); break; }
-    let file: string;
-    try {
-      file = locateTranscript(trashed);
-    } catch {
-      continue;
-    }
+    const file = searchTranscript(trashed, ctx);
+    if (!file) continue;
     if (corpus.has(file)) continue;
     corpus.set(file, {
       file,
@@ -228,9 +236,6 @@ interface FileHits {
   snippets: SearchSnippet[];
 }
 
-// A fixed-size read buffer and one bounded record replace both rg's buffered
-// JSON output and the whole-file fallback. Oversized records are discarded up
-// to the next newline, so later small messages remain searchable.
 function scanFile(file: string, provider: Provider, query: string, cap: number, ctx: SearchContext): FileHits {
   const hits: FileHits = { matchCount: 0, snippets: [] };
   const stats = ctx.metadata.local;
@@ -241,7 +246,7 @@ function scanFile(file: string, provider: Provider, query: string, cap: number, 
     stats.filesScanned++;
     const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, ctx.budgets.maxBytes));
     const record = Buffer.allocUnsafe(ctx.budgets.maxLineBytes);
-    let length = 0, skipping = false, matchedLines = 0;
+    let length = 0, skipping = false, matchedLines = 0, fileBytes = 0;
     const consume = () => {
       stats.linesRead++;
       if (!skipping && length) {
@@ -263,9 +268,14 @@ function scanFile(file: string, provider: Provider, query: string, cap: number, 
     while (true) {
       if (timedOut(ctx)) break;
       if (stats.linesRead >= ctx.budgets.maxLines) { note(ctx, "lines"); break; }
-      if (stats.bytesRead >= ctx.budgets.maxBytes) { note(ctx, "bytes"); break; }
+      if (stats.bytesRead >= ctx.budgets.maxBytes) {
+        if (fileBytes >= fstatSync(fd).size) { if (length || skipping) consume(); }
+        else note(ctx, "bytes");
+        break;
+      }
       const size = readSync(fd, chunk, 0, Math.min(chunk.length, ctx.budgets.maxBytes - stats.bytesRead), null);
       stats.bytesRead += size;
+      fileBytes += size;
       if (!size) { if (length || skipping) consume(); break; }
       let offset = 0;
       while (offset < size) {
@@ -418,18 +428,19 @@ function searchRemotes(query: string, opts: SearchOptions, ctx: SearchContext): 
     const args = ["search", "--json", "--metadata", "--local-only", "--limit", String(opts.limit ?? DEFAULT_LIMIT)];
     if (opts.all) args.push("--all");
     args.push("--", query);
-    let payload: any;
+    let stdout: string;
     try {
       const [command, ...argv] = sshAmStreamArgv(host, args);
-      const stdout = execFileSync(command!, argv, {
+      stdout = execFileSync(command!, argv, {
         encoding: "utf8", timeout: remaining, killSignal: "SIGKILL",
         maxBuffer: ctx.budgets.maxOutputBytes, stdio: ["ignore", "pipe", "pipe"],
       });
-      payload = JSON.parse(stdout);
     } catch (error: any) {
       fail(error.code === "ETIMEDOUT" ? "time" : error.code === "ENOBUFS" ? "output-bytes" : "remote-error");
       continue;
     }
+    let payload: any;
+    try { payload = JSON.parse(stdout); } catch { fail("invalid-response"); continue; }
     const rows = Array.isArray(payload) ? payload : payload?.results;
     if (!Array.isArray(rows) || rows.length > 1000 || !rows.every(validResult)) { fail("invalid-response"); continue; }
     // Older peers return an array and cannot attest that their scan completed.
@@ -481,7 +492,7 @@ export function search(query: string, opts: SearchOptions = {}): SearchResults {
   const results: SearchResult[] = [];
   let bytes = 2;
   for (const result of merged.slice(0, limit)) {
-    bytes += Buffer.byteLength(JSON.stringify(result)) + 1;
+    bytes += Buffer.byteLength(JSON.stringify(result)) + (results.length ? 1 : 0);
     if (bytes > budgets.maxOutputBytes) { metadata.partial = true; metadata.reasons.push("output-bytes"); break; }
     results.push(result);
   }

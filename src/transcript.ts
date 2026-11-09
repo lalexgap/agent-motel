@@ -1,5 +1,5 @@
 import { antigravityTranscriptPath, nativeAntigravityTranscriptPath, reconcileAntigravityAgent } from "./antigravity";
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
@@ -494,10 +494,31 @@ function codexTranscriptMatchesSession(file: string, sessionId: string): boolean
   }
 }
 
+export class TranscriptLookupLimitError extends Error {}
+
+function readLegacyTranscript(file: string, maxBytes?: number): string {
+  if (maxBytes === undefined) return readFileSync(file, "utf8");
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("transcript is not a regular file");
+    if (stat.size > maxBytes) throw new TranscriptLookupLimitError("legacy transcript exceeds lookup budget");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const size = readSync(fd, buffer, length, buffer.length - length, null);
+      if (!size) break;
+      length += size;
+    }
+    if (length > maxBytes) throw new TranscriptLookupLimitError("legacy transcript exceeds lookup budget");
+    return buffer.toString("utf8", 0, length);
+  } finally { closeSync(fd); }
+}
+
 // Find the agent's native session file. Hook payloads from both providers
 // include transcript_path; reject a known wrong-provider file left by a
 // stale hook before falling back to the recorded session id.
-export function locateTranscript(agent: AgentState): string {
+export function locateTranscript(agent: AgentState, opts: { maxLegacyBytes?: number } = {}): string {
   if (agentProvider(agent) === "antigravity") {
     if (!agent.sessionId && !agent.antigravityRunId) {
       Object.assign(agent, reconcileAntigravityAgent(agent));
@@ -517,7 +538,7 @@ export function locateTranscript(agent: AgentState): string {
       if (lstatSync(expectedLegacy).isSymbolicLink() || realpathSync(expectedLegacy) !== expectedLegacy) {
         throw new Error("Antigravity transcript path must remain inside its owned namespace");
       }
-      for (const entry of parseLines(readFileSync(expectedLegacy, "utf8"))) {
+      for (const entry of parseLines(readLegacyTranscript(expectedLegacy, opts.maxLegacyBytes))) {
         if (entry.createdAt !== agent.createdAt || entry.sessionId !== agent.sessionId) {
           throw new Error("Antigravity transcript provenance does not match the current incarnation and conversation");
         }
