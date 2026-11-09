@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { antigravityTranscriptPath } from "../src/antigravity";
 import { readAgent } from "../src/state";
-import { search, type SearchResult } from "../src/search";
+import { search, SEARCH_BUDGETS, type SearchResult } from "../src/search";
 import { writeAgent } from "../src/state";
 
 let root: string;
@@ -107,6 +107,51 @@ test("SSH envelope preserves results, host commands, literal query and requested
   expect(JSON.parse(decoded.stdout.toString())).toEqual([
     "am", "search", "--json", "--metadata", "--local-only", "--limit", "7", "--all", "--", "--needle 'quoted'",
   ]);
+});
+
+test("near-limit results survive the actual CLI metadata envelope and newline over SSH", () => {
+  writeFileSync(transcript("large"), line("needle large"));
+  writeFileSync(transcript("small"), line("needle small"));
+  const agent = readAgent("large")!;
+  writeAgent({ ...agent, dir: "" });
+  const targetBytes = SEARCH_BUDGETS.maxOutputBytes - 128;
+  const padding = targetBytes - Buffer.byteLength(JSON.stringify(search("needle")));
+  writeAgent({ ...agent, dir: "x".repeat(padding) });
+  const peer = cli("needle", "--local-only", "--limit", "1000", "--json", "--metadata");
+  const payload = JSON.parse(peer.stdout);
+  expect(payload.results).toHaveLength(2);
+  expect(Buffer.byteLength(JSON.stringify(payload.results))).toBe(targetBytes);
+  expect(payload.metadata.partial).toBe(false);
+  expect(peer.stdout.endsWith("\n")).toBe(true);
+  expect(Buffer.byteLength(peer.stdout)).toBeGreaterThan(SEARCH_BUDGETS.maxOutputBytes);
+  expect(peer.stderr).toBe("");
+  const wireFile = join(root, "peer-wire.json");
+  writeFileSync(wireFile, peer.stdout);
+  if (process.env.AM_SEARCH_EVIDENCE_DIR) {
+    writeFileSync(join(process.env.AM_SEARCH_EVIDENCE_DIR, "f1-peer-wire.json"), peer.stdout);
+    writeFileSync(join(process.env.AM_SEARCH_EVIDENCE_DIR, "f1-wire-bytes.json"), JSON.stringify({
+      arrayBytes: targetBytes, wireBytes: Buffer.byteLength(peer.stdout), resultBudget: SEARCH_BUDGETS.maxOutputBytes,
+    }));
+  }
+  sshFixture(`import { readFileSync } from "node:fs"; writeSync(1, readFileSync(${JSON.stringify(wireFile)}));`);
+  process.env.AGENTMGR_HOME = join(root, "caller");
+  mkdirSync(process.env.AGENTMGR_HOME);
+  writeFileSync(join(process.env.AGENTMGR_HOME, "config.json"), JSON.stringify({ remotes: ["fixture-remote"] }));
+  const result = search("needle", { fleet: true, limit: 1000 });
+  expect(result.metadata.hosts).toEqual([{ host: "fixture-remote", partial: false, reasons: [] }]);
+  expect(result).toHaveLength(2);
+  expect(result.every(row => row.host === "fixture-remote")).toBe(true);
+  expect(result.metadata.partial).toBe(false);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(SEARCH_BUDGETS.maxOutputBytes);
+});
+
+for (const fd of [1, 2]) test(`SSH caps ${fd === 1 ? "stdout" : "stderr"} beyond the envelope allowance`, () => {
+  const budget = 4096;
+  sshFixture(`writeSync(${fd}, Buffer.alloc(${budget + 4096 + 1}, 120));`);
+  const result = search("needle", { fleet: true, budgets: { maxOutputBytes: budget } });
+  expect(result).toHaveLength(0);
+  expect(result.metadata.hosts[0]?.reasons).toEqual(["output-bytes"]);
+  expect(result.metadata.partial).toBe(true);
 });
 
 test("legacy arrays preserve usable matches with an explicit completeness warning", () => {

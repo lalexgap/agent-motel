@@ -110,6 +110,8 @@ const SNIPPET_WINDOW = 80; // chars shown on each side of the match
 const MAX_SNIPPETS = 3;
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PER_FILE_CAP = 50;
+// Local-only metadata and the CLI newline sit outside the result-array budget.
+const SEARCH_ENVELOPE_BYTES = 4 * 1024;
 
 const LIVE_STATUSES = new Set<DisplayStatus>(["starting", "idle", "working", "waiting", "needs-attention"]);
 
@@ -433,7 +435,7 @@ function searchRemotes(query: string, opts: SearchOptions, ctx: SearchContext): 
       const [command, ...argv] = sshAmStreamArgv(host, args);
       stdout = execFileSync(command!, argv, {
         encoding: "utf8", timeout: remaining, killSignal: "SIGKILL",
-        maxBuffer: ctx.budgets.maxOutputBytes, stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: ctx.budgets.maxOutputBytes + SEARCH_ENVELOPE_BYTES, stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error: any) {
       fail(error.code === "ETIMEDOUT" ? "time" : error.code === "ENOBUFS" ? "output-bytes" : "remote-error");

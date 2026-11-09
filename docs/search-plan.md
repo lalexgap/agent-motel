@@ -69,8 +69,10 @@ partial; counts and ranking then describe only the searched portion.
   remains an array with an additive `.metadata` property (not serialized by
   `JSON.stringify`); callers must inspect it to determine completeness.
 - Fleet queries request the envelope, pass the requested result limit, and
-  bound each remote's captured stdout/stderr at 2 MiB and its runtime at the
-  remaining shared deadline. At most 16 hosts are attempted. Remote failures,
+  bound each remote's captured stdout/stderr at 2 MiB plus a fixed 4 KiB
+  allowance for the local-only metadata envelope and trailing newline. The
+  result-array budget remains 2 MiB; runtime uses the remaining shared deadline.
+  At most 16 hosts are attempted. Remote failures,
   invalid replies, and remote partial results identify the host. Old peers
   returning arrays remain usable but are marked `legacy-completeness-unknown`;
   peers rejecting the flag appear unavailable. No claim of complete coverage
