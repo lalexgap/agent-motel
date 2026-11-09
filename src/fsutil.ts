@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Shared file primitives for am's on-disk state. Several processes (hooks,
@@ -20,7 +20,12 @@ export function readJsonOrNull<T>(file: string): T | null {
 // writers can't interleave into invalid JSON — last rename wins with a
 // complete document either way.
 // `mode` sets the file's permissions (the default leaves them to the umask).
-export function writeJsonAtomic(file: string, value: unknown, opts: { pretty?: boolean; mode?: number } = {}): void {
+// Durable writes sync the replacement before rename and its directory after.
+export function writeJsonAtomic(
+  file: string,
+  value: unknown,
+  opts: { pretty?: boolean; mode?: number; durable?: boolean; syncPath?: (path: string) => void } = {},
+): void {
   const tmp = `${file}.${process.pid}.tmp`;
   const text = JSON.stringify(value, null, opts.pretty === false ? undefined : 2) + "\n";
   if (opts.mode === undefined) writeFileSync(tmp, text);
@@ -28,7 +33,19 @@ export function writeJsonAtomic(file: string, value: unknown, opts: { pretty?: b
     writeFileSync(tmp, text, { mode: opts.mode });
     chmodSync(tmp, opts.mode); // a leftover tmp keeps its old mode
   }
+  if (opts.durable) {
+    (opts.syncPath ?? syncPath)(tmp);
+  }
   renameSync(tmp, file);
+  if (opts.durable) {
+    (opts.syncPath ?? syncPath)(dirname(file));
+  }
+}
+
+function syncPath(path: string): void {
+  const fd = openSync(path, "r");
+  try { fsyncSync(fd); }
+  finally { closeSync(fd); }
 }
 
 // The last maxBytes of a file as text. When the read is truncated, the first

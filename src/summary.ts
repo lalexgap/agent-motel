@@ -1,5 +1,6 @@
 import type { DisplayStatus } from "./commands/ls";
 import { fleetKey, type Fleet, type FleetRow } from "./fleet";
+import { formatTrackedPullRequest } from "./prMonitorDisplay";
 
 export const STALE_STARTING_SECONDS = 120;
 
@@ -18,6 +19,7 @@ export interface SummaryItem {
   changedAt?: string;
   ageSeconds: number;
   dir?: string;
+  prMonitor?: FleetRow["prMonitor"];
 }
 
 export interface FleetSummary {
@@ -63,6 +65,7 @@ function summaryItem(row: FleetRow, nowMs: number): SummaryItem {
     changedAt,
     ageSeconds: age,
     dir: row.dir,
+    ...(row.prMonitor ? { prMonitor: row.prMonitor } : {}),
   };
 }
 
@@ -144,7 +147,8 @@ function section(title: string, items: SummaryItem[], nameWidth: number): string
     const queued = item.queued > 0 ? ` · ${item.queued} queued` : "";
     const age = item.status === "unreachable" ? "" : `  ${formatAge(item.ageSeconds)}`;
     const role = item.role ? ` · ${item.role}` : "";
-    lines.push(`  ${item.key.padEnd(nameWidth)} ${item.status}${role}${detail ? ` — ${detail}` : ""}${queued}${age}`);
+    const prs = item.prMonitor?.pullRequests.map(formatTrackedPullRequest).join(" · ");
+    lines.push(`  ${item.key.padEnd(nameWidth)} ${item.status}${role}${detail ? ` — ${detail}` : ""}${prs ? ` · ${prs}` : ""}${queued}${age}`);
   }
   return lines;
 }
@@ -152,8 +156,9 @@ function section(title: string, items: SummaryItem[], nameWidth: number): string
 export function formatFleetSummary(summary: FleetSummary): string[] {
   if (summary.totalAgents === 0 && summary.unreachableHosts === 0) return ["No agents."];
   // Historical agents can number in the hundreds. Keep the default report
-  // focused on current work; JSON callers still receive every exited item.
-  const visible = [...summary.attention, ...summary.active, ...summary.idle];
+  // focused on current work and queued PR follow-ups; JSON retains all exits.
+  const queuedExits = summary.exited.filter((item) => item.queued > 0 && item.prMonitor?.pullRequests.length);
+  const visible = [...summary.attention, ...summary.active, ...summary.idle, ...queuedExits];
   const nameWidth = Math.max(4, ...visible.map((item) => item.key.length));
   const unreachable = summary.unreachableHosts > 0
     ? ` · ${plural(summary.unreachableHosts, "unreachable host")}`
@@ -163,10 +168,12 @@ export function formatFleetSummary(summary: FleetSummary): string[] {
     ["Needs attention", summary.attention],
     ["Active", summary.active],
     ["Idle", summary.idle],
+    ["Exited with queued messages", queuedExits],
   ] as const) {
     const rendered = section(title, items, nameWidth);
     if (rendered.length > 0) lines.push("", ...rendered);
   }
-  if (summary.exited.length > 0) lines.push("", `Exited (${summary.exited.length})`);
+  const hiddenExits = summary.exited.length - queuedExits.length;
+  if (hiddenExits > 0) lines.push("", `Exited (${hiddenExits})`);
   return lines;
 }

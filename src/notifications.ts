@@ -5,7 +5,11 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { baseDir } from "./paths";
 import { newMsgId } from "./msgid";
 
-export type NotificationKind = "attention" | "idle" | "share";
+export type NotificationKind = "attention" | "idle" | "share" | "pr";
+
+export function isNotificationKind(value: unknown): value is NotificationKind {
+  return value === "attention" || value === "idle" || value === "share" || value === "pr";
+}
 
 export interface NotificationEntry {
   id: string;
@@ -53,7 +57,7 @@ export function readNotifications(): NotificationEntry[] {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as NotificationEntry;
-      if (typeof entry?.id === "string" && typeof entry.message === "string") entries.push(entry);
+      if (typeof entry?.id === "string" && typeof entry.message === "string" && isNotificationKind(entry.kind)) entries.push(entry);
     } catch {}
   }
   return entries;

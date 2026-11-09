@@ -1,5 +1,5 @@
 import { loadConfig, localHostIdentity } from "./config";
-import { planRelayDisplay, readRelayCursors, writeRelayCursor, type NotificationBatch } from "./notifications";
+import { isNotificationKind, planRelayDisplay, readRelayCursors, writeRelayCursor, type NotificationBatch } from "./notifications";
 import { canShowNotifications, showNotification } from "./notify";
 import { sshAmAsync, type SshResult } from "./remote";
 
@@ -42,7 +42,7 @@ export async function relayOnce(host: string, deps: RelayDeps = defaultDeps, wai
   }
   if (!Array.isArray(batch?.entries) || typeof batch.cursor !== "string") return false;
   const local = localHostIdentity();
-  const entries = batch.entries.filter((e) => e && typeof e.message === "string" && e.host !== local);
+  const entries = batch.entries.filter((e) => e && typeof e.message === "string" && isNotificationKind(e.kind) && e.host !== local);
   for (const display of planRelayDisplay(host, entries, deps.now())) deps.show(display.title, display.message);
   if (batch.cursor !== after) deps.saveCursor(host, batch.cursor);
   return true;

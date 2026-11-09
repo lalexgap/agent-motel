@@ -14,6 +14,8 @@ export function localHostIdentity(): string {
 }
 
 export interface Config {
+  // PR lifecycle polling interval; 0 disables. Positive values have a 30s floor.
+  prPollSeconds: number;
   // Provider a new agent runs on when no provider flag is given
   // (and, in the create form, the preselected provider). "codex", "claude", or "antigravity".
   defaultProvider: Provider;
@@ -120,6 +122,7 @@ export interface Config {
 }
 
 const DEFAULTS: Config = {
+  prPollSeconds: 120,
   defaultProvider: "codex",
   conciergeProvider: "codex",
   notifyOnIdle: true,
