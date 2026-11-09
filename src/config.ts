@@ -28,11 +28,6 @@ export interface Config {
   // does not support remote control. Per-agent override via
   // `am new --remote / --no-remote`.
   remoteControl: boolean;
-  // macOS bundle id notifications are posted as (icon + click target), e.g.
-  // "com.mitchellh.ghostty" or "com.googlecode.iterm2". Requires
-  // terminal-notifier (brew install terminal-notifier); without it — or with
-  // this unset — notifications fall back to osascript (Script Editor icon).
-  notifySender?: string;
   // Overrides the built-in notifiers on any platform: run via `sh -c` with
   // $AM_TITLE and $AM_MESSAGE set. On a headless server, point this at a
   // push service (e.g. curl -d "$AM_MESSAGE" ntfy.sh/<topic>).

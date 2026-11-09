@@ -61,7 +61,7 @@ Already implemented; the server-side job is to TEST these on the real machine:
 1. **Notifications are platform-aware** (`src/notify.ts`): `notifyCommand`
    config wins everywhere (run via `sh -c` with `$AM_TITLE`/`$AM_MESSAGE` —
    point it at ntfy.sh for phone push; ask Alex for a topic name), then
-   macOS terminal-notifier/osascript, then linux `notify-send`, then silent
+   macOS osascript, then linux `notify-send`, then silent
    no-op. Never blocks a hook.
 2. **URL clicks are headless-safe** (`src/commands/click.ts`): `open` on
    macOS, `xdg-open` when a display exists, otherwise the URL is copied to
