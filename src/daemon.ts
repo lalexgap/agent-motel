@@ -1,4 +1,5 @@
 import { reconcileAntigravityAgent } from "./antigravity";
+import { startNotificationRelay } from "./notificationRelay";
 import { recordAudit, withAuditContext } from "./audit";
 import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -264,6 +265,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // Codex approvals reach the daemon's own app-server connection; it records
   // them for `am serve` clients and replies with their answers.
   const codexApprovals = startCodexApprovalWatcher({ publish, log });
+  const notificationRelay = startNotificationRelay(log);
 
   const server = Bun.serve({
     unix: socketPath,
@@ -420,6 +422,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       clearInterval(reconciler);
       clearInterval(keepalive);
       codexApprovals.stop();
+      notificationRelay.stop();
       if (fileEventTimer) clearTimeout(fileEventTimer);
       for (const watcher of fileWatchers) watcher.close();
       for (const subscriber of subscribers) {

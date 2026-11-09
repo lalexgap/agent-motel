@@ -54,6 +54,7 @@ import { serveCommand, tokenCommand } from "./commands/serve";
 import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { summaryCommand } from "./commands/summary";
+import { notificationsListCommand, notificationsPollCommand } from "./notifications";
 import { usageCommand } from "./commands/usage";
 import { cancelMessage, deliverCommand, interruptMessage } from "./deliver";
 import { readMessage } from "./messages";
@@ -117,6 +118,9 @@ usage:
                               --role unassigned selects agents without a role
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
+  am notifications [--json] [--limit n]
+                              recent notifications recorded on this host (the
+                              journal the daemon relays to other machines)
   am usage [<name>] [--tokens | --quota-only] [--json] [--claude | --codex]
                               quota headroom per provider plus token usage
                               by agent/subagent, workflow, tool category, and
@@ -624,6 +628,15 @@ async function main(): Promise<void> {
       break;
     case "summary":
       summaryCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
+      break;
+    case "notifications":
+      notificationsListCommand({ json: !!args.flags.json, limit: numberFlag(args, "limit") });
+      break;
+    case "__notifications":
+      await notificationsPollCommand({
+        after: typeof args.flags.after === "string" ? args.flags.after : undefined,
+        waitSeconds: numberFlag(args, "wait"),
+      });
       break;
     case "usage":
       await usageCommand({

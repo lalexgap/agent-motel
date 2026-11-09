@@ -848,7 +848,7 @@ export async function hookCommand(event: string): Promise<void> {
     }
   }
 
-  if (effects.notify) notify(`am: ${name}`, effects.notify);
+  if (effects.notify) notify(`am: ${name}`, effects.notify, { agent: name, kind: "attention" });
 
   // Last, so everything above is recorded before the wait.
   if (event === "permission-request" && agentProvider(agent) === "claude") {
@@ -879,7 +879,7 @@ export async function hookCommand(event: string): Promise<void> {
         attached: hasAttachedClient(agent.tmuxSession),
       })
     ) {
-      notify(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`);
+      notify(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`, { agent: name, kind: "idle" });
     }
   }
 }
