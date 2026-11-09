@@ -26,6 +26,8 @@ export interface NotificationBatch {
 const MAX_BYTES = 256 * 1024;
 const KEEP_ENTRIES = 500;
 const MAX_BATCH = 100;
+// Cursor for an empty journal; no id matches it, so it reads as "before everything".
+export const JOURNAL_START = "start";
 
 export function notificationsFile(): string {
   return join(baseDir(), "notifications.jsonl");
@@ -77,11 +79,11 @@ export function recordNotification(entry: Omit<NotificationEntry, "id" | "at"> &
 // A trimmed-away cursor returns the survivors (at most MAX_BATCH).
 export function notificationsAfter(entries: NotificationEntry[], after: string | undefined): NotificationBatch {
   const last = entries.at(-1)?.id;
-  if (!after) return { entries: [], cursor: last };
+  if (!after) return { entries: [], cursor: last ?? JOURNAL_START };
   const index = entries.findIndex((e) => e.id === after);
   const fresh = index === -1 ? entries : entries.slice(index + 1);
   const batch = fresh.slice(-MAX_BATCH);
-  return { entries: batch, cursor: batch.at(-1)?.id ?? (index === -1 ? last : after) };
+  return { entries: batch, cursor: batch.at(-1)?.id ?? after };
 }
 
 function journalSignature(): string {

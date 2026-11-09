@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  JOURNAL_START,
   notificationsAfter,
   planRelayDisplay,
   readNotifications,
@@ -69,6 +70,13 @@ describe("notificationsAfter", () => {
   test("a trimmed-away cursor returns every survivor", () => {
     expect(notificationsAfter(entries, "gone").entries.map((e) => e.id)).toEqual(["1", "2", "3"]);
   });
+
+  test("an empty journal hands out a start cursor that later sees the first entry", () => {
+    const first = notificationsAfter([], undefined);
+    expect(first).toEqual({ entries: [], cursor: JOURNAL_START });
+    expect(notificationsAfter([], first.cursor)).toEqual({ entries: [], cursor: JOURNAL_START });
+    expect(notificationsAfter(entries.slice(0, 1), first.cursor)).toEqual({ entries: entries.slice(0, 1), cursor: "1" });
+  });
 });
 
 describe("planRelayDisplay", () => {
@@ -123,6 +131,12 @@ describe("relayOnce", () => {
     expect(calls[0]).toEqual(["__notifications", "--wait", "1"]);
     expect(shown).toEqual([]);
     expect(cursors.gapserver).toBe("9");
+  });
+
+  test("a reply without a cursor is a failure, so the loop backs off", async () => {
+    const { d, cursors } = deps(JSON.stringify({ entries: [] }));
+    expect(await relayOnce("gapserver", d, 1)).toBe(false);
+    expect(cursors.gapserver).toBeUndefined();
   });
 
   test("shows new entries and advances the cursor", async () => {
