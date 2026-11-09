@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { flushPrEvents, parsePrUrl, parsePullRequest, pollPullRequests, recordPrObservations, trackPullRequests, type PrCommand, type TrackedPullRequest } from "../src/prMonitor";
-import { queueAppendOnceLocked, queueDepth, queuePop, queueRecordReceipt } from "../src/queue";
+import { queueAppendOnceLocked, queueDepth, queueList, queuePop, queueReceived, queueRecordReceipt } from "../src/queue";
 import { acquireMailboxLock, releaseMailboxLock } from "../src/mailbox";
 import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { exportCommand } from "../src/commands/move";
@@ -102,6 +103,59 @@ test("a crash after receipt and consumer drain does not recreate a notification"
   queuePop(owner.name);
   flushPrEvents(owner);
   expect(queueDepth(owner.name)).toBe(0);
+});
+
+test("recovered pending events must sync state before enqueue after a directory fsync failure", async () => {
+  const owner = agent("owner", "exited");
+  recordPrObservations(owner, [pr()]);
+  const updatedAt = readAgent(owner.name)!.updatedAt;
+  const opened = new Map<number, string>();
+  const synced: string[] = [];
+  const open = fs.openSync, sync = fs.fsyncSync;
+  let fail = true;
+  const openSpy = spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+    const fd = open(...args);
+    opened.set(fd, String(args[0]));
+    return fd;
+  });
+  const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(fd => {
+    const path = opened.get(fd)!;
+    if (fail && path === join(home, "agents")) throw new Error("state directory fsync failed");
+    sync(fd);
+    synced.push(path);
+  });
+  const run: PrCommand = async () => JSON.stringify(api(pr("MERGED")));
+  try {
+    await pollPullRequests(run);
+    const event = readAgent(owner.name)!.prMonitor!.pending![0]!;
+    expect(event).toBeDefined();
+    expect(queueDepth(owner.name)).toBe(0);
+    expect(() => flushPrEvents(owner, undefined, true)).toThrow("state directory fsync failed");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await pollPullRequests(run);
+      expect(queueDepth(owner.name)).toBe(0);
+      expect(queueReceived(owner.name, event.id)).toBe(false);
+      expect(readAgent(owner.name)!.prMonitor!.pending).toEqual([event]);
+    }
+    fail = false;
+    synced.length = 0;
+    await pollPullRequests(run);
+    expect(synced.slice(0, 3)).toEqual([
+      join(home, "agents", `${owner.name}.json.${process.pid}.tmp`),
+      join(home, "agents"),
+      join(home, "queue", owner.name, `${event.id}.json`),
+    ]);
+    expect(queueList(owner.name).map(entry => entry.msgId)).toEqual([event.id]);
+    expect(queueReceived(owner.name, event.id)).toBe(true);
+    expect(readAgent(owner.name)!.prMonitor!.pending).toEqual([]);
+    expect(readAgent(owner.name)!.updatedAt).toBe(updatedAt);
+    queuePop(owner.name);
+    await pollPullRequests(run);
+    expect(queueDepth(owner.name)).toBe(0);
+  } finally {
+    syncSpy.mockRestore();
+    openSpy.mockRestore();
+  }
 });
 
 test("busy mailbox defers durable events and preserves transition order", () => {
@@ -221,6 +275,20 @@ test("one unavailable PR does not block other stack layers", async () => {
   expect(readAgent(owner.name)?.prMonitor?.error).toBeTruthy();
 });
 
+test("failed discovery still advances available tracked PRs without completing bootstrap", async () => {
+  const owner = agent();
+  recordPrObservations(owner, [pr(), pr("OPEN", 2)]);
+  await pollPullRequests(async (_cwd, executable, args) => {
+    if (executable === "git" || args[2] === "2") throw new Error("unavailable");
+    return JSON.stringify(api(pr("MERGED")));
+  });
+  const monitor = readAgent(owner.name)!.prMonitor!;
+  expect(monitor.pullRequests.map(pr => pr.state)).toEqual(["MERGED", "OPEN"]);
+  expect(monitor.bootstrapped).toBeUndefined();
+  expect(monitor.error).toContain("retrying");
+  expect(queueDepth(owner.name)).toBe(1);
+});
+
 test("stopping the watcher discards in-flight observations", async () => {
   const owner = agent("owner", "exited");
   recordPrObservations(owner, [pr()]);
@@ -242,25 +310,65 @@ test("exited worktree owners can bootstrap without using the current checkout br
   expect(queueDepth(owner.name)).toBe(1);
 });
 
-test("failed exited bootstrap retries discovery and records only a successful empty result", async () => {
+test("exited bootstrap uses surviving directories when the worktree was removed", async () => {
+  const owner = agent("owner", "exited");
+  owner.worktreeBranch = "am/owner";
+  owner.dir = join(home, "removed-worktree");
+  owner.repoRoot = join(home, "repo");
+  fs.mkdirSync(owner.repoRoot);
+  writeAgent(owner);
+  expect(fs.existsSync(owner.dir)).toBe(false);
+  const commands: string[] = [];
+  await pollPullRequests(async (cwd, executable, args) => {
+    commands.push(executable);
+    expect(fs.existsSync(cwd)).toBe(true);
+    if (executable === "git") {
+      expect(cwd).toBe(owner.repoRoot!);
+      expect(args).toEqual(["remote", "get-url", "origin"]);
+      return "https://github.com/owner/repo.git";
+    }
+    expect(cwd).toBe(home);
+    expect(args).toContain("--head=am/owner");
+    return JSON.stringify([api(pr("MERGED"))]);
+  });
+  expect(commands).toEqual(["git", "gh"]);
+  expect(readAgent(owner.name)?.prMonitor?.bootstrapped).toBe(true);
+  expect(queueDepth(owner.name)).toBe(1);
+});
+
+test.each([
+  ["git", false], ["git", true], ["gh", false], ["gh", true],
+] as const)("repeated %s bootstrap failures retry until success (empty=%s)", async (failure, empty) => {
   const owner = agent("owner", "exited");
   owner.worktreeBranch = "am/owner";
   writeAgent(owner);
-  let lists = 0;
+  const updatedAt = readAgent(owner.name)!.updatedAt;
+  let attempts = 0;
   const run: PrCommand = async (_cwd, executable) => {
+    if (executable === failure && ++attempts <= 3) throw new Error("temporary failure");
     if (executable === "git") return "https://github.com/owner/repo.git";
-    lists++;
-    if (lists === 1) throw new Error("temporary failure");
-    return "[]";
+    return JSON.stringify(empty ? [] : [api(pr("MERGED")), api({ ...pr("CLOSED", 2), closedAt: "2025-12-01T00:00:00Z" })]);
   };
+  for (let sweep = 1; sweep <= 3; sweep++) {
+    await pollPullRequests(run);
+    expect(attempts).toBe(sweep);
+    expect(readAgent(owner.name)?.prMonitor).toMatchObject({ pullRequests: [], error: expect.stringContaining("retrying") });
+    expect(readAgent(owner.name)?.prMonitor?.bootstrapped).toBeUndefined();
+    expect(queueDepth(owner.name)).toBe(0);
+  }
   await pollPullRequests(run);
-  expect(readAgent(owner.name)?.prMonitor).toMatchObject({ pullRequests: [], error: expect.stringContaining("retrying") });
-  expect(readAgent(owner.name)?.prMonitor?.bootstrapped).toBeUndefined();
-  await pollPullRequests(run);
-  expect(readAgent(owner.name)?.prMonitor).toMatchObject({ pullRequests: [], bootstrapped: true });
+  expect(attempts).toBe(4);
+  expect(readAgent(owner.name)?.prMonitor?.bootstrapped).toBe(true);
   expect(readAgent(owner.name)?.prMonitor?.error).toBeUndefined();
-  await pollPullRequests(run);
-  expect(lists).toBe(2);
+  expect(readAgent(owner.name)?.updatedAt).toBe(updatedAt);
+  expect(queueDepth(owner.name)).toBe(empty ? 0 : 1);
+  let discoveryCalls = 0;
+  await pollPullRequests(async (_cwd, executable, args) => {
+    if (executable === "git" || args[1] === "list") discoveryCalls++;
+    return JSON.stringify(api({ ...pr("CLOSED", 2), closedAt: "2025-12-01T00:00:00Z" }));
+  });
+  expect(discoveryCalls).toBe(0);
+  expect(queueDepth(owner.name)).toBe(empty ? 0 : 1);
 });
 
 test("CLI entrypoint parses with the shebang first", () => {

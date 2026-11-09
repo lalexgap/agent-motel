@@ -97,7 +97,7 @@ function mutateMonitor(agent: AgentState, fn: (current: AgentState) => void, str
   });
 }
 
-export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString(), strict = true): boolean {
+export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString(), strict = true, discovered = false): boolean {
   return mutateMonitor(agent, current => {
     const monitor = current.prMonitor ?? { pullRequests: [] };
     const byUrl = new Map(monitor.pullRequests.map(pr => [pr.url, pr]));
@@ -113,7 +113,8 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
       }
       byUrl.set(pr.url, pr);
     }
-    current.prMonitor = { pullRequests: [...byUrl.values()], pending, checkedAt: now, bootstrapped: true };
+    current.prMonitor = { pullRequests: [...byUrl.values()], pending, checkedAt: now,
+      bootstrapped: discovered ? true : monitor.bootstrapped };
   }, strict, true);
 }
 
@@ -132,6 +133,12 @@ export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = 
       return false;
     }
     try {
+      // A failed directory sync can leave readable pending IDs after rename.
+      if (current.prMonitor?.pending?.length && !updateAgentIf(agent.name, state => {
+        return state.createdAt === agent.createdAt && state.tmuxSession === agent.tmuxSession;
+      }, { preserveUpdatedAt: true, durable: true })) {
+        throw new Error(`agent "${agent.name}" changed — retry PR registration`);
+      }
       for (const event of current.prMonitor?.pending ?? []) {
         if (!queueReceived(current.name, event.id)) {
           queueAppendOnceLocked(current.name, event.message, event.id);
@@ -149,18 +156,15 @@ export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = 
   });
 }
 
-async function discover(agent: AgentState, run: PrCommand): Promise<TrackedPullRequest[]> {
+async function discover(agent: AgentState, run: PrCommand): Promise<TrackedPullRequest[] | null> {
   // Exited workspaces may now belong to another agent.
-  if (agent.status === "exited" && ((agent.prMonitor?.pullRequests.length ?? 0) > 0 || agent.prMonitor?.bootstrapped || !agent.worktreeBranch)) return [];
-  let remote: string, branch: string;
-  try {
-    const dir = agent.status === "exited" ? agent.repoRoot ?? agent.dir : agent.dir;
-    remote = await run(dir, "git", ["remote", "get-url", "origin"]);
-    branch = agent.status === "exited" ? agent.worktreeBranch! : (await run(dir, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
-  } catch { return []; }
+  if (agent.status === "exited" && ((agent.prMonitor?.pullRequests.length ?? 0) > 0 || agent.prMonitor?.bootstrapped || !agent.worktreeBranch)) return null;
+  const dir = agent.status === "exited" ? agent.repoRoot ?? agent.dir : agent.dir;
+  const remote = await run(dir, "git", ["remote", "get-url", "origin"]);
+  const branch = agent.status === "exited" ? agent.worktreeBranch! : (await run(dir, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
   const repository = githubRepository(remote);
-  if (!repository || !branch || ["main", "master"].includes(branch)) return [];
-  const result = JSON.parse(await run(agent.dir, "gh", ["pr", "list", "--repo", repository, `--head=${branch}`, "--state", "all", "--limit", "100", "--json", FIELDS]));
+  if (!repository || !branch || ["main", "master"].includes(branch)) return null;
+  const result = JSON.parse(await run(baseDir(), "gh", ["pr", "list", "--repo", repository, `--head=${branch}`, "--state", "all", "--limit", "100", "--json", FIELDS]));
   if (!Array.isArray(result)) throw new Error("Invalid PR list");
   return result
     .filter(pr => pr?.headRepository?.nameWithOwner?.toLowerCase() === repository.toLowerCase())
@@ -186,7 +190,8 @@ export async function pollPullRequests(run: PrCommand = command, active: () => b
         try {
           flushPrEvents(agent, onEvent);
           let failed = false;
-          const found = await discover(agent, cached).catch(() => { failed = true; return []; });
+          const discovery = await discover(agent, cached).catch(() => { failed = true; return null; });
+          const found: TrackedPullRequest[] = discovery ?? [];
           const seen = new Set(found.map(pr => pr.url));
           for (const old of agent.prMonitor?.pullRequests ?? []) {
             if (!active()) return;
@@ -199,8 +204,8 @@ export async function pollPullRequests(run: PrCommand = command, active: () => b
             } catch { failed = true; }
           }
           if (!active()) return;
-          if (found.length || agent.prMonitor || (!failed && agent.status === "exited" && !!agent.worktreeBranch)) {
-            if (!recordPrObservations(agent, found, undefined, false)) throw new Error("PR monitor state unavailable");
+          if (found.length || agent.prMonitor || (discovery !== null && agent.status === "exited")) {
+            if (!recordPrObservations(agent, found, undefined, false, discovery !== null)) throw new Error("PR monitor state unavailable");
           }
           flushPrEvents(agent, onEvent);
           if (failed) throw new Error("PR lookup unavailable");
