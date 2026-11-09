@@ -6,7 +6,7 @@ import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAg
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { queueDeferredMessage } from "../queue";
-import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
+import { buildResumeCommand, CONCIERGE_NAME, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
 import {
   amTrustedCodexDir,
@@ -55,11 +55,19 @@ export function claudeResumeTrust(agent: AgentState): void {
   if (agentProvider(agent) === "claude") pretrustClaudeAgentDir(agent.dir);
 }
 
+function requireCapturedConciergeSession(agent: AgentState): void {
+  if (agent.name === CONCIERGE_NAME && !agentSessionId(agent)?.trim())
+    throw new Error(
+      "concierge has no captured session ID; refusing to resume an unrelated conversation. Archive it with am rm concierge, then reopen it with am concierge.",
+    );
+}
+
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
 export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, internal: {lifecycleLocked?:boolean} = {}): Promise<void> {
   if(agentProvider(agent)==="antigravity")return reviveAntigravity(agent,opts,!!internal.lifecycleLocked);
   if (hasSession(agent.tmuxSession)) return; // already live
+  requireCapturedConciergeSession(agent);
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 
   const provider = agentProvider(agent);
@@ -90,6 +98,7 @@ async function reviveAntigravity(expected:AgentState, opts:ResumeOpts, locked:bo
   try {
     let agent=currentLifecycleAgent(expected);
     if(hasSession(agent.tmuxSession))return;
+    requireCapturedConciergeSession(agent);
     if(!existsSync(agent.dir))throw new Error(`agent directory no longer exists: ${agent.dir}`);
     if(!Bun.which(providerBinary("antigravity"),{PATH:process.env.PATH}))throw new Error("agy is not installed — install Antigravity CLI and sign in first; see docs/antigravity.md");
     ensureAgentPlan(agent);

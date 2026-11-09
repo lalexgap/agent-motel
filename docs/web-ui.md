@@ -33,7 +33,7 @@ Use `am models --json --codex` to verify the selected model is available to your
 
 Run `am serve --bind 127.0.0.1 --port 8790` under a persistent service. When web mode is enabled, service startup ensures the concierge exists and revives it after a restart. `conciergeAutoStart: false` disables startup creation. Opening the concierge also ensures it is available. A startup error is logged without taking down the dashboard; opening the concierge retries it.
 
-When the concierge is opened through `am concierge` or the web dock, revival requires a captured conversation ID. If it is missing, those concierge-opening paths refuse to resume an unrelated recent conversation; archive the old concierge with `am rm concierge` and reopen it with `am concierge`. A live concierge can still be opened through either path before its ID has been captured.
+Concierge revival requires a captured conversation ID, including generic CLI and API resume. If it is missing, revival refuses to resume an unrelated recent conversation; archive the old concierge with `am rm concierge` and reopen it with `am concierge`. A live concierge can still be opened before its ID has been captured.
 
 Caddy configuration:
 
