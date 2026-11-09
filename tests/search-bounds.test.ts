@@ -113,10 +113,12 @@ test("near-limit results survive the actual CLI metadata envelope and newline ov
   writeFileSync(transcript("large"), line("needle large"));
   writeFileSync(transcript("small"), line("needle small"));
   const agent = readAgent("large")!;
-  writeAgent({ ...agent, dir: "" });
+  // Persist legacy metadata directly; fresh ownership claims reject oversized paths.
+  const record = join(root, "agents", "large.json");
+  writeFileSync(record, JSON.stringify({ ...agent, dir: "" }));
   const targetBytes = SEARCH_BUDGETS.maxOutputBytes - 128;
   const padding = targetBytes - Buffer.byteLength(JSON.stringify(search("needle")));
-  writeAgent({ ...agent, dir: "x".repeat(padding) });
+  writeFileSync(record, JSON.stringify({ ...agent, dir: "x".repeat(padding) }));
   const peer = cli("needle", "--local-only", "--limit", "1000", "--json", "--metadata");
   const payload = JSON.parse(peer.stdout);
   expect(payload.results).toHaveLength(2);
