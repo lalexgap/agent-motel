@@ -171,7 +171,6 @@ test("one unavailable PR does not block other stack layers", async () => {
     if (args[2] === "1") throw new Error("not found");
     return JSON.stringify(api(pr("MERGED", 2)));
   });
-  // Pending events survive the partial failure and are drained next sweep.
   flushPrEvents(owner);
   expect(queueDepth(owner.name)).toBe(1);
   expect(readAgent(owner.name)?.prMonitor?.error).toBeTruthy();

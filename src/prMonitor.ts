@@ -65,8 +65,7 @@ export function prEventMessage(pr: TrackedPullRequest): string {
       : "PR state changed on GitHub. Reconcile your current plan with this state.");
 }
 
-// Save the transition before enqueueing; a crash at any later step replays the
-// same event id, even if GitHub's updatedAt changes again before recovery.
+// Persist event IDs before enqueueing so crash recovery reuses them.
 export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString()): void {
   updateAgentIf(agent.name, current => {
     if (current.createdAt !== agent.createdAt) return false;
@@ -113,8 +112,7 @@ export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier): void {
 }
 
 async function discover(agent: AgentState, run: PrCommand): Promise<TrackedPullRequest[]> {
-  // Exited agents retain explicit/previously discovered associations, without
-  // continually querying old workspaces now used by somebody else.
+  // Exited workspaces may now belong to another agent.
   if (agent.status === "exited" && (agent.prMonitor || !agent.worktreeBranch)) return [];
   let remote: string, branch: string;
   try {
@@ -133,7 +131,6 @@ export async function pollPullRequests(run: PrCommand = command, active: () => b
   const release = tryAcquireFileLock(join(baseDir(), "locks", "pr-monitor.lock"));
   if (!release) return;
   try {
-    // Shared PRs are fetched once per sweep, irrespective of owner count.
     const requests = new Map<string, Promise<string>>();
     const cached: PrCommand = (cwd, executable, args) => {
       if (executable !== "gh") return run(cwd, executable, args);
