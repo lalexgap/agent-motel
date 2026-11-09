@@ -1,20 +1,14 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, opendirSync, readSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { codexHome } from "./codexHooks";
 import { displayStatus, type DisplayStatus } from "./commands/ls";
 import { loadConfig } from "./config";
 import { claudeProjectsDir } from "./paths";
-import { sshAm } from "./remote";
+import { sshAmStreamArgv } from "./remote";
 import { agentProvider, listAgents, type Provider } from "./state";
 import { listTrashed } from "./trash";
 import { entryFragments, locateTranscript } from "./transcript";
-
-// `am search` — ripgrep full-text over agent transcripts. ripgrep does the
-// whole local corpus in tens of milliseconds and returns each matched line in
-// full, so we JSON.parse only matched lines (never whole files — transcripts
-// reach 100MB+). Each matched line is run through entryFragments() to recover
-// clean, role-labeled snippet text and to drop hits that landed in JSON
-// structure rather than conversation content.
 
 export type SearchScope = "agent" | "trash" | "history";
 export type SearchAction = "jump" | "resume" | "restore" | "adopt";
@@ -47,6 +41,57 @@ export interface SearchOptions {
   localOnly?: boolean; // never recurse to remotes (set on the federated leg)
   limit?: number; // cap results (default 20)
   perFileCap?: number; // cap matches scanned per file (default 50)
+  budgets?: Partial<SearchBudgets>; // may lower, never raise, the hard limits
+}
+
+export interface SearchBudgets {
+  maxBytes: number;
+  maxLineBytes: number;
+  maxLines: number;
+  maxFiles: number;
+  maxMs: number;
+  maxOutputBytes: number;
+}
+export const SEARCH_BUDGETS: Readonly<SearchBudgets> = Object.freeze({
+  maxBytes: 64 * 1024 * 1024,
+  maxLineBytes: 1024 * 1024,
+  maxLines: 250_000,
+  maxFiles: 10_000,
+  maxMs: 8000,
+  maxOutputBytes: 2 * 1024 * 1024,
+});
+export interface SearchMetadata {
+  partial: boolean;
+  local: {
+    reasons: string[];
+    bytesRead: number;
+    linesRead: number;
+    filesScanned: number;
+    peakLineBytes: number;
+  };
+  hosts: { host: string; partial: boolean; reasons: string[] }[];
+  reasons: string[];
+}
+// JSON.stringify deliberately keeps the legacy array wire contract.
+export type SearchResults = SearchResult[] & { metadata: SearchMetadata };
+interface SearchContext {
+  budgets: SearchBudgets;
+  deadline: number;
+  metadata: SearchMetadata;
+}
+function note(ctx: SearchContext, reason: string): void {
+  ctx.metadata.partial = true;
+  if (!ctx.metadata.local.reasons.includes(reason)) ctx.metadata.local.reasons.push(reason);
+}
+function timedOut(ctx: SearchContext): boolean {
+  if (performance.now() < ctx.deadline) return false;
+  note(ctx, "time");
+  return true;
+}
+function boundedOption(value: number | undefined, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error("search limits must be positive integers");
+  return Math.min(value, max);
 }
 
 interface CorpusEntry {
@@ -71,10 +116,12 @@ const LIVE_STATUSES = new Set<DisplayStatus>(["starting", "idle", "working", "wa
 // Build the file→metadata map the search ranges over. Registered agents and
 // trashed agents come first (they carry a name and a direct pick-up command);
 // with --all, every other session on disk is added as an adoptable history hit.
-function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
+function buildCorpus(opts: SearchOptions, ctx: SearchContext): Map<string, CorpusEntry> {
   const corpus = new Map<string, CorpusEntry>();
 
   for (const agent of listAgents()) {
+    if (timedOut(ctx)) break;
+    if (corpus.size >= ctx.budgets.maxFiles) { note(ctx, "files"); break; }
     let file: string;
     try {
       file = locateTranscript(agent);
@@ -97,6 +144,8 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
   }
 
   for (const trashed of listTrashed()) {
+    if (timedOut(ctx)) break;
+    if (corpus.size >= ctx.budgets.maxFiles) { note(ctx, "files"); break; }
     let file: string;
     try {
       file = locateTranscript(trashed);
@@ -117,7 +166,9 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
   }
 
   if (opts.all) {
-    for (const { file, provider, sessionId } of walkHistory()) {
+    for (const { file, provider, sessionId } of walkHistory(ctx)) {
+      if (timedOut(ctx)) break;
+      if (corpus.size >= ctx.budgets.maxFiles) { note(ctx, "files"); break; }
       if (corpus.has(file)) continue;
       corpus.set(file, {
         file,
@@ -135,105 +186,113 @@ function buildCorpus(opts: SearchOptions): Map<string, CorpusEntry> {
 
 const CLAUDE_SESSION_ID_RE = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;
 
-function* walkHistory(): Generator<{ file: string; provider: Provider; sessionId?: string }> {
+function* walkHistory(ctx: SearchContext): Generator<{ file: string; provider: Provider; sessionId?: string }> {
   const claudeRoot = claudeProjectsDir();
-  for (const file of walkJsonl(claudeRoot)) {
+  for (const file of walkJsonl(claudeRoot, ctx)) {
     const m = CLAUDE_SESSION_ID_RE.exec(basename(file));
     yield { file, provider: "claude", sessionId: m?.[1] ?? basename(file).replace(/\.jsonl$/, "") };
   }
   const codexRoot = join(codexHome(), "sessions");
-  for (const file of walkJsonl(codexRoot)) {
+  for (const file of walkJsonl(codexRoot, ctx)) {
     const m = CLAUDE_SESSION_ID_RE.exec(basename(file));
     yield { file, provider: "codex", sessionId: m?.[1] };
   }
 }
 
-function* walkJsonl(root: string): Generator<string> {
-  if (!existsSync(root)) return;
+function* walkJsonl(root: string, ctx: SearchContext): Generator<string> {
   const stack = [root];
+  let visited = 0;
   while (stack.length > 0) {
+    if (timedOut(ctx)) return;
     const dir = stack.pop()!;
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
+    let handle;
+    try { handle = opendirSync(dir); } catch (error: any) {
+      if (error.code !== "ENOENT") note(ctx, "unreadable-directory");
       continue;
     }
-    for (const e of entries) {
-      const path = join(dir, e.name);
-      if (e.isDirectory()) stack.push(path);
-      else if (e.name.endsWith(".jsonl")) yield path;
-    }
+    try {
+      let entry;
+      while ((entry = handle.readSync())) {
+        if (timedOut(ctx)) return;
+        if (++visited > ctx.budgets.maxFiles * 10) { note(ctx, "discovery-entries"); return; }
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) stack.push(path);
+        else if (entry.isFile() && entry.name.endsWith(".jsonl")) yield path;
+      }
+    } finally { handle.closeSync(); }
   }
 }
 
 interface FileHits {
   matchCount: number;
-  lines: string[]; // raw matched JSONL lines (deduped, capped)
+  snippets: SearchSnippet[];
 }
 
-// Run ripgrep over the corpus files. Fixed-string + smart-case-insensitive by
-// default; we pass an explicit file list so the search never strays outside the
-// chosen scope. Returns null when rg is unavailable so the caller can fall back.
-function ripgrep(query: string, files: string[], perFileCap: number): Map<string, FileHits> | null {
-  if (files.length === 0) return new Map();
-  let proc;
+// A fixed-size read buffer and one bounded record replace both rg's buffered
+// JSON output and the whole-file fallback. Oversized records are discarded up
+// to the next newline, so later small messages remain searchable.
+function scanFile(file: string, provider: Provider, query: string, cap: number, ctx: SearchContext): FileHits {
+  const hits: FileHits = { matchCount: 0, snippets: [] };
+  const stats = ctx.metadata.local;
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK); } catch { note(ctx, "unreadable-file"); return hits; }
   try {
-    proc = Bun.spawnSync(
-      ["rg", "--json", "-F", "-i", "-m", String(perFileCap), "-e", query, "--", ...files],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
-    );
-  } catch {
-    return null; // rg not installed
-  }
-  // rg exits 1 on "no matches" (not an error) and 2 on a real error.
-  if (proc.exitCode === 2 && proc.stdout.length === 0) return null;
-  return parseRgJson(proc.stdout.toString(), perFileCap);
-}
-
-function parseRgJson(stdout: string, perFileCap: number): Map<string, FileHits> {
-  const byFile = new Map<string, FileHits>();
-  for (const line of stdout.split("\n")) {
-    if (!line) continue;
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
+    if (!fstatSync(fd).isFile()) { note(ctx, "unreadable-file"); return hits; }
+    stats.filesScanned++;
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, ctx.budgets.maxBytes));
+    const record = Buffer.allocUnsafe(ctx.budgets.maxLineBytes);
+    let length = 0, skipping = false, matchedLines = 0;
+    const consume = () => {
+      stats.linesRead++;
+      if (!skipping && length) {
+        const raw = record.toString("utf8", 0, length);
+        const lower = raw.toLowerCase(), needle = query.toLowerCase();
+        let offset = 0, count = 0;
+        while ((offset = lower.indexOf(needle, offset)) >= 0) { count++; offset += needle.length; }
+        if (count) {
+          matchedLines++;
+          hits.matchCount += count;
+          hits.snippets.push(...snippetsFor(provider, [raw], query));
+          hits.snippets = hits.snippets.filter((s, i, all) => all.findIndex(other => other.text === s.text) === i)
+            .sort((a, b) => Number(a.kind === "tool") - Number(b.kind === "tool")).slice(0, MAX_SNIPPETS);
+        }
+      }
+      length = 0;
+      skipping = false;
+    };
+    while (true) {
+      if (timedOut(ctx)) break;
+      if (stats.linesRead >= ctx.budgets.maxLines) { note(ctx, "lines"); break; }
+      if (stats.bytesRead >= ctx.budgets.maxBytes) { note(ctx, "bytes"); break; }
+      const size = readSync(fd, chunk, 0, Math.min(chunk.length, ctx.budgets.maxBytes - stats.bytesRead), null);
+      stats.bytesRead += size;
+      if (!size) { if (length || skipping) consume(); break; }
+      let offset = 0;
+      while (offset < size) {
+        if (timedOut(ctx)) return hits;
+        const newline = chunk.indexOf(10, offset);
+        const end = newline < 0 || newline >= size ? size : newline;
+        if (!skipping) {
+          const partLength = end - offset;
+          if (length + partLength > record.length) {
+            length = 0; skipping = true; note(ctx, "line-bytes");
+          } else {
+            chunk.copy(record, length, offset, end);
+            length += partLength;
+            stats.peakLineBytes = Math.max(stats.peakLineBytes, length);
+          }
+        }
+        offset = end + 1;
+        if (end < size) {
+          consume();
+          if (matchedLines >= cap) { note(ctx, "per-file-matches"); return hits; }
+          if (stats.linesRead >= ctx.budgets.maxLines) { note(ctx, "lines"); return hits; }
+        }
+      }
     }
-    if (event.type !== "match") continue;
-    const file: string = event.data.path.text;
-    const submatches: unknown[] = event.data.submatches ?? [];
-    const hits = byFile.get(file) ?? { matchCount: 0, lines: [] };
-    hits.matchCount += submatches.length || 1;
-    if (hits.lines.length < perFileCap) hits.lines.push(event.data.lines.text);
-    byFile.set(file, hits);
-  }
-  return byFile;
-}
-
-// Pure-Bun fallback when ripgrep is absent: a per-line case-insensitive scan
-// over the same files. Slower, but keeps am self-contained.
-function scanFallback(query: string, files: string[], perFileCap: number): Map<string, FileHits> {
-  const needle = query.toLowerCase();
-  const byFile = new Map<string, FileHits>();
-  for (const file of files) {
-    let content: string;
-    try {
-      content = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    const hits: FileHits = { matchCount: 0, lines: [] };
-    for (const line of content.split("\n")) {
-      if (!line) continue;
-      if (!line.toLowerCase().includes(needle)) continue;
-      hits.matchCount += 1;
-      if (hits.lines.length < perFileCap) hits.lines.push(line);
-    }
-    if (hits.matchCount > 0) byFile.set(file, hits);
-  }
-  return byFile;
+  } catch { note(ctx, "unreadable-file"); }
+  finally { closeSync(fd); }
+  return hits;
 }
 
 // Turn one file's raw matched lines into clean snippets, dropping lines whose
@@ -313,63 +372,78 @@ function mtimeMs(file: string): number {
   }
 }
 
-// Local search: build the corpus, ripgrep it, attach snippets, rank.
-function searchLocal(query: string, opts: SearchOptions): SearchResult[] {
-  const corpus = buildCorpus(opts);
-  const files = [...corpus.keys()];
-  const perFileCap = opts.perFileCap ?? DEFAULT_PER_FILE_CAP;
-  const hits = ripgrep(query, files, perFileCap) ?? scanFallback(query, files, perFileCap);
-
+function searchLocal(query: string, opts: SearchOptions, ctx: SearchContext): SearchResult[] {
+  const corpus = buildCorpus(opts, ctx);
+  const cap = boundedOption(opts.perFileCap, DEFAULT_PER_FILE_CAP, 1000);
+  const limit = boundedOption(opts.limit, DEFAULT_LIMIT, 1000);
   const results: SearchResult[] = [];
-  for (const [file, fileHits] of hits) {
-    const meta = corpus.get(file);
-    if (!meta) continue;
-    const snippets = snippetsFor(meta.provider, fileHits.lines, query);
-    if (snippets.length === 0) continue; // every hit was JSON structure / noise
+  for (const [file, meta] of corpus) {
+    if (timedOut(ctx)) break;
+    if (ctx.metadata.local.bytesRead >= ctx.budgets.maxBytes) { note(ctx, "bytes"); break; }
+    if (ctx.metadata.local.linesRead >= ctx.budgets.maxLines) { note(ctx, "lines"); break; }
+    const fileHits = scanFile(file, meta.provider, query, cap, ctx);
+    if (!fileHits.snippets.length) continue;
     results.push({
-      agentName: meta.agentName,
-      sessionId: meta.sessionId,
-      provider: meta.provider,
-      dir: meta.dir,
-      status: meta.status,
-      scope: meta.scope,
-      action: meta.action,
-      command: meta.command,
-      matchCount: fileHits.matchCount,
-      snippets,
+      agentName: meta.agentName, sessionId: meta.sessionId, provider: meta.provider,
+      dir: meta.dir, status: meta.status, scope: meta.scope, action: meta.action,
+      command: meta.command, matchCount: fileHits.matchCount, snippets: fileHits.snippets,
       updatedAt: mtimeMs(file),
     });
+    results.sort(rank);
+    if (results.length > limit) { results.pop(); note(ctx, "results"); }
   }
-  results.sort(rank);
-  return results.slice(0, opts.limit ?? DEFAULT_LIMIT);
+  return results;
 }
 
-// Federate over config.remotes, mirroring fleet's `am ls --json --local-only`
-// pattern: each host runs the same search locally and returns JSON we merge.
-function searchRemotes(query: string, opts: SearchOptions): SearchResult[] {
+function validResult(row: any): row is SearchResult {
+  return row && ["claude", "codex", "antigravity"].includes(row.provider)
+    && ["agent", "trash", "history"].includes(row.scope)
+    && ["jump", "resume", "restore", "adopt"].includes(row.action)
+    && typeof row.command === "string" && Number.isFinite(row.matchCount) && Number.isFinite(row.updatedAt)
+    && [row.agentName, row.sessionId, row.dir, row.status].every(value => value === undefined || typeof value === "string")
+    && Array.isArray(row.snippets) && row.snippets.length <= MAX_SNIPPETS
+    && row.snippets.every((s: any) => s && ["user", "assistant", "tool"].includes(s.kind)
+      && typeof s.text === "string" && Number.isFinite(s.matchStart) && Number.isFinite(s.matchLen));
+}
+
+function searchRemotes(query: string, opts: SearchOptions, ctx: SearchContext): SearchResult[] {
   const out: SearchResult[] = [];
-  for (const host of loadConfig().remotes ?? []) {
-    const args = ["search", "--json", "--local-only", query];
+  const remotes = loadConfig().remotes ?? [];
+  for (const host of remotes.slice(0, 16)) {
+    const evidence = { host, partial: false, reasons: [] as string[] };
+    ctx.metadata.hosts.push(evidence);
+    const fail = (reason: string) => { evidence.partial = true; evidence.reasons.push(reason); ctx.metadata.partial = true; };
+    const remaining = Math.floor(ctx.deadline - performance.now());
+    if (remaining <= 0) { fail("time"); continue; }
+    const args = ["search", "--json", "--metadata", "--local-only", "--limit", String(opts.limit ?? DEFAULT_LIMIT)];
     if (opts.all) args.push("--all");
-    const res = sshAm(host, args, { timeoutMs: 8000 });
-    if (res.exitCode !== 0 && res.exitCode !== 1) continue; // unreachable / error
-    let rows: SearchResult[];
+    args.push("--", query);
+    let payload: any;
     try {
-      rows = JSON.parse(res.stdout) as SearchResult[];
-    } catch {
+      const [command, ...argv] = sshAmStreamArgv(host, args);
+      const stdout = execFileSync(command!, argv, {
+        encoding: "utf8", timeout: remaining, killSignal: "SIGKILL",
+        maxBuffer: ctx.budgets.maxOutputBytes, stdio: ["ignore", "pipe", "pipe"],
+      });
+      payload = JSON.parse(stdout);
+    } catch (error: any) {
+      fail(error.code === "ETIMEDOUT" ? "time" : error.code === "ENOBUFS" ? "output-bytes" : "remote-error");
       continue;
     }
-    for (const r of rows) {
-      r.host = host;
-      // Rewrite the pick-up command to target the remote agent.
-      if (r.agentName && r.action !== "adopt") {
-        r.command = `am -H ${host} ${r.action === "jump" ? "j" : r.action} ${r.agentName}`;
-      } else if (r.action === "adopt") {
-        r.command = `am -H ${host} ${r.command.replace(/^am /, "")}`;
-      }
+    const rows = Array.isArray(payload) ? payload : payload?.results;
+    if (!Array.isArray(rows) || rows.length > 1000 || !rows.every(validResult)) { fail("invalid-response"); continue; }
+    // Older peers return an array and cannot attest that their scan completed.
+    if (Array.isArray(payload)) fail("legacy-completeness-unknown");
+    else if (typeof payload.metadata?.partial !== "boolean") { fail("invalid-response"); continue; }
+    else if (payload.metadata.partial) fail("remote-partial");
+    for (const row of rows) {
+      const r = { ...row, host };
+      if (r.agentName && r.action !== "adopt") r.command = `am -H ${host} ${r.action === "jump" ? "j" : r.action} ${r.agentName}`;
+      else if (r.action === "adopt") r.command = `am -H ${host} ${r.command.replace(/^am /, "")}`;
       out.push(r);
     }
   }
+  if (remotes.length > 16) { ctx.metadata.partial = true; ctx.metadata.reasons.push("fleet-hosts"); }
   return out;
 }
 
@@ -387,10 +461,36 @@ export function localAgentMatches(results: SearchResult[]): { order: string[]; s
   return { order, snippets };
 }
 
-export function search(query: string, opts: SearchOptions = {}): SearchResult[] {
-  const local = searchLocal(query, opts);
-  if (opts.localOnly || !opts.fleet) return local;
-  const merged = [...local, ...searchRemotes(query, opts)];
+export function search(query: string, opts: SearchOptions = {}): SearchResults {
+  if (!query.trim() || query.length > 256) throw new Error("search query must be 1–256 characters");
+  const budgets = { ...SEARCH_BUDGETS };
+  for (const key of Object.keys(budgets) as (keyof SearchBudgets)[]) {
+    budgets[key] = boundedOption(opts.budgets?.[key], budgets[key], budgets[key]);
+  }
+  const metadata: SearchMetadata = {
+    partial: false,
+    local: { reasons: [], bytesRead: 0, linesRead: 0, filesScanned: 0, peakLineBytes: 0 },
+    hosts: [], reasons: [],
+  };
+  const ctx: SearchContext = { budgets, deadline: performance.now() + budgets.maxMs, metadata };
+  const limit = boundedOption(opts.limit, DEFAULT_LIMIT, 1000);
+  const local = searchLocal(query, opts, ctx);
+  const merged = opts.localOnly || !opts.fleet ? local : [...local, ...searchRemotes(query, { ...opts, limit }, ctx)];
   merged.sort(rank);
-  return merged.slice(0, opts.limit ?? DEFAULT_LIMIT);
+  if (merged.length > limit) { metadata.partial = true; metadata.reasons.push("results"); }
+  const results: SearchResult[] = [];
+  let bytes = 2;
+  for (const result of merged.slice(0, limit)) {
+    bytes += Buffer.byteLength(JSON.stringify(result)) + 1;
+    if (bytes > budgets.maxOutputBytes) { metadata.partial = true; metadata.reasons.push("output-bytes"); break; }
+    results.push(result);
+  }
+  return Object.assign(results, { metadata });
+}
+
+export function searchWarning(metadata: SearchMetadata): string | undefined {
+  if (!metadata.partial) return;
+  const local = metadata.local.reasons.length ? `local: ${metadata.local.reasons.join(", ")}` : "";
+  const hosts = metadata.hosts.filter(host => host.partial).map(host => `${host.host}: ${host.reasons.join(", ")}`);
+  return `Partial search results (${[local, ...hosts, ...metadata.reasons].filter(Boolean).join("; ")}).`;
 }

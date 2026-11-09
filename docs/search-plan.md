@@ -24,58 +24,57 @@ running.**
   - **any historical session by id → `am new <name> --resume <session-id>`**
     (confirmed in `providers.ts`: both claude and codex support resume-by-id).
 
-## Key facts established during exploration
+## Current bounds and compatibility
 
-- `/usr/bin/rg` is present. **`rg -l` over the whole 265 MB / 187-file corpus = 46 ms.**
-  `rg --json` returns each matching line's full text → we JSON.parse only the
-  matched lines (never the whole file).
-- Transcripts get huge: largest is **98 MB**. So "parse the whole file into
-  Turn[] and search" is unsafe for the `--all` corpus. rg-find-then-parse-matched-lines
-  is safe at any size because rg streams and we only parse the lines that hit.
-- Two corpora:
-  - **Registered agents** (`listAgents()` + trash): small, map directly to
-    jump/resume/restore. This is "search across all agents."
-  - **All historical sessions** (everything under `~/.claude/projects` +
-    `~/.codex/sessions`): 265 MB, recoverable via `am new --resume <id>`. This is
-    "pick up an old session an agent was running" even when am never tracked it.
+The original 46 ms measurement covered `rg -l` on a 265 MB / 187-file corpus.
+It was a historical filename-only benchmark, not a latency guarantee for full
+conversation extraction. Buffering `rg --json` output, or reading whole files
+in the fallback, was unsafe: a matching record or accumulated output could
+exceed the runtime's string capacity. Parsing only matching lines is **not**
+safe at any size.
+
+Search now uses one bounded chunk scanner regardless of whether ripgrep is
+installed. It retains at most one 1 MiB JSONL record and reads 64 KiB chunks.
+Oversized records are skipped through their next newline; subsequent smaller
+messages still match. The local scan stops at 64 MiB read, 250,000 records,
+10,000 corpus files, or the shared 8-second search deadline. History discovery
+also caps visited directory entries at 100,000 per provider root. Synchronous
+filesystem/agent discovery operations can overrun the wall-clock deadline;
+checks between operations stop further work. This is a work budget, not a
+hard real-time guarantee for slow disks.
+
+`--limit` caps returned results (default 20, maximum 1,000), **not scan work**.
+The separate budgets above cap scan work. Each file also stops after 50 raw
+matching records by default. Ranking remains live agents, scope, recency, then
+match count, within the searched portion. Output results are capped at 2 MiB
+of compact JSON. Metadata adds a small amount of overhead. Any skipped records,
+exhausted budget, unreadable transcript, or omitted results marks the response
+partial; counts and ranking then describe only the searched portion.
+
+`am search <query> [--all] [--fleet] [--limit N] [--json] [--metadata]`:
+
+- Default scope remains registered agents plus trash; `--all` includes history.
+- `--json` still returns `SearchResult[]`. Partial warnings go to stderr for
+  both JSON and text. Empty partial results say only that the searched portion
+  had no matches.
+- `--json --metadata` opts into `{ results, metadata }`, including local scan
+  counters/reasons and per-host completeness. The in-process `search()` result
+  remains an array with an additive `.metadata` property (not serialized by
+  `JSON.stringify`); callers must inspect it to determine completeness.
+- Fleet queries request the envelope, pass the requested result limit, and
+  bound each remote's captured stdout/stderr at 2 MiB and its runtime at the
+  remaining shared deadline. At most 16 hosts are attempted. Remote failures,
+  invalid replies, and remote partial results identify the host. Old peers
+  returning arrays remain usable but are marked `legacy-completeness-unknown`;
+  peers rejecting the flag appear unavailable. No claim of complete coverage
+  is made for either case.
+- The terminal picker uses the same scanner with a 100 ms budget and shows
+  `partial`. Browser conversation search has its own bounded implementation
+  and existing partial/unavailable-host response; its API is unchanged.
+
+There are no date/role indexes or ranking redesign in this change.
 
 ## Ranked approaches
-
-### Tier 1 — `am search` ripgrep full-text  ✅ ship now, zero deps
-Single code path that scales from a 4 KB transcript to the 98 MB monster:
-
-1. Build the corpus (file → metadata):
-   - registered: `listAgents()` → `locateTranscript()` (skip agents with no
-     session yet), tag `{agentName, status, provider, dir, sessionId, action}`.
-   - trash: `listTrashed()` → `action: restore`.
-   - `--all`: walk `~/.claude/projects/**.jsonl` + `~/.codex/sessions/**.jsonl`;
-     sessionId from the filename; dir/startedAt read lazily (first/last line)
-     only for files that matched. De-dupe registered files by path.
-2. `rg --json -F -i -m <cap> -e <query> -- <files…>` (fixed-string + smart-case
-   by default; `--regex` opt-in later).
-3. For each `type:match` line: `JSON.parse(data.lines.text)` = the transcript
-   entry → run it through a shared `entryPlainText(provider, entry)` helper
-   (factored out of `transcript.ts` so the role/harness/tool-noise rules live in
-   one place). Build a highlighted snippet windowed on the submatch offset; skip
-   pure tool-noise hits.
-4. Group matches by file → `SearchResult { agentName?, sessionId, provider, dir,
-   status, action, matchCount, snippets[], updatedAt }`.
-5. Rank: live agents first, then recency (mtime), then matchCount.
-6. Print: glyph + name/session, scope badge, match count, relative time, dir, the
-   ready-to-run command, and 1–3 snippets. `--json` emits `SearchResult[]` (for
-   the picker and for remote federation).
-
-Scope flags: default = registered + trash; `--all` = history too; `--fleet` =
-federate over `config.remotes` by running `am search --json --local-only` per
-host and merging (exact mirror of `fetchRemoteRows`). `--limit N`.
-
-Fallback: if `rg` is missing, a small pure-Bun line scanner over the same corpus
-(slower, but keeps am self-contained and lets tests run without rg).
-
-**Files:** new `src/search.ts` (core), `src/commands/search.ts` (CLI/format),
-`tests/search.test.ts`; edit `src/index.ts` (case `search`/`s` + HELP +
-VALUE_FLAGS for `--limit`), small refactor in `src/transcript.ts` to export
-`entryPlainText`.
 
 ### Tier 1b — picker `/` chat-search mode  (same PR, separable)
 A `/` mode in `picker.ts` that shells `am search --json <q>` async (debounced),
@@ -100,11 +99,11 @@ mode is explicit and async.
   is real tokens = cost/minutes).
 - Surface: `am search --semantic <q>`, optional hybrid rank with full-text.
 - **Why defer:** recurring API cost or a heavy local dep, plus index-freshness
-  and complexity, against a need that 46 ms full-text already covers well.
+  and complexity, until bounded full-text search proves insufficient.
 
 ## Recommendation
 
-Ship **Tier 1** (`am search`, ripgrep, zero deps, local + `--all` + `--fleet`)
+Ship **Tier 1** (`am search`, bounded scanning, zero deps, local + `--all` + `--fleet`)
 now; include **Tier 1b** (picker `/`) in the same PR if it lands cleanly, else as
 a fast follow. Hold **Tier 2** (semantic) until we see full-text fall short.
 

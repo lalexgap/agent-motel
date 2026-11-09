@@ -1,4 +1,4 @@
-import { search, type SearchResult, type SearchSnippet } from "../search";
+import { search, searchWarning, type SearchResult, type SearchSnippet } from "../search";
 import { relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS } from "./ls";
 
 const RESET = "\x1b[0m";
@@ -13,6 +13,7 @@ export interface SearchCmdOptions {
   fleet?: boolean;
   localOnly?: boolean;
   json?: boolean;
+  metadata?: boolean;
   limit?: number;
 }
 
@@ -24,14 +25,17 @@ export function searchCommand(query: string, opts: SearchCmdOptions): void {
     limit: opts.limit,
   });
 
+  const warning = searchWarning(results.metadata);
+  if (warning) console.error(warning);
+
   if (opts.json) {
-    console.log(JSON.stringify(results, null, 2));
+    console.log(JSON.stringify(opts.metadata ? { results, metadata: results.metadata } : results));
     return;
   }
 
   if (results.length === 0) {
     const where = opts.all ? "any session" : "registered agents or trash (try --all for history)";
-    console.log(`no matches for "${query}" in ${where}`);
+    console.log(`${results.metadata.partial ? "no matches in the searched portion" : "no matches"} for "${query}" in ${where}`);
     return;
   }
 

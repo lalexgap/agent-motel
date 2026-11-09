@@ -1047,6 +1047,7 @@ export async function pick(
   let chatQuery = "";
   let chatMatch: Map<string, string> | null = null;
   let chatOrder: string[] = [];
+  let chatPartial = false;
   let cursor = Math.max(0, items.findIndex((i) => i.name === initial));
   // The list reloads every second and agents come and go, so the cursor
   // follows a NAME, not an index — otherwise a reload silently moves the
@@ -1220,23 +1221,24 @@ export async function pick(
 
   const paletteTotal = () => paletteMatches().length + paletteAgentMatches().length;
 
-  // Run `am search` over local agents' chats for the current query. Synchronous
-  // (ripgrep does the whole corpus in tens of ms) so it can run per keystroke
-  // without an async dance. Local registered agents only — they're the rows the
-  // picker can actually select; history/remote stay on the `am search` CLI.
+  // Keep per-keystroke chat searches within a short scan budget.
   const runChatSearch = () => {
     const query = chatQuery.trim();
+    chatPartial = false;
     if (!query) {
       chatMatch = null;
       chatOrder = [];
       return;
     }
     try {
-      const { order, snippets } = localAgentMatches(search(query, { limit: 100 }));
+      const results = search(query, { limit: 100, budgets: { maxMs: 100 } });
+      chatPartial = results.metadata.partial;
+      const { order, snippets } = localAgentMatches(results);
       chatMatch = snippets;
       chatOrder = order;
     } catch {
-      chatMatch = null;
+      chatPartial = true;
+      chatMatch = new Map();
       chatOrder = [];
     }
   };
@@ -1499,11 +1501,11 @@ export async function pick(
         : mode === "rename-name"
           ? { text: `${THEME.blue}rename to${THEME.sidebar}  ${renameName}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
           : mode === "search"
-            ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
+            ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${chatPartial ? " · partial" : ""}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
             : mode === "filter"
               ? { text: `${THEME.blue}filter${THEME.sidebar}  ${filter}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
               : chatMatch
-                ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches · esc clears${THEME.sidebar}`, style: THEME.sidebar }
+                ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches${chatPartial ? " · partial" : ""} · esc clears${THEME.sidebar}`, style: THEME.sidebar }
                 : filter
                   ? { text: `${THEME.muted}filter: ${filter} · ⌫ clears${THEME.sidebar}`, style: THEME.sidebar }
                   : mode === "edit"
