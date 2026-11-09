@@ -1,5 +1,5 @@
-import { notifyPrEvent, trackPullRequests } from "./prMonitor";
 #!/usr/bin/env bun
+import { notifyPrEvent, trackPullRequests } from "./prMonitor";
 import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
 import { parseArgs, selectedProvider, type ParsedArgs } from "./args";

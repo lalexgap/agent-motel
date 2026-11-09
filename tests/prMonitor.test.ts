@@ -6,6 +6,8 @@ import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { flushPrEvents, parsePrUrl, parsePullRequest, pollPullRequests, recordPrObservations, trackPullRequests, type PrCommand, type TrackedPullRequest } from "../src/prMonitor";
 import { queueAppendOnceLocked, queueDepth, queuePop, queueRecordReceipt } from "../src/queue";
 import { acquireMailboxLock, releaseMailboxLock } from "../src/mailbox";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
+import { exportCommand } from "../src/commands/move";
 
 let home: string;
 let originalHome: string | undefined;
@@ -29,7 +31,9 @@ function pr(state: TrackedPullRequest["state"] = "OPEN", number = 1, day = 2): T
     ...(state === "MERGED" ? { mergeCommit: "a".repeat(40), mergedAt: "2026-01-02T00:00:00Z" } : {}),
     ...(state === "CLOSED" ? { closedAt: "2026-01-02T00:00:00Z" } : {}) };
 }
-function api(value: TrackedPullRequest) { return { ...value, mergeCommit: value.mergeCommit ? { oid: value.mergeCommit } : null }; }
+function api(value: TrackedPullRequest, headRepository = value.repository) {
+  return { ...value, headRepository: { nameWithOwner: headRepository }, mergeCommit: value.mergeCommit ? { oid: value.mergeCommit } : null };
+}
 
 test("open baseline is quiet, merge queues once, even after consumption/restart", () => {
   const owner = agent();
@@ -43,6 +47,18 @@ test("open baseline is quiet, merge queues once, even after consumption/restart"
   recordPrObservations(readAgent(owner.name)!, [pr("MERGED", 1, 3)]);
   flushPrEvents(owner);
   expect(queueDepth(owner.name)).toBe(0);
+});
+
+test("monitor bookkeeping preserves agent activity age", async () => {
+  const owner = agent("owner", "exited");
+  const updatedAt = readAgent(owner.name)!.updatedAt;
+  recordPrObservations(owner, [pr()]);
+  expect(readAgent(owner.name)!.updatedAt).toBe(updatedAt);
+  await pollPullRequests(async () => { throw new Error("offline"); });
+  expect(readAgent(owner.name)!.updatedAt).toBe(updatedAt);
+  recordPrObservations(readAgent(owner.name)!, [pr("MERGED")]);
+  flushPrEvents(readAgent(owner.name)!);
+  expect(readAgent(owner.name)!.updatedAt).toBe(updatedAt);
 });
 
 test("exited agents retain multiple PRs and queued merge notices", async () => {
@@ -115,7 +131,7 @@ test("stale observations and recycled agent names cannot receive old events", ()
   recordPrObservations(owner, [pr("OPEN", 1, 3)]);
   expect(readAgent(owner.name)?.prMonitor?.pullRequests[0]?.state).toBe("CLOSED");
   writeAgent({ ...owner, createdAt: "2026-02-01T00:00:00Z" });
-  recordPrObservations(owner, [pr("MERGED")]);
+  expect(() => recordPrObservations(owner, [pr("MERGED")])).toThrow(/changed.*retry/);
   flushPrEvents(owner);
   expect(queueDepth(owner.name)).toBe(0);
   expect(readAgent(owner.name)?.prMonitor).toBeUndefined();
@@ -155,6 +171,16 @@ test("current branch discovery persists ownership across branch changes", async 
   expect(queueDepth(owner.name)).toBe(1);
 });
 
+test("branch discovery excludes same-named branches from forks", async () => {
+  const owner = agent();
+  await pollPullRequests(async (_cwd, executable, args) => {
+    if (executable === "git") return args[0] === "remote" ? "git@github.com:owner/repo.git\n" : "feature\n";
+    return JSON.stringify([api(pr(), "contributor/repo")]);
+  });
+  expect(readAgent(owner.name)?.prMonitor).toBeUndefined();
+  expect(queueDepth(owner.name)).toBe(0);
+});
+
 test("explicit registration validates URLs and API identity", async () => {
   const owner = agent("owner", "exited");
   expect(() => parsePrUrl("https://evil.test/owner/repo/pull/1")).toThrow();
@@ -162,6 +188,25 @@ test("explicit registration validates URLs and API identity", async () => {
   await expect(trackPullRequests(owner, [pr().url], async () => JSON.stringify(api(pr("OPEN", 2))))).rejects.toThrow("different PR");
   await trackPullRequests(owner, [pr().url, pr("OPEN", 2).url], async (_cwd, _exe, args) => JSON.stringify(api(pr("OPEN", Number(args[2])))));
   expect(readAgent(owner.name)?.prMonitor?.pullRequests).toHaveLength(2);
+});
+
+test("explicit registration rejects lifecycle and pull-handoff barriers", async () => {
+  const owner = agent("owner", "exited");
+  const run: PrCommand = async () => JSON.stringify(api(pr()));
+  expect(acquireLifecycleLock(owner.name)).toBe(true);
+  try {
+    await expect(trackPullRequests(owner, [pr().url], run)).rejects.toThrow(/lifecycle is busy.*retry/);
+  } finally { releaseLifecycleLock(owner.name); }
+  expect(readAgent(owner.name)?.prMonitor).toBeUndefined();
+
+  const log = console.log;
+  try {
+    console.log = () => {};
+    exportCommand(owner.name, "handoff", "transfer");
+  } finally { console.log = log; }
+  await expect(trackPullRequests(owner, [pr().url], run)).rejects.toThrow(/being moved.*retry/);
+  expect(readAgent(owner.name)?.prMonitor).toBeUndefined();
+  exportCommand(owner.name, "release", "transfer");
 });
 
 test("one unavailable PR does not block other stack layers", async () => {
@@ -195,4 +240,36 @@ test("exited worktree owners can bootstrap without using the current checkout br
     return JSON.stringify([api(pr("MERGED"))]);
   });
   expect(queueDepth(owner.name)).toBe(1);
+});
+
+test("failed exited bootstrap retries discovery and records only a successful empty result", async () => {
+  const owner = agent("owner", "exited");
+  owner.worktreeBranch = "am/owner";
+  writeAgent(owner);
+  let lists = 0;
+  const run: PrCommand = async (_cwd, executable) => {
+    if (executable === "git") return "https://github.com/owner/repo.git";
+    lists++;
+    if (lists === 1) throw new Error("temporary failure");
+    return "[]";
+  };
+  await pollPullRequests(run);
+  expect(readAgent(owner.name)?.prMonitor).toMatchObject({ pullRequests: [], error: expect.stringContaining("retrying") });
+  expect(readAgent(owner.name)?.prMonitor?.bootstrapped).toBeUndefined();
+  await pollPullRequests(run);
+  expect(readAgent(owner.name)?.prMonitor).toMatchObject({ pullRequests: [], bootstrapped: true });
+  expect(readAgent(owner.name)?.prMonitor?.error).toBeUndefined();
+  await pollPullRequests(run);
+  expect(lists).toBe(2);
+});
+
+test("CLI entrypoint parses with the shebang first", () => {
+  const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/index.ts"), "--help"], {
+    env: { ...process.env, AGENTMGR_HOME: home, AGENTMGR_SYSTEMD: "0", HOME: home },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("Agent Motel (am)");
+  expect(result.stderr.toString()).toBe("");
 });

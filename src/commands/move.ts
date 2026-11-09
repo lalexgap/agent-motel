@@ -829,29 +829,35 @@ export function exportCommand(name: string, mode?: string, token?: string): void
     }
     return;
   }
-  // Enrich on the source side (where the worktree is live) so a pull recreates
-  // it even when the agent never recorded its worktree metadata.
-  const agent = withWorktreeMeta(resolveAgent(name));
-  if (agentProvider(agent) === "antigravity") throw new Error("Antigravity export/move is unsupported");
-  if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the export`);
+  const resolved = resolveAgent(name);
+  if (!acquireLifecycleLock(resolved.name)) throw new Error(`agent "${resolved.name}" lifecycle is busy — retry the export`);
   try {
-    if (mode === "handoff") beginDeliveryHandoff(agent.name, token!);
-    const backlog = queueList(agent.name);
-    console.log(
-      JSON.stringify({
-        state: agent,
-        queue: backlog.map((m) => m.message),
-        queueIds: backlog.map((m) => m.msgId),
-        queueProvenance: backlog.map((m) => m.provenance),
-        receivedMsgIds: queueReceiptIds(agent.name),
-        home: homedir(),
-        transcript: sourceTranscript(agent),
-        plan: readPlan(agent.name) ?? undefined,
-        ...(mode === "handoff" ? { handoffToken: token } : {}),
-      }),
-    );
+    // Enrich on the source side (where the worktree is live) so a pull recreates
+    // it even when the agent never recorded its worktree metadata.
+    const agent = withWorktreeMeta(currentLifecycleAgent(resolved));
+    if (agentProvider(agent) === "antigravity") throw new Error("Antigravity export/move is unsupported");
+    if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is receiving a message — retry the export`);
+    try {
+      if (mode === "handoff") beginDeliveryHandoff(agent.name, token!);
+      const backlog = queueList(agent.name);
+      console.log(
+        JSON.stringify({
+          state: agent,
+          queue: backlog.map((m) => m.message),
+          queueIds: backlog.map((m) => m.msgId),
+          queueProvenance: backlog.map((m) => m.provenance),
+          receivedMsgIds: queueReceiptIds(agent.name),
+          home: homedir(),
+          transcript: sourceTranscript(agent),
+          plan: readPlan(agent.name) ?? undefined,
+          ...(mode === "handoff" ? { handoffToken: token } : {}),
+        }),
+      );
+    } finally {
+      releaseDeliverLock(agent.name);
+    }
   } finally {
-    releaseDeliverLock(agent.name);
+    releaseLifecycleLock(resolved.name);
   }
 }
 

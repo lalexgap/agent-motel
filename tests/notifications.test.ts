@@ -14,6 +14,7 @@ import {
 } from "../src/notifications";
 import { relayOnce, type RelayDeps } from "../src/notificationRelay";
 import { notify } from "../src/notify";
+import { notifyPrEvent } from "../src/prMonitor";
 
 let home: string;
 
@@ -38,6 +39,11 @@ describe("journal", () => {
     const [e] = readNotifications();
     expect(e).toMatchObject({ host: "laptop", agent: "alpha", kind: "attention", title: "am: alpha", message: "approval requested — Bash" });
     expect(typeof e!.id).toBe("string");
+  });
+
+  test("PR notifications retain owner and kind in the journal", () => {
+    notifyPrEvent("alpha", "PR merged");
+    expect(readNotifications().at(-1)).toMatchObject({ host: "laptop", agent: "alpha", kind: "pr", message: "PR merged" });
   });
 
   test("trims to the newest entries once the file grows large", () => {
@@ -146,6 +152,22 @@ describe("relayOnce", () => {
     expect(calls[0]).toEqual(["__notifications", "--after", "9", "--wait", "1"]);
     expect(shown).toEqual(["am: alpha (gapserver)|msg 10"]);
     expect(cursors.gapserver).toBe("10");
+  });
+
+  test("relays validated PR notifications", async () => {
+    const pr = { ...entry("10", "2026-01-01T00:59:50Z", "alpha"), kind: "pr" as const };
+    const { d, shown } = deps(JSON.stringify({ entries: [pr], cursor: "10" }));
+    d.saveCursor("gapserver", "9");
+    expect(await relayOnce("gapserver", d, 1)).toBe(true);
+    expect(shown).toEqual(["am: alpha (gapserver)|msg 10"]);
+  });
+
+  test("drops relay entries with unknown notification kinds", async () => {
+    const invalid = { ...entry("10", "2026-01-01T00:59:50Z"), kind: "unknown" };
+    const { d, shown } = deps(JSON.stringify({ entries: [invalid], cursor: "10" }));
+    d.saveCursor("gapserver", "9");
+    expect(await relayOnce("gapserver", d, 1)).toBe(true);
+    expect(shown).toEqual([]);
   });
 
   test("never re-shows this host's own entries", async () => {

@@ -7,9 +7,10 @@ import { listAgents, readAgent, updateAgentIf, type AgentState } from "./state";
 import { baseDir } from "./paths";
 import { githubRepository } from "./workspace";
 import { tryAcquireFileLock } from "./filelock";
-import { acquireMailboxLock, releaseMailboxLock } from "./mailbox";
+import { acquireMailboxLock, releaseMailboxLock, withMailboxWrite } from "./mailbox";
 import { queueAppendOnceLocked, queueReceived, queueRecordReceipt } from "./queue";
 import { loadConfig } from "./config";
+import { acquireLifecycleLock, releaseLifecycleLock } from "./lifecycle";
 
 export interface TrackedPullRequest {
   repository: string;
@@ -24,12 +25,13 @@ export interface TrackedPullRequest {
 interface PrEvent { id: string; message: string }
 export interface PrMonitorState {
   pullRequests: TrackedPullRequest[];
+  bootstrapped?: boolean;
   checkedAt?: string;
   error?: string;
   pending?: PrEvent[];
 }
 const exec = promisify(execFile);
-const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt";
+const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt,headRepository";
 export type PrCommand = (cwd: string, executable: string, args: string[]) => Promise<string>;
 const command: PrCommand = async (cwd, executable, args) => (await exec(executable, args, {
   cwd, timeout: 15_000, maxBuffer: 1024 * 1024,
@@ -66,9 +68,37 @@ export function prEventMessage(pr: TrackedPullRequest): string {
 }
 
 // Persist event IDs before enqueueing so crash recovery reuses them.
-export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString()): void {
-  updateAgentIf(agent.name, current => {
-    if (current.createdAt !== agent.createdAt) return false;
+function withMonitorOwnership(agent: AgentState, strict: boolean, fn: () => boolean): boolean {
+  if (!acquireLifecycleLock(agent.name)) {
+    if (strict) throw new Error(`agent "${agent.name}" lifecycle is busy — retry PR registration`);
+    return false;
+  }
+  try {
+    try {
+      return withMailboxWrite(agent.name, fn);
+    } catch (error) {
+      if (strict) throw error;
+      return false;
+    }
+  } finally {
+    releaseLifecycleLock(agent.name);
+  }
+}
+
+function mutateMonitor(agent: AgentState, fn: (current: AgentState) => void, strict: boolean, durable = false): boolean {
+  return withMonitorOwnership(agent, strict, () => {
+    const changed = updateAgentIf(agent.name, current => {
+      if (current.createdAt !== agent.createdAt || current.tmuxSession !== agent.tmuxSession) return false;
+      fn(current);
+      return true;
+    }, { preserveUpdatedAt: true, durable });
+    if (!changed && strict) throw new Error(`agent "${agent.name}" changed — retry PR registration`);
+    return changed;
+  });
+}
+
+export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString(), strict = true): boolean {
+  return mutateMonitor(agent, current => {
     const monitor = current.prMonitor ?? { pullRequests: [] };
     const byUrl = new Map(monitor.pullRequests.map(pr => [pr.url, pr]));
     const pending = [...(monitor.pending ?? [])];
@@ -83,37 +113,45 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
       }
       byUrl.set(pr.url, pr);
     }
-    current.prMonitor = { pullRequests: [...byUrl.values()], pending, checkedAt: now };
+    current.prMonitor = { pullRequests: [...byUrl.values()], pending, checkedAt: now, bootstrapped: true };
+  }, strict, true);
+}
+
+export type PrNotifier = (name: string, message: string) => void;
+export const notifyPrEvent: PrNotifier = (name, message) => notify(`PR update · ${name}`, message, { agent: name, kind: "pr" });
+
+export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = false): boolean {
+  return withMonitorOwnership(agent, strict, () => {
+    const current = readAgent(agent.name);
+    if (!current || current.createdAt !== agent.createdAt || current.tmuxSession !== agent.tmuxSession) {
+      if (strict) throw new Error(`agent "${agent.name}" changed — retry PR registration`);
+      return false;
+    }
+    if (!acquireMailboxLock(agent.name)) {
+      if (strict) throw new Error(`agent "${agent.name}" mailbox is busy — retry PR registration`);
+      return false;
+    }
+    try {
+      for (const event of current.prMonitor?.pending ?? []) {
+        if (!queueReceived(current.name, event.id)) {
+          queueAppendOnceLocked(current.name, event.message, event.id);
+          queueRecordReceipt(current.name, event.id);
+          try { onEvent?.(current.name, event.message); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
+        }
+        updateAgentIf(current.name, state => {
+          if (state.createdAt !== current.createdAt || !state.prMonitor) return false;
+          state.prMonitor.pending = state.prMonitor.pending?.filter(item => item.id !== event.id);
+          return true;
+        }, { preserveUpdatedAt: true });
+      }
+    } finally { releaseMailboxLock(agent.name); }
     return true;
   });
 }
 
-export type PrNotifier = (name: string, message: string) => void;
-export const notifyPrEvent: PrNotifier = (name, message) => notify(`PR update · ${name}`, message);
-
-export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier): void {
-  if (!acquireMailboxLock(agent.name)) return;
-  try {
-    const current = readAgent(agent.name);
-    if (!current || current.createdAt !== agent.createdAt) return;
-    for (const event of current.prMonitor?.pending ?? []) {
-      if (!queueReceived(current.name, event.id)) {
-        queueAppendOnceLocked(current.name, event.message, event.id);
-        queueRecordReceipt(current.name, event.id);
-        try { onEvent?.(current.name, event.message); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
-      }
-      updateAgentIf(current.name, state => {
-        if (state.createdAt !== current.createdAt || !state.prMonitor) return false;
-        state.prMonitor.pending = state.prMonitor.pending?.filter(item => item.id !== event.id);
-        return true;
-      });
-    }
-  } finally { releaseMailboxLock(agent.name); }
-}
-
 async function discover(agent: AgentState, run: PrCommand): Promise<TrackedPullRequest[]> {
   // Exited workspaces may now belong to another agent.
-  if (agent.status === "exited" && (agent.prMonitor || !agent.worktreeBranch)) return [];
+  if (agent.status === "exited" && ((agent.prMonitor?.pullRequests.length ?? 0) > 0 || agent.prMonitor?.bootstrapped || !agent.worktreeBranch)) return [];
   let remote: string, branch: string;
   try {
     const dir = agent.status === "exited" ? agent.repoRoot ?? agent.dir : agent.dir;
@@ -124,7 +162,9 @@ async function discover(agent: AgentState, run: PrCommand): Promise<TrackedPullR
   if (!repository || !branch || ["main", "master"].includes(branch)) return [];
   const result = JSON.parse(await run(agent.dir, "gh", ["pr", "list", "--repo", repository, `--head=${branch}`, "--state", "all", "--limit", "100", "--json", FIELDS]));
   if (!Array.isArray(result)) throw new Error("Invalid PR list");
-  return result.map(pr => parsePullRequest(repository, pr));
+  return result
+    .filter(pr => pr?.headRepository?.nameWithOwner?.toLowerCase() === repository.toLowerCase())
+    .map(pr => parsePullRequest(repository, pr));
 }
 
 export async function pollPullRequests(run: PrCommand = command, active: () => boolean = () => true, onEvent?: PrNotifier): Promise<void> {
@@ -159,16 +199,16 @@ export async function pollPullRequests(run: PrCommand = command, active: () => b
             } catch { failed = true; }
           }
           if (!active()) return;
-          if (found.length || agent.prMonitor) recordPrObservations(agent, found);
+          if (found.length || agent.prMonitor || (!failed && agent.status === "exited" && !!agent.worktreeBranch)) {
+            if (!recordPrObservations(agent, found, undefined, false)) throw new Error("PR monitor state unavailable");
+          }
           flushPrEvents(agent, onEvent);
           if (failed) throw new Error("PR lookup unavailable");
         } catch {
           if (!active()) return;
-          updateAgentIf(agent.name, current => {
-            if (current.createdAt !== agent.createdAt) return false;
+          mutateMonitor(agent, current => {
             current.prMonitor = { ...(current.prMonitor ?? { pullRequests: [] }), error: "PR lookup or delivery unavailable; retrying next sweep." };
-            return true;
-          });
+          }, false);
         }
       }
     }));
@@ -184,8 +224,8 @@ export async function trackPullRequests(agent: AgentState, urls: string[], run: 
     prs.push(pr);
   }
   if (prs.length) {
-    recordPrObservations(agent, prs);
-    flushPrEvents(agent, onEvent);
+    recordPrObservations(agent, prs, undefined, true);
+    flushPrEvents(agent, onEvent, true);
   }
 }
 

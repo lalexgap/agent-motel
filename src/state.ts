@@ -203,12 +203,16 @@ export function writeAgent(state: AgentState): void {
 
 // Read, check and write under the state lock, so a hook's write lands wholly
 // before or after. `fn` changes the current state, or returns false to leave it.
-export function updateAgentIf(name: string, fn: (state: AgentState) => boolean): boolean {
+export function updateAgentIf(
+  name: string,
+  fn: (state: AgentState) => boolean,
+  opts: { preserveUpdatedAt?: boolean; durable?: boolean } = {},
+): boolean {
   return withFileLock(stateLock(name), () => {
     const current = readAgent(name);
     if (!current || !fn(current)) return false;
-    current.updatedAt = new Date().toISOString();
-    writeJsonAtomic(stateFile(name), current);
+    if (!opts.preserveUpdatedAt) current.updatedAt = new Date().toISOString();
+    writeJsonAtomic(stateFile(name), current, { durable: opts.durable });
     return true;
   });
 }
