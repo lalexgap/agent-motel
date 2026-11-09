@@ -12,6 +12,7 @@ import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
 import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
 import { forgetClaudeTrust, readClaudeTrustLedger } from "./claudeTrust";
+import { withWorktreeOwnershipLock, worktreeOwnerReason, worktreeSafetyReason } from "./worktreeOwnership";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -187,13 +188,9 @@ function worktreeScan(referenced: Set<string>): { remove: WorktreeRemoval[]; kep
         kept.push({ path, reason: "not a linked git worktree — inspect manually" });
         continue;
       }
-      const status = git(path, "status", "--porcelain");
-      if (!status.ok) {
-        kept.push({ path, reason: "git status failed — inspect manually" });
-        continue;
-      }
-      if (status.out !== "") {
-        kept.push({ path, reason: "uncommitted changes" });
+      const reason = worktreeOwnerReason(path) ?? worktreeSafetyReason(path);
+      if (reason) {
+        kept.push({ path, reason });
         continue;
       }
       remove.push({ path, repoRoot: info.repoRoot });
@@ -295,9 +292,21 @@ export function applyGc(plan: GcPlan): string[] {
   }
 
   for (const w of plan.worktrees) {
-    const result = git(w.repoRoot, "worktree", "remove", w.path);
-    if (result.ok) lines.push(`removed worktree ${w.path}`);
-    else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
+    withWorktreeOwnershipLock(() => {
+      const reason = worktreeOwnerReason(w.path) ?? worktreeSafetyReason(w.path);
+      if (reason) {
+        lines.push(`kept worktree ${w.path}: ${reason}`);
+        return;
+      }
+      const info = inferWorktree(w.path);
+      if (!info || canon(info.repoRoot) !== canon(w.repoRoot)) {
+        lines.push(`kept worktree ${w.path}: worktree registration changed`);
+        return;
+      }
+      const result = git(w.repoRoot, "worktree", "remove", w.path);
+      if (result.ok) lines.push(`removed worktree ${w.path}`);
+      else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
+    });
   }
 
   for (const dir of plan.codexTrust) {

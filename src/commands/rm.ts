@@ -14,6 +14,9 @@ import { hasSession, killSession } from "../tmux";
 import { CODEX_STOP_BUDGET_MS, codexDeadline, releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 
+import { withWorktreeOwnershipLock, worktreeOwnerReason, worktreeSafetyReason, canonicalPath } from "../worktreeOwnership";
+import { inferWorktree } from "./move";
+
 function killStoppedSession(agent: AgentState): void {
   if(!hasSession(agent.tmuxSession))return;
   try {killSession(agent.tmuxSession);}
@@ -144,15 +147,18 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   stopCodexDaemonWork(current, deadline);
 
   if (clean && current.worktreePath && current.repoRoot) {
-    const result = Bun.spawnSync([
-      "git", "-C", current.repoRoot,
-      "worktree", "remove", "--force", current.worktreePath,
-    ]);
-    if (result.exitCode !== 0) {
-      console.error(`warning: failed to remove worktree: ${result.stderr.toString().trim()}`);
-    } else {
-      console.log(`removed worktree ${current.worktreePath}`);
-    }
+    withWorktreeOwnershipLock(() => {
+      const path = current.worktreePath!;
+      const reason = worktreeOwnerReason(path, current) ?? worktreeSafetyReason(path);
+      const info = inferWorktree(path);
+      if (reason || !info || canonicalPath(info.repoRoot) !== canonicalPath(current.repoRoot!)) {
+        console.error(`warning: kept worktree ${path}: ${reason ?? "worktree registration changed"}`);
+        return;
+      }
+      const result = Bun.spawnSync(["git", "-C", current.repoRoot!, "worktree", "remove", path]);
+      if (result.exitCode !== 0) console.error(`warning: failed to remove worktree: ${result.stderr.toString().trim()}`);
+      else console.log(`removed worktree ${path}`);
+    });
   }
 
   // Snapshot the state before deleting it so an accidental rm is recoverable

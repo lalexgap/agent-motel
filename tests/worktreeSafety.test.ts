@@ -1,0 +1,205 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { planGc, applyGc } from "../src/gc";
+import { destroyAgent } from "../src/commands/rm";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { trashState } from "../src/trash";
+
+let home: string, repo: string, wt: string;
+let oldHome: string | undefined, oldPool: string | undefined;
+const retention = { agentDays: 7, trashDays: 30 };
+function git(dir: string, ...args: string[]) {
+  const r = Bun.spawnSync(["git", "-C", dir, ...args]);
+  if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  return r.stdout.toString().trim();
+}
+function agent(name: string, dir = wt): AgentState {
+  return { name, dir, status: "exited", tmuxSession: `am-safety-absent-${name}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+}
+function pool(lease: unknown) {
+  mkdirSync(join(home, "pool", "state"), { recursive: true });
+  for (let i = 1; i <= 3; i++) writeFileSync(join(home, "pool", "state", `slot-${i}.json`), JSON.stringify({ lease: i === 1 ? lease : null }));
+}
+beforeEach(() => {
+  oldHome = process.env.AGENTMGR_HOME;
+  oldPool = process.env.DEV_POOL_ROOT;
+  home = mkdtempSync(join(tmpdir(), "am-worktree-safety-"));
+  process.env.AGENTMGR_HOME = home;
+  process.env.DEV_POOL_ROOT = join(home, "pool");
+  repo = join(home, "repo");
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  git(repo, "config", "user.name", "Fixture");
+  git(repo, "config", "user.email", "fixture@example.test");
+  git(repo, "commit", "-q", "--allow-empty", "-m", "initial");
+  wt = join(home, "worktrees", "repo", "checkout");
+  git(repo, "worktree", "add", "-q", "-b", "fixture", wt);
+});
+afterEach(() => {
+  rmSync(home, { recursive: true, force: true });
+  if (oldHome === undefined) delete process.env.AGENTMGR_HOME; else process.env.AGENTMGR_HOME = oldHome;
+  if (oldPool === undefined) delete process.env.DEV_POOL_ROOT; else process.env.DEV_POOL_ROOT = oldPool;
+});
+
+for (const trashed of [false, true]) test(`B05 protects ${trashed ? "restorable" : "registered"} symlink descendant`, () => {
+  mkdirSync(join(wt, "frontend"));
+  const alias = join(home, "alias");
+  symlinkSync(wt, alias);
+  const owner = agent("owner", join(alias, "frontend"));
+  if (trashed) trashState(owner); else writeAgent(owner);
+  expect(planGc(retention).worktrees).toEqual([]);
+});
+
+test("B06 rechecks a newly registered descendant owner before applying", () => {
+  const plan = planGc(retention);
+  expect(plan.worktrees).toHaveLength(1);
+  mkdirSync(join(wt, "frontend"));
+  writeAgent(agent("new-owner", join(wt, "frontend")));
+  applyGc(plan);
+  expect(existsSync(wt)).toBe(true);
+});
+
+test("B07 keeps detached commits without a durable reference", () => {
+  git(wt, "checkout", "--detach", "-q");
+  git(wt, "commit", "-q", "--allow-empty", "-m", "detached work");
+  expect(planGc(retention).worktrees).toEqual([]);
+  git(wt, "tag", "saved");
+  expect(planGc(retention).worktrees).toHaveLength(1);
+});
+
+for (const mode of ["shared", "dirty", "restorable", "same-name-trash", "detached"] as const) test(`B08 rm clean preserves ${mode} checkout`, () => {
+  const primary = { ...agent("primary"), worktreePath: wt, repoRoot: repo };
+  writeAgent(primary);
+  if (mode === "shared" || mode === "restorable" || mode === "same-name-trash") {
+    mkdirSync(join(wt, "frontend"));
+    const other = agent(mode === "same-name-trash" ? "primary" : "other", join(wt, "frontend"));
+    other.createdAt = "2020-01-01T00:00:00.000Z";
+    if (mode === "shared") writeAgent(other); else trashState(other);
+  } else if (mode === "dirty") writeFileSync(join(wt, "valuable.txt"), "do not lose");
+  else {
+    git(wt, "checkout", "--detach", "-q");
+    git(wt, "commit", "-q", "--allow-empty", "-m", "detached");
+  }
+  destroyAgent(primary, { clean: true });
+  expect(existsSync(wt)).toBe(true);
+});
+
+for (const pinned of [false, true]) test(`B09 protects pool lease (pinned=${pinned}) at plan and apply`, () => {
+  const plan = planGc(retention);
+  pool({ worktree: wt, kind: pinned ? "preview" : "agent", pinned });
+  expect(planGc(retention).worktrees).toEqual([]);
+  applyGc(plan);
+  expect(existsSync(wt)).toBe(true);
+});
+
+test("invalid lease data fails safe", () => {
+  pool({ pinned: true });
+  expect(planGc(retention).worktrees).toEqual([]);
+});
+
+test("invalid agent ownership fails safe", () => {
+  mkdirSync(join(home, "agents"), { recursive: true });
+  writeFileSync(join(home, "agents", "broken.json"), "{broken");
+  expect(planGc(retention).worktrees).toEqual([]);
+});
+
+test("rm clean still removes an unshared clean checkout", () => {
+  const primary = { ...agent("primary"), worktreePath: wt, repoRoot: repo };
+  writeAgent(primary);
+  destroyAgent(primary, { clean: true });
+  expect(existsSync(wt)).toBe(false);
+});
+
+async function waitFor(file: string) {
+  for (let n = 0; n < 300 && !existsSync(file); n++) await Bun.sleep(10);
+  expect(existsSync(file)).toBe(true);
+}
+function worker(source: string) {
+  return Bun.spawn([process.execPath, "-e", source], { cwd: import.meta.dir, env: { ...process.env, AGENTMGR_HOME: home, DEV_POOL_ROOT: join(home, "pool") }, stdout: "pipe", stderr: "pipe" });
+}
+
+test("registration wins the lock: GC observes the new owner", async () => {
+  const plan = planGc(retention);
+  const holding = join(home, "holding"), release = join(home, "release");
+  const writer = worker(`
+    import { writeAgent, updateAgentIf } from '../src/state';
+    import { withWorktreeOwnershipLock } from '../src/worktreeOwnership';
+    import { existsSync, writeFileSync } from 'node:fs';
+    writeAgent(${JSON.stringify(agent("racer", home))});
+    updateAgentIf('racer', state => {
+      withWorktreeOwnershipLock(() => {
+        writeFileSync(${JSON.stringify(holding)}, 'ready');
+        while (!existsSync(${JSON.stringify(release)})) Bun.sleepSync(10);
+      });
+      state.dir = ${JSON.stringify(wt)};
+      return true;
+    });
+  `);
+  try {
+    await waitFor(holding);
+    writeFileSync(release, "go");
+    expect(await new Response(writer.stderr).text()).toBe("");
+    expect(await writer.exited).toBe(0);
+    expect(readAgent("racer")?.dir).toBe(wt);
+    applyGc(plan);
+    expect(existsSync(wt)).toBe(true);
+  } finally { writer.kill(); }
+});
+
+test("removal wins the lock: a waiting registration cannot claim the deleted checkout", async () => {
+  const holding = join(home, "holding"), release = join(home, "release"), started = join(home, "started");
+  const remover = worker(`
+    import { withWorktreeOwnershipLock } from '../src/worktreeOwnership';
+    import { existsSync, writeFileSync } from 'node:fs';
+    withWorktreeOwnershipLock(() => {
+      writeFileSync(${JSON.stringify(holding)}, 'ready');
+      while (!existsSync(${JSON.stringify(release)})) Bun.sleepSync(10);
+      const r = Bun.spawnSync(['git', '-C', ${JSON.stringify(repo)}, 'worktree', 'remove', ${JSON.stringify(wt)}]);
+      if (r.exitCode) throw new Error(r.stderr.toString());
+    });
+  `);
+  let writer: ReturnType<typeof worker> | undefined;
+  try {
+    await waitFor(holding);
+    writer = worker(`
+      import { writeAgent } from '../src/state';
+      import { writeFileSync } from 'node:fs';
+      writeFileSync(${JSON.stringify(started)}, 'ready');
+      writeAgent(${JSON.stringify(agent("racer"))});
+    `);
+    await waitFor(started);
+    await Bun.sleep(50);
+    expect(writer.exitCode).toBeNull();
+    writeFileSync(release, "go");
+    expect(await remover.exited).toBe(0);
+    expect(await writer.exited).not.toBe(0);
+    expect(await new Response(writer.stderr).text()).toContain("missing worktree directory");
+    expect(existsSync(join(home, "agents", "racer.json"))).toBe(false);
+  } finally { remover.kill(); writer?.kill(); }
+});
+
+test("ownership lock releases after errors and status writes do not wait for it", async () => {
+  const { withWorktreeOwnershipLock } = await import("../src/worktreeOwnership");
+  writeAgent(agent("status-only"));
+  expect(() => withWorktreeOwnershipLock(() => { throw new Error("fixture"); })).toThrow("fixture");
+  const holding = join(home, "holding"), release = join(home, "release");
+  const holder = worker(`
+    import { withWorktreeOwnershipLock } from '../src/worktreeOwnership';
+    import { existsSync, writeFileSync } from 'node:fs';
+    withWorktreeOwnershipLock(() => {
+      writeFileSync(${JSON.stringify(holding)}, 'ready');
+      while (!existsSync(${JSON.stringify(release)})) Bun.sleepSync(10);
+    });
+  `);
+  try {
+    await waitFor(holding);
+    const status = worker(`import { setStatus, updateAgentIf } from '../src/state'; setStatus('status-only', 'idle'); updateAgentIf('status-only', s => { s.status = 'exited'; return true; });`);
+    try {
+      expect(await Promise.race([status.exited, Bun.sleep(1000).then(() => "blocked")])).toBe(0);
+    } finally { status.kill(); }
+    writeFileSync(release, "go");
+    expect(await holder.exited).toBe(0);
+  } finally { holder.kill(); }
+});
