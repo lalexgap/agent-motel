@@ -1,11 +1,14 @@
+import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { loadConfig, localHostIdentity, type Config } from "./config";
+import { tmux } from "./tmux";
 import { recordNotification, type NotificationKind } from "./notifications";
 
 // Desktop/push notifications, portable across the laptop (macOS) and a
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
 //      $AM_MESSAGE (e.g. a curl to ntfy.sh for phone push from a server)
-//   2. macOS: osascript (terminal-notifier's -sender is broken on macOS 27)
+//   2. macOS: iTerm2's own notification (OSC 9 to an attached iTerm2 tmux
+//      client, for its icon), else osascript (Script Editor icon)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
 // Every notification is also journaled so remote daemons can relay it.
@@ -43,9 +46,56 @@ export function canShowNotifications(config: Config = loadConfig()): boolean {
   return buildNotifyCommand("", "", config, { platform: process.platform, has: (binary) => !!Bun.which(binary) }) !== null;
 }
 
+export interface TmuxClient {
+  tty: string;
+  termtype: string;
+  activity: number;
+}
+
+export function parseTmuxClients(stdout: string): TmuxClient[] {
+  return stdout.split("\n").flatMap((line) => {
+    const [tty, termtype, activity] = line.split("\t");
+    return tty?.startsWith("/dev/") ? [{ tty, termtype: termtype ?? "", activity: Number(activity) || 0 }] : [];
+  });
+}
+
+// The most recently active client running in iTerm2 — one, so several
+// attached windows don't each post the same banner.
+export function pickItermClient(clients: TmuxClient[]): TmuxClient | null {
+  const iterm = clients.filter((c) => c.termtype.startsWith("iTerm2"));
+  return iterm.reduce<TmuxClient | null>((best, c) => (!best || c.activity > best.activity ? c : best), null);
+}
+
+// OSC 9 carries a single line of text; strip control characters (C0, DEL,
+// C1) so message content can't end the sequence early or inject another one.
+export function osc9(title: string, message: string): string {
+  const text = `${title}: ${message}`.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 500);
+  return `\x1b]9;${text}\x07`;
+}
+
+function postViaIterm(title: string, message: string): boolean {
+  const listed = tmux("list-clients", "-F", "#{client_tty}\t#{client_termtype}\t#{client_activity}");
+  if (listed.exitCode !== 0) return false;
+  const client = pickItermClient(parseTmuxClients(listed.stdout));
+  if (!client) return false;
+  let fd: number | undefined;
+  try {
+    // Non-blocking: a wedged terminal must never stall a hook or the daemon.
+    fd = openSync(client.tty, constants.O_WRONLY | constants.O_NOCTTY | constants.O_NONBLOCK);
+    writeSync(fd, osc9(title, message));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 // Display without journaling, so relayed notifications don't bounce back.
 export function showNotification(title: string, message: string): void {
-  const cmd = buildNotifyCommand(title, message, loadConfig(), {
+  const config = loadConfig();
+  if (!config.notifyCommand && process.platform === "darwin" && config.itermNotifications !== false && postViaIterm(title, message)) return;
+  const cmd = buildNotifyCommand(title, message, config, {
     platform: process.platform,
     has: (binary) => !!Bun.which(binary),
   });
