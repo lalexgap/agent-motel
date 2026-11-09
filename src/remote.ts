@@ -101,6 +101,8 @@ export async function checkedRemoteAm(
   opts: { stdin?: string; timeoutMs?: number },
   run: (host: string, args: string[], opts?: { stdin?: string; timeoutMs?: number }) => Promise<SshResult>,
 ): Promise<SshResult> {
+  const check = needsAntigravitySupport(args);
+  if (!check) return run(host, args, opts);
   const deadline = opts.timeoutMs && opts.timeoutMs > 0 ? performance.now() + opts.timeoutMs : undefined;
   const invoke = (command: string[], options: typeof opts): Promise<SshResult> => {
     const remaining = deadline === undefined ? undefined : deadline - performance.now();
@@ -111,7 +113,6 @@ export async function checkedRemoteAm(
       : options.timeoutMs ? Math.min(options.timeoutMs, remaining) : remaining;
     return run(host, command, { ...options, timeoutMs });
   };
-  const check = needsAntigravitySupport(args);
   if (check) {
     const probe = await invoke(ANTIGRAVITY_PROBE, { timeoutMs: 10000 });
     if (probe.exitCode === 124) return probe;

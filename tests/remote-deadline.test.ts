@@ -68,6 +68,22 @@ test("successful and rejected drains release readers and clear the kill timer", 
   `);
 });
 
+test.each([{ timeoutMs: 80 }, {}])("ordinary commands preserve options: %j", opts => {
+  fixture(`
+    import { checkedRemoteAm } from "./src/remote";
+    const opts = ${JSON.stringify(opts)};
+    let passed;
+    const result = await checkedRemoteAm("fixture", ["list"], opts, async (_host, _args, options) => {
+      passed = options;
+      return { exitCode: 0, stdout: "ok", stderr: "" };
+    });
+    assert.deepEqual(result, { exitCode: 0, stdout: "ok", stderr: "" });
+    assert.strictEqual(passed, opts);
+    assert.deepEqual(Object.keys(passed), Object.keys(opts));
+    if ("timeoutMs" in opts) assert.equal(Number.isInteger(passed.timeoutMs), true);
+  `);
+});
+
 test.each(["models", "__detail"])("negotiation shares the operation deadline at %s", stage => {
   fixture(`
     import { checkedRemoteAm, runAsync } from "./src/remote";
