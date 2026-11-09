@@ -7,7 +7,7 @@ import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { ensureDaemon } from "../daemon";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
-import { queueAppendForAgent } from "../queue";
+import { queueDeferredMessage } from "../queue";
 import { checkSelection, providerCatalog } from "../catalog";
 import { agentEnv } from "./new";
 import { codexResumeDaemon, type ResumeOpts } from "./resume";
@@ -75,7 +75,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
   if (!plan.antigravityRunId) plan.command[0] = executable;
-  if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
+  if (plan.deferredMessage) queueDeferredMessage(agent.name, plan.deferredMessage);
   if (plan.antigravityRunId) {
     const selection={model:agent.model,effort:agent.effort};
     agent=reserveAntigravityLaunch(agent,plan);

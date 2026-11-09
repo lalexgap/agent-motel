@@ -38,6 +38,7 @@ describe("resolveSender", () => {
     process.env.AGENTMGR_AGENT = "api";
     expect(resolveSender()).toBe("api");
     expect(resolveSender("lead")).toBe("lead");
+    expect(resolveSender("  ")).toBe("api");
     delete process.env.AGENTMGR_AGENT;
     expect(resolveSender()).toBeUndefined();
     expect(resolveSender("  ")).toBeUndefined();
@@ -145,10 +146,10 @@ describe("envelope + self-send", () => {
 });
 
 describe("attribute", () => {
-  test("anonymous and self sends pass through untouched, unlogged", () => {
+  test("operator sends pass through; self sends remain attributed", () => {
     expect(attribute(undefined, "docs", "hi", "send")).toMatchObject({ body: "hi", allowed: true, attributed: false });
-    expect(attribute("docs", "docs", "hi", "send")).toMatchObject({ body: "hi", attributed: false });
-    expect(commsFor("docs")).toHaveLength(0);
+    expect(attribute("docs", "docs", "hi", "send")).toMatchObject({ body: "[am · from docs] hi", attributed: true, provenance: { kind: "peer", from: "docs" } });
+    expect(commsFor("docs")).toHaveLength(1);
   });
 
   test("a peer send is wrapped and recorded", () => {

@@ -1,3 +1,4 @@
+import type { MessageProvenance } from "./comms";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -354,7 +355,7 @@ export function lateHookKeys(name: string, agent: AgentState): string[] {
 // Queue a tracked message: the record lands before the entry, under the
 // producer lock, so a deliverer never pops an entry whose record is missing
 // and a cancel (which also takes the producer lock) never sees one half made.
-export function queueTrackedMessage(name: string, body: string): string {
+export function queueTrackedMessage(name: string, body: string, provenance?: MessageProvenance): string {
   return withMailboxWrite(name, () => {
     validateQueuedMessage(name, body);
     if (!readAgent(name)) throw new Error(`agent "${name}" no longer exists — retry the message`);
@@ -369,7 +370,7 @@ export function queueTrackedMessage(name: string, body: string): string {
       promptKey: promptKey(body),
     });
     try {
-      queueAppendLocked(name, body, undefined, `${id}.json`);
+      queueAppendLocked(name, body, undefined, `${id}.json`, provenance);
     } catch (error) {
       rmSync(recordFile(name, id), { force: true });
       throw error;

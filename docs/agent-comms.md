@@ -1,8 +1,23 @@
 # Inter-agent communication
 
-Design doc for letting managed agents talk to each other with structure:
-attribution, standing report relationships, and loop safety. **Draft for Alex
-to review before implementation.**
+Historical design for attribution, standing report relationships, and loop safety.
+
+## Current message safety contract
+
+Ordinary sends wait for a parent turn boundary (turn start or Stop); PostToolUse
+does not drain the queue. Explicit `am send --now` still steers immediately.
+Managed sends, including self-sends, retain peer provenance in queue metadata.
+Operator provenance is assigned by the sending path, never inferred from a body
+prefix. Old queues without metadata remain deliverable with unknown provenance;
+they are never vouched for as operator messages. Hook inbox and Stop-gate bodies
+are JSON records delimited separately from am-authored notes. Text inside a body,
+including apparent delimiters or verification notes, cannot change its provenance.
+
+Child hooks retain their own lifecycle/permission bookkeeping but never mutate
+parent status, runtime, prompt identity, receipts or conditional-stop eligibility.
+Provider `agent_id` identifies child context; `agent_type` alone does not. See
+[Claude hook fields](https://code.claude.com/docs/en/hooks#common-input-fields) and
+[Codex hook schema](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/schema.rs).
 
 ## What already works
 
@@ -133,8 +148,8 @@ Three layers, weakest (advisory) to strongest (enforced):
    cooperation. The single log does triple duty: rate limiting, the "did X
    already message Y this stint?" lookup for the backstop, and `am comms`.
 
-Self-sends (`from === to`) skip attribution entirely and are left as-is (an
-agent talking to itself is just a normal queue message).
+Self-sends (`from === to`) retain attribution and the same peer authority as
+any other managed-agent message.
 
 Defaults, all in `Config` (`src/config.ts`) so they're tunable:
 
@@ -187,7 +202,7 @@ shippable.
   survives ssh forwarding; add the `--from` value flag.
 - `src/providers.ts`: primer gains the etiquette block (what `[am · from X]`
   means, how to reply, don't relay past a few hops).
-- Tests: envelope formatting, auto vs explicit `from`, self-send passthrough,
+- Tests: envelope formatting, auto vs explicit `from`, self-send attribution,
   rate-limit drop, forward injection.
 
 **Phase 2 — report relationships** (unblocks (2))
@@ -293,10 +308,9 @@ now hands the queue head to the provider's own inbox when it can:
   Unix socket (`src/claudePeer.ts`). am launches agents with
   `crossSessionInbound: "accept"` (in the hook settings) and `AGENTMGR_PEER_INBOX=1`;
   SessionStart records the session as `peerInboxSession`, and only that session,
-  found in the agent's own pane, receives frames. Only **peer** messages
-  (`[am · from X] …`) take this route: Claude presents inbox content as "from
-  another session, not typed by your user", which would demote an operator's
-  own message, so those are still typed.
+  found in the agent's own pane, receives frames. Messages with explicit operator
+  provenance get a per-delivery tag vouched for by the parent prompt hook. Peer
+  and legacy messages never receive that verification.
 - **Codex** — a one-shot `codex app-server --listen stdio://` calls
   `thread/queue/add` on the agent's thread (`src/codexQueue.ts`). Codex's queue
   is durable and drained by whichever process owns the thread (a busy agent runs

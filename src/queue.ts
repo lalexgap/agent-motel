@@ -2,7 +2,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { join } from "node:path";
 import { baseDir, ensureDirs, queueDir } from "./paths";
 import { msgIdAt, newMsgId } from "./msgid";
-import { parseJsonl } from "./comms";
+import { attribute, parseJsonl, resolveSender, type MessageProvenance } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withMailboxWrite } from "./mailbox";
 import { agentProvider, readAgent } from "./state";
@@ -20,6 +20,7 @@ import { providerMessageError } from "./providerLimits";
 // claimed — and reclaim it into a duplicate delivery.
 
 interface QueueEntry {
+  provenance?: MessageProvenance;
   message: string;
   queuedAt: string;
   msgId?: string;
@@ -142,31 +143,37 @@ export function validateQueuedMessage(name: string, message: string): void {
 
 // `entryId` names the entry file (`<id>.json`) for a caller that tracks the
 // message by that id; it must be a fresh msgId so FIFO order holds.
-export function queueAppendLocked(name: string, message: string, msgId?: string, entryId?: string): string {
+export function queueAppendLocked(name: string, message: string, msgId?: string, entryId?: string, provenance?: MessageProvenance): string {
   validateQueuedMessage(name, message);
   if (msgId !== undefined) messageFile(name, msgId);
   if (entryId !== undefined) messageFile(name, entryId.replace(/\.json$/, ""));
   ensureDirs();
   migrateLegacy(name); // the legacy backlog must land first to keep FIFO
-  return writeEntry(name, { message, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) }, undefined, entryId);
+  return writeEntry(name, { message, provenance, queuedAt: new Date().toISOString(), ...(msgId ? { msgId } : {}) }, undefined, entryId);
 }
 
 // Put a handed-over entry back under its old id, so it sorts ahead of
 // everything queued after it. Callers hold the delivery lock.
-export function queueRestoreLocked(name: string, entryId: string, message: string): void {
+export function queueRestoreLocked(name: string, entryId: string, message: string, provenance?: MessageProvenance): void {
   messageFile(name, entryId.replace(/\.json$/, ""));
   ensureDirs();
-  writeEntry(name, { message, queuedAt: new Date().toISOString() }, undefined, entryId);
+  writeEntry(name, { message, provenance, queuedAt: new Date().toISOString() }, undefined, entryId);
 }
 
-export function queueAppend(name: string, message: string, msgId?: string): string {
-  return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId));
+export function queueAppend(name: string, message: string, msgId?: string, provenance?: MessageProvenance): string {
+  return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId, undefined, provenance));
 }
 
-export function queueAppendForAgent(name: string, message: string, msgId?: string): string {
+export function queueDeferredMessage(name: string, message: string): string {
+  const attributed = attribute(resolveSender(), name, message, "send");
+  if (!attributed.allowed) throw new Error(`message to "${name}" is rate-limited`);
+  return queueAppendForAgent(name, attributed.body, undefined, attributed.provenance);
+}
+
+export function queueAppendForAgent(name: string, message: string, msgId?: string, provenance?: MessageProvenance): string {
   return withMailboxWrite(name, () => {
     if (!readAgent(name)) throw new Error(`agent "${name}" no longer exists — retry the message`);
-    return queueAppendLocked(name, message, msgId);
+    return queueAppendLocked(name, message, msgId, undefined, provenance);
   });
 }
 
@@ -177,14 +184,14 @@ function messageFile(name: string, msgId: string): string {
 
 // Callers hold the delivery lock until the receipt is persisted, preventing
 // consumers from removing the queue entry during crash recovery.
-export function queueAppendOnceLocked(name: string, message: string, msgId: string): string {
+export function queueAppendOnceLocked(name: string, message: string, msgId: string, provenance?: MessageProvenance): string {
   validateQueuedMessage(name, message);
   const file = messageFile(name, msgId);
   ensureDirs();
   migrateLegacy(name);
   mkdirSync(agentQueueDir(name), { recursive: true });
   if (!queueHasId(name, msgId)) {
-    writeJsonAtomic(file, { message, queuedAt: new Date().toISOString(), msgId }, { pretty: false });
+    writeJsonAtomic(file, { message, provenance, queuedAt: new Date().toISOString(), msgId }, { pretty: false });
   }
   // Also flush a pre-existing entry recovered after an interrupted ingestion.
   for (const id of entryFiles(name)) {
@@ -194,8 +201,8 @@ export function queueAppendOnceLocked(name: string, message: string, msgId: stri
   return `${msgId}.json`;
 }
 
-export function queueAppendOnce(name: string, message: string, msgId: string): string {
-  return withMailboxWrite(name, () => queueAppendOnceLocked(name, message, msgId));
+export function queueAppendOnce(name: string, message: string, msgId: string, provenance?: MessageProvenance): string {
+  return withMailboxWrite(name, () => queueAppendOnceLocked(name, message, msgId, provenance));
 }
 
 export function queueHasId(name: string, msgId: string): boolean {
@@ -252,6 +259,7 @@ export function queuePeek(name: string): string | null {
 }
 
 export interface QueueHead {
+  provenance?: MessageProvenance;
   id: string;
   message: string;
 }
@@ -263,7 +271,7 @@ export function queueHead(name: string): QueueHead | null {
   const dir = agentQueueDir(name);
   for (const f of entryFiles(name)) {
     const entry = readJsonOrNull<QueueEntry>(join(dir, f));
-    if (entry) return { id: f, message: entry.message };
+    if (entry) return { id: f, message: entry.message, ...(entry.provenance ? { provenance: entry.provenance } : {}) };
   }
   return null;
 }

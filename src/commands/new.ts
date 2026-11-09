@@ -8,7 +8,7 @@ import { agentNameOwner, callingAgentName, matchAgent, readAgent, recordAttached
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
-import { queueAppendForAgent, queueClear } from "../queue";
+import { queueDeferredMessage, queueClear } from "../queue";
 import {
   agentSystemPrompt,
   buildLaunchCommand,
@@ -378,7 +378,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
       }
     }
     // Queue before the session starts so the SessionStart hook finds it.
-    if (plan.deferredMessage) queueAppendForAgent(name, plan.deferredMessage);
+    if (plan.deferredMessage) queueDeferredMessage(name, plan.deferredMessage);
     try {
       newSession({ session, dir, env: agentEnv(name, provider), command: scrubNestedSessionEnv(plan.command) });
     } catch (error) {

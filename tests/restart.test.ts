@@ -3,6 +3,9 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { restartAgent, restartIfIdle } from "../src/commands/restart";
+import type { MessageProvenance } from "../src/comms";
+import { reviveAgent } from "../src/commands/resume";
+import { newCommand } from "../src/commands/new";
 import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, releaseDeliverLock } from "../src/deliver";
 import { queueAppend, queueAppendForAgent, queueClear, queueList, queuePopId } from "../src/queue";
@@ -115,6 +118,45 @@ describe("restartAgent", () => {
     await restartAgent("api", { message: "continue", remote: true });
     expect(readFileSync(join(home, "launch"), "utf8")).toStartWith("new-session\n");
     expect(queueList("api").map(e => e.message)).toEqual(["continue"]);
+  });
+
+  test("deferred prompts retain operator, peer and self-sender provenance", async () => {
+    const oldCaller = process.env.AGENTMGR_AGENT;
+    try {
+      for (const caller of [undefined, "lead", "api"]) {
+        queueClear("api");
+        if (caller) process.env.AGENTMGR_AGENT = caller;
+        else delete process.env.AGENTMGR_AGENT;
+        await restartAgent("api", { message: "continue", remote: true });
+        const entry = queueList("api")[0]!;
+        expect(entry.provenance).toEqual(caller ? { kind: "peer", from: caller } : { kind: "operator" });
+        expect(entry.message).toBe(caller ? `[am · from ${caller}] continue` : "continue");
+      }
+    } finally {
+      if (oldCaller === undefined) delete process.env.AGENTMGR_AGENT;
+      else process.env.AGENTMGR_AGENT = oldCaller;
+    }
+  });
+
+  test("new and resumed remote Claude prompts preserve initiating provenance", async () => {
+    const oldCaller = process.env.AGENTMGR_AGENT;
+    writeFileSync(join(home, "dead"), "");
+    try {
+      for (const caller of [undefined, "lead"]) {
+        if (caller) process.env.AGENTMGR_AGENT = caller;
+        else delete process.env.AGENTMGR_AGENT;
+        const name = caller ? "peer-created" : "operator-created";
+        const provenance: MessageProvenance = caller ? { kind: "peer", from: caller } : { kind: "operator" };
+        await newCommand({ name, dir: home, provider: "claude", message: "new task", remote: true, inPlace: true, jump: false, quiet: true, noPlan: true });
+        expect(queueList(name)[0]!.provenance).toEqual(provenance);
+        queueClear("api");
+        await reviveAgent(readAgent("api")!, { message: "resume task", remote: true });
+        expect(queueList("api")[0]!.provenance).toEqual(provenance);
+      }
+    } finally {
+      if (oldCaller === undefined) delete process.env.AGENTMGR_AGENT;
+      else process.env.AGENTMGR_AGENT = oldCaller;
+    }
   });
 
   test("rejects a restart during delivery or handoff without replacing the pane", async () => {

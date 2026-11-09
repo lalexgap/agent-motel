@@ -55,13 +55,13 @@ const ordinaryEvents = ["pre-tool-use", "post-tool-use", "user-prompt-submit", "
 
 describe("hook transcript source identity", () => {
   for (const event of ordinaryEvents) {
-    test(`daemon child ${event} preserves parent source and existing status behavior`, () => {
+    test(`daemon child ${event} preserves parent source and status`, () => {
       // Daemon hooks share the parent's session ID even when the rollout is the child's.
       const agent = hook(event, { agent_id: "child", transcript_path: childPath });
       expect(agent.sessionId).toBe("parent-session");
       expect(agent.transcriptPath).toBe(parentPath);
-      expect(agent.status).toBe(event === "stop" ? "idle" : "working");
-      expect(agent.statusReason).toBeUndefined();
+      expect(agent.status).toBe("needs-attention");
+      expect(agent.statusReason).toBe("approval requested");
     });
   }
 
@@ -81,7 +81,7 @@ describe("hook transcript source identity", () => {
         const agent = hook(event, { agent_id: agentId, transcript_path: childPath, agent_transcript_path: childPath });
         expect(agent.sessionId).toBe("parent-session");
         expect(agent.transcriptPath).toBe(parentPath);
-        expect(agent.status).toBe("working");
+        expect(agent.status).toBe("needs-attention");
       });
     }
   }

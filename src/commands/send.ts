@@ -108,8 +108,8 @@ export async function sendCommand(
     return printResult(opts, { id, outcome: "steered" });
   }
 
-  const trackedId = track ? queueTrackedMessage(agent.name, body) : null;
-  const queuedId = trackedId ? `${trackedId}.json` : queueAppendForAgent(agent.name, body);
+  const trackedId = track ? queueTrackedMessage(agent.name, body, att.provenance) : null;
+  const queuedId = trackedId ? `${trackedId}.json` : queueAppendForAgent(agent.name, body, undefined, att.provenance);
   if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
   if (agent.status === "idle" || agent.status === "starting") {
     // Agent isn't working, so no Stop hook is coming — deliver right away.

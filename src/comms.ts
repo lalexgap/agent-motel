@@ -25,7 +25,7 @@ export interface CommsEntry {
 // daemon, the HTTP API, and ssh-forwarded sends set it because the env doesn't
 // survive those hops).
 export function resolveSender(explicit?: string): string | undefined {
-  const from = explicit ?? callingAgentName();
+  const from = explicit?.trim() || callingAgentName();
   if (!from?.trim()) return undefined;
   const trimmed = from.trim();
   // Explicit senders may be host-qualified and describe another machine.
@@ -33,8 +33,7 @@ export function resolveSender(explicit?: string): string | undefined {
   return explicit === undefined ? (matchAgent(trimmed)?.name ?? trimmed) : trimmed;
 }
 
-// A send is a "self send" — no attribution — only when an unqualified sender
-// equals the local target. A host-qualified sender is always a peer.
+// Whether the sender names the local target. Self-sends still carry provenance.
 export function isSelfSend(from: string, target: string): boolean {
   return !from.includes(":") && from === target;
 }
@@ -145,9 +144,23 @@ export function seenRecently(msgId: string): boolean {
   return readLog().some((e) => e.msgId === msgId);
 }
 
+export type MessageProvenance = { kind: "operator" } | { kind: "peer"; from: string } | { kind: "unknown" };
+
+export interface InboxMessage {
+  message: string;
+  provenance?: MessageProvenance;
+}
+
+export function messageData(message: string | InboxMessage): string {
+  const entry = typeof message === "string" ? { message } : message;
+  return JSON.stringify({ provenance: entry.provenance ?? { kind: "unknown" }, body: entry.message })
+    .replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
 export interface Attribution {
+  provenance: MessageProvenance;
   // The body to actually deliver — wrapped in the envelope, or unchanged for a
-  // self/anonymous send.
+  // operator send.
   body: string;
   // False → over the rate limit; the caller must drop the message.
   allowed: boolean;
@@ -166,16 +179,16 @@ export function attribute(
   msgId?: string,
   opts: { record?: boolean } = {},
 ): Attribution {
-  if (!from || isSelfSend(from, target)) {
-    return { body, allowed: true, attributed: false };
+  if (!from) {
+    return { body, allowed: true, attributed: false, provenance: { kind: "operator" } };
   }
   const cfg = loadConfig();
   const windowMs = cfg.commsWindowSeconds * 1000;
   if (sendsInWindow(from, target, windowMs) >= cfg.commsMaxPerWindow) {
-    return { body, allowed: false, attributed: true };
+    return { body, allowed: false, attributed: true, provenance: { kind: "peer", from } };
   }
   if (opts.record !== false) recordComms({ at: new Date().toISOString(), from, to: target, kind, body, msgId });
-  return { body: formatEnvelope(from, body), allowed: true, attributed: true };
+  return { body: formatEnvelope(from, body), allowed: true, attributed: true, provenance: { kind: "peer", from } };
 }
 
 // Backstop gate: fire the Stop-hook heads-up only for a real work stint where

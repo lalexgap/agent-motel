@@ -29,6 +29,7 @@ import { createWorktree, isGitRepo } from "./new";
 import { newMsgId } from "../msgid";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 import { importPlan, readPlan, removePlan } from "../plan";
+import type { MessageProvenance } from "../comms";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
 // move of an agent between machines — state, queue, and the provider's
@@ -39,6 +40,7 @@ export interface MovePayload {
   state: AgentState;
   queue: string[];
   queueIds?: (string | null | undefined)[];
+  queueProvenance?: (MessageProvenance | null | undefined)[];
   receivedMsgIds?: string[];
   // The agent's running plan file; absent from older am versions.
   plan?: string;
@@ -230,8 +232,22 @@ export function importPayload(raw: string, handoffToken?: string): string {
   return importPayloadResult(raw, handoffToken).name;
 }
 
+function transferProvenance(payload: MovePayload): (MessageProvenance | undefined)[] {
+  const values = payload.queueProvenance;
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || values.length !== payload.queue.length) throw new Error("malformed queue provenance");
+  return values.map(value => {
+    if (value == null) return undefined;
+    if (typeof value !== "object") throw new Error("malformed queue provenance");
+    if ((value.kind === "operator" || value.kind === "unknown") && Object.keys(value).length === 1) return { kind: value.kind };
+    if (value.kind === "peer" && typeof value.from === "string" && value.from.trim() && Object.keys(value).length === 2) return { kind: "peer", from: value.from };
+    throw new Error("malformed queue provenance");
+  });
+}
+
 function importPayloadResult(raw: string, handoffToken?: string): ImportResult {
   const payload = JSON.parse(raw) as MovePayload;
+  const provenance = transferProvenance(payload);
   const state = payload.state;
   if (state?.provider === "antigravity") throw new Error("Antigravity import/move is unsupported: native conversation storage has not been verified");
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
@@ -244,7 +260,7 @@ function importPayloadResult(raw: string, handoffToken?: string): ImportResult {
     updateAgentStatus(imported, "exited", "moved from another host");
     writeAgent(imported);
     for (const [index, message] of (payload.queue ?? []).entries()) {
-      queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined);
+      queueAppendLocked(state.name, message, payload.queueIds?.[index] ?? undefined, undefined, provenance[index]);
     }
     for (const id of payload.receivedMsgIds ?? []) queueRecordReceipt(state.name, id);
     let planCreated = false;
@@ -500,6 +516,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
           ...backlog.map((m) => m.message),
         ],
         queueIds: [undefined, ...backlog.map((m) => m.msgId)],
+        queueProvenance: [undefined, ...backlog.map((m) => m.provenance)],
         receivedMsgIds: queueReceiptIds(agent.name),
         plan: readPlan(agent.name) ?? undefined,
       };
@@ -545,6 +562,7 @@ export function validateRemoteExport(remote: any, expectedName?: string): void {
       state.repoRoot !== undefined && !absolute(state.repoRoot) || state.worktreePath !== undefined && !absolute(state.worktreePath) ||
       state.worktreeBranch !== undefined && typeof state.worktreeBranch !== "string")
     throw new Error("malformed remote move export");
+  transferProvenance(remote);
   if (!agentSessionId(state)) throw new Error("cannot move a remote agent without a session id");
   for (const id of [state.sessionId, state.claudeSessionId]) {
     if (id !== undefined && (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)))
@@ -580,6 +598,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       state: AgentState;
       queue: string[];
       queueIds?: (string | null)[];
+      queueProvenance?: (MessageProvenance | null)[];
       receivedMsgIds?: string[];
       handoffToken?: string;
       home: string;
@@ -699,6 +718,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
           ...remote.queue,
         ],
         queueIds: [undefined, ...(remote.queueIds ?? remote.queue.map(() => undefined))],
+        queueProvenance: [undefined, ...(remote.queueProvenance ?? remote.queue.map(() => undefined))],
         receivedMsgIds: remote.receivedMsgIds,
         plan: typeof remote.plan === "string" ? remote.plan : undefined,
       });
@@ -822,6 +842,7 @@ export function exportCommand(name: string, mode?: string, token?: string): void
         state: agent,
         queue: backlog.map((m) => m.message),
         queueIds: backlog.map((m) => m.msgId),
+        queueProvenance: backlog.map((m) => m.provenance),
         receivedMsgIds: queueReceiptIds(agent.name),
         home: homedir(),
         transcript: sourceTranscript(agent),

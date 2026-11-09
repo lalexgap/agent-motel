@@ -41,21 +41,20 @@ function hook(event: string, payload: Record<string, unknown> = {}): Record<stri
 
 describe("hook delivery line", () => {
   test("UserPromptSubmit drain", () => {
-    seed();
+    seed("claude", "idle");
     queueAppend("api", "and yeah queue that up");
     queueAppend("api", "[am · from lead] check the build");
     const out = hook("user-prompt-submit", { prompt: "go" })!;
-    expect(out.systemMessage).toBe('am: delivered 2 messages — operator: "and yeah queue that up"; from lead: "check the build"');
+    expect(out.systemMessage).toBe('am: delivered 2 messages — unverified: "and yeah queue that up"; unverified: "check the build"');
     expect(out.hookSpecificOutput.additionalContext).toContain("[am · from lead] check the build");
     expect(queueDepth("api")).toBe(0);
   }, 20_000);
 
-  test("PostToolUse drain", () => {
+  test("PostToolUse preserves the queue", () => {
     seed();
     queueAppend("api", "[am · from web] ping");
-    const out = hook("post-tool-use", { tool_name: "Bash" })!;
-    expect(out.systemMessage).toBe('am: delivered 1 message — from web: "ping"');
-    expect(out.hookSpecificOutput.hookEventName).toBe("PostToolUse");
+    expect(hook("post-tool-use", { tool_name: "Bash" })).toBeNull();
+    expect(queueDepth("api")).toBe(1);
   }, 20_000);
 
   test("Stop gate", () => {
@@ -63,15 +62,15 @@ describe("hook delivery line", () => {
     queueAppend("api", "one more thing");
     const out = hook("stop")!;
     expect(out.decision).toBe("block");
-    expect(out.systemMessage).toBe('am: delivered 1 message — operator: "one more thing"');
+    expect(out.systemMessage).toBe('am: delivered 1 message — unverified: "one more thing"');
   }, 20_000);
 
   test("nothing delivered, nothing shown; Codex gets no line", () => {
     seed();
     expect(hook("post-tool-use", { tool_name: "Bash" })).toBeNull();
-    seed("codex");
+    seed("codex", "idle");
     queueAppend("api", "[am · from web] ping");
-    const out = hook("post-tool-use", { tool_name: "Bash" })!;
+    const out = hook("user-prompt-submit", { prompt: "go" })!;
     expect(out.systemMessage).toBeUndefined();
     expect(out.hookSpecificOutput.additionalContext).toContain("ping");
   }, 20_000);
