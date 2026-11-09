@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLock } from "./filelock";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
@@ -69,7 +69,10 @@ export function recordNotification(entry: Omit<NotificationEntry, "id" | "at"> &
       let bytes = 0;
       let start = lines.length;
       while (start > 0 && bytes + Buffer.byteLength(lines[start - 1]!) <= MAX_BYTES / 2) bytes += Buffer.byteLength(lines[--start]!);
-      writeFileSync(notificationsFile(), lines.slice(start).join(""));
+      // Atomic, since pollers read without the lock.
+      const tmp = `${notificationsFile()}.${process.pid}.tmp`;
+      writeFileSync(tmp, lines.slice(start).join(""));
+      renameSync(tmp, notificationsFile());
     }
   });
   return full;
@@ -97,8 +100,8 @@ function journalSignature(): string {
 
 export async function notificationsPollCommand(opts: { after?: string; waitSeconds?: number }): Promise<void> {
   const deadline = Date.now() + Math.min(Math.max(opts.waitSeconds ?? 0, 0), 60) * 1000;
-  let batch = notificationsAfter(readNotifications(), opts.after);
   let signature = journalSignature();
+  let batch = notificationsAfter(readNotifications(), opts.after);
   while (opts.after && batch.entries.length === 0 && Date.now() < deadline) {
     await Bun.sleep(500);
     const next = journalSignature();

@@ -65,13 +65,14 @@ export function startNotificationRelay(log: (message: string) => void): { stop()
   async function loop(host: string): Promise<void> {
     let backoff = MIN_BACKOFF_MS;
     try {
-      while (!stopped && (loadConfig().remotes ?? []).includes(host)) {
-        if (!relayEnabled()) {
-          await sleep(DISABLED_RECHECK_MS);
-          continue;
-        }
+      while (!stopped) {
         let ok = false;
         try {
+          if (!(loadConfig().remotes ?? []).includes(host)) return;
+          if (!relayEnabled()) {
+            await sleep(DISABLED_RECHECK_MS);
+            continue;
+          }
           ok = await relayOnce(host);
         } catch (error) {
           log(`notification relay from ${host} failed: ${error}`);
@@ -91,11 +92,15 @@ export function startNotificationRelay(log: (message: string) => void): { stop()
   // Pick up remotes added to the config without a daemon restart.
   function supervise(): void {
     if (stopped) return;
-    const local = localHostIdentity();
-    for (const host of loadConfig().remotes ?? []) {
-      if (host === local || running.has(host)) continue;
-      running.add(host);
-      void loop(host);
+    try {
+      const local = localHostIdentity();
+      for (const host of loadConfig().remotes ?? []) {
+        if (host === local || running.has(host)) continue;
+        running.add(host);
+        void loop(host);
+      }
+    } catch (error) {
+      log(`notification relay: ${error}`);
     }
   }
   supervise();
