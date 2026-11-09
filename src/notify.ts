@@ -50,19 +50,24 @@ export interface TmuxClient {
   tty: string;
   termtype: string;
   activity: number;
+  utf8: boolean;
+  controlMode: boolean;
 }
 
 export function parseTmuxClients(stdout: string): TmuxClient[] {
   return stdout.split("\n").flatMap((line) => {
-    const [tty, termtype, activity] = line.split("\t");
-    return tty?.startsWith("/dev/") ? [{ tty, termtype: termtype ?? "", activity: Number(activity) || 0 }] : [];
+    const [tty, termtype, activity, utf8, controlMode] = line.split("\t");
+    if (!tty?.startsWith("/dev/")) return [];
+    return [{ tty, termtype: termtype ?? "", activity: Number(activity) || 0, utf8: utf8 === "1", controlMode: controlMode === "1" }];
   });
 }
 
 // The most recently active client running in iTerm2 — one, so several
-// attached windows don't each post the same banner.
+// attached windows don't each post the same banner. Non-UTF-8 clients would
+// read encoded bytes as C1 controls, and control-mode (tmux -CC) ttys carry
+// the tmux protocol, so neither gets raw OSC.
 export function pickItermClient(clients: TmuxClient[]): TmuxClient | null {
-  const iterm = clients.filter((c) => c.termtype.startsWith("iTerm2"));
+  const iterm = clients.filter((c) => c.termtype.startsWith("iTerm2") && c.utf8 && !c.controlMode);
   return iterm.reduce<TmuxClient | null>((best, c) => (!best || c.activity > best.activity ? c : best), null);
 }
 
@@ -73,8 +78,14 @@ export function osc9(title: string, message: string): string {
   return `\x1b]9;${text}\x07`;
 }
 
+// The tty is non-blocking, so a write can land short; treat that as failure.
+export function writeOsc9(write: (data: Buffer) => number, title: string, message: string): boolean {
+  const data = Buffer.from(osc9(title, message));
+  return write(data) === data.length;
+}
+
 function postViaIterm(title: string, message: string): boolean {
-  const listed = tmux("list-clients", "-F", "#{client_tty}\t#{client_termtype}\t#{client_activity}");
+  const listed = tmux("list-clients", "-F", "#{client_tty}\t#{client_termtype}\t#{client_activity}\t#{client_utf8}\t#{client_control_mode}");
   if (listed.exitCode !== 0) return false;
   const client = pickItermClient(parseTmuxClients(listed.stdout));
   if (!client) return false;
@@ -82,8 +93,8 @@ function postViaIterm(title: string, message: string): boolean {
   try {
     // Non-blocking: a wedged terminal must never stall a hook or the daemon.
     fd = openSync(client.tty, constants.O_WRONLY | constants.O_NOCTTY | constants.O_NONBLOCK);
-    writeSync(fd, osc9(title, message));
-    return true;
+    const tty = fd;
+    return writeOsc9((data) => writeSync(tty, data), title, message);
   } catch {
     return false;
   } finally {
