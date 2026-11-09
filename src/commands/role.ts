@@ -19,10 +19,15 @@ export function roleCommand(action: string | undefined, name: string | undefined
   if (!action || action === "list" || action === "ls") {
     const roles = listRoles();
     if (opts.json) console.log(JSON.stringify(roles, null, 2));
-    else if (!roles.length) console.log("no roles defined");
-    else for (const role of roles) {
-      const pin = role.provider ? `  · ${role.provider}` : "";
-      console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}${pin}${role.description ? `  · ${role.description}` : ""}`);
+    else {
+      console.log("AM role registry (for am new --role):");
+      if (!roles.length) console.log("no roles defined");
+      for (const role of roles) {
+        const pin = role.provider ? `  · ${role.provider}` : "";
+        console.log(`${role.name}${role.builtIn ? "  [built-in]" : ""}${pin}${role.description ? `  · ${role.description}` : ""}`);
+      }
+      console.log("\nNative subagent presets engineer/reviewer/shepherd are exported separately.");
+      console.log("Inspect planned exports with am role export --dry-run; custom roles are exported too.");
     }
     return;
   }

@@ -69,7 +69,8 @@ usage:
   am                          split view: sidebar + live agent pane
                               (scrolling previews agents, enter/→ locks input
                                into the pane, ctrl-q back to the sidebar,
-                               ctrl-n new, esc detach, ctrl-c quit)
+                               ctrl-n new, ctrl-k commands (ctrl-p legacy alias),
+                               esc detach, ctrl-c quit)
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
@@ -138,7 +139,9 @@ usage:
                               models and reasoning-effort levels the installed
                               providers actually offer (what --model / --effort
                               accept; -H <host> asks that machine)
-  am role list [--json]       list built-in and custom roles
+  am role list [--json]       list AM registry roles for am new --role
+                              (native engineer/reviewer/shepherd presets are
+                               separate; inspect with role export --dry-run)
   am role show <name>         print a role's instructions
   am role add <name> -m msg   define a role (-m - or --file for long prompts;
                               --description adds a short UI summary; --force replaces)

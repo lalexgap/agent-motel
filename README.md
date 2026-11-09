@@ -17,7 +17,7 @@ f filter · ↑/↓/j/k preview     │
 enter/→ lock in · n new        │
 ```
 
-The full-screen hub shows every agent in a sidebar with a live preview of the selected session. Use it to switch agents, check progress, send follow-ups, or let agents collaborate across machines. Press `ctrl-p` for a searchable command palette.
+The full-screen hub shows every agent in a sidebar with a live preview of the selected session. Use it to switch agents, check progress, send follow-ups, or let agents collaborate across machines. Press `Ctrl-K` for a searchable command palette (`Ctrl-P` remains a legacy alias).
 
 ## Install
 
@@ -51,6 +51,10 @@ am -                       # return to the previous agent
 ```
 
 Agents created in a git repository get a worktree on `am/<name>`. New branches start from a freshly fetched `origin/main` (origin's default branch), not the current checkout; pass `--base <ref>` (e.g. `--base HEAD`) to start elsewhere. Pass `--in-place` to use the current checkout or `--worktree <branch>` to choose a branch.
+
+For help, start with the [troubleshooting index](docs/troubleshooting.md),
+[web setup](docs/web-ui.md), or [remote setup](#remote-fleets).
+Integration details are in the [HTTP API reference](#http-api).
 
 ## Common commands
 
@@ -94,6 +98,8 @@ am new deep-dive --codex --model gpt-5.6-sol --effort ultra
 
 Model and effort options come from the installed CLIs rather than a hardcoded list: codex reports its own catalog (including which reasoning levels each model supports — `ultra` exists only on the newest), and claude's levels are read from its `--help`, so new ones appear as soon as you upgrade. The hub's create form cycles the real options with `←`/`→` — for the machine the agent will run on, so a remote host's catalog is used when you pick it as the location — and the model field still accepts a typed name. `am new` / `am run` reject a `--model` or `--effort` the provider can't accept instead of spawning a session that dies on startup; claude's model list isn't exhaustive, so an unrecognized model there is only a warning.
 
+A rejected nickname such as `astra` gets a “did you mean” hint only when it uniquely matches a full slug suffix in that machine's catalog. Pass the exact suggested slug; AM never silently selects it or chooses between ambiguous matches.
+
 ### Fleet concierge
 
 ```sh
@@ -101,13 +107,13 @@ am concierge                                  # open the fleet assistant
 am concierge which agent touched the auth flow?
 ```
 
-`concierge` is a reserved singleton agent that acts as the motel's front desk: its only job is answering questions about the other agents and doing safe fleet management for you — summarize what everyone is doing, find the agent that worked on something (via `am search`), revive exited agents, queue messages, and point you at the right session. In the hub, press `c` (or pick "Ask the concierge" in the `ctrl-k` palette) to jump to it from anywhere; its row is marked `✦ concierge` in cyan, and it is created on first use and revived automatically when its session has exited. It won't stop, interrupt, or remove agents unless you explicitly ask.
+`concierge` is a reserved singleton agent that acts as the motel's front desk: its only job is answering questions about the other agents and doing safe fleet management for you — summarize what everyone is doing, find the agent that worked on something (via `am search`), revive exited agents, queue messages, and point you at the right session. In the hub, press `c` (or pick "Ask the concierge" in the `Ctrl-K` palette) to jump to it from anywhere; its row is marked `✦ concierge` in cyan, and it is created on first use and revived automatically when its session has exited. It won't stop, interrupt, or remove agents unless you explicitly ask.
 
 There is one concierge per fleet, not per machine: if a concierge already exists on any reachable host, `am concierge` and the `c` key route to it over ssh instead of opening a rival one. Pin its home with `"conciergeHost"` in `~/.agent-manager/config.json` (`"local"` or a host alias — set the same value on every machine to share one front desk), and pick its provider with `"conciergeProvider": "claude" | "codex"` (default `codex`; applies when it's first created).
 
 ### Roles
 
-Roles are named instruction presets for agents. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `concierge` is a protected built-in role; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
+AM registry roles are named instruction presets selected with `am new --role`. `am role list` shows this host-local registry; it does not enumerate native subagent presets. They add behavior and a visible identity without changing the provider, permissions, or tools. Each role can also pin the provider it launches on and set a default model for each provider. `caretaker` and `concierge` are protected built-in roles; custom roles live as plain JSON files under `~/.agent-manager/roles/`.
 
 ```sh
 am role list
@@ -130,7 +136,7 @@ Use `-m -` or `--file <path>` for multiline role instructions, and `--force` to 
 
 #### Roles as the providers' own subagents
 
-Agents delegate to built-in subagents, and both providers let you define those by file — so am writes its roles there too. Three ship with am: `engineer` (implements a settled brief and reports once; Opus 5.5 / gpt-5.6-sol at medium effort), `reviewer` (severity-tagged findings and a `Verdict:` line, never edits; Opus 5.5 / gpt-5.6-sol at high effort), and `shepherd` (takes a PR to merge-ready with the shepherd-pr skill, never merges; Opus 5.5 / gpt-5.6-luna at medium effort). Every custom role is exported alongside them, and a custom role with a shipped name replaces it.
+Agents delegate to built-in subagents, and both providers let you define those by file — so am writes its roles there too. Three native subagent presets ship with am (not AM registry entries unless you add custom roles with those names): `engineer` (implements a settled brief and reports once; Opus 5.5 / gpt-5.6-sol at medium effort), `reviewer` (severity-tagged findings and a `Verdict:` line, never edits; Opus 5.5 / gpt-5.6-sol at high effort), and `shepherd` (takes a PR to merge-ready with the shepherd-pr skill, never merges; Opus 5.5 / gpt-5.6-luna at medium effort). Every custom role is exported alongside them, and a custom role with a shipped name replaces it.
 
 ```sh
 am role export             # ~/.claude/agents/<name>.md and ~/.codex/agents/<name>.toml
@@ -242,9 +248,12 @@ Messages to an unreachable roaming machine use a durable outbox and are collecte
 
 ## Web front desk
 
-A responsive dashboard for monitoring the fleet, chatting with agents and the concierge, creating agents, answering permission requests, and managing sessions. Enable it with an HTTPS `webOrigin`; sign in with `am token`. The concierge can start automatically with the service, including after a reboot. See [setup, authentication and deployment](docs/web-ui.md).
+A responsive dashboard for monitoring the fleet, chatting with agents and the concierge, creating agents, answering permission requests, and managing sessions. Enable it with an HTTPS `webOrigin`; sign in with `am token`. The concierge can start automatically with the service, including after a reboot. See [setup, authentication and deployment](docs/web-ui.md). In the browser, `Ctrl-K` (or `Cmd-K`) opens Overview and focuses its list filter; the terminal hub's `Ctrl-K` opens commands.
 
 ## HTTP API
+
+<details>
+<summary>Integration reference: endpoints, receipts and permissions</summary>
 
 ```sh
 am serve
@@ -252,6 +261,8 @@ am token
 ```
 
 The token-protected API can list, message, interrupt, create, stop, and resume agents, read their parsed transcripts (`GET /api/agents/:name/transcript?after=n`, indexed turns; the same object as `am transcript <name> --json`), with live fleet updates at `/api/events`. `POST /api/agents/:name/messages` (`{text, mode: queue|now|interrupt}`) returns a message `id` (also printed by `am send ... --json`); `GET /api/agents/:name/messages/:id` reports its delivery receipt (`state`: `queued`, `delivered` once typed in or handed over by the hook inbox, `done` at the next turn end after that, `cancelled`, or `failed` when its session died first; plus `queuedAt`, `deliveredAt`, `doneAt`, and `transcriptIndex`, the transcript length at delivery, so the agent's response is at that index or later; a `done` from a turn's Stop hook also carries `transcriptComplete`: `true` once the turn's final reply is readable in the transcript at that index or later, which am waits up to 3s for before marking the turn done, or `false` if it never landed in that time; it is absent when there was no reply to check, such as after an interrupt), and `DELETE` on the same path cancels it while it is still queued (409 once it has been delivered). `POST /api/agents/:name/interrupt` with `{messageId}` (instead of `text`) presses Esc once, only while that message's own turn is running (409 with its `state` before that turn starts, after it ends, or on a repeat), so it never aborts another turn. Neither provider fires a Stop hook for a turn aborted with Esc alone, so after any Esc-only interrupt am waits a few seconds for the pane to return to an empty prompt with no turn running, then marks the agent idle, its turn's receipts `done` with `interrupted: true`, and delivers what is queued. Every 409 from the message and interrupt routes carries a machine-readable `reason` beside `error`: `not_delivered`, `already_done`, `already_cancelled`, `already_failed`, `already_delivered`, `not_started`, `already_interrupted`, `no_session`, `mailbox_busy`, `remote_too_old`, or `unknown`. `POST /api/agents/:name/stop` with `{ifIdle: true}` stops the agent only when it is idle with nothing queued, no delivered message still in its turn, and no message (tracked or not) handed over since it last went idle (a dead or exited agent counts as idle), checked and stopped under the delivery lock so no delivery starts in between; otherwise it answers 409 with `reason` `busy`, `queued`, or `in_turn` (or `remote_too_old` for a `host:name` agent whose am predates it). `GET /api/health` reports `messageReceipts: true` on an am that supports all of this, and `stopIfIdle: true` on one with the conditional stop. Receipts live beside the agent's queue, move with `am rename`, and are pruned after a week. Agents launched with prompts (`skipPermissions: false`) can have their permission prompts answered over the API too: `GET /api/agents/:name/permissions` lists the pending ones (`{requests: [{id, provider, tool, summary, input, options: [{id, label, kind: allow|deny|allow_always}], createdAt, expiresAt}]}`), and `POST /api/agents/:name/permissions/:id` with `{optionId}` answers one with one of its own options (200 once the provider has the decision; 409 with `reason` `expired`, `already_resolved` or `not_pending`; 404 for an unknown id). The daemon's event stream emits `permission-request` and `permission-resolved`, and agent detail reports `permissionRequests: true` and `pendingPermissions`. For Claude, a `PermissionRequest` hook relays the prompt while Claude's own dialog stays on screen: it waits `permissionWaitSeconds` (default 120, 0 turns it off) for an answer, and otherwise steps aside, leaving the pane prompt as the only way to answer. A prompt answered in the pane, or a turn that ends, retires the request. For daemon-attached Codex agents, the am daemon joins each thread on the app-server and sees its command and file-change approvals; they have no deadline, and the first answer from either side wins. Options are the provider's own: an "always" choice is persisted only by the provider itself. A receipt finds the prompt that starts its message's turn by the message's text, so identical text typed or sent untracked into the same agent can claim it: leave agents that T3 drives to T3. It drives agents on other fleet hosts too, over the same ssh as `am -H`: address one as `host:name` in `/api/agents/:name/...`, pass `host` (and optionally `remoteDir`; otherwise a `dir` under `$HOME` maps to the remote `$HOME`) to `POST /api/agents`, and list hosts with `GET /api/hosts`. It can execute code through spawned agents, so keep it on loopback or behind a private network such as [Tailscale](https://tailscale.com). For public browser access, use the HTTPS web mode and authentication described in [web setup](docs/web-ui.md); never expose the Bun listener directly. For systemd deployment, use the [service ownership and migration guide](docs/service-lifecycle.md) and the separate tmux, daemon, and frontend units.
+
+</details>
 
 ## How it works
 
@@ -267,10 +278,11 @@ Remote control is enabled by default. Claude agents launch with Claude Code Remo
 ## Development
 
 ```sh
-bun test
+python3 scripts/test-isolated.py
+python3 scripts/test-isolated.py tests/catalog.test.ts
 ```
 
-On a machine running a live Agent Motel daemon, use `python3 scripts/test-isolated.py` instead (it takes the same arguments): it runs `bun test` with a private HOME, state directory and tmux socket, so tests cannot reach the live fleet.
+The isolated runner accepts Bun test arguments and uses a private HOME, state directory and tmux socket, with provider stubs. Use it on live-fleet hosts; see [isolated tests](docs/troubleshooting.md#isolated-tests).
 
 ## Caretaker
 

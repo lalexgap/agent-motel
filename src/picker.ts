@@ -851,7 +851,7 @@ function keyBarHints(mode: Mode, handlers: PickerHandlers, active: boolean): { l
       ...(handlers.regroup ? [{ key: "g", label: "group" }] : []),
       ...(handlers.resort ? [{ key: "s", label: "sort" }] : []),
       ...(hasEditActions(handlers) ? [{ key: "e", label: "edit" }] : []),
-      { key: "ctrl-p", label: "commands" },
+      { key: "ctrl-k", label: "commands" },
       { key: "?", label: "keys" },
     ];
     label = "SIDEBAR";
@@ -1579,7 +1579,7 @@ export async function pick(
         `${key("f")} filter names/tasks`,
         `${key("r")} filter by role`,
         `${key("/")} search conversations`,
-        `${key("ctrl-k")} command palette`,
+        `${key("ctrl-k")} command palette (ctrl-p legacy alias)`,
         ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
         ...(handlers.resort ? [`${key("s")} cycle status/recent/role sort`] : []),
         `${key("a")} show exited agents`,
