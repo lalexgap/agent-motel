@@ -37,6 +37,10 @@ export interface Config {
   // $AM_TITLE and $AM_MESSAGE set. On a headless server, point this at a
   // push service (e.g. curl -d "$AM_MESSAGE" ntfy.sh/<topic>).
   notifyCommand?: string;
+  // The daemon relays notifications from every host in `remotes` to this
+  // machine's notifier (default on; only runs where a notifier exists). Set
+  // false to keep each host's notifications to itself.
+  relayNotifications?: boolean;
   // ssh host aliases whose agents appear alongside local ones in ls, the
   // picker, and the hub (each must have am installed and on PATH).
   remotes?: string[];

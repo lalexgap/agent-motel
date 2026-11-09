@@ -77,7 +77,7 @@ export async function shareCommand(filePath: string, message: string | undefined
   if (owner !== "operator") {
     recordComms({ at: new Date().toISOString(), from: owner, to: "operator", kind: "share", body: announcement });
   }
-  notify(`am: ${owner}`, `${announcement} · am open ${owner}`);
+  notify(`am: ${owner}`, `${announcement} · am open ${owner}`, { agent: owner === "operator" ? undefined : owner, kind: "share" });
   console.log(`shared ${name} → ${dest}`);
   console.log(`the operator can open it from their machine with \`am open ${owner}\``);
 }

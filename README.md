@@ -170,7 +170,7 @@ am open web-fix                # pull that agent's newest artifact here and open
 am open web-fix 2              # ...or the 2nd newest / `am open web-fix login` by name
 ```
 
-Shared files are copied to `~/.agent-manager/shared/<agent>/` on the agent's host (so they outlive the worktree), and `am open` pulls them over ssh into `~/.agent-manager/artifacts-cache/` locally. Sharing fires a notification — set `config.notifyCommand` (e.g. a curl to ntfy.sh) on the server so shares from headless hosts reach you.
+Shared files are copied to `~/.agent-manager/shared/<agent>/` on the agent's host (so they outlive the worktree), and `am open` pulls them over ssh into `~/.agent-manager/artifacts-cache/` locally. Sharing fires a notification, which the daemon on your laptop relays from remote hosts (see [Remote fleets](#remote-fleets)); `config.notifyCommand` (e.g. a curl to ntfy.sh) adds another channel such as phone push.
 
 ### Preserve and hand off work
 
@@ -239,6 +239,8 @@ am send server:api "ship it"       # address a specific host
 ```
 
 Messages to an unreachable roaming machine use a durable outbox and are collected when it reconnects. For live reverse access, see [Reverse SSH](docs/reverse-ssh.md).
+
+Notifications follow you too: each host journals its notifications (`am notifications` lists them), and the daemon on any machine with a notifier long-polls every remote's journal and shows them locally, labelled with the host — so agents on a headless server reach your laptop's desktop. Anything that piled up while the laptop slept arrives as one summary. Set `relayNotifications: false` to opt out.
 
 ## Web front desk
 

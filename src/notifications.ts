@@ -1,0 +1,179 @@
+import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { withFileLock } from "./filelock";
+import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
+import { baseDir } from "./paths";
+import { newMsgId } from "./msgid";
+
+// Per-host notification journal. Every notify() lands here as well as on the
+// local notifier, so another machine's daemon can relay it: the laptop
+// long-polls `am __notifications` on each remote and shows what it finds, which
+// is how a headless server's agents reach the operator's desktop.
+
+export type NotificationKind = "attention" | "idle" | "share";
+
+export interface NotificationEntry {
+  id: string;
+  at: string;
+  host: string;
+  agent?: string;
+  kind: NotificationKind;
+  title: string;
+  message: string;
+}
+
+export interface NotificationBatch {
+  entries: NotificationEntry[];
+  // Newest id in the journal (or the caller's cursor when it's empty): the
+  // caller's next --after.
+  cursor?: string;
+}
+
+const MAX_BYTES = 256 * 1024;
+const KEEP_ENTRIES = 500;
+const MAX_BATCH = 100;
+
+export function notificationsFile(): string {
+  return join(baseDir(), "notifications.jsonl");
+}
+
+function lockFile(): string {
+  return join(baseDir(), "notifications.lock");
+}
+
+function cursorsFile(): string {
+  return join(baseDir(), "notification-cursors.json");
+}
+
+export function readNotifications(): NotificationEntry[] {
+  let text: string;
+  try {
+    text = readFileSync(notificationsFile(), "utf8");
+  } catch {
+    return [];
+  }
+  const entries: NotificationEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as NotificationEntry;
+      if (typeof entry?.id === "string" && typeof entry.message === "string") entries.push(entry);
+    } catch {
+      // torn or foreign line — skip it
+    }
+  }
+  return entries;
+}
+
+export function recordNotification(entry: Omit<NotificationEntry, "id" | "at"> & { at?: string }): NotificationEntry {
+  const full: NotificationEntry = { id: newMsgId(), at: entry.at ?? new Date().toISOString(), ...entry };
+  withFileLock(lockFile(), () => {
+    appendFileSync(notificationsFile(), JSON.stringify(full) + "\n");
+    if (statSync(notificationsFile()).size > MAX_BYTES) {
+      // Keep the newest entries that fit in half the budget, so trims are rare.
+      const lines = readNotifications().slice(-KEEP_ENTRIES).map((e) => JSON.stringify(e) + "\n");
+      let bytes = 0;
+      let start = lines.length;
+      while (start > 0 && bytes + Buffer.byteLength(lines[start - 1]!) <= MAX_BYTES / 2) bytes += Buffer.byteLength(lines[--start]!);
+      writeFileSync(notificationsFile(), lines.slice(start).join(""));
+    }
+  });
+  return full;
+}
+
+// Entries recorded after `after`. With no cursor, the caller is subscribing
+// fresh: hand back only the current position so it doesn't replay history.
+// A cursor that's no longer in the journal (trimmed away) returns the oldest
+// survivors — at most MAX_BATCH, newest last.
+export function notificationsAfter(entries: NotificationEntry[], after: string | undefined): NotificationBatch {
+  const last = entries.at(-1)?.id;
+  if (!after) return { entries: [], cursor: last };
+  const index = entries.findIndex((e) => e.id === after);
+  const fresh = index === -1 ? entries : entries.slice(index + 1);
+  const batch = fresh.slice(-MAX_BATCH);
+  return { entries: batch, cursor: batch.at(-1)?.id ?? (index === -1 ? last : after) };
+}
+
+function journalSignature(): string {
+  try {
+    const s = statSync(notificationsFile());
+    return `${s.size}:${s.mtimeMs}`;
+  } catch {
+    return "";
+  }
+}
+
+// `am __notifications [--after <id>] [--wait <seconds>]`: the remote end of
+// the relay. With --wait it long-polls — returns as soon as something new is
+// recorded, or empty-handed at the deadline — so one ssh round trip per wait
+// window carries every notification with ~a second of latency.
+export async function notificationsPollCommand(opts: { after?: string; waitSeconds?: number }): Promise<void> {
+  const deadline = Date.now() + Math.min(Math.max(opts.waitSeconds ?? 0, 0), 60) * 1000;
+  let batch = notificationsAfter(readNotifications(), opts.after);
+  let signature = journalSignature();
+  while (opts.after && batch.entries.length === 0 && Date.now() < deadline) {
+    await Bun.sleep(500);
+    const next = journalSignature();
+    if (next === signature) continue;
+    signature = next;
+    batch = notificationsAfter(readNotifications(), opts.after);
+  }
+  console.log(JSON.stringify(batch));
+}
+
+// `am notifications`: the recent journal on this host, newest last.
+export function notificationsListCommand(opts: { json?: boolean; limit?: number }): void {
+  const entries = readNotifications().slice(-(opts.limit ?? 20));
+  if (opts.json) {
+    console.log(JSON.stringify(entries, null, 2));
+    return;
+  }
+  if (entries.length === 0) {
+    console.log("no notifications recorded on this host");
+    return;
+  }
+  for (const e of entries) {
+    const when = new Date(e.at).toLocaleString();
+    console.log(`${when}  ${e.kind.padEnd(9)} ${e.agent ?? "-"}  ${e.message}`);
+  }
+}
+
+export function readRelayCursors(): Record<string, string> {
+  return readJsonOrNull<Record<string, string>>(cursorsFile()) ?? {};
+}
+
+export function writeRelayCursor(host: string, cursor: string): void {
+  withFileLock(lockFile(), () => {
+    writeJsonAtomic(cursorsFile(), { ...readRelayCursors(), [host]: cursor });
+  });
+}
+
+export interface Display {
+  title: string;
+  message: string;
+}
+
+// What to show for one relayed batch. Recent entries show individually (up to
+// a few); anything older than staleMs — the laptop was asleep or offline —
+// or past the cap collapses into one "while away" summary so waking up
+// doesn't fire a burst of stale banners.
+export function planRelayDisplay(
+  host: string,
+  entries: NotificationEntry[],
+  now: number,
+  opts: { staleMs?: number; maxIndividual?: number } = {},
+): Display[] {
+  const staleMs = opts.staleMs ?? 10 * 60_000;
+  const max = opts.maxIndividual ?? 4;
+  const recent = entries.filter((e) => now - Date.parse(e.at) <= staleMs);
+  const shown = recent.slice(-max);
+  const collapsed = entries.length - shown.length;
+  const displays: Display[] = [];
+  if (collapsed > 0) {
+    const agents = [...new Set(entries.slice(0, entries.length - shown.length).map((e) => e.agent).filter(Boolean))];
+    const who = agents.length ? `: ${agents.slice(0, 4).join(", ")}${agents.length > 4 ? ", …" : ""}` : "";
+    displays.push({ title: `am (${host})`, message: `${collapsed} earlier notification${collapsed === 1 ? "" : "s"}${who}` });
+  }
+  for (const e of shown) displays.push({ title: `${e.title} (${host})`, message: e.message });
+  return displays;
+}

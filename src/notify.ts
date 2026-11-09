@@ -1,4 +1,5 @@
-import { loadConfig, type Config } from "./config";
+import { loadConfig, localHostIdentity, type Config } from "./config";
+import { recordNotification, type NotificationKind } from "./notifications";
 
 // Desktop/push notifications, portable across the laptop (macOS) and a
 // headless server (linux). Resolution order:
@@ -8,6 +9,8 @@ import { loadConfig, type Config } from "./config";
 //      focuses it), else osascript (Script Editor icon)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
+// Every notification is also journaled (see notifications.ts) so a daemon on
+// another machine can relay it — how a headless server reaches the laptop.
 
 export interface NotifyEnv {
   platform: NodeJS.Platform;
@@ -32,7 +35,22 @@ export function buildNotifyCommand(
   return null;
 }
 
-export function notify(title: string, message: string): void {
+export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind }): void {
+  try {
+    recordNotification({ host: localHostIdentity(), agent: meta.agent, kind: meta.kind, title, message });
+  } catch {
+    // the journal is best-effort, like the notifier
+  }
+  showNotification(title, message);
+}
+
+export function canShowNotifications(config: Config = loadConfig()): boolean {
+  return buildNotifyCommand("", "", config, { platform: process.platform, has: (binary) => !!Bun.which(binary) }) !== null;
+}
+
+// Display only, without journaling — for relayed notifications, which would
+// otherwise bounce back to the host they came from.
+export function showNotification(title: string, message: string): void {
   const cmd = buildNotifyCommand(title, message, loadConfig(), {
     platform: process.platform,
     has: (binary) => !!Bun.which(binary),
