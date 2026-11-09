@@ -5,8 +5,7 @@ import { recordNotification, type NotificationKind } from "./notifications";
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
 //      $AM_MESSAGE (e.g. a curl to ntfy.sh for phone push from a server)
-//   2. macOS: osascript (posts as Script Editor; terminal-notifier's -sender
-//      no longer works on current macOS, so no other icon is reachable)
+//   2. macOS: osascript (terminal-notifier's -sender is broken on macOS 27)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
 // Every notification is also journaled so remote daemons can relay it.
