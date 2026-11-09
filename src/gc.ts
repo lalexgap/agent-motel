@@ -12,6 +12,7 @@ import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
 import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
 import { forgetClaudeTrust, readClaudeTrustLedger } from "./claudeTrust";
+import { withWorktreeDeletionLock, worktreeOwnerReason, worktreeSafetyReason } from "./worktreeOwnership";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -89,7 +90,7 @@ function canon(path: string): string {
 }
 
 function git(dir: string, ...args: string[]): { ok: boolean; out: string; err: string } {
-  const r = Bun.spawnSync(["git", "-C", dir, ...args]);
+  const r = Bun.spawnSync(["git", "-C", dir, ...args], { timeout: 5_000, killSignal: "SIGKILL" });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
 
@@ -187,13 +188,9 @@ function worktreeScan(referenced: Set<string>): { remove: WorktreeRemoval[]; kep
         kept.push({ path, reason: "not a linked git worktree — inspect manually" });
         continue;
       }
-      const status = git(path, "status", "--porcelain");
-      if (!status.ok) {
-        kept.push({ path, reason: "git status failed — inspect manually" });
-        continue;
-      }
-      if (status.out !== "") {
-        kept.push({ path, reason: "uncommitted changes" });
+      const reason = worktreeOwnerReason(path) ?? worktreeSafetyReason(path);
+      if (reason) {
+        kept.push({ path, reason });
         continue;
       }
       remove.push({ path, repoRoot: info.repoRoot });
@@ -295,9 +292,17 @@ export function applyGc(plan: GcPlan): string[] {
   }
 
   for (const w of plan.worktrees) {
-    const result = git(w.repoRoot, "worktree", "remove", w.path);
-    if (result.ok) lines.push(`removed worktree ${w.path}`);
-    else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
+    const lockReason = withWorktreeDeletionLock(() => {
+      const reason = worktreeOwnerReason(w.path) ?? worktreeSafetyReason(w.path, w.repoRoot);
+      if (reason) {
+        lines.push(`kept worktree ${w.path}: ${reason}`);
+        return;
+      }
+      const result = git(w.repoRoot, "worktree", "remove", w.path);
+      if (result.ok) lines.push(`removed worktree ${w.path}`);
+      else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
+    });
+    if (lockReason) lines.push(`kept worktree ${w.path}: ${lockReason}`);
   }
 
   for (const dir of plan.codexTrust) {

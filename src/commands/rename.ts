@@ -167,8 +167,9 @@ async function renameAgentLocked(
     // A hook may have updated status/session metadata while tmux was being
     // renamed. Carry the freshest state forward instead of overwriting it
     // with the snapshot taken during validation.
-    const renamed = nextState(readAgent(oldName) ?? agent, newName);
-    writeAgent(renamed);
+    const original = readAgent(oldName) ?? agent;
+    const renamed = nextState(original, newName);
+    writeAgent(renamed, { ownershipSource: { kind: "agent", owner: original } });
     removeAgent(oldName);
     stateRenamed = true;
     rewriteRelationships(oldName, newName);
