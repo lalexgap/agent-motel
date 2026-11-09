@@ -2,7 +2,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { join } from "node:path";
 import { baseDir, ensureDirs, queueDir } from "./paths";
 import { msgIdAt, newMsgId } from "./msgid";
-import { parseJsonl, type MessageProvenance } from "./comms";
+import { attribute, parseJsonl, resolveSender, type MessageProvenance } from "./comms";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withMailboxWrite } from "./mailbox";
 import { agentProvider, readAgent } from "./state";
@@ -162,6 +162,12 @@ export function queueRestoreLocked(name: string, entryId: string, message: strin
 
 export function queueAppend(name: string, message: string, msgId?: string, provenance?: MessageProvenance): string {
   return withMailboxWrite(name, () => queueAppendLocked(name, message, msgId, undefined, provenance));
+}
+
+export function queueDeferredMessage(name: string, message: string): string {
+  const attributed = attribute(resolveSender(), name, message, "send");
+  if (!attributed.allowed) throw new Error(`message to "${name}" is rate-limited`);
+  return queueAppendForAgent(name, attributed.body, undefined, attributed.provenance);
 }
 
 export function queueAppendForAgent(name: string, message: string, msgId?: string, provenance?: MessageProvenance): string {

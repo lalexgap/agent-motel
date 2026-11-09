@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type MovePayload,
   defaultMoveTarget,
   exportCommand,
   importAfterRenew,
@@ -265,6 +266,52 @@ describe("importPayload", () => {
     expect(agent.status).toBe("exited");
     expect(agent.sessionId).toBe("abc-123");
     expect(queueList("migrated").map((m) => m.message)).toEqual(["pending one", "pending two"]);
+  });
+
+  test("export/import preserves structured sender provenance and legacy unknown", () => {
+    const raw = JSON.parse(payload(home));
+    raw.queue = ["operator", "peer", "legacy"];
+    raw.queueProvenance = [{ kind: "operator" }, { kind: "peer", from: "lead" }, null];
+    importPayload(JSON.stringify(raw));
+    const output: string[] = [];
+    const previous = console.log;
+    console.log = (line: string) => { output.push(line); };
+    try { exportCommand("migrated"); } finally { console.log = previous; }
+    const exported = JSON.parse(output[0]!);
+    expect(exported.queueProvenance).toEqual(raw.queueProvenance);
+    exported.state.name = "destination";
+    importPayload(JSON.stringify(exported));
+    expect(queueList("destination").map(entry => entry.provenance)).toEqual([
+      { kind: "operator" }, { kind: "peer", from: "lead" }, undefined,
+    ]);
+  });
+
+  test("push and pull preserve provenance alignment after the migration briefing", async () => {
+    const raw = JSON.parse(payload(home));
+    raw.queueProvenance = [{ kind: "operator" }, { kind: "peer", from: "lead" }];
+    importPayload(JSON.stringify(raw));
+    let pushed: MovePayload | undefined;
+    await moveAgent("migrated", "remote", { dir: "/remote/work", copy: true, clone: true, start: false }, {
+      sshRunAsync: async (_host, command) => ({ exitCode: 0, stderr: "", stdout: command === "echo $HOME" ? "/remote" : "/remote/work" }),
+      sshAmAsync: async (_host, args, opts) => {
+        if (args[0] === "__import") pushed = JSON.parse(opts!.stdin!);
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+    });
+    expect(pushed?.queueProvenance).toEqual([null, ...raw.queueProvenance]);
+    const remote = { ...raw, state: { ...raw.state, name: "pulled" }, home: "/remote", transcript: null };
+    await moveAgent("remote:pulled", undefined, { dir: home, copy: true, clone: true, start: false }, {
+      sshAmAsync: async (_host, args) => ({ exitCode: 0, stderr: "", stdout: JSON.stringify({ ...remote, handoffToken: args[3] }) }),
+    });
+    expect(queueList("pulled").map(entry => entry.provenance)).toEqual([undefined, ...raw.queueProvenance]);
+  });
+
+  test("malformed transferred provenance is rejected before importing state", () => {
+    const raw = JSON.parse(payload(home));
+    for (const metadata of [[{ kind: "peer" }], [{ kind: "operator", from: "peer" }], "operator"]) {
+      expect(() => importPayload(JSON.stringify({ ...raw, queueProvenance: metadata }))).toThrow("provenance");
+      expect(readAgent("migrated")).toBeNull();
+    }
   });
 
   test("carries the plan file along", async () => {

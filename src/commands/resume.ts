@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
-import { queueAppendForAgent } from "../queue";
+import { queueDeferredMessage } from "../queue";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
 import {
@@ -70,7 +70,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, inte
 
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts) });
   // Queue before the session starts so the SessionStart hook finds it.
-  if (plan.deferredMessage) queueAppendForAgent(agent.name, plan.deferredMessage);
+  if (plan.deferredMessage) queueDeferredMessage(agent.name, plan.deferredMessage);
 
   updateAgentStatus(agent, "starting", "resuming");
   writeAgent(agent);

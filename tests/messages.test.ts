@@ -546,6 +546,24 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id)!.state).toBe("done");
   });
 
+  test("confirming an inbox prompt retires only that delivery while working", () => {
+    fakeSession("working");
+    const id = queueTrackedMessage("api", "[am · from web] ping");
+    const other = queueTrackedMessage("api", "ordinary queued mail");
+    const mark = deliveryMark("api", `${id}.json`);
+    writeFileSync(join(home, "queue", "api", ".delivery.pending"), JSON.stringify({
+      id: `${id}.json`, message: "[am · from web] ping", via: "inbox", sentAt: Date.now(), mark,
+    }));
+    expect(acquireDeliverLock("api")).toBe(true);
+    hook("user-prompt-submit", { prompt: "[am · from web] ping" });
+    expect(readMessage("api", id)!.state).toBe("queued");
+    releaseDeliverLock("api");
+    hook("user-prompt-submit", { prompt: "[am · from web] ping" });
+    expect(readMessage("api", id)!.state).toBe("delivered");
+    expect(readMessage("api", other)!.state).toBe("queued");
+    expect(queueDepth("api")).toBe(1);
+  });
+
   test("a record from before prompt claims (no via) still finishes at a later prompt's stop", () => {
     fakeSession("working");
     const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");

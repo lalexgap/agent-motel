@@ -286,7 +286,7 @@ function surfaceInbox(
     const out = buildInboxOutput([], hookEventName, notes, received);
     if (out) process.stdout.write(out);
   };
-  if (opts.drain === false || queueDepth(name) === 0) return emitNotes(); // nothing pending — avoid lock churn per tool call
+  if (queueDepth(name) === 0) return emitNotes();
   if (!acquireDeliverLock(name)) return emitNotes(); // deliverNext is mid-delivery — it'll handle them
   try {
     const pending: InboxMessage[] = [];
@@ -297,6 +297,7 @@ function surfaceInbox(
         if (finishConfirmedDelivery(name, head.id)) continue;
         break;
       }
+      if (opts.drain === false) break;
       const mark = receipts.mark(head.id);
       queuePopId(name, head.id);
       receipts.delivered(head.id, mark);
