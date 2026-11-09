@@ -76,7 +76,7 @@ Each Trace repro belongs in a temporary HOME/state directory/tmux socket. Never 
 
 ## UI/UX polish (with screenshots)
 
-These are screenshots of the running UI, not fixture renders. Private agent names, tasks, subagent labels and transcript bodies were hidden in-page before capture; the resulting blank content areas are **redaction, not rendering defects**. The create image is cropped to the dialog. No credential appears in any image.
+These are screenshots of the running UI, not fixture renders. Repository labels, the host name, private agent names, tasks, subagent labels and transcript bodies were hidden in-page before capture; the resulting blank content areas are **redaction, not rendering defects**. The create image is cropped to the dialog. No credential appears in any image.
 
 | Priority / effort | Suggestion |
 | --- | --- |
