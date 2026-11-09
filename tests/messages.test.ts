@@ -192,12 +192,18 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id!)!.state).toBe("done");
   });
 
-  test("PostToolUse surfacing delivers mid-turn; the running turn's stop finishes it", async () => {
+  test("ordinary sends stay queued through PostToolUse and --now steering until Stop", async () => {
     fakeSession("working");
     const { id } = await sendCommand("api", "mid turn note", { now: false, track: true });
-    say("assistant", "working on it");
-    expect(hook("post-tool-use")).toContain("mid turn note");
-    expect(readMessage("api", id!)).toMatchObject({ state: "delivered", transcriptIndex: 4 });
+    expect(hook("post-tool-use")).toBe("");
+    expect(readMessage("api", id!)!.state).toBe("queued");
+    fastSleep();
+    const steer = await sendCommand("api", "urgent change", { now: true, track: true });
+    expect(steer.outcome).toBe("steered");
+    expect(readMessage("api", steer.id!)!.state).toBe("delivered");
+    expect(readMessage("api", id!)!.state).toBe("queued");
+    expect(JSON.parse(hook("stop")).decision).toBe("block");
+    expect(readMessage("api", id!)!.state).toBe("delivered");
     hook("stop");
     expect(readMessage("api", id!)!.state).toBe("done");
   });
@@ -274,7 +280,7 @@ describe("delivery receipts", () => {
     for (let i = 0; i < 20_000; i++) say(i % 2 ? "assistant" : "user", `line ${i}`);
     const ids = [];
     for (const text of ["a", "b", "c"]) ids.push(queueTrackedMessage("api", text));
-    const out = hook("post-tool-use");
+    const out = hook("stop");
     for (const text of ["a", "b", "c"]) expect(out).toContain(text);
     const raw = ids.map((id) => JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8")));
     expect(raw.map((r) => r.state)).toEqual(["delivered", "delivered", "delivered"]);
@@ -664,7 +670,7 @@ describe("done waits for the reply on disk", () => {
     const first = await turnRunning();
     say("assistant", "Same.");
     const { id: second } = await sendCommand("api", "one more", { now: false, track: true });
-    expect(hook("post-tool-use")).toContain("one more");
+    expect(hook("stop")).toContain("one more");
     expect(readMessage("api", second!)).toMatchObject({ state: "delivered", transcriptIndex: 5 });
     expect(readMessage("api", first)!.transcriptIndex).toBe(3);
     expect(await awaitTurnReply("api", readAgent("api")!, "Same.", new Date(), { capMs: 0 })).toBe(false);
@@ -720,6 +726,18 @@ describe("stop ifIdle after an untracked handover", () => {
 
   // The hook marks the agent working as it drains, so the stop is refused as
   // busy until the turn the drain fed ends; that end shows the agent took it.
+  test("child Stop cannot finish the parent's receipt or allow conditional stop", async () => {
+    fakeSession("working");
+    fastSleep();
+    const { id } = await sendCommand("api", "parent work", { now: true, track: true });
+    hook("user-prompt-submit", { prompt: "parent work" });
+    const before = readAgent("api")!;
+    hook("stop", { agent_id: "child", last_assistant_message: "child done" });
+    expect(readAgent("api")!.workingSince).toBe(before.workingSince);
+    expect(readMessage("api", id!)!.state).toBe("delivered");
+    expect(await stop()).toMatchObject({ ok: false, reason: "busy" });
+  });
+
   test("a Stop gate drain holds the stop until the turn it fed ends", async () => {
     fakeSession("working");
     await sendCommand("api", "while you were busy", { now: false });
@@ -730,9 +748,10 @@ describe("stop ifIdle after an untracked handover", () => {
     expect(await stop()).toEqual({ ok: true });
   });
 
-  test.each(["user-prompt-submit", "post-tool-use"])("a %s inbox drain holds the stop until that turn ends", async (event) => {
+  test.each(["user-prompt-submit"])("a %s inbox drain holds the stop until that turn ends", async (event) => {
     fakeSession("working");
     await sendCommand("api", `note for ${event}`, { now: false });
+    writeAgent({ ...readAgent("api")!, status: "idle" });
     expect(hook(event, { prompt: "other" })).toContain(`note for ${event}`);
     expect(await stop()).toMatchObject({ ok: false, reason: "busy" });
     hook("stop");

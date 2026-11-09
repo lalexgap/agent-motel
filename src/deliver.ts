@@ -4,13 +4,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, noteHandoff, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
-import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked } from "./queue";
+import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked, type QueueHead } from "./queue";
 import { capturePane, hasSession, sendClearLine, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
 import { cliEntrypoint } from "./settings";
 import { baseDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { withFileLock } from "./filelock";
 import { openLogFd, readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { isAttributedBody, operatorEnvelope } from "./comms";
+import { isAttributedBody, operatorEnvelope, type MessageProvenance } from "./comms";
 import { peerSendable, peerTarget, sendPeerMessage } from "./claudePeer";
 import { clientMessageId, CodexOutcomeUnknown, queueCodexMessage, reclaimCodexMessages } from "./codexQueue";
 import {
@@ -184,6 +184,7 @@ export type DeliveryResult =
 // An inbox marker records a frame sent to Claude's session socket, awaiting
 // the UserPromptSubmit hook's confirmation.
 interface PendingDelivery {
+  provenance?: MessageProvenance;
   id: string;
   message: string;
   typed?: boolean;
@@ -226,12 +227,12 @@ export function confirmInboxDelivery(name: string, prompt: string, promptAt?: st
 
 // The in-flight inbox delivery this prompt carries, if any: `content` is the
 // text am sent, inside whatever framing Claude adds. Pure read.
-export function inboxDeliveryIn(name: string, prompt: string): { id: string; content: string; operatorTag?: string } | null {
+export function inboxDeliveryIn(name: string, prompt: string): { id: string; content: string; operatorTag?: string; provenance?: MessageProvenance } | null {
   const pending = readJsonOrNull<PendingDelivery>(pendingPath(name));
   // Markers written before `content` existed came only from peer sends, whose content was the message itself.
   const content = pending?.content ?? (pending && isAttributedBody(pending.message) ? pending.message : null);
   if (pending?.via !== "inbox" || !content || !normalized(prompt).includes(normalized(content))) return null;
-  return { id: pending.id, content, operatorTag: pending.operatorTag };
+  return { id: pending.id, content, operatorTag: pending.provenance?.kind === "operator" ? pending.operatorTag : undefined, provenance: pending.provenance };
 }
 
 function deliveryConfirmed(name: string, id: string): boolean {
@@ -481,6 +482,7 @@ function codexQueueHeld(agent: AgentState): boolean {
 // `uncertain`: the add's outcome is unknown, so am typed it as well.
 // `retries`/`retryAt`: a reclaim that failed, to try again then.
 interface CodexHandoff {
+  provenance?: MessageProvenance;
   entryId: string;
   message: string;
   key?: string;
@@ -536,9 +538,9 @@ export function dropCodexHandoff(name: string, key: string, startedId: string | 
 // Noted before the add, so a crash after it still leaves the entry findable;
 // one Codex never got is dropped when reclaimed. An add that may have landed
 // keeps its note, marked, so a reclaim deletes the copy without restoring it.
-async function handToCodexQueue(name: string, threadId: string, head: { id: string; message: string }): Promise<void> {
+async function handToCodexQueue(name: string, threadId: string, head: QueueHead): Promise<void> {
   const others = (handoffs: CodexHandoff[]) => handoffs.filter((h) => h.entryId !== head.id);
-  const note = { entryId: head.id, message: head.message, key: promptKey(head.message) };
+  const note = { entryId: head.id, message: head.message, provenance: head.provenance, key: promptKey(head.message) };
   updateCodexHandoffs(name, (handoffs) => [...others(handoffs), note]);
   try {
     await queueCodexMessage(threadId, head.message, clientMessageId(head.id));
@@ -595,7 +597,7 @@ async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly
       // The hook claims a prompt before dropping its note: started means Codex ran it.
       if (ifNoted && !entryUnstarted(name, h.entryId)) return handoffs.filter((x) => x.entryId !== h.entryId);
       if (!h.uncertain) {
-        queueRestoreLocked(name, h.entryId, h.message);
+        queueRestoreLocked(name, h.entryId, h.message, h.provenance);
         try {
           requeueDelivered(name, h.entryId);
         } catch {
@@ -642,7 +644,7 @@ async function reclaimCodexHandoffs(name: string, agent: AgentState, pendingOnly
   }
 }
 
-function inboxSender(agent: AgentState, head: { id: string; message: string }): InboxSender | null {
+function inboxSender(agent: AgentState, head: QueueHead): InboxSender | null {
   if (agentProvider(agent) === "antigravity") return null;
   if (agentProvider(agent) === "codex") {
     const threadId = agentSessionId(agent);
@@ -650,7 +652,7 @@ function inboxSender(agent: AgentState, head: { id: string; message: string }): 
       ? { send: () => handToCodexQueue(agent.name, threadId, head), confirm: false }
       : null;
   }
-  const operatorTag = isAttributedBody(head.message) ? undefined : randomBytes(8).toString("hex");
+  const operatorTag = head.provenance?.kind === "operator" ? randomBytes(8).toString("hex") : undefined;
   const content = operatorTag ? operatorEnvelope(head.message, operatorTag) : head.message;
   if (!peerSendable(content)) return null;
   const target = peerTarget(agent);
@@ -660,7 +662,7 @@ function inboxSender(agent: AgentState, head: { id: string; message: string }): 
 // Null means the inbox was unusable, so the caller types the message instead.
 async function deliverToInbox(
   name: string,
-  head: { id: string; message: string },
+  head: QueueHead,
   incarnation: string,
   inbox: InboxSender,
 ): Promise<DeliveryResult | null> {
@@ -681,6 +683,7 @@ async function deliverToInbox(
   writeJsonAtomic(markerPath, {
     id: head.id,
     message: head.message,
+    provenance: head.provenance,
     incarnation,
     via: "inbox",
     sentAt: Date.now(),

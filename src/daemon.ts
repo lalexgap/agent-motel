@@ -95,10 +95,10 @@ export async function injectCollected(entry: OutboxEntry, host: string): Promise
       return false;
     }
     if (entry.msgId) {
-      queueAppendOnceLocked(target.name, att.body, entry.msgId);
+      queueAppendOnceLocked(target.name, att.body, entry.msgId, { kind: "peer", from: sender });
       queueRecordReceipt(target.name, entry.msgId);
     } else {
-      queueAppendLocked(target.name, att.body);
+      queueAppendLocked(target.name, att.body, undefined, undefined, { kind: "peer", from: sender });
     }
     if (!entry.msgId || !seenRecently(entry.msgId)) {
       recordComms({ at: new Date().toISOString(), from: sender, to: target.name, body: entry.body, kind: "send", msgId: entry.msgId });
