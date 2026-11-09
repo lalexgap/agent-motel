@@ -1680,7 +1680,7 @@ async function loadModels() {
 }
 function updateCreateGuidance() {
   const host = $("create-host");
-  $("create-host-note").textContent = `Directory on ${host.selectedOptions[0]?.textContent || "this server"}. Git repositories get an isolated worktree; non-Git directories run in place.`;
+  $("create-host-note").textContent = `Directory on ${host.selectedOptions[0]?.textContent || "this server"}. Git repositories use isolated worktrees when enabled in host settings; otherwise they run in place. Non-Git directories run in place.`;
 }
 function loadEfforts() {
   const catalog = state.catalogs.find(

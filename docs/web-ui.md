@@ -4,7 +4,7 @@ The browser front desk combines a compact dark fleet list, attention filters, ag
 
 Overview counts exclude the concierge. Available corresponds to CLI `idle`; Stopped includes `exited` and `dead`. The concierge dock shows the provider, host and lifecycle status of the resolved concierge, separately from message acceptance feedback. Missing fleet metadata shows an unknown provider rather than assuming Codex.
 
-The create dialog identifies the host that owns the directory. Git repositories create isolated worktrees; non-Git directories run in place. New branches use origin's default branch when available, then `origin/main` or `origin/master`, otherwise repository HEAD. Creation attempts to fetch the selected origin branch first and uses the saved ref if fetching fails. Existing branches are reused.
+The create dialog identifies the host that owns the directory. Git repositories create isolated worktrees when the host's `worktreeByDefault` setting is enabled; otherwise they run in place. Non-Git directories run in place. New branches use origin's default branch when available, then `origin/main` or `origin/master`, otherwise repository HEAD. Creation attempts to fetch the selected origin branch first and uses the saved ref if fetching fails. Existing branches are reused.
 
 The design takes inspiration from [Linear's attention-first Inbox](https://linear.app/docs/inbox) and [Vercel's overview-to-detail observability](https://vercel.com/docs/observability): quiet navigation, actionable status, and a focused agent workspace. The responsive layout uses local system fonts and no external scripts, analytics or CDN dependencies.
 
@@ -33,7 +33,7 @@ Use `am models --json --codex` to verify the selected model is available to your
 
 Run `am serve --bind 127.0.0.1 --port 8790` under a persistent service. When web mode is enabled, service startup ensures the concierge exists and revives it after a restart. `conciergeAutoStart: false` disables startup creation. Opening the concierge also ensures it is available. A startup error is logged without taking down the dashboard; opening the concierge retries it.
 
-Revival requires a captured conversation ID. If it is missing, the concierge refuses to resume an unrelated recent conversation; archive the old concierge with `am rm concierge` and reopen it with `am concierge`. A live concierge can still be opened before its ID has been captured.
+When the concierge is opened through `am concierge` or the web dock, revival requires a captured conversation ID. If it is missing, those concierge-opening paths refuse to resume an unrelated recent conversation; archive the old concierge with `am rm concierge` and reopen it with `am concierge`. A live concierge can still be opened through either path before its ID has been captured.
 
 Caddy configuration:
 
