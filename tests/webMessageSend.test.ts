@@ -92,4 +92,12 @@ for (const dock of [false, true]) describe(dock ? "concierge composer" : "agent 
     expect(c.state.sending.size).toBe(0);
     expect(c.element(dock ? "dock-button" : "message-send").disabled).toBe(false);
   });
+
+  if (dock) test("message acceptance preserves the provider identity", async () => {
+    const c = composer("claude", true);
+    c.element("dock-provider").textContent = "Claude";
+    await c.submit();
+    expect(c.element("dock-provider").textContent).toBe("Claude");
+    expect(c.element("dock-status").textContent).toBe("Message accepted");
+  });
 });

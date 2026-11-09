@@ -235,6 +235,8 @@ function lock() {
   lastUserTexts.clear();
   state.dockRevision++;
   state.conciergeKey = null;
+  renderDockIdentity();
+  $("dock-status").textContent = "";
   state.subagent = null;
   $("subagent-dialog").close();
   $("create-dialog").close();
@@ -404,6 +406,7 @@ function compareRows(a, b) {
   return (order || a.name.localeCompare(b.name)) * (state.reverse ? -1 : 1);
 }
 function renderFleet() {
+  renderDockIdentity();
   if (!$("search-page").hidden) renderAdvancedSearch();
   const rows = state.rows.filter((row) => row.name !== "concierge");
   const stopped = (row) => ["exited", "dead"].includes(row.status);
@@ -1675,6 +1678,10 @@ async function loadModels() {
     $("create-error").textContent = e.message;
   }
 }
+function updateCreateGuidance() {
+  const host = $("create-host");
+  $("create-host-note").textContent = `Directory on ${host.selectedOptions[0]?.textContent || "this server"}. Git repositories get an isolated worktree; non-Git directories run in place.`;
+}
 function loadEfforts() {
   const catalog = state.catalogs.find(
     (c) => c.provider === $("create-provider").value,
@@ -1707,6 +1714,7 @@ async function createDialog() {
     $("create-role").replaceChildren(new Option("No preset", ""));
     for (const role of roles.roles.filter((r) => r.name !== "concierge"))
       $("create-role").add(new Option(role.name, role.name));
+    updateCreateGuidance();
     await loadModels();
   } catch (e) {
     $("create-error").textContent = e.message;
@@ -1716,7 +1724,7 @@ $("new-agent").onclick = createDialog;
 $("side-new").onclick = createDialog;
 $("close-create").onclick = () => $("create-dialog").close();
 $("create-provider").onchange = loadModels;
-$("create-host").onchange = loadModels;
+$("create-host").onchange = () => { updateCreateGuidance(); loadModels(); };
 $("create-model").onchange = loadEfforts;
 $("create-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -1757,7 +1765,17 @@ setInterval(() => {
 }, 4000);
 unlock().catch(() => {});
 
+function renderDockIdentity() {
+  const name = state.conciergeKey;
+  const row = state.rows.find((row) => key(row) === name);
+  const providers = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" };
+  $("dock-provider").textContent = providers[row?.provider] || "Unknown provider";
+  const host = row?.host || (name?.includes(":") ? name.slice(0, name.lastIndexOf(":")) : "This server");
+  $("dock-location").textContent = `${host} · ${row ? statusName(row.status) : "Unavailable"}`;
+}
+
 async function refreshDock() {
+  renderDockIdentity();
   const name = state.conciergeKey;
   if (!state.rows.some((row) => key(row) === name)) $("dock-working").hidden = true;
   if (

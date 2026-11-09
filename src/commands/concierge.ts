@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { readAgent, recordAttached, type AgentState } from "../state";
+import { agentSessionId, readAgent, recordAttached, type AgentState } from "../state";
 import { attachOrSwitch, hasSession } from "../tmux";
 import { CONCIERGE_NAME } from "../providers";
 import { loadConfig } from "../config";
@@ -145,6 +145,10 @@ async function openConcierge(
   }
   let delivery: ConciergeLocation["delivery"];
   if (!hasSession(existing.tmuxSession)) {
+    if (!agentSessionId(existing)?.trim())
+      throw new Error(
+        "concierge has no captured session ID; refusing to resume an unrelated conversation. Archive it with am rm concierge, then reopen it with am concierge.",
+      );
     await reviveAgent(existing, question ? { message: question } : {});
     if (question) delivery = "revived";
   } else if (question) {

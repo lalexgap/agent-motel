@@ -2,6 +2,10 @@
 
 The browser front desk combines a compact dark fleet list, attention filters, agent conversations and an inline concierge. Sort by repository, status, time in the current working state, recent activity or name; reverse any ordering. Create Codex or Claude agents on configured fleet hosts, choose a model and role, send or queue messages, answer permission requests, use interactive terminals, cancel tracked queued messages, and resume, restart, interrupt, stop or remove agents. Destructive controls ask for confirmation. Chat and fleet changes arrive through server-sent events, with four-second polling for recovery and remote transcripts; unreachable hosts and request failures remain visible.
 
+Overview counts exclude the concierge. Available corresponds to CLI `idle`; Stopped includes `exited` and `dead`. The concierge dock shows the provider, host and lifecycle status of the resolved concierge, separately from message acceptance feedback. Missing fleet metadata shows an unknown provider rather than assuming Codex.
+
+The create dialog identifies the host that owns the directory. Git repositories create isolated worktrees; non-Git directories run in place. New branches use origin's default branch when available, then `origin/main` or `origin/master`, otherwise repository HEAD. Creation attempts to fetch the selected origin branch first and uses the saved ref if fetching fails. Existing branches are reused.
+
 The design takes inspiration from [Linear's attention-first Inbox](https://linear.app/docs/inbox) and [Vercel's overview-to-detail observability](https://vercel.com/docs/observability): quiet navigation, actionable status, and a focused agent workspace. The responsive layout uses local system fonts and no external scripts, analytics or CDN dependencies.
 
 Built-in subagents appear beneath active parents and in agent detail, including finished runs and available output. They are read-only: redirect them through the parent. Running Codex subagent transcripts may only become available at completion. AM child agents link to their parent and retain independent conversations and lifecycle controls. Subagent records use `GET /api/agents/:name/subagents`; select output with `GET /api/agents/:name/transcript?subagent=id`. Remote output requires a remote am version supporting `transcript --json --subagent`.
@@ -28,6 +32,8 @@ Add these settings to `~/.agent-manager/config.json` (merge with existing settin
 Use `am models --json --codex` to verify the selected model is available to your account. Model and effort settings apply to newly created concierges. Existing concierges retain their provider and conversation; switching provider requires archiving the old concierge with `am rm concierge` and creating it again with `am concierge --no-jump`. Removal keeps its archived state/transcript; do not use `--clean`.
 
 Run `am serve --bind 127.0.0.1 --port 8790` under a persistent service. When web mode is enabled, service startup ensures the concierge exists and revives it after a restart. `conciergeAutoStart: false` disables startup creation. Opening the concierge also ensures it is available. A startup error is logged without taking down the dashboard; opening the concierge retries it.
+
+Revival requires a captured conversation ID. If it is missing, the concierge refuses to resume an unrelated recent conversation; archive the old concierge with `am rm concierge` and reopen it with `am concierge`. A live concierge can still be opened before its ID has been captured.
 
 Caddy configuration:
 

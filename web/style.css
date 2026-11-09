@@ -482,6 +482,10 @@ main {
   font-size: 17px;
   color: var(--fg-muted);
 }
+.fleet-guidance { margin: 0 0 12px; font-size: 12px; line-height: 1.5; }
+.dock-note { margin: 0; padding: 8px 13px; font-size: 12px; overflow-wrap: anywhere; }
+#dock-status { margin: 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
+#dock-status:empty { display: none; }
 #dock-transcript {
   height: calc(100vh - 365px);
   min-height: 200px;
