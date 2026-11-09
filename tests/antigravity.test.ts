@@ -209,7 +209,6 @@ test('instant result cannot race tracked delivery, prompt association, or transc
   expect(queueDepth('api')).toBe(0);
   const receipt=readMessage('api',id)!;
   expect(receipt.state).toBe('done');
-  expect(receipt.transcriptComplete).toBe(true);
   expect(transcript()[receipt.transcriptIndex!].text).toBe('tracked message');
   expect(transcript()[receipt.transcriptIndex!+1].kind).toBe('assistant');
 });

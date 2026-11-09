@@ -108,8 +108,7 @@ had already acted on input. This is not an exactly-once execution guarantee.
 and records the eventual interruption/exit. It does not emulate native TUI
 Escape. The CLI may exit; resume the saved conversation before continuing. If
 agy survives SIGINT, an operator prompt or restart releases the hold. Mid-turn
-`am send --now`, interrupt-with-message, and interruption by message receipt are
-unsupported and fail clearly.
+`am send --now` and interrupt-with-message are unsupported and fail clearly.
 
 The runner owns a separate Unix process group. Shutdown retains TERM→KILL
 escalation even after agy exits, and verifies ordinary group workers are stopped

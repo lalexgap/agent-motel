@@ -106,9 +106,8 @@ export interface TranscriptJson {
   entries: TranscriptEntry[];
 }
 
-// Indexes are positions in the full parsed turn list. A tool entry's output can
-// land later, so `after` pollers re-read from their oldest unsettled index.
-export function transcriptJson(agent: AgentState, after = 0): TranscriptJson {
+// Indexes are positions in the full parsed turn list.
+export function transcriptJson(agent: AgentState): TranscriptJson {
   const provider = agentProvider(agent);
   let file: string | null = null;
   try {
@@ -126,16 +125,13 @@ export function transcriptJson(agent: AgentState, after = 0): TranscriptJson {
     sessionId: agentSessionId(agent) ?? transcript?.sessionId ?? null,
     status: displayStatus(agent),
     total: turns.length,
-    entries: turns
-      .slice(Math.max(0, after))
-      .map((turn, i) => ({ index: Math.max(0, after) + i, ...turn })),
+    entries: turns.map((turn, index) => ({ index, ...turn })),
   };
 }
 
 export function subagentTranscriptJson(
   agent: AgentState,
   query: string,
-  after = 0,
 ): TranscriptJson {
   const source = subagentSource(agent, query);
   const provider = agentProvider(agent);
@@ -150,9 +146,7 @@ export function subagentTranscriptJson(
     sessionId: transcript.sessionId ?? null,
     status: record.endedAt ? "exited" : displayStatus(agent),
     total: transcript.turns.length,
-    entries: transcript.turns
-      .slice(after)
-      .map((turn, i) => ({ index: after + i, ...turn })),
+    entries: transcript.turns.map((turn, index) => ({ index, ...turn })),
   };
 }
 

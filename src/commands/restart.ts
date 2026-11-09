@@ -11,7 +11,6 @@ import { queueDeferredMessage } from "../queue";
 import { checkSelection, providerCatalog } from "../catalog";
 import { agentEnv } from "./new";
 import { codexResumeDaemon, type ResumeOpts } from "./resume";
-import { runIfIdle, type IdleRefusal } from "./rm";
 import { CODEX_LAUNCH_BUDGET_MS, CODEX_STOP_BUDGET_MS, codexDeadline, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 import { ensureAgentPlan } from "../plan";
@@ -143,38 +142,9 @@ export async function restartAgent(prefix: string, opts: RestartOpts = {}): Prom
   }
 }
 
-// Restart only an agent with nothing to do, under the same checks as
-// `am stop --if-idle`.
-export async function restartIfIdle(prefix: string, opts: RestartOpts = {}): Promise<({ ok: true } & RestartResult) | IdleRefusal> {
-  await ensureDaemon();
-  const agent = resolveAgent(prefix);
-  validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
-  const result = await runIfIdle(agent, { releaseProducer: true }, (current) => {
-    if (!acquireLifecycleLock(current.name)) return null;
-    try {
-      return restartLocked(currentLifecycleAgent(current), opts);
-    } finally {
-      releaseLifecycleLock(current.name);
-    }
-  });
-  if (!result.ok) return result;
-  if (!result.value) return { ok: false, error: lifecycleBusy(agent.name), reason: "busy" };
-  return { ok: true, ...result.value };
-}
-
-export async function restartCommand(prefix: string, opts: RestartOpts & { ifIdle?: boolean; json?: boolean }): Promise<void> {
-  const { ifIdle, json, ...restart } = opts;
-  if (ifIdle) {
-    // Prints the outcome either way; a refusal is {ok: false, error, reason}.
-    const result = await restartIfIdle(prefix, restart);
-    if (json) console.log(JSON.stringify(result));
-    else if (!result.ok) throw new Error(result.error);
-    else console.log(`restarted agent "${resolveAgent(prefix).name}" — resumed its conversation`);
-    return;
-  }
-  const result = await restartAgent(prefix, restart);
-  if (json) console.log(JSON.stringify({ ok: true, ...result }));
-  else console.log(`restarted agent "${resolveAgent(prefix).name}" — resumed its conversation${describeSelection(result)}`);
+export async function restartCommand(prefix: string, opts: RestartOpts): Promise<void> {
+  const result = await restartAgent(prefix, opts);
+  console.log(`restarted agent "${resolveAgent(prefix).name}" — resumed its conversation${describeSelection(result)}`);
 }
 
 function describeSelection(result: RestartResult): string {

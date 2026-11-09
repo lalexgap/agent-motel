@@ -20,7 +20,6 @@ import {
   promptKey,
   recordImmediateDelivery,
   transcriptLength,
-  withSettledRecord,
   awaitTurnReply,
   markTurnEnded,
 } from "../src/messages";
@@ -430,22 +429,19 @@ describe("delivery receipts", () => {
     expect(transcriptLength({ ...readAgent("api")!, transcriptPath: undefined, sessionId: undefined })).toBe(0);
   });
 
-  test("hidden CLI: __message prints the receipt, __cancel the outcome, __detail advertises receipts", () => {
+  test("hidden CLI: __cancel prints the outcome, __detail advertises receipts", () => {
     fakeSession("working");
     const id = queueTrackedMessage("api", "remote me");
     const am = (...args: string[]) =>
       Bun.spawnSync([process.execPath, CLI, ...args, "--local", "--exact"], { env: { ...process.env } });
-    expect(JSON.parse(am("__message", "api", id).stdout.toString())).toMatchObject({ id, state: "queued" });
     expect(JSON.parse(am("__detail", "api").stdout.toString()).messageReceipts).toBe(true);
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toEqual({ ok: true, state: "cancelled" });
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toMatchObject({ ok: false, state: "cancelled" });
     expect(JSON.parse(am("__cancel", "api", id).stdout.toString())).toMatchObject({ reason: "already_cancelled" });
-    expect(JSON.parse(am("__interrupt", "api", id).stdout.toString())).toEqual({ ok: false, error: `message ${id} is already cancelled`, state: "cancelled", reason: "already_cancelled" });
-    expect(am("__interrupt", "api", "01NOPE").stderr.toString()).toContain('no message "01NOPE"');
-    const missing = am("__message", "api", "01NOPE");
+    const missing = am("__cancel", "api", "01NOPE");
     expect(missing.exitCode).toBe(1);
     expect(missing.stderr.toString()).toContain('no message "01NOPE"');
-    expect(am("__message", "ghost", id).stderr.toString()).toContain("no local agent");
+    expect(am("__cancel", "ghost", id).stderr.toString()).toContain("no local agent");
   });
 
   test("Codex-style queue adds start in order: each prompt finishes only its own message", () => {
@@ -575,18 +571,6 @@ describe("delivery receipts", () => {
     expect(readMessage("api", id)!.state).toBe("done");
   });
 
-  test("a turn end the hooks have not marked yet is settled inside the records lock", () => {
-    fakeSession("working");
-    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
-    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
-    writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
-    expect(withSettledRecord("api", id, (r) => r.state)).toBe("done");
-    const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
-    expect(raw.state).toBe("done");
-    expect(withSettledRecord("api", "01NOPE", (r) => r.state)).toBeNull();
-  });
-
   test("rename carries the records", async () => {
     const now = new Date().toISOString();
     writeAgent({ name: "alpha", status: "exited", dir: "/tmp", tmuxSession: "agentmgr-alpha", createdAt: now, updatedAt: now });
@@ -610,13 +594,13 @@ describe("done waits for the reply on disk", () => {
     return id!;
   }
 
-  test("a reply already flushed: done at once, transcriptComplete true", async () => {
+  test("a reply already flushed: done at once", async () => {
     const id = await turnRunning();
     say("assistant", "All   done:\nit works.");
     const started = Date.now();
     hook("stop", { last_assistant_message: "All done: it works." });
     expect(Date.now() - started).toBeLessThan(1500);
-    expect(readMessage("api", id)).toMatchObject({ state: "done", transcriptComplete: true });
+    expect(readMessage("api", id)).toMatchObject({ state: "done" });
   });
 
   test("a reply of several text blocks matches their run", async () => {
@@ -638,15 +622,14 @@ describe("done waits for the reply on disk", () => {
     expect(waited).toBeLessThan(1500);
   });
 
-  test("a reply never flushed: done after the cap, transcriptComplete false", async () => {
+  test("a reply never flushed: done after the cap", async () => {
     const id = await turnRunning();
     const started = Date.now();
     hook("stop", { last_assistant_message: "This never reaches disk." });
     const waited = Date.now() - started;
     expect(waited).toBeGreaterThanOrEqual(2900);
     expect(waited).toBeLessThan(6000);
-    const done = readMessage("api", id)!;
-    expect(done).toMatchObject({ state: "done", transcriptComplete: false });
+    expect(readMessage("api", id)).toMatchObject({ state: "done" });
     expect(readAgent("api")!.status).toBe("idle");
   }, 15_000);
 
@@ -664,24 +647,20 @@ describe("done waits for the reply on disk", () => {
     expect(await awaitTurnReply("api", readAgent("api")!, "one", new Date(), { capMs: 0 })).toBe(false);
   });
 
-  test("no reply text (an interrupt, a tool-only turn) skips the wait and leaves the field off", async () => {
+  test("no reply text (an interrupt, a tool-only turn) skips the wait", async () => {
     const id = await turnRunning();
     const started = Date.now();
     expect(await awaitTurnReply("api", readAgent("api")!, undefined)).toBeUndefined();
     expect(await awaitTurnReply("api", readAgent("api")!, "  ")).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(100);
     markTurnEnded("api", readAgent("api")!, new Date(), true);
-    const done = readMessage("api", id)!;
-    expect(done).toMatchObject({ state: "done", interrupted: true });
-    expect(done.transcriptComplete).toBeUndefined();
+    expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
   });
 
-  test("a stop without a reply in its payload goes done at once, without the field", async () => {
+  test("a stop without a reply in its payload goes done at once", async () => {
     const id = await turnRunning();
     hook("stop");
-    const done = readMessage("api", id)!;
-    expect(done.state).toBe("done");
-    expect(done.transcriptComplete).toBeUndefined();
+    expect(readMessage("api", id)!.state).toBe("done");
   });
 
   test("the reply must be past every finishing receipt's transcriptIndex", async () => {
@@ -792,7 +771,7 @@ describe("messages api", () => {
   const call = (path: string, init: RequestInit = {}) =>
     fetch(server.url + path, { ...init, headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" } });
 
-  test("POST returns an id; GET reads the receipt; DELETE cancels once, then 409", async () => {
+  test("POST returns an id; DELETE cancels once, then 409", async () => {
     fakeSession("working");
     fastSleep();
     const posted = await call("/api/agents/api/messages", { method: "POST", body: JSON.stringify({ text: "queued one" }) });
@@ -800,9 +779,7 @@ describe("messages api", () => {
     const { ok, mode, id } = (await posted.json()) as any;
     expect({ ok, mode }).toEqual({ ok: true, mode: "queue" });
 
-    const got = (await (await call(`/api/agents/api/messages/${id}`)).json()) as any;
-    expect(Object.keys(got).sort()).toEqual(["deliveredAt", "doneAt", "id", "queuedAt", "state", "transcriptIndex"]);
-    expect(got).toMatchObject({ id, state: "queued", deliveredAt: null, doneAt: null, transcriptIndex: null });
+    expect(readMessage("api", id)).toMatchObject({ id, state: "queued", deliveredAt: null, doneAt: null, transcriptIndex: null });
 
     const cancelled = await call(`/api/agents/api/messages/${id}`, { method: "DELETE" });
     expect(cancelled.status).toBe(200);
@@ -817,68 +794,25 @@ describe("messages api", () => {
     expect(late.status).toBe(409);
     expect(await late.json()).toEqual({ error: `message ${steer.id} is already delivered`, state: "delivered", reason: "already_delivered" });
 
-    expect((await call("/api/agents/api/messages/NOPE")).status).toBe(404);
     expect((await call("/api/agents/api/messages/NOPE", { method: "DELETE" })).status).toBe(404);
-    expect((await call(`/api/agents/ghost/messages/${id}`)).status).toBe(404);
+    expect((await call(`/api/agents/ghost/messages/${id}`, { method: "DELETE" })).status).toBe(404);
     expect((await call("/api/agents/ghost/messages", { method: "POST", body: JSON.stringify({ text: "x" }) })).status).toBe(404);
   });
 
-  test("GET on a stopped agent leaves a queued message queued", async () => {
-    fakeSession("working");
-    const posted = (await (await call("/api/agents/api/messages", { method: "POST", body: JSON.stringify({ text: "later" }) })).json()) as any;
-    writeFileSync(join(home, "mode"), "dead");
-    const got = (await (await call(`/api/agents/api/messages/${posted.id}`)).json()) as any;
-    expect(got).toMatchObject({ id: posted.id, state: "queued" });
-    expect(queueDepth("api")).toBe(1);
-  });
-
-  test("health and local detail report messageReceipts and stopIfIdle", async () => {
+  test("local detail reports messageReceipts", async () => {
     fakeSession("idle");
-    expect(await (await call("/api/health")).json()).toEqual({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true, models: true, restartModel: true });
     expect(((await (await call("/api/agents/api")).json()) as any).messageReceipts).toBe(true);
   });
 
-  describe("interrupt by messageId", () => {
+  describe("interrupt (Esc only)", () => {
     const keys = () => (existsSync(join(home, "keys")) ? readFileSync(join(home, "keys"), "utf8") : "");
-    const interrupt = (body: unknown) => call("/api/agents/api/interrupt", { method: "POST", body: JSON.stringify(body) });
+    const interrupt = () => call("/api/agents/api/interrupt", { method: "POST", body: "{}" });
 
-    test("refused before its turn starts; one Esc once started; refused once done", async () => {
+    test("a messageId is refused without pressing Esc", async () => {
       fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
-      const early = await interrupt({ messageId: id });
-      expect(early.status).toBe(409);
-      expect(await early.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" });
-      expect(keys()).toBe("");
-
-      hook("user-prompt-submit", { prompt: "go" });
-      // The pane never gets back to its prompt, so the turn is left running.
-      writeFileSync(join(home, "busy"), "");
-      fastSleep();
-      const log = spyOn(console, "error").mockImplementation(() => {});
-      let ok: Response;
-      let logged: unknown[][];
-      try {
-        ok = await interrupt({ messageId: id });
-      } finally {
-        logged = [...log.mock.calls];
-        log.mockRestore();
-      }
-      expect(ok.status).toBe(200);
-      expect(await ok.json()).toEqual({ ok: true });
-      expect(logged).toEqual([['am: "api" did not return to its prompt after Esc; leaving it as it is']]);
-      expect(keys()).toBe("Escape\n");
-      expect(readAgent("api")!.status).toBe("working");
-      const again = await interrupt({ messageId: id });
-      expect(again.status).toBe(409);
-      expect(await again.json()).toEqual({ error: `message ${id} was already interrupted`, state: "delivered", reason: "already_interrupted" });
-      expect(keys()).toBe("Escape\n");
-      expect(Object.keys(readMessage("api", id)!).sort()).toEqual(["deliveredAt", "doneAt", "id", "queuedAt", "state", "transcriptIndex"]);
-
-      rmSync(join(home, "keys"));
-      hook("stop");
-      const done = await interrupt({ messageId: id });
-      expect(done.status).toBe(409);
-      expect(await done.json()).toEqual({ error: `message ${id} is already done`, state: "done", reason: "already_done" });
+      const res = await call("/api/agents/api/interrupt", { method: "POST", body: JSON.stringify({ messageId: "01ABC" }) });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "messageId is not supported" });
       expect(keys()).toBe("");
     });
 
@@ -889,12 +823,10 @@ describe("messages api", () => {
       hook("user-prompt-submit", { prompt: "go" });
       const next = queueTrackedMessage("api", "next one");
 
-      const ok = await interrupt({ messageId: id });
-      expect(ok.status).toBe(200);
-      const interrupted = (await (await call(`/api/agents/api/messages/${id}`)).json()) as any;
+      expect((await interrupt()).status).toBe(200);
+      const interrupted = readMessage("api", id)!;
       expect(interrupted).toMatchObject({ id, state: "done", interrupted: true });
       expect(interrupted.doneAt).not.toBeNull();
-      expect(interrupted.transcriptComplete).toBeUndefined();
       const agent = readAgent("api")!;
       expect(agent.status).toBe("idle");
       expect(agent.workingSince).toBeUndefined();
@@ -908,8 +840,6 @@ describe("messages api", () => {
       hook("stop");
       expect(readMessage("api", id)).toEqual(interrupted);
       expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
-      const repeat = await interrupt({ messageId: id });
-      expect(await repeat.json()).toMatchObject({ state: "done", reason: "already_done" });
 
       hook("user-prompt-submit", { prompt: "next one" });
       hook("stop");
@@ -927,7 +857,7 @@ describe("messages api", () => {
       writeFileSync(join(home, "mode"), "keep");
       writeFileSync(join(home, "input"), "go slowly");
 
-      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect((await interrupt()).status).toBe(200);
       expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
       expect(readAgent("api")!.status).toBe("idle");
       expect(readFileSync(join(home, "keys"), "utf8")).toBe("Escape\nC-u\nEnter\n");
@@ -945,7 +875,7 @@ describe("messages api", () => {
 
       const log = spyOn(console, "error").mockImplementation(() => {});
       try {
-        expect((await interrupt({ messageId: id })).status).toBe(200);
+        expect((await interrupt()).status).toBe(200);
       } finally {
         log.mockRestore();
       }
@@ -963,7 +893,7 @@ describe("messages api", () => {
       writeFileSync(join(home, "input"), "go on slowly");
       writeFileSync(join(home, "late"), "4");
 
-      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect((await interrupt()).status).toBe(200);
       expect(keys()).toBe("Escape\nC-u\nC-u\nC-u\n");
       expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
       expect(readAgent("api")!.status).toBe("idle");
@@ -1006,7 +936,7 @@ describe("messages api", () => {
 
       const log = spyOn(console, "error").mockImplementation(() => {});
       try {
-        expect((await interrupt({ messageId: id })).status).toBe(200);
+        expect((await interrupt()).status).toBe(200);
       } finally {
         log.mockRestore();
       }
@@ -1037,12 +967,11 @@ describe("messages api", () => {
       expect(readAgent("api")!.status).toBe("idle");
     });
 
-    test("a prompt that lands after the pane check keeps its turn running", async () => {
+    test("a typed prompt that lands after the pane check keeps its turn running", async () => {
       fakeSession("working");
       fastSleep();
       const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
       hook("user-prompt-submit", { prompt: "go" });
-      const next = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date(Date.now() + 1).toISOString() }, "next");
       const inner = spawnSpy!.getMockImplementation()!;
       let fired = false;
       spawnSpy!.mockImplementation((cmd: any, opts?: any) => {
@@ -1055,12 +984,10 @@ describe("messages api", () => {
         return result;
       });
 
-      expect((await interrupt({ messageId: id })).status).toBe(200);
+      expect((await interrupt()).status).toBe(200);
       expect(fired).toBe(true);
       expect(readAgent("api")!.status).toBe("working");
-      expect(readMessage("api", next)).toMatchObject({ state: "delivered" });
       hook("stop");
-      expect(readMessage("api", next)).toMatchObject({ state: "done" });
       expect(readMessage("api", id)).toMatchObject({ state: "done" });
     });
 
@@ -1072,7 +999,7 @@ describe("messages api", () => {
       writeFileSync(join(home, "running"), "");
       const log = spyOn(console, "error").mockImplementation(() => {});
       try {
-        expect((await interrupt({ messageId: id })).status).toBe(200);
+        expect((await interrupt()).status).toBe(200);
       } finally {
         log.mockRestore();
       }
@@ -1080,62 +1007,14 @@ describe("messages api", () => {
       expect(readAgent("api")!.status).toBe("working");
     });
 
-    test("an unrelated prompt doesn't make it interruptible", async () => {
-      fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
-      hook("user-prompt-submit", { prompt: "something else" });
-      const res = await interrupt({ messageId: id });
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" });
-      expect(keys()).toBe("");
-    });
-
-    test("a turn that ended but is not marked yet is done, and gets no Esc", async () => {
-      fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
-      const later = (ms: number) => new Date(Date.now() + ms).toISOString();
-      writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
-      const res = await interrupt({ messageId: id });
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `message ${id} is already done`, state: "done", reason: "already_done" });
-      expect(keys()).toBe("");
-      expect(readMessage("api", id)!.state).toBe("done");
-    });
-
-    test("queued → 409; unknown or malformed id → 404; bad bodies → 400", async () => {
-      fakeSession("working");
-      const id = queueTrackedMessage("api", "not yet");
-      const queued = await interrupt({ messageId: id });
-      expect(queued.status).toBe(409);
-      expect(await queued.json()).toEqual({ error: `message ${id} is not delivered yet`, state: "queued", reason: "not_delivered" });
-      const missing = await interrupt({ messageId: "01NOPE" });
-      expect(missing.status).toBe(404);
-      expect(await missing.json()).toEqual({ error: 'no message "01NOPE" for agent "api"' });
-      expect((await interrupt({ messageId: "a.b" })).status).toBe(404);
-      const both = await interrupt({ messageId: id, text: "hi" });
-      expect(both.status).toBe(400);
-      expect(await both.json()).toEqual({ error: "messageId and text are mutually exclusive" });
-      expect((await interrupt({ messageId: 5 })).status).toBe(400);
-      expect(keys()).toBe("");
-      expect(queueDepth("api")).toBe(1);
-    });
-
     test("busy while a delivery holds the lock", async () => {
       fakeSession("working");
-      const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
+      hook("user-prompt-submit", { prompt: "go" });
       expect(acquireDeliverLock("api")).toBe(true);
-      fastSleep();
-      let t = Date.now();
-      const clock = spyOn(Date, "now").mockImplementation(() => (t += 20_000));
-      let res: Response;
-      try {
-        res = await interrupt({ messageId: id });
-      } finally {
-        clock.mockRestore();
-      }
+      const res = await interrupt();
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: 'agent "api" mailbox is busy — retry', state: "delivered", reason: "mailbox_busy" });
+      expect(await res.json()).toMatchObject({ reason: "mailbox_busy" });
       expect(keys()).toBe("");
     });
   });

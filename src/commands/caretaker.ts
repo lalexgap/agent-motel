@@ -75,7 +75,7 @@ export async function caretakerCommand(opts: {
         await reviveAgent(existing, { message: message ?? CARETAKER_SCAN });
       }
     } else if (opts.scan) {
-      const admitted = await runIfIdle(existing, {}, (current) => {
+      const admitted = await runIfIdle(existing, (current) => {
         if (
           current.createdAt !== existing.createdAt ||
           current.role !== CARETAKER_ROLE ||

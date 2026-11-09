@@ -12,6 +12,7 @@ import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResul
 import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
 import { daemonRequest, startDaemonServer } from "../src/daemon";
 import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
+import { stopIfIdle } from "../src/commands/rm";
 import { addRole } from "../src/roles";
 import { setRemoteRunnersForTests } from "../src/remoteAgents";
 import { localHostIdentity } from "../src/config";
@@ -168,7 +169,7 @@ describe("api auth", () => {
   test("accepts the token", async () => {
     const res = await fetch(url("/api/health"), auth());
     expect(res.status).toBe(200);
-    expect(((await res.json()) as any).ok).toBe(true);
+    expect(await res.json()).toEqual({ ok: true, name: "am" });
   });
 
   test("query-param tokens are no longer accepted (they leak into logs)", async () => {
@@ -449,13 +450,13 @@ describe("transcript + interrupt api", () => {
     ]);
 
     appendFileSync(file, toolResult + assistantLine("done") + '{"type":"assis'); // partial last line
-    const second = await getTranscript("tx", "?after=1");
+    const second = await getTranscript("tx");
     expect(second.total).toBe(3);
     expect(second.entries).toEqual([
+      { index: 0, kind: "user", text: "hi" },
       { index: 1, kind: "tool", name: "Bash", input: '{"command":"ls"}', output: "a.txt" },
       { index: 2, kind: "assistant", text: "done" },
     ]);
-    expect((await getTranscript("tx", "?after=5")).entries).toEqual([]);
   });
 
   test("no transcript yet → empty", async () => {
@@ -464,11 +465,8 @@ describe("transcript + interrupt api", () => {
     expect(body).toMatchObject({ provider: "claude", sessionId: null, total: 0, entries: [] });
   });
 
-  test("unknown agent → 404, bad after → 400", async () => {
+  test("unknown agent → 404", async () => {
     expect((await fetch(url("/api/agents/ghost/transcript"), auth())).status).toBe(404);
-    seedAgent("bad-after");
-    expect((await fetch(url("/api/agents/bad-after/transcript?after=-1"), auth())).status).toBe(400);
-    expect((await fetch(url("/api/agents/bad-after/transcript?after=x"), auth())).status).toBe(400);
   });
 
   test("interrupt: unknown agent → 404, no live session → 409", async () => {
@@ -501,7 +499,7 @@ describe("transcript + interrupt api", () => {
   });
 });
 
-describe("stop ifIdle", () => {
+describe("stopIfIdle", () => {
   // Fake tmux: sessions in `live` exist, panes are empty, and kill-session
   // runs `onKill` — while the stop still holds the mailbox locks.
   let live: Set<string>;
@@ -529,6 +527,7 @@ describe("stop ifIdle", () => {
 
   const stop = (name: string, body?: unknown) =>
     fetch(url(`/api/agents/${name}/stop`), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+  const stopIdle = (name: string) => stopIfIdle(readAgent(name)!);
 
   function liveAgent(name: string, status: AgentState["status"] = "idle") {
     seedAgent(name, status);
@@ -537,9 +536,7 @@ describe("stop ifIdle", () => {
 
   test("an idle agent with nothing pending is stopped", async () => {
     liveAgent("calm");
-    const res = await stop("calm", { ifIdle: true });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await stopIdle("calm")).toEqual({ ok: true });
     expect(readAgent("calm")!.status).toBe("exited");
     expect(live.has("agentmgr-calm")).toBe(false);
   });
@@ -547,9 +544,7 @@ describe("stop ifIdle", () => {
   test("a busy agent is refused with reason busy and left running", async () => {
     for (const status of ["working", "starting", "needs-attention"] as const) {
       liveAgent(`b-${status}`, status);
-      const res = await stop(`b-${status}`, { ifIdle: true });
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `agent "b-${status}" is ${status}`, reason: "busy" });
+      expect(await stopIdle(`b-${status}`)).toEqual({ ok: false, error: `agent "b-${status}" is ${status}`, reason: "busy" });
       expect(readAgent(`b-${status}`)!.status).toBe(status);
       expect(live.has(`agentmgr-b-${status}`)).toBe(true);
     }
@@ -558,9 +553,7 @@ describe("stop ifIdle", () => {
   test("queued messages refuse with reason queued", async () => {
     liveAgent("q");
     queueAppend("q", "later");
-    const res = await stop("q", { ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as any).reason).toBe("queued");
+    expect(await stopIdle("q")).toMatchObject({ ok: false, reason: "queued" });
     expect(readAgent("q")!.status).toBe("idle");
   });
 
@@ -570,9 +563,7 @@ describe("stop ifIdle", () => {
     queuePopId("t", `${id}.json`);
     markDelivered("t", `${id}.json`);
     expect(readMessage("t", id)!.state).toBe("delivered");
-    const res = await stop("t", { ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as any).reason).toBe("in_turn");
+    expect(await stopIdle("t")).toMatchObject({ ok: false, reason: "in_turn" });
     expect(readAgent("t")!.status).toBe("idle");
   });
 
@@ -589,8 +580,7 @@ describe("stop ifIdle", () => {
         enqueueError = error as Error;
       }
     };
-    const res = await stop("race", { ifIdle: true });
-    expect(res.status).toBe(200);
+    expect(await stopIdle("race")).toEqual({ ok: true });
     expect(await delivery).toEqual({ status: "queued", reason: "locked" });
     expect(enqueueError?.message).toContain("mailbox is busy");
     expect(queueDepth("race")).toBe(0);
@@ -605,21 +595,17 @@ describe("stop ifIdle", () => {
   test("a dead or exited agent counts as idle, even with messages queued", async () => {
     seedAgent("gone");
     queueAppend("gone", "for resume");
-    const dead = await stop("gone", { ifIdle: true });
-    expect(dead.status).toBe(200);
+    expect(await stopIdle("gone")).toEqual({ ok: true });
     expect(readAgent("gone")!.status).toBe("exited");
     expect(queueDepth("gone")).toBe(1);
-    const again = await stop("gone", { ifIdle: true });
-    expect(again.status).toBe(200);
+    expect(await stopIdle("gone")).toEqual({ ok: true });
   });
 
   test("a stop that cannot take the lifecycle lock is refused as busy", async () => {
     liveAgent("held");
     expect(acquireLifecycleLock("held")).toBe(true);
     try {
-      const res = await stop("held", { ifIdle: true });
-      expect(res.status).toBe(409);
-      expect(((await res.json()) as any).reason).toBe("busy");
+      expect(await stopIdle("held")).toMatchObject({ ok: false, reason: "busy" });
       expect(readAgent("held")!.status).toBe("idle");
     } finally {
       releaseLifecycleLock("held");
@@ -630,19 +616,21 @@ describe("stop ifIdle", () => {
     liveAgent("wait");
     expect(acquireDeliverLock("wait")).toBe(true);
     setTimeout(() => releaseDeliverLock("wait"), 300);
-    const res = await stop("wait", { ifIdle: true });
-    expect(res.status).toBe(200);
+    expect(await stopIdle("wait")).toEqual({ ok: true });
     expect(readAgent("wait")!.status).toBe("exited");
   });
 
-  test("without the flag a busy agent is stopped as before; bad bodies are rejected", async () => {
+  test("POST /stop refuses any ifIdle without stopping; a plain stop stops a busy agent", async () => {
     liveAgent("plain", "working");
-    expect((await stop("plain")).status).toBe(200);
+    for (const ifIdle of [true, false, "yes", null]) {
+      const res = await stop("plain", { ifIdle });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ifIdle is not supported; use `am stop --if-idle`" });
+      expect(readAgent("plain")!.status).toBe("working");
+      expect(live.has("agentmgr-plain")).toBe(true);
+    }
+    expect((await stop("plain", {})).status).toBe(200);
     expect(readAgent("plain")!.status).toBe("exited");
-    liveAgent("plain2", "working");
-    expect((await stop("plain2", { ifIdle: false })).status).toBe(200);
-    expect((await stop("plain2", { ifIdle: "yes" })).status).toBe(400);
-    expect((await stop("missing", { ifIdle: true })).status).toBe(404);
   });
 
   test("a handover within the grace before the idle transition still refuses; one before it does not", async () => {
@@ -650,12 +638,10 @@ describe("stop ifIdle", () => {
     const at = (ms: number) => new Date(idleAt + ms).toISOString();
     liveAgent("grace");
     writeAgent({ ...readAgent("grace")!, promptAt: at(-10_000), lastHandoffAt: at(-1_500), statusChangedAt: at(0) });
-    const res = await stop("grace", { ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'agent "grace" was handed a message it has not started on yet', reason: "in_turn" });
+    expect(await stopIdle("grace")).toEqual({ ok: false, error: 'agent "grace" was handed a message it has not started on yet', reason: "in_turn" });
     expect(live.has("agentmgr-grace")).toBe(true);
     writeAgent({ ...readAgent("grace")!, lastHandoffAt: at(-2_500) });
-    expect((await stop("grace", { ifIdle: true })).status).toBe(200);
+    expect(await stopIdle("grace")).toEqual({ ok: true });
   });
 
   test("a turn shorter than the grace, prompted after the handover, does not block the stop", async () => {
@@ -663,14 +649,8 @@ describe("stop ifIdle", () => {
     const at = (ms: number) => new Date(handoffAt + ms).toISOString();
     liveAgent("short");
     writeAgent({ ...readAgent("short")!, lastHandoffAt: at(0), promptAt: at(100), statusChangedAt: at(500) });
-    expect((await stop("short", { ifIdle: true })).status).toBe(200);
+    expect(await stopIdle("short")).toEqual({ ok: true });
     expect(readAgent("short")!.status).toBe("exited");
-  });
-
-  test("detail and health advertise stopIfIdle", async () => {
-    liveAgent("cap");
-    expect(((await (await fetch(url("/api/agents/cap"), auth())).json()) as any).stopIfIdle).toBe(true);
-    expect(((await (await fetch(url("/api/health"), auth())).json()) as any).stopIfIdle).toBe(true);
   });
 });
 
@@ -846,17 +826,12 @@ describe("remote agents api (host:name)", () => {
     expect(await reasonOf(await post("/api/agents/laptop:api/interrupt"))).toBe("remote_too_old");
   });
 
-  test("message receipt and cancel forward to __message / __cancel", async () => {
-    const record = { id: "01ABC", state: "delivered", queuedAt: "q", deliveredAt: "d", doneAt: null, transcriptIndex: 4 };
+  test("message cancel forwards to __cancel", async () => {
     reply = (call) => {
-      if (call.args[0] === "__message") return { exitCode: 0, stdout: JSON.stringify(record) };
       if (call.args[2] === "01ABC") return { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01ABC is already delivered", state: "delivered", reason: "already_delivered" }) };
       if (call.args[2] === "01OLD") return { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01OLD is already done", state: "done" }) };
       return { exitCode: 0, stdout: JSON.stringify({ ok: true, state: "cancelled" }) };
     };
-    const got = await fetch(url("/api/agents/laptop:api/messages/01ABC"), auth());
-    expect(got.status).toBe(200);
-    expect(await got.json()).toEqual(record);
     const refused = await fetch(url("/api/agents/laptop:api/messages/01ABC"), auth({ method: "DELETE" }));
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ error: "message 01ABC is already delivered", state: "delivered", reason: "already_delivered" });
@@ -868,49 +843,15 @@ describe("remote agents api (host:name)", () => {
     expect(old.status).toBe(409);
     expect(await old.json()).toEqual({ error: "message 01OLD is already done", state: "done", reason: "already_done" });
     expect(calls.map((c) => c.args)).toEqual([
-      ["__message", "api", "01ABC", "--local", "--exact"],
       ["__cancel", "api", "01ABC", "--local", "--exact"],
       ["__cancel", "api", "01XYZ", "--local", "--exact"],
       ["__cancel", "api", "01OLD", "--local", "--exact"],
     ]);
   });
 
-  test("interrupt by messageId forwards to __interrupt", async () => {
-    reply = (call) =>
-      call.args[2] === "01ABC"
-        ? { exitCode: 0, stdout: JSON.stringify({ ok: false, error: "message 01ABC is already done", state: "done", reason: "already_done" }) }
-        : { exitCode: 0, stdout: JSON.stringify({ ok: true, state: "delivered" }) };
-    const refused = await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC" });
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: "message 01ABC is already done", state: "done", reason: "already_done" });
-    const ok = await post("/api/agents/laptop:api/interrupt", { messageId: "01XYZ" });
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true });
-    expect(calls.map((c) => c.args)).toEqual([
-      ["__interrupt", "api", "01ABC", "--local", "--exact"],
-      ["__interrupt", "api", "01XYZ", "--local", "--exact"],
-    ]);
-
+  test("message cancel: unknown id → 404, old am → 409, bad id never reaches ssh", async () => {
     reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
-    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" })).status).toBe(404);
-    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__interrupt" — see `am help`' });
-    const old = await post("/api/agents/laptop:api/interrupt", { messageId: "01NOPE" });
-    expect(old.status).toBe(409);
-    expect(await old.json()).toMatchObject({ error: expect.stringContaining("remote am too old"), reason: "remote_too_old" });
-    calls.length = 0;
-    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "a.b" })).status).toBe(404);
-    expect((await post("/api/agents/laptop:api/interrupt", { messageId: "01ABC", text: "hi" })).status).toBe(400);
-    expect((await post("/api/agents/laptop:api/interrupt", { messageId: 1 })).status).toBe(400);
-    expect(calls).toEqual([]);
-  });
-
-  test("message receipts: unknown id → 404, old am → 409, bad id never reaches ssh", async () => {
-    reply = () => ({ exitCode: 1, stderr: 'am: no message "01NOPE" for agent "api"' });
-    expect((await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth())).status).toBe(404);
-    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__message" — see `am help`' });
-    const old = await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth());
-    expect(old.status).toBe(409);
-    expect(await old.json()).toMatchObject({ error: expect.stringContaining("remote am too old"), reason: "remote_too_old" });
+    expect((await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth({ method: "DELETE" }))).status).toBe(404);
     reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__cancel" — see `am help`' });
     const oldCancel = await fetch(url("/api/agents/laptop:api/messages/01NOPE"), auth({ method: "DELETE" }));
     expect(await oldCancel.json()).toMatchObject({ reason: "remote_too_old" });
@@ -919,7 +860,7 @@ describe("remote agents api (host:name)", () => {
     expect(noJson.status).toBe(409);
     expect(await noJson.json()).toMatchObject({ reason: "remote_too_old" });
     calls.length = 0;
-    expect((await fetch(url("/api/agents/laptop:api/messages/a.b"), auth())).status).toBe(404);
+    expect((await fetch(url("/api/agents/laptop:api/messages/a.b"), auth({ method: "DELETE" }))).status).toBe(404);
     expect(calls).toEqual([]);
   });
 
@@ -932,18 +873,15 @@ describe("remote agents api (host:name)", () => {
     expect(calls.map(c => c.args)).toEqual([["__detail", "api", "--local", "--exact"], ["rename", "api", "new-name", "--local", "--exact"]]);
   });
 
-  test("transcript slices entries by after", async () => {
+  test("transcript forwards to transcript --json after the exact precheck", async () => {
     const transcript = {
       provider: "claude", sessionId: "s", status: "idle", total: 3,
       entries: [0, 1, 2].map((index) => ({ index, kind: "user", text: String(index) })),
     };
     reply = () => ({ exitCode: 0, stdout: JSON.stringify(transcript) });
-    const body = (await (await fetch(url("/api/agents/laptop:api/transcript?after=1"), auth())).json()) as any;
-    expect(body.total).toBe(3);
-    expect(body.entries.map((e: any) => e.index)).toEqual([1, 2]);
+    expect(await (await fetch(url("/api/agents/laptop:api/transcript"), auth())).json()).toEqual(transcript);
     expect(calls.map((c) => c.args[0])).toEqual(["__detail", "transcript"]);
     expect(calls[1]!.args).toEqual(["transcript", "api", "--json", "--local", "--exact"]);
-    expect((await fetch(url("/api/agents/laptop:api/transcript?after=-1"), auth())).status).toBe(400);
   });
 
   test("transcript from an am without --json → 409 remote am too old", async () => {
@@ -974,34 +912,23 @@ describe("remote agents api (host:name)", () => {
     expect((await post("/api/agents/laptop:api/interrupt", { text: 1 })).status).toBe(400);
   });
 
-  test("stop ifIdle: capability-checked, forwarded as stop --if-idle, refusals keep their reason", async () => {
-    let outcome: unknown = { ok: true };
-    let capable = true;
-    reply = (call) =>
-      call.args[0] === "__detail"
-        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", ...(capable ? { stopIfIdle: true } : {}) }) }
-        : { exitCode: 0, stdout: JSON.stringify(outcome) };
-    const ok = await post("/api/agents/laptop:api/stop", { ifIdle: true });
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true });
-    expect(calls.map((c) => c.args)).toEqual([
-      ["__detail", "api", "--local", "--exact"],
-      ["stop", "api", "--if-idle", "--local", "--exact"],
-    ]);
-    for (const reason of ["busy", "queued", "in_turn"]) {
-      outcome = { ok: false, error: `nope (${reason})`, reason };
-      const res = await post("/api/agents/laptop:api/stop", { ifIdle: true });
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `nope (${reason})`, reason });
+  test("stop with any ifIdle is refused before anything reaches the host", async () => {
+    for (const ifIdle of [true, false, 1, null]) {
+      const res = await post("/api/agents/laptop:api/stop", { ifIdle });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ifIdle is not supported; use `am stop --if-idle`" });
     }
-    // An older am would ignore --if-idle and stop regardless: never sent.
-    capable = false;
-    calls.length = 0;
-    const old = await post("/api/agents/laptop:api/stop", { ifIdle: true });
-    expect(old.status).toBe(409);
-    expect(await old.json()).toEqual({ error: "remote am too old on laptop (no stop --if-idle)", reason: "remote_too_old" });
-    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
-    expect((await post("/api/agents/laptop:api/stop", { ifIdle: 1 })).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  test("restart with ifIdle/model/effort and interrupt with messageId are refused before anything reaches the host", async () => {
+    for (const body of [{ ifIdle: true }, { model: "opus" }, { effort: null }]) {
+      expect((await post("/api/agents/laptop:api/restart", body)).status).toBe(400);
+    }
+    for (const messageId of ["01ABC", null]) {
+      expect((await post("/api/agents/laptop:api/interrupt", { messageId })).status).toBe(400);
+    }
+    expect(calls).toEqual([]);
   });
 
   test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {
@@ -1151,50 +1078,14 @@ describe("remote agents api (host:name)", () => {
     expect(calls).toHaveLength(2);
   });
 
-  test("restart: capability-checked, forwarded with --model/--effort/--if-idle --json", async () => {
-    let outcome: unknown = { ok: true, model: "gpt-6.1-sol", effort: "high" };
-    let capable = true;
-    reply = (call) =>
-      call.args[0] === "__detail"
-        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", ...(capable ? { restartModel: true } : {}) }) }
-        : { exitCode: 0, stdout: JSON.stringify(outcome) };
-    const ok = await post("/api/agents/laptop:api/restart", { model: "gpt-6.1-sol", effort: "high" });
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true, model: "gpt-6.1-sol", effort: "high" });
-    expect(calls.map((c) => [c.args, c.timeoutMs])).toEqual([
-      [["__detail", "api", "--local", "--exact"], 20_000],
-      [["restart", "api", "--json", "--model", "gpt-6.1-sol", "--effort", "high", "--local", "--exact"], 60_000],
+  test("restart is forwarded as a plain am restart after the exact precheck", async () => {
+    const res = await post("/api/agents/laptop:api/restart");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["__detail", "api", "--local", "--exact"],
+      ["restart", "api", "--local", "--exact"],
     ]);
-    calls.length = 0;
-    outcome = { ok: true, model: null, effort: null };
-    expect(await (await post("/api/agents/laptop:api/restart", { model: null, effort: "", ifIdle: true })).json())
-      .toEqual({ ok: true, model: null, effort: null });
-    expect(calls[1]!.args).toEqual(["restart", "api", "--json", "--model", "default", "--effort", "default", "--if-idle", "--local", "--exact"]);
-    for (const reason of ["busy", "queued", "in_turn"]) {
-      outcome = { ok: false, error: `nope (${reason})`, reason };
-      const res = await post("/api/agents/laptop:api/restart", { ifIdle: true });
-      expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: `nope (${reason})`, reason });
-    }
-    // A rejected model on the remote is a 400 there too.
-    reply = (call) =>
-      call.args[0] === "__detail"
-        ? { exitCode: 0, stdout: JSON.stringify({ name: "api", restartModel: true }) }
-        : { exitCode: 1, stderr: 'am: unknown codex model "gpt-nope" — known models: gpt-6-luna (see `am models`)' };
-    const bad = await post("/api/agents/laptop:api/restart", { model: "gpt-nope" });
-    expect(bad.status).toBe(400);
-    expect(((await bad.json()) as any).error).toContain('unknown codex model "gpt-nope"');
-    // An older am would restart on the old model: never sent.
-    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "api" }) });
-    capable = false;
-    calls.length = 0;
-    const old = await post("/api/agents/laptop:api/restart", { model: "opus" });
-    expect(old.status).toBe(409);
-    expect(await old.json()).toEqual({ error: "remote am too old on laptop (no restart --model)", reason: "remote_too_old" });
-    expect(calls.map((c) => c.args[0])).toEqual(["__detail"]);
-    expect((await post("/api/agents/laptop:api/restart", { model: 1 })).status).toBe(400);
-    reply = () => ({ exitCode: 1, stderr: 'am: no local agent "api"' });
-    expect((await post("/api/agents/laptop:api/restart", { model: "opus" })).status).toBe(404);
   });
 
   test("GET /api/hosts lists this host and the configured remotes", async () => {
@@ -1242,10 +1133,6 @@ describe("models api (this host)", () => {
     expect(probes()).toBe(1);
     await fetch(url("/api/models?refresh=1"), auth());
     expect(probes()).toBe(2);
-  });
-
-  test("health advertises models", async () => {
-    expect(((await (await fetch(url("/api/health"), auth())).json()) as any).models).toBe(true);
   });
 });
 

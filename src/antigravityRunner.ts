@@ -239,7 +239,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions, 
       try {
         if(owned()) {
           const current=readAgent(name)!;
-          if(interrupted && turn?.ack)markTurnEnded(name,current,new Date(Math.max(Date.now(),Date.parse(current.promptAt ?? "")+1 || 0)),true,false);
+          if(interrupted && turn?.ack)markTurnEnded(name,current,new Date(Math.max(Date.now(),Date.parse(current.promptAt ?? "")+1 || 0)),true);
           markSessionEnded(name,current,undefined);
           mutate(s=>{
             if(clean) {s.antigravityCleanupRunId=runId;updateAgentStatus(s,"exited",reason);}
@@ -382,7 +382,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions, 
     const at=new Date(Math.max(Date.now(),Date.parse(turn.promptAt!)+1));
     if(body.status==="SUCCESS" || body.status==="CANCELED" || body.status==="INTERRUPTED") {
       if(turn.id)persist(deliveryPath(turn.id),{createdAt,runId,id:turn.id,digest:digest(turn.text),outcome:"delivered",promptAt:turn.promptAt,mark:turn.mark,completedAt:at.toISOString(),interrupted:interrupted || body.status!=="SUCCESS"});
-      markTurnEnded(name,current,at,interrupted || body.status!=="SUCCESS",true);
+      markTurnEnded(name,current,at,interrupted || body.status!=="SUCCESS");
     }
     const failed=body.status==="ERROR" || body.status==="INVALID";
     const blocked=body.status==="WAITING" || body.status==="RUNNING" || permissionBlocked;
@@ -434,7 +434,7 @@ export async function runAntigravity(name: string, rawOpts: AntigravityOptions, 
             if(record.outcome==="delivered") {
               markDelivered(name,payload.id,record.mark,"prompt",record.promptAt);
               queuePopId(name,payload.id);
-              if(record.completedAt)markTurnEnded(name,{...readAgent(name)!,promptAt:record.promptAt,promptKey:promptKey(payload.message)},new Date(record.completedAt),record.interrupted,true);
+              if(record.completedAt)markTurnEnded(name,{...readAgent(name)!,promptAt:record.promptAt,promptKey:promptKey(payload.message)},new Date(record.completedAt),record.interrupted);
               reply(response("delivered"));
             } else {
               hold=true;status("needs-attention","Antigravity delivery outcome unknown; inspect delivery evidence before resubmitting");

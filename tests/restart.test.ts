@@ -2,18 +2,17 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { restartAgent, restartIfIdle } from "../src/commands/restart";
+import { restartAgent } from "../src/commands/restart";
 import type { MessageProvenance } from "../src/comms";
 import { reviveAgent } from "../src/commands/resume";
 import { newCommand } from "../src/commands/new";
 import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, releaseDeliverLock } from "../src/deliver";
-import { queueAppend, queueAppendForAgent, queueClear, queueList, queuePopId } from "../src/queue";
-import { readAgent, updateAgentStatus, writeAgent, type AgentState } from "../src/state";
-import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
+import { queueAppend, queueClear, queueList } from "../src/queue";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { queueTrackedMessage, readMessage } from "../src/messages";
 import { SelectionError } from "../src/catalog";
 import { startApiServer, type ApiServerHandle } from "../src/server";
-import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
 
 let home: string;
@@ -277,23 +276,6 @@ describe("restart with a model change", () => {
     expect(readAgent("api")!.effort).toBeUndefined();
   });
 
-  test("an enqueue during an ifIdle restart is not refused", async () => {
-    const agent = readAgent("api")!;
-    updateAgentStatus(agent, "idle");
-    writeAgent(agent);
-    const spawn = spawnSpy.getMockImplementation()!;
-    let enqueued: unknown;
-    spawnSpy.mockImplementation((cmd: any, opts?: any) => {
-      if (cmd[1] === "respawn-pane") {
-        try { enqueued = queueAppendForAgent("api", "heads-up"); } catch (error) { enqueued = error; }
-      }
-      return spawn(cmd, opts);
-    });
-    expect(await restartIfIdle("api", { model: "opus" })).toEqual({ ok: true, model: "opus", effort: null });
-    expect(typeof enqueued).toBe("string");
-    expect(queueList("api").map((e) => e.message)).toEqual(["heads-up"]);
-  });
-
   test("a queued message survives the restart, receipt still queued", async () => {
     const id = queueTrackedMessage("api", "after the restart");
     await restartAgent("api", { model: "opus" });
@@ -315,84 +297,29 @@ describe("POST /api/agents/:name/restart", () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const setStatus = (status: AgentState["status"]) => {
-    const agent = readAgent("api")!;
-    updateAgentStatus(agent, status);
-    writeAgent(agent);
-  };
 
-  test("restarts on the new model and answers with what it now runs", async () => {
-    const res = await restart("api", { model: "sonnet", effort: "low" });
+  test("restarts on the agent's current model and answers ok; 404 for an unknown agent", async () => {
+    await restartAgent("api", { model: "sonnet", effort: "low" });
+    const res = await restart("api");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, model: "sonnet", effort: "low" });
+    expect(await res.json()).toEqual({ ok: true });
     expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'sonnet' '--effort' 'low' '--resume' 'conversation-123'");
-    // "" and null both mean the provider default; omitted keeps the value.
-    expect(await (await restart("api", { effort: "" })).json()).toEqual({ ok: true, model: "sonnet", effort: null });
-    expect(await (await restart("api")).json()).toEqual({ ok: true, model: "sonnet", effort: null });
+    expect((await restart("nobody")).status).toBe(404);
   });
 
-  test("ifIdle refuses busy, queued and in_turn agents without touching the pane", async () => {
-    let res = await restart("api", { model: "opus", ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'agent "api" is working', reason: "busy" });
-
-    setStatus("idle");
-    queueAppend("api", "later");
-    res = await restart("api", { model: "opus", ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as any).reason).toBe("queued");
-
-    queueClear("api");
-    const id = queueTrackedMessage("api", "now");
-    queuePopId("api", `${id}.json`);
-    markDelivered("api", `${id}.json`);
-    res = await restart("api", { model: "opus", ifIdle: true });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as any).reason).toBe("in_turn");
-
-    expect(existsSync(join(home, "launch"))).toBe(false);
-    expect(readAgent("api")!.model).toBeUndefined();
-  });
-
-  test("ifIdle restarts an idle agent; a held lifecycle lock is busy", async () => {
-    setStatus("idle");
-    expect(acquireLifecycleLock("api")).toBe(true);
-    try {
-      const res = await restart("api", { model: "opus", ifIdle: true });
-      expect(res.status).toBe(409);
-      expect(((await res.json()) as any).reason).toBe("busy");
-    } finally {
-      releaseLifecycleLock("api");
+  test("refuses ifIdle, model and effort rather than restarting regardless", async () => {
+    for (const body of [{ ifIdle: true }, { model: "opus" }, { effort: "high" }, { model: null }, { effort: null }, { ifIdle: null }]) {
+      const res = await restart("api", body);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain(`${Object.keys(body)[0]} is not supported`);
     }
-    const res = await restart("api", { model: "opus", ifIdle: true });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, model: "opus", effort: null });
-    expect(readAgent("api")).toMatchObject({ model: "opus", status: "starting" });
-    // Both mailbox locks are free again.
-    expect(acquireDeliverLock("api")).toBe(true);
-    releaseDeliverLock("api");
-    queueAppend("api", "after");
-  });
-
-  test("400 on an invalid model or body, 404 for an unknown agent", async () => {
-    writeFileSync(join(home, "claude"), `#!/bin/sh
-if [ "$1" = --help ]; then printf '  --effort <level>  Effort level (low, medium, high)\\n  --model <model>  Model\\n  -x\\n'; fi
-exit 0
-`);
-    const bad = await restart("api", { effort: "ultra" });
-    expect(bad.status).toBe(400);
-    expect(((await bad.json()) as any).error).toContain('unknown claude effort "ultra"');
-    expect((await restart("api", { model: 5 })).status).toBe(400);
-    expect((await restart("api", { model: "a b" })).status).toBe(400);
-    expect((await restart("api", { ifIdle: "yes" })).status).toBe(400);
-    expect((await restart("nobody", { model: "opus" })).status).toBe(404);
     expect(existsSync(join(home, "launch"))).toBe(false);
   });
 
-  test("detail reports the model, effort and the restartModel capability", async () => {
+  test("detail reports the model and effort", async () => {
     const detail = async () => (await (await fetch(`${server.url}/api/agents/api`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as any;
-    expect(await detail()).toMatchObject({ model: null, effort: null, restartModel: true });
-    await restart("api", { model: "opus", effort: "high" });
-    expect(await detail()).toMatchObject({ model: "opus", effort: "high", restartModel: true });
+    expect(await detail()).toMatchObject({ model: null, effort: null });
+    await restartAgent("api", { model: "opus", effort: "high" });
+    expect(await detail()).toMatchObject({ model: "opus", effort: "high" });
   });
 });

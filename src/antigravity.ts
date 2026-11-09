@@ -467,7 +467,7 @@ export function reconcileAntigravityAgent(
   if (transitionedToIdle && beforeIdleSnapshot) {
     try {
       const endedAt = new Date(Date.parse(result.statusChangedAt ?? "") || Date.now());
-      markTurnEnded(agent.name, beforeIdleSnapshot, endedAt, false, true);
+      markTurnEnded(agent.name, beforeIdleSnapshot, endedAt);
       settleMessages(agent.name);
     } catch {
       // Message receipt updates must not break status reconciliation.

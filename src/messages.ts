@@ -30,11 +30,6 @@ export interface MessageView {
   error?: string;
   // On a done record: its turn was aborted with Esc rather than finished.
   interrupted?: true;
-  // On a done record from a Stop hook with a reply: whether that reply was on
-  // disk (GET /transcript at transcriptIndex or later) when it went done.
-  // Absent when there was no reply to check: an interrupt, a turn with no
-  // text, or a turn end caught up after the fact.
-  transcriptComplete?: boolean;
 }
 
 // Why a message or interrupt route refused (HTTP 409), for clients to branch
@@ -44,8 +39,6 @@ export type ConflictReason =
   | "already_done"
   | "already_cancelled"
   | "already_failed"
-  | "not_started"
-  | "already_interrupted"
   | "no_session"
   | "mailbox_busy"
   | "already_delivered"
@@ -66,8 +59,6 @@ export function conflictReason(message: string): ConflictReason | undefined {
   if (/has no live tmux session|no longer exists|no agent matches|no local agent/.test(message)) return "no_session";
   if (/is being delivered/.test(message)) return "already_delivered";
   if (/is not delivered yet/.test(message)) return "not_delivered";
-  if (/has not started yet/.test(message)) return "not_started";
-  if (/was already interrupted/.test(message)) return "already_interrupted";
   const already = /is already (delivered|done|cancelled|failed)\b/.exec(message);
   return already ? alreadyReason(already[1] as Exclude<MessageState, "queued">) : undefined;
 }
@@ -84,7 +75,6 @@ export interface MessageRecord extends MessageView {
   // The prompt (UserPromptSubmit) that started its turn; see claimPrompt.
   startedAt?: string;
   promptKey?: string;
-  interruptedAt?: string;
 }
 
 // Taken immediately before am hands a message over, so everything the agent
@@ -120,7 +110,7 @@ function entryMessageId(entryId: string): string {
 }
 
 function view(record: MessageRecord): MessageView {
-  const { handedAt: _handedAt, via: _via, startedAt: _startedAt, interruptedAt: _interruptedAt, promptKey: _promptKey, ...rest } = record;
+  const { handedAt: _handedAt, via: _via, startedAt: _startedAt, promptKey: _promptKey, ...rest } = record;
   return rest;
 }
 
@@ -329,7 +319,7 @@ export function requeueDelivered(name: string, entryId: string): void {
   if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
   updateRecord(name, id, (r) => {
     if (r.state !== "delivered" || r.startedAt) return null;
-    const { handedAt: _h, via: _v, interruptedAt: _i, interrupted: _x, ...rest } = r;
+    const { handedAt: _h, via: _v, interrupted: _x, ...rest } = r;
     return { ...rest, state: "queued", deliveredAt: null, doneAt: null, transcriptIndex: null };
   });
 }
@@ -408,7 +398,6 @@ export function markTurnEnded(
   agent: AgentState,
   at: Date = new Date(),
   interrupted = false,
-  transcriptComplete?: boolean,
 ): void {
   const iso = at.toISOString();
   for (const r of listRecords(name)) {
@@ -420,7 +409,6 @@ export function markTurnEnded(
             state: "done",
             doneAt: iso,
             ...(interrupted ? { interrupted: true as const } : {}),
-            ...(transcriptComplete !== undefined ? { transcriptComplete } : {}),
           }
         : null,
     );
@@ -519,29 +507,6 @@ function settle(name: string, record: MessageRecord): MessageRecord {
   }
   if (agent && hasSession(agent.tmuxSession)) return record;
   return finishDelivered(name, record.id, agent, undefined) ?? record;
-}
-
-// Runs `fn` under the records lock on a record caught up with any turn end
-// the hooks have yet to mark, so none can land between its check and its
-// action; `save` writes it back. Null: no such record.
-export function withSettledRecord<T>(
-  name: string,
-  id: string,
-  fn: (record: MessageRecord, save: (next: MessageRecord) => void) => T,
-): T | null {
-  if (!ID_RE.test(id)) return null;
-  const file = recordFile(name, id);
-  if (!existsSync(file)) return null;
-  return withFileLock(recordsLock(name), () => {
-    let record = readJsonOrNull<MessageRecord>(file);
-    if (!record) return null;
-    const agent = readAgent(name);
-    if (record.state === "delivered" && agent && turnEndedSince(agent, record)) {
-      record = { ...record, state: "done", doneAt: new Date().toISOString() };
-      writeJsonAtomic(file, record, { pretty: false });
-    }
-    return fn(record, (next) => writeJsonAtomic(file, next, { pretty: false }));
-  });
 }
 
 export function readMessage(name: string, id: string): MessageView | null {
