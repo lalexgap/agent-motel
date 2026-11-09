@@ -160,7 +160,7 @@ describe("concierge exact conversation revival", () => {
       seedAgent(CONCIERGE_NAME, { provider, [field]: "exact-concierge-session" });
       const live = spyOn(tmux, "hasSession").mockReturnValue(false);
       const revive = spyOn(resume, "reviveAgent").mockImplementation(async (agent, opts) => {
-        const plan = buildResumeCommand(provider, agent, opts);
+        const plan = buildResumeCommand(provider, agent, opts ?? {});
         expect(plan.command).toContain("exact-concierge-session");
         expect(plan.command).not.toContain("--last");
         expect(plan.command).not.toContain("--continue");
