@@ -267,7 +267,7 @@ function cancelResponse(result: CancelResult): Response {
 // a client that still sends those fields rather than act unconditionally.
 async function refuseFields(req: Request, fields: string[]): Promise<Response | null> {
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
-  const sent = fields.find((field) => body?.[field] != null);
+  const sent = body && typeof body === "object" ? fields.find((field) => Object.hasOwn(body, field)) : undefined;
   return sent ? json({ error: `${sent} is not supported${sent === "ifIdle" ? "; use `am stop --if-idle`" : ""}` }, 400) : null;
 }
 const stopBody = (req: Request) => refuseFields(req, ["ifIdle"]);
@@ -309,7 +309,7 @@ async function hostCatalogs(host: string | null, refresh: boolean): Promise<Prov
 // {text?}: an error response, or the text to send after the Esc.
 async function interruptBody(req: Request): Promise<Response | string> {
   const body = (await req.json().catch(() => null)) as { text?: unknown; messageId?: unknown } | null;
-  if (body?.messageId != null) return json({ error: "messageId is not supported" }, 400);
+  if (body && typeof body === "object" && Object.hasOwn(body, "messageId")) return json({ error: "messageId is not supported" }, 400);
   if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
   return typeof body?.text === "string" ? body.text.trim() : "";
 }
@@ -986,8 +986,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
   let terminalResolutions = 0;
   const server = Bun.serve<TerminalData>({
     websocket: terminal.websocket,
-    // Above Bun's 10s default: stop {ifIdle} waits up to 10s for the mailbox,
-    // and remote routes run ssh with up to 30s timeouts.
+    // Above Bun's 10s default: remote routes run ssh with up to 30s timeouts.
     idleTimeout: 120,
     maxRequestBodySize: PASTE_MAX_BYTES + 64 * 1024,
     port: opts.port ?? loadConfig().apiPort,

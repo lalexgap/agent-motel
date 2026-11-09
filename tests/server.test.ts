@@ -622,7 +622,7 @@ describe("stopIfIdle", () => {
 
   test("POST /stop refuses any ifIdle without stopping; a plain stop stops a busy agent", async () => {
     liveAgent("plain", "working");
-    for (const ifIdle of [true, false, "yes"]) {
+    for (const ifIdle of [true, false, "yes", null]) {
       const res = await stop("plain", { ifIdle });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "ifIdle is not supported; use `am stop --if-idle`" });
@@ -913,10 +913,20 @@ describe("remote agents api (host:name)", () => {
   });
 
   test("stop with any ifIdle is refused before anything reaches the host", async () => {
-    for (const ifIdle of [true, false, 1]) {
+    for (const ifIdle of [true, false, 1, null]) {
       const res = await post("/api/agents/laptop:api/stop", { ifIdle });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "ifIdle is not supported; use `am stop --if-idle`" });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("restart with ifIdle/model/effort and interrupt with messageId are refused before anything reaches the host", async () => {
+    for (const body of [{ ifIdle: true }, { model: "opus" }, { effort: null }]) {
+      expect((await post("/api/agents/laptop:api/restart", body)).status).toBe(400);
+    }
+    for (const messageId of ["01ABC", null]) {
+      expect((await post("/api/agents/laptop:api/interrupt", { messageId })).status).toBe(400);
     }
     expect(calls).toEqual([]);
   });

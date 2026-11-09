@@ -20,7 +20,6 @@ import {
   promptKey,
   recordImmediateDelivery,
   transcriptLength,
-  withSettledRecord,
   awaitTurnReply,
   markTurnEnded,
 } from "../src/messages";
@@ -570,18 +569,6 @@ describe("delivery receipts", () => {
     hook("user-prompt-submit", { prompt: "go" });
     hook("stop");
     expect(readMessage("api", id)!.state).toBe("done");
-  });
-
-  test("a turn end the hooks have not marked yet is settled inside the records lock", () => {
-    fakeSession("working");
-    const id = recordImmediateDelivery("api", { transcriptIndex: 3, handedAt: new Date().toISOString() }, "go");
-    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
-    writeAgent({ ...readAgent("api")!, status: "idle", promptAt: later(10), statusChangedAt: later(20) });
-    expect(claimPrompt("api", readAgent("api")!.promptAt!, promptKey("go"))).toBe(id);
-    expect(withSettledRecord("api", id, (r) => r.state)).toBe("done");
-    const raw = JSON.parse(readFileSync(join(home, "queue", "api", ".messages", `${id}.json`), "utf8"));
-    expect(raw.state).toBe("done");
-    expect(withSettledRecord("api", "01NOPE", (r) => r.state)).toBeNull();
   });
 
   test("rename carries the records", async () => {

@@ -36,7 +36,6 @@ import {
   promptKey,
   readMessage,
   requeueDelivered,
-  withSettledRecord,
   type Conflict,
   type DeliveryMark,
   type MessageState,

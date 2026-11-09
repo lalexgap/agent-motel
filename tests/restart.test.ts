@@ -308,7 +308,7 @@ describe("POST /api/agents/:name/restart", () => {
   });
 
   test("refuses ifIdle, model and effort rather than restarting regardless", async () => {
-    for (const body of [{ ifIdle: true }, { model: "opus" }, { effort: "high" }]) {
+    for (const body of [{ ifIdle: true }, { model: "opus" }, { effort: "high" }, { model: null }, { effort: null }, { ifIdle: null }]) {
       const res = await restart("api", body);
       expect(res.status).toBe(400);
       expect(((await res.json()) as any).error).toContain(`${Object.keys(body)[0]} is not supported`);
