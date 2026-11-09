@@ -107,11 +107,13 @@ describe("buildNotifyCommand", () => {
     expect(buildNotifyCommand("t", "m", config, { platform: "darwin", has: () => true })![0]).toBe("sh");
   });
 
-  test("macOS: terminal-notifier with sender, else osascript", () => {
-    const withSender = { ...base, notifySender: "com.mitchellh.ghostty" };
-    expect(buildNotifyCommand("t", "m", withSender, { platform: "darwin", has: () => true })![0]).toBe("terminal-notifier");
-    expect(buildNotifyCommand("t", "m", withSender, { platform: "darwin", has: () => false })![0]).toBe("osascript");
-    expect(buildNotifyCommand("t", "m", base, { platform: "darwin", has: () => true })![0]).toBe("osascript");
+  test("macOS: osascript, even when terminal-notifier is installed", () => {
+    expect(buildNotifyCommand("t", "m", base, { platform: "darwin", has: () => true })).toEqual([
+      "osascript", "-e", 'display notification "m" with title "t"',
+    ]);
+    expect(buildNotifyCommand('a "b"', "c\\d", base, { platform: "darwin", has: () => false })![2]).toBe(
+      'display notification "c\\\\d" with title "a \\"b\\""',
+    );
   });
 
   test("linux: notify-send when present, else silent null", () => {

@@ -5,8 +5,7 @@ import { recordNotification, type NotificationKind } from "./notifications";
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
 //      $AM_MESSAGE (e.g. a curl to ntfy.sh for phone push from a server)
-//   2. macOS: terminal-notifier as config.notifySender (terminal icon, click
-//      focuses it), else osascript (Script Editor icon)
+//   2. macOS: osascript (terminal-notifier's -sender is broken on macOS 27)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
 // Every notification is also journaled so remote daemons can relay it.
@@ -24,9 +23,6 @@ export function buildNotifyCommand(
 ): string[] | null {
   if (config.notifyCommand) return ["sh", "-c", config.notifyCommand];
   if (env.platform === "darwin") {
-    if (config.notifySender && env.has("terminal-notifier")) {
-      return ["terminal-notifier", "-title", title, "-message", message, "-sender", config.notifySender, "-group", `am-${title}`];
-    }
     const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     return ["osascript", "-e", `display notification "${esc(message)}" with title "${esc(title)}"`];
   }
@@ -54,8 +50,8 @@ export function showNotification(title: string, message: string): void {
     has: (binary) => !!Bun.which(binary),
   });
   if (!cmd) return;
-  // Fire-and-forget: hooks run these, and a notifier that blocks
-  // (terminal-notifier is known to linger) must never stall a hook.
+  // Fire-and-forget: hooks run these, and a notifier that blocks must never
+  // stall a hook.
   Bun.spawn({
     cmd,
     env: { ...process.env, AM_TITLE: title, AM_MESSAGE: message },
