@@ -143,9 +143,9 @@ export function asFeedback(f: Feedback | null | undefined): FeedbackResult | nul
 
 export interface PickerHandlers {
   // Each returns a feedback message shown as a banner under the header.
-  stop?: (name: string) => Feedback;
+  stop?: (name: string) => Feedback | Promise<Feedback>;
   restart?: (name: string) => Feedback | Promise<Feedback>;
-  remove?: (name: string) => Feedback;
+  remove?: (name: string) => Feedback | Promise<Feedback>;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
   // Create a new agent; resolves to its key (name locally, host:name remote),
@@ -1950,14 +1950,6 @@ export async function pick(
       return true;
     };
 
-    const runAction = (handler: (name: string) => Feedback) => {
-      const target = filtered()[cursor];
-      if (!actionable(target)) return;
-      feedback = asFeedback(handler(target.name));
-      items = load();
-      if (items.length === 0 && !handlers.create) return finish(null);
-    };
-
     // Slow actions (ssh move, handoff): show progress in the footer, resolve
     // into it when done — the picker stays interactive throughout.
     const runDeferred = (working: string, handler: (name: string) => Feedback | Promise<Feedback>) => {
@@ -1970,6 +1962,7 @@ export async function pick(
           (message) => {
             feedback = asFeedback(message);
             items = load();
+            if (!finished && items.length === 0 && !handlers.create && !handlers.select) return finish(null);
             if (!finished) render();
           },
           (error: Error) => {
@@ -2147,7 +2140,7 @@ export async function pick(
           break;
         case "stop":
           mode = "list";
-          if (handlers.stop) runAction(handlers.stop);
+          if (handlers.stop) runDeferred("stopping", handlers.stop);
           break;
         case "remove":
           if (actionable(target) && handlers.remove) {
@@ -2432,12 +2425,12 @@ export async function pick(
           runDeferred("restarting", handlers.restart);
         } else if (key === "x" && handlers.stop) {
           mode = "list";
-          runAction(handlers.stop);
+          runDeferred("stopping", handlers.stop);
         } else if (key === "d" && handlers.remove) {
           // twice on the same item to confirm
           if (pending === target.name) {
             mode = "list";
-            runAction(handlers.remove);
+            runDeferred("removing", handlers.remove);
           } else {
             confirmRemove = target.name;
           }

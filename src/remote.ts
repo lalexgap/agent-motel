@@ -102,10 +102,32 @@ export async function checkedRemoteAm(
   run: (host: string, args: string[], opts?: { stdin?: string; timeoutMs?: number }) => Promise<SshResult>,
 ): Promise<SshResult> {
   const check = needsAntigravitySupport(args);
-  if (check) assertAntigravitySupport(host, await run(host, ANTIGRAVITY_PROBE, { timeoutMs: 10000 }));
-  const result = await run(host, args, opts);
+  if (!check) return run(host, args, opts);
+  const deadline = opts.timeoutMs && opts.timeoutMs > 0 ? performance.now() + opts.timeoutMs : undefined;
+  const invoke = (command: string[], options: typeof opts): Promise<SshResult> => {
+    const remaining = deadline === undefined ? undefined : deadline - performance.now();
+    if (remaining !== undefined && remaining <= 0) {
+      return Promise.resolve({ exitCode: 124, stdout: "", stderr: "remote operation timed out" });
+    }
+    const timeoutMs = remaining === undefined ? options.timeoutMs
+      : options.timeoutMs ? Math.min(options.timeoutMs, remaining) : remaining;
+    return run(host, command, { ...options, timeoutMs });
+  };
+  if (check) {
+    const probe = await invoke(ANTIGRAVITY_PROBE, { timeoutMs: 10000 });
+    if (probe.exitCode === 124) return probe;
+    assertAntigravitySupport(host, probe);
+  }
+  const result = await invoke(args, opts);
   const name = check && result.exitCode === 0 ? createdName(args) : undefined;
-  if (name) assertCreatedProvider(host, name, await run(host, ["__detail", name, "--local", "--exact"], { timeoutMs: 10000 }));
+  if (name) {
+    const verified = await invoke(["__detail", name, "--local", "--exact"], { timeoutMs: 10000 });
+    if (verified.exitCode === 124) return {
+      exitCode: 124, stdout: result.stdout,
+      stderr: `${verified.stderr}\nremote ${host}:${name} verification timed out; inspect it before retrying`.trim(),
+    };
+    assertCreatedProvider(host, name, verified);
+  }
   return result;
 }
 
@@ -214,16 +236,56 @@ export function sshAm(
   return result;
 }
 
-// A killed-on-timeout process reports 124, like coreutils `timeout`.
-function killAfter(proc: { kill: () => void }, timeoutMs?: number) {
-  const state = { timedOut: false };
-  const timer = timeoutMs
-    ? setTimeout(() => {
-        state.timedOut = true;
-        proc.kill();
-      }, timeoutMs)
-    : undefined;
-  return { state, settle: () => clearTimeout(timer) };
+// Completion includes both process exit and pipe EOF. Descendants may keep
+// pipes open after the direct child exits, so killing alone is not a deadline.
+async function collectProcess(
+  proc: { stdout?: ReadableStream<Uint8Array>; stderr: ReadableStream<Uint8Array>; exited: Promise<number>; kill: (signal?: number) => void },
+  timeoutMs?: number,
+): Promise<SshResult> {
+  const outputs = [proc.stdout, proc.stderr].map(stream => ({
+    reader: stream?.getReader(), decoder: new TextDecoder(), text: "", done: false,
+  }));
+  let exited = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const kill = () => {
+    if (!exited) {
+      try { proc.kill(9); } catch {}
+    }
+  };
+  const drains = outputs.map(async output => {
+    if (!output.reader) return;
+    try {
+      while (true) {
+        const { value, done } = await output.reader.read();
+        if (done) break;
+        output.text += output.decoder.decode(value, { stream: true });
+      }
+      output.text += output.decoder.decode();
+      output.done = true;
+    } finally {
+      output.reader.releaseLock();
+    }
+  });
+  const completion = Promise.all([
+    ...drains,
+    proc.exited.then(code => { exited = true; return code; }),
+  ]).then(values => values[values.length - 1] as number);
+  try {
+    const deadline = timeoutMs && timeoutMs > 0
+      ? new Promise<number>(resolve => { timer = setTimeout(() => resolve(124), timeoutMs); })
+      : undefined;
+    const exitCode = await (deadline ? Promise.race([completion, deadline]) : completion);
+    return { exitCode, stdout: outputs[0]!.text, stderr: outputs[1]!.text };
+  } finally {
+    clearTimeout(timer);
+    kill();
+    for (const output of outputs) {
+      if (!output.reader || output.done) continue;
+      // Cancellation itself can hang; neither it nor exit may delay settlement.
+      void output.reader.cancel().catch(() => {});
+      output.reader.releaseLock();
+    }
+  }
 }
 
 // Async process runner shared by the non-blocking ssh helpers: the move
@@ -238,14 +300,7 @@ export async function runAsync(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const timeout = killAfter(proc, opts.timeoutMs);
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  timeout.settle();
-  return { exitCode: timeout.state.timedOut ? 124 : exitCode, stdout, stderr };
+  return collectProcess(proc, opts.timeoutMs);
 }
 
 // File transfer, deliberately not scp. Since OpenSSH 9.0 scp speaks the SFTP
@@ -273,16 +328,13 @@ export async function sshPullFile(
     stdout: Bun.file(partial),
     stderr: "pipe",
   });
-  const timeout = killAfter(proc, opts.timeoutMs);
-  const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-  timeout.settle();
-  const code = timeout.state.timedOut ? 124 : exitCode;
-  if (code === 0) {
-    renameSync(partial, destPath);
-  } else {
+  try {
+    const result = await collectProcess({ stderr: proc.stderr, exited: proc.exited, kill: signal => proc.kill(signal) }, opts.timeoutMs);
+    if (result.exitCode === 0) renameSync(partial, destPath);
+    return result;
+  } finally {
     rmSync(partial, { force: true });
   }
-  return { exitCode: code, stdout: "", stderr };
 }
 
 // Push a local file to an absolute remote path (its directory must exist).
@@ -297,14 +349,7 @@ export async function sshPushFile(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const timeout = killAfter(proc, opts.timeoutMs);
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  timeout.settle();
-  return { exitCode: timeout.state.timedOut ? 124 : exitCode, stdout, stderr };
+  return collectProcess(proc, opts.timeoutMs);
 }
 
 // Same as sshAm, asynchronously — for the picker's background fleet refresh
