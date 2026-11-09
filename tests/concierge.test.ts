@@ -3,13 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as remote from "../src/remote";
+import * as resume from "../src/commands/resume";
+import * as tmux from "../src/tmux";
 import { ensureConcierge, resolveConciergeHostAsync } from "../src/commands/concierge";
-import { CONCIERGE_NAME } from "../src/providers";
+import { buildResumeCommand, CONCIERGE_NAME } from "../src/providers";
 import { conciergeRow } from "../src/fleet";
 import { conciergeAskFeedback, conciergeNewOptions, resolveConciergeHost } from "../src/commands/concierge";
 import { newCommand } from "../src/commands/new";
 import { renameAgent } from "../src/commands/rename";
-import { writeAgent, type AgentState } from "../src/state";
+import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { configFile } from "../src/paths";
 import type { Config } from "../src/config";
 
@@ -137,6 +139,48 @@ describe("conciergeAskFeedback", () => {
 
   test("a rate-limited drop is an error", () => {
     expect(at("dropped").level).toBe("error");
+  });
+});
+
+describe("concierge exact conversation revival", () => {
+  for (const provider of ["claude", "codex"] as const) {
+    test.each([undefined, "", "   "])(`${provider} refuses missing or blank session ID (%s) before revival`, async (sessionId) => {
+      seedAgent(CONCIERGE_NAME, { provider, sessionId });
+      const before = readAgent(CONCIERGE_NAME);
+      const live = spyOn(tmux, "hasSession").mockReturnValue(false);
+      const revive = spyOn(resume, "reviveAgent").mockResolvedValue(undefined);
+      try {
+        await expect(ensureConcierge("fleet status")).rejects.toThrow(/no captured session ID.*unrelated conversation/);
+        expect(revive).not.toHaveBeenCalled();
+        expect(readAgent(CONCIERGE_NAME)).toEqual(before);
+      } finally { live.mockRestore(); revive.mockRestore(); }
+    });
+
+    test.each(["sessionId", "claudeSessionId"])(`${provider} revives the captured %s only`, async (field) => {
+      seedAgent(CONCIERGE_NAME, { provider, [field]: "exact-concierge-session" });
+      const live = spyOn(tmux, "hasSession").mockReturnValue(false);
+      const revive = spyOn(resume, "reviveAgent").mockImplementation(async (agent, opts) => {
+        const plan = buildResumeCommand(provider, agent, opts ?? {});
+        expect(plan.command).toContain("exact-concierge-session");
+        expect(plan.command).not.toContain("--last");
+        expect(plan.command).not.toContain("--continue");
+      });
+      try {
+        expect((await ensureConcierge("fleet status")).delivery).toBe("revived");
+        expect(revive).toHaveBeenCalledTimes(1);
+        expect(revive.mock.calls[0]![1]).toEqual({ message: "fleet status" });
+      } finally { live.mockRestore(); revive.mockRestore(); }
+    });
+  }
+
+  test("opening a live concierge needs no captured ID", async () => {
+    seedAgent(CONCIERGE_NAME);
+    const live = spyOn(tmux, "hasSession").mockReturnValue(true);
+    const revive = spyOn(resume, "reviveAgent").mockResolvedValue(undefined);
+    try {
+      expect((await ensureConcierge()).key).toBe(CONCIERGE_NAME);
+      expect(revive).not.toHaveBeenCalled();
+    } finally { live.mockRestore(); revive.mockRestore(); }
   });
 });
 

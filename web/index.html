@@ -192,12 +192,13 @@
                     >
                   </div>
                 </div>
+                <p class="fleet-guidance muted">Counts exclude the concierge. Available = CLI idle; Stopped = exited or dead.</p>
                 <div id="agent-grid" class="agent-grid"></div>
               </section>
               <aside class="concierge-dock">
                 <div class="dock-heading">
                   <h2>✳ Concierge</h2>
-                  <span id="dock-status">Codex</span
+                  <span id="dock-provider">Unknown provider</span
                   ><button
                     id="expand-concierge"
                     aria-label="Expand concierge conversation"
@@ -205,6 +206,7 @@
                     ↗
                   </button>
                 </div>
+                <p id="dock-location" class="dock-note muted">Resolving concierge…</p>
                 <div
                   id="dock-transcript"
                   tabindex="0"
@@ -214,6 +216,7 @@
                 </div>
                 <div id="dock-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
                 <form id="dock-form">
+                  <p id="dock-status" class="muted" role="status"></p>
                   <textarea
                     id="dock-message"
                     rows="3"
@@ -456,7 +459,8 @@
         <p id="create-provider-note" class="muted" hidden>Antigravity remote control and quota reporting are unavailable.</p>
         <p id="create-error" role="alert"></p>
         <button class="primary" id="create-submit">Create agent →</button>
-        <p class="muted">Creates an isolated Git worktree.</p>
+        <p id="create-host-note" class="muted">Directory on the selected host. Git repositories use isolated worktrees when enabled in host settings; otherwise they run in place. Non-Git directories run in place.</p>
+        <p class="muted">Default base for a new branch: origin’s default branch, then origin/main or origin/master if available, otherwise repository HEAD. Fetch is attempted first; offline creation uses the saved ref. An existing branch is reused.</p>
       </form>
     </dialog>
   </body>
