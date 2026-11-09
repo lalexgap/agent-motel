@@ -89,11 +89,11 @@ describe("SSH lifecycle transport audit", () => {
     child(`
       import { sshAm, sshAmAsync } from "./src/remote";
       sshAm("remote-box", ["stop", "--if-idle", "sample"]);
-      await sshAmAsync("remote-box", ["restart", "--if-idle", "sample"]);
+      await sshAmAsync("remote-box", ["stop", "--if-idle", "sample"]);
     `, { SSH_OUTPUT: JSON.stringify({ ok: false, reason: "queued" }) });
     expect(records().map(row => [row.target, row.action, row.phase, row.reason])).toEqual([
       ["sample", "stop", "requested", undefined], ["sample", "stop", "refused", "queued"],
-      ["sample", "restart", "requested", undefined], ["sample", "restart", "refused", "queued"],
+      ["sample", "stop", "requested", undefined], ["sample", "stop", "refused", "queued"],
     ]);
   });
 
@@ -149,7 +149,7 @@ describe("SSH lifecycle transport audit", () => {
       child(`
         import { sshAm, sshAmAsync } from "./src/remote";
         sshAm("remote-box", ["stop", "sample", "--if-idle"]);
-        await sshAmAsync("remote-box", ["restart", "sample", "--if-idle"]);
+        await sshAmAsync("remote-box", ["stop", "sample", "--if-idle"]);
       `, { SSH_OUTPUT: JSON.stringify({ ok: false, reason, error: secret }) });
     }
     const rows = records();
@@ -187,7 +187,7 @@ describe("HTTP stop transport audit", () => {
     for (let i = 0; i < requests.length; i += 2) expect(requests[i + 1].requestId).toBe(requests[i].requestId);
   });
 
-  test("if-idle refusals retain their safe reason without stopping the agent", () => {
+  test("an ifIdle body is refused with 400 without stopping the agent", () => {
     child(`
       import { startApiServer } from "./src/server";
       import { writeAgent } from "./src/state";
@@ -196,11 +196,11 @@ describe("HTTP stop transport audit", () => {
       const server = startApiServer({ port: 0, hostname: "127.0.0.1", token });
       try {
         const response = await fetch(server.url + "/api/agents/sample/stop", { method: "POST", headers: { Authorization: "Bearer " + token }, body: JSON.stringify({ ifIdle: true, text: token }) });
-        if (response.status !== 409 || (await response.json()).reason !== "busy") throw new Error("refusal");
+        if (response.status !== 400) throw new Error("refusal");
       } finally { server.stop(); }
     `, { TMUX_EXIT: "0" });
     const rows = records();
-    expect(rows.filter(row => row.action === "stop-request").map(row => [row.phase, row.reason])).toEqual([["requested", undefined], ["refused", "busy"]]);
+    expect(rows.filter(row => row.action === "stop-request").map(row => [row.phase, row.reason])).toEqual([["requested", undefined], ["refused", "http_400"]]);
     expect(rows.some(row => row.action === "stop" && row.phase === "completed")).toBe(false);
   });
 

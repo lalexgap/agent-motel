@@ -742,13 +742,6 @@ export async function cancelMessage(name: string, id: string): Promise<CancelRes
   }
 }
 
-export type InterruptResult = { ok: true; state: "delivered" } | Conflict;
-
-function notInterruptible(id: string, state: MessageState): InterruptResult {
-  if (state === "queued") return { ok: false, error: `message ${id} is not delivered yet`, state, reason: "not_delivered" };
-  return { ok: false, error: `message ${id} is already ${state}`, state, reason: alreadyReason(state) };
-}
-
 const ABORT_POLL_MS = 250;
 const ABORT_POLLS = 16;
 // Wall-clock cap on waiting out an Esc, clearing included.
@@ -840,56 +833,6 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
   }
   console.error(`am: "${name}" did not return to its prompt after Esc; leaving it as it is`);
   return false;
-}
-
-// Esc the turn handling a delivered message, once, and only that turn. The delivery
-// lock keeps the next message from being handed over, and the records lock
-// keeps the Stop hook from marking it done, between the check and the Esc.
-// Null: no such message.
-export async function interruptMessage(name: string, id: string): Promise<InterruptResult | null> {
-  const target = readAgent(name);
-  if (target && agentProvider(target) === "antigravity") throw new Error("Antigravity interruption by message receipt is unsupported; use am interrupt <name>");
-  if (!isMessageId(id)) return null;
-  for (const deadline = Date.now() + CANCEL_WAIT_MS; ;) {
-    const record = readMessage(name, id);
-    if (!record) return null;
-    if (record.state !== "delivered") return notInterruptible(id, record.state);
-    if (acquireDeliverLock(name)) {
-      let result: InterruptResult | null;
-      let abortedKey: string | undefined;
-      const escAt = Date.now();
-      try {
-        result = withSettledRecord(name, id, (current, save): InterruptResult => {
-          if (current.state !== "delivered") return notInterruptible(id, current.state);
-          // A delivered message can still wait behind an earlier turn (Codex's
-          // queue, a deferred steer); Esc then would abort that turn instead.
-          if (!current.startedAt && current.via !== "absorbed") {
-            return { ok: false, error: `message ${id} has not started yet`, state: "delivered", reason: "not_started" };
-          }
-          // A second Esc rewinds the conversation in both TUIs.
-          if (current.interruptedAt) {
-            return { ok: false, error: `message ${id} was already interrupted`, state: "delivered", reason: "already_interrupted" };
-          }
-          const agent = readAgent(name);
-          if (!agent || !hasSession(agent.tmuxSession)) {
-            return { ok: false, error: `agent "${name}" has no live tmux session`, state: current.state, reason: "no_session" };
-          }
-          sendEscape(agent.tmuxSession);
-          abortedKey = current.promptKey;
-          save({ ...current, interruptedAt: new Date().toISOString() });
-          return { ok: true, state: "delivered" };
-        });
-        // Outside the records lock, but before a delivery can follow.
-        if (result?.ok) noteEscape(name, [abortedKey]);
-      } finally {
-        releaseDeliverLock(name);
-      }
-      if (result?.ok) await endAbortedTurn(name, escAt);
-      return result;
-    }
-    if (Date.now() >= deadline) return { ok: false, error: `agent "${name}" mailbox is busy — retry`, state: record.state, reason: "mailbox_busy" };
-    await Bun.sleep(100);
-  }
 }
 
 // `am queue --clear`: under both locks, so no enqueue or delivery interleaves

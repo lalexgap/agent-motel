@@ -56,8 +56,7 @@ import { watchCommand } from "./commands/watch";
 import { summaryCommand } from "./commands/summary";
 import { notificationsListCommand, notificationsPollCommand } from "./notifications";
 import { usageCommand } from "./commands/usage";
-import { cancelMessage, deliverCommand, interruptMessage } from "./deliver";
-import { readMessage } from "./messages";
+import { cancelMessage, deliverCommand } from "./deliver";
 import { runEventsPipe, runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
 import { roleCommand } from "./commands/role";
@@ -609,9 +608,6 @@ async function main(): Promise<void> {
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
         model: selectionFlag(args, "model"),
         effort: selectionFlag(args, "effort"),
-        // --if-idle and --json are for `am serve` on another host.
-        ifIdle: args.flags["if-idle"] === true,
-        json: !!args.flags.json,
       });
       break;
     case "resume":
@@ -846,8 +842,7 @@ async function main(): Promise<void> {
     case "stop": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));
       if (args.flags["if-idle"] === true) {
-        // Hidden, for `am serve` on another host: prints the outcome either
-        // way; a refusal is {ok: false, error, reason}.
+        // Prints the outcome either way; a refusal is {ok: false, error, reason}.
         console.log(JSON.stringify(await stopIfIdle(agent)));
         break;
       }
@@ -938,32 +933,12 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(detail));
       break;
     }
-    case "__message": {
-      // A delivery receipt, for `am serve` on another host.
-      const name = requirePositional(args, 0, "agent name");
-      const id = requirePositional(args, 1, "message id");
-      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
-      const message = readMessage(name, id);
-      if (!message) throw new Error(`no message "${id}" for agent "${name}"`);
-      console.log(JSON.stringify(message));
-      break;
-    }
     case "__cancel": {
       // Prints the outcome either way; a conflict is {ok: false, error, state}.
       const name = requirePositional(args, 0, "agent name");
       const id = requirePositional(args, 1, "message id");
       if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
       const result = await cancelMessage(name, id);
-      if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
-      console.log(JSON.stringify(result));
-      break;
-    }
-    case "__interrupt": {
-      // Esc a delivered message's turn; prints the outcome like __cancel.
-      const name = requirePositional(args, 0, "agent name");
-      const id = requirePositional(args, 1, "message id");
-      if (!readAgent(name)) throw new Error(`no local agent "${name}"`);
-      const result = await interruptMessage(name, id);
       if (!result) throw new Error(`no message "${id}" for agent "${name}"`);
       console.log(JSON.stringify(result));
       break;

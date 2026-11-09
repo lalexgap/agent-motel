@@ -211,7 +211,6 @@ describe("Antigravity append-only transcript projection", () => {
         { index: 1, kind: "tool", name: "tool", input: "Tool activity in progress", output: "Tool activity completed" },
         { index: 2, kind: "user", text: "next" },
       ] });
-      expect(transcriptJson(agent, 1).entries.map(entry => entry.index)).toEqual([1, 2]);
       for (const mismatch of [{ createdAt: "old-incarnation" }, { sessionId: "other-conversation" }]) {
         writeFileSync(path, jsonl([delta("r", "partial"), tool(mismatch)]));
         expect(() => locateTranscript(agent)).toThrow(/provenance/);

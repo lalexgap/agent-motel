@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clientMessageId, queueCodexMessage } from "../src/codexQueue";
-import { acquireDeliverLock, deliverNext, dropCodexHandoff, escapeTurn, interruptMessage, noteTypedAfterEscape, releaseDeliverLock, releaseEscapeHold } from "../src/deliver";
+import { acquireDeliverLock, deliverNext, dropCodexHandoff, escapeTurn, noteTypedAfterEscape, releaseDeliverLock, releaseEscapeHold } from "../src/deliver";
 import { drainStranded } from "../src/daemon";
 import { claimPrompt, markTurnEnded, promptKey, queueTrackedMessage, readMessage } from "../src/messages";
 import { ensureDirs } from "../src/paths";
@@ -242,7 +242,12 @@ describe("codex inbox delivery", () => {
     prompt("first");
     sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined);
 
-    expect(await interruptMessage("api", first)).toEqual({ ok: true, state: "delivered" });
+    const out = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await abortTurn("api");
+    } finally {
+      out.mockRestore();
+    }
     expect(readMessage("api", first)).toMatchObject({ state: "done", interrupted: true });
     expect(codexQueue()).toEqual([]);
     expect(readFileSync(join(home, "typed"), "utf8")).toBe("second\n");
@@ -275,7 +280,12 @@ describe("codex inbox delivery", () => {
     claimPrompt("api", promptAt, promptKey("only"));
     sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined);
 
-    expect(await interruptMessage("api", id)).toEqual({ ok: true, state: "delivered" });
+    const out = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await abortTurn("api");
+    } finally {
+      out.mockRestore();
+    }
     expect(readMessage("api", id)).toMatchObject({ state: "done", interrupted: true });
     expect(queueDepth("api")).toBe(0);
     expect(existsSync(join(home, "typed"))).toBe(false);
@@ -295,10 +305,12 @@ describe("codex inbox delivery", () => {
     sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined);
     fakeCodex(mode);
     const log = spyOn(console, "error").mockImplementation(() => {});
+    const out = spyOn(console, "log").mockImplementation(() => {});
     try {
-      expect(await interruptMessage("api", ids[0]!)).toEqual({ ok: true, state: "delivered" });
+      await abortTurn("api");
     } finally {
       log.mockRestore();
+      out.mockRestore();
     }
     return ids as [string, string, string];
   }

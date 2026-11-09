@@ -26,15 +26,15 @@ import { collectUsage, type ProviderUsage } from "./usage";
 import { collectAgentTokenUsage, collectFleetTokenUsage, enrichSubagentsWithTokens } from "./tokenUsage";
 import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
-import { stopAgent, stopIfIdle, destroyAgent, type StopIfIdleResult } from "./commands/rm";
+import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
-import { restartAgent, restartIfIdle, type RestartOpts, type RestartResult } from "./commands/restart";
+import { restartAgent } from "./commands/restart";
 import { localCatalogs } from "./commands/models";
-import { SelectionError, parseCatalogs, type ProviderCatalog } from "./catalog";
+import { parseCatalogs, type ProviderCatalog } from "./catalog";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest, notifyDaemon } from "./daemon";
-import { cancelMessage, interruptMessage, type CancelResult, type InterruptResult } from "./deliver";
-import { alreadyReason, conflictReason, isMessageId, readMessage, type Conflict, type ConflictReason } from "./messages";
+import { cancelMessage, type CancelResult } from "./deliver";
+import { alreadyReason, conflictReason, isMessageId, type Conflict, type ConflictReason } from "./messages";
 import { listRoles, roleForAgent } from "./roles";
 import {
   OPTION_ID_RE,
@@ -165,12 +165,8 @@ export function agentDetail(name: string) {
     messageReceipts: true,
     terminalAttach: 1,
     panePrompt: agentProvider(agent) === "claude" ? agentPanePrompt(name) : null,
-    // ...and that `am stop --if-idle` refuses rather than stopping regardless.
-    stopIfIdle: true,
     permissionRequests: nativeControls,
     interruptByReceipt: nativeControls,
-    // ...and that `am restart` takes --model/--effort/--if-idle/--json.
-    restartModel: true,
     pendingPermissions: pendingPermissions(agentNamesAndAliases(agent)).length,
   };
 }
@@ -267,44 +263,15 @@ function cancelResponse(result: CancelResult): Response {
   return result.ok ? json(result) : conflict(result.error, resultReason(result), result.state);
 }
 
-function stopIfIdleResponse(result: StopIfIdleResult): Response {
-  return result.ok ? json({ ok: true }) : json({ error: result.error, reason: result.reason }, 409);
+// Conditional stops and restarts are CLI-only (`am stop --if-idle`); refuse
+// a client that still sends those fields rather than act unconditionally.
+async function refuseFields(req: Request, fields: string[]): Promise<Response | null> {
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const sent = fields.find((field) => body?.[field] != null);
+  return sent ? json({ error: `${sent} is not supported${sent === "ifIdle" ? "; use `am stop --if-idle`" : ""}` }, 400) : null;
 }
-
-// {ifIdle?}: an error response, or whether the stop is conditional.
-async function stopBody(req: Request): Promise<Response | { ifIdle: boolean }> {
-  const body = (await req.json().catch(() => null)) as { ifIdle?: unknown } | null;
-  if (body?.ifIdle != null && typeof body.ifIdle !== "boolean") return json({ error: "ifIdle must be a boolean" }, 400);
-  return { ifIdle: body?.ifIdle === true };
-}
-
-// {model?, effort?, ifIdle?}: model/effort null or "" = the provider default.
-type RestartBody = Pick<RestartOpts, "model" | "effort"> & { ifIdle: boolean };
-
-async function restartBody(req: Request): Promise<Response | RestartBody> {
-  const body = (await req.json().catch(() => null)) as { model?: unknown; effort?: unknown; ifIdle?: unknown } | null;
-  if (body?.ifIdle != null && typeof body.ifIdle !== "boolean") return json({ error: "ifIdle must be a boolean" }, 400);
-  const parsed: RestartBody = { ifIdle: body?.ifIdle === true };
-  for (const field of ["model", "effort"] as const) {
-    const value = body?.[field];
-    if (value === undefined) continue;
-    if (value !== null && typeof value !== "string") return json({ error: `${field} must be a string or null` }, 400);
-    const trimmed = value?.trim() || null;
-    // Shipped to a remote am as a flag, where `default` means null.
-    if (trimmed !== null && (trimmed === "default" || !/^[A-Za-z0-9._:\[\]\/-]+$/.test(trimmed))) {
-      return json({ error: `invalid ${field} "${trimmed}"` }, 400);
-    }
-    parsed[field] = trimmed;
-  }
-  return parsed;
-}
-
-type RestartOutcome = ({ ok: true } & RestartResult) | { ok: false; error: string; reason?: string };
-
-function restartResponse(result: RestartOutcome): Response {
-  if (!result.ok) return json({ error: result.error, reason: result.reason }, 409);
-  return json({ ok: true, model: result.model ?? null, effort: result.effort ?? null });
-}
+const stopBody = (req: Request) => refuseFields(req, ["ifIdle"]);
+const restartBody = (req: Request) => refuseFields(req, ["ifIdle", "model", "effort"]);
 
 // --- models ------------------------------------------------------------------
 
@@ -339,18 +306,12 @@ async function hostCatalogs(host: string | null, refresh: boolean): Promise<Prov
   return catalogs;
 }
 
-function interruptResponse(result: InterruptResult): Response {
-  return result.ok ? json({ ok: true }) : conflict(result.error, resultReason(result), result.state);
-}
-
-// {text?, messageId?}: an error response, or what to interrupt with.
-async function interruptBody(req: Request): Promise<Response | { text: string; messageId?: string }> {
+// {text?}: an error response, or the text to send after the Esc.
+async function interruptBody(req: Request): Promise<Response | string> {
   const body = (await req.json().catch(() => null)) as { text?: unknown; messageId?: unknown } | null;
+  if (body?.messageId != null) return json({ error: "messageId is not supported" }, 400);
   if (body?.text != null && typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
-  if (body?.messageId != null && typeof body.messageId !== "string") return json({ error: "messageId must be a string" }, 400);
-  if (body?.messageId != null && body.text != null) return json({ error: "messageId and text are mutually exclusive" }, 400);
-  const text = typeof body?.text === "string" ? body.text.trim() : "";
-  return typeof body?.messageId === "string" ? { text, messageId: body.messageId } : { text };
+  return typeof body?.text === "string" ? body.text.trim() : "";
 }
 
 async function handoffBody(req: Request): Promise<{ to: "claude" | "codex"; newName?: string; full: boolean } | Response> {
@@ -400,16 +361,14 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
   const route = rest[0];
   const fallback = route === "messages" || route === "interrupt" ? "unknown" : undefined;
   try {
-    // A receipt: __message/__cancel ship after --exact and read the name
-    // exactly, and an am without them fails "unknown command", so they need
-    // no __detail precheck (which would double every poll's ssh round trip).
-    if (route === "messages" && rest.length === 2 && (method === "GET" || method === "DELETE")) {
+    // __cancel ships after --exact and reads the name exactly, and an am
+    // without it fails "unknown command", so it needs no __detail precheck.
+    if (route === "messages" && rest.length === 2 && method === "DELETE") {
       const id = rest[1]!;
       if (!isMessageId(id)) return messageNotFound(name, id);
-      if (method === "GET") return json(await runRemoteJson(host, ["__message", name, id]));
       return cancelResponse(await runRemoteJson<CancelResult>(host, ["__cancel", name, id], { timeoutMs: 30_000 }));
     }
-    // Like receipts: __permissions/__permission ship after --exact, and an
+    // Like __cancel: __permissions/__permission ship after --exact, and an
     // older am fails "unknown command".
     if (route === "permissions" && rest.length === 1 && method === "GET") {
       return json(await runRemoteJson(host, ["__permissions", name]));
@@ -500,9 +459,6 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
 
     if (route === "transcript" && method === "GET") {
-      const raw = new URL(req.url).searchParams.get("after");
-      const after = raw === null || raw === "" ? 0 : Number(raw);
-      if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
       await ensureExactCapable(host, name);
       const subagent = new URL(req.url).searchParams.get("subagent");
       if (subagent !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(subagent)) return json({ error: "invalid subagent id" }, 400);
@@ -510,37 +466,20 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       if (!Array.isArray(transcript?.entries)) {
         return json({ error: `remote am too old on ${host} (transcript --json has no entries)` }, 409);
       }
-      return json({ ...transcript, entries: transcript.entries.filter((entry) => entry.index >= after) });
+      return json(transcript);
     }
 
     if (route === "interrupt" && method === "POST") {
-      const body = await interruptBody(req);
-      if (body instanceof Response) return body;
-      const { text, messageId } = body;
-      // Like __cancel: an am without __interrupt fails "unknown command".
-      if (messageId !== undefined) {
-        if (!isMessageId(messageId)) return messageNotFound(name, messageId);
-        return interruptResponse(await runRemoteJson<InterruptResult>(host, ["__interrupt", name, messageId], { timeoutMs: 30_000 }));
-      }
+      const text = await interruptBody(req);
+      if (text instanceof Response) return text;
       if (text) await run(["interrupt", name, "-"], { stdin: text });
       else await run(["interrupt", name]);
       return json({ ok: true });
     }
 
     if (route === "stop" && method === "POST") {
-      const body = await stopBody(req);
-      if (body instanceof Response) return body;
-      if (body.ifIdle) {
-        // An older am would ignore --if-idle and stop regardless, so the
-        // __detail precheck doubles as the capability check.
-        const detail = await runRemoteJson<{ stopIfIdle?: boolean }>(host, ["__detail", name]);
-        if (detail?.stopIfIdle !== true) {
-          return json({ error: `remote am too old on ${host} (no stop --if-idle)`, reason: "remote_too_old" }, 409);
-        }
-        const result = await runRemoteJson<StopIfIdleResult>(host, ["stop", name, "--if-idle"], { timeoutMs: 30_000 });
-        if (typeof result?.ok !== "boolean") return json({ error: `am stop --if-idle on ${host} returned no outcome` }, 502);
-        return stopIfIdleResponse(result);
-      }
+      const refused = await stopBody(req);
+      if (refused) return refused;
       await run(["stop", name]);
       return json({ ok: true });
     }
@@ -551,22 +490,10 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
     }
 
     if (route === "restart" && method === "POST") {
-      const body = await restartBody(req);
-      if (body instanceof Response) return body;
-      // An older am would ignore the flags and restart on the old model (or
-      // regardless of ifIdle), so the __detail precheck doubles as the
-      // capability check.
-      const detail = await runRemoteJson<{ restartModel?: boolean }>(host, ["__detail", name]);
-      if (detail?.restartModel !== true) {
-        return json({ error: `remote am too old on ${host} (no restart --model)`, reason: "remote_too_old" }, 409);
-      }
-      const args = ["restart", name, "--json"];
-      if (body.model !== undefined) args.push("--model", body.model ?? "default");
-      if (body.effort !== undefined) args.push("--effort", body.effort ?? "default");
-      if (body.ifIdle) args.push("--if-idle");
-      const result = await runRemoteJson<RestartOutcome>(host, args, { timeoutMs: 60_000 });
-      if (typeof result?.ok !== "boolean") return json({ error: `am restart on ${host} returned no outcome` }, 502);
-      return restartResponse(result);
+      const refused = await restartBody(req);
+      if (refused) return refused;
+      await run(["restart", name]);
+      return json({ ok: true });
     }
   } catch (error) {
     return remoteFailure(error, fallback);
@@ -641,7 +568,7 @@ async function auditedApi(req: Request, parts: string[]): Promise<Response> {
     let reason: string | undefined;
     if (!response.ok) {
       const body = await response.clone().json().catch(() => null) as { reason?: unknown } | null;
-      const safeReasons = ["busy", "queued", "in_turn", "remote_too_old", "not_found"];
+      const safeReasons = ["remote_too_old", "not_found"];
       reason = typeof body?.reason === "string" && safeReasons.includes(body.reason) ? body.reason : `http_${response.status}`;
     }
     recordAudit(target.name, "stop-request", response.ok ? "completed" : response.status < 500 ? "refused" : "failed", { ...details, requestId, ...(reason ? { reason } : {}) });
@@ -689,7 +616,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/health
   if (parts.length === 1 && parts[0] === "health" && method === "GET") {
-    return json({ ok: true, name: "am", messageReceipts: true, stopIfIdle: true, models: true, restartModel: true });
+    return json({ ok: true, name: "am" });
   }
 
   // GET /api/models[?host=h][&refresh=1] — `am models --json` for this
@@ -911,15 +838,10 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // GET /api/agents/:name/messages/:id — delivery receipt
     // DELETE /api/agents/:name/messages/:id — cancel while still queued
-    if (parts.length === 4 && parts[2] === "messages" && (method === "GET" || method === "DELETE")) {
+    if (parts.length === 4 && parts[2] === "messages" && method === "DELETE") {
       const id = parts[3]!;
       if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
-      if (method === "GET") {
-        const message = readMessage(name, id);
-        return message ? json(message) : messageNotFound(name, id);
-      }
       const result = await cancelMessage(name, id);
       return result ? cancelResponse(result) : messageNotFound(name, id);
     }
@@ -970,31 +892,22 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       return json(collectAgentTokenUsage(agent));
     }
 
-    // GET /api/agents/:name/transcript?after=n — see transcriptJson
+    // GET /api/agents/:name/transcript[?subagent=id] — see transcriptJson
     if (parts.length === 3 && parts[2] === "transcript" && method === "GET") {
       const agent = readAgent(name);
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);
-      const raw = new URL(req.url).searchParams.get("after");
-      const after = raw === null || raw === "" ? 0 : Number(raw);
-      if (!Number.isInteger(after) || after < 0) return json({ error: "after must be a non-negative integer" }, 400);
       const subagent = new URL(req.url).searchParams.get("subagent");
       if (subagent !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(subagent)) return json({ error: "invalid subagent id" }, 400);
-      try { return json(subagent ? subagentTranscriptJson(agent, subagent, after) : transcriptJson(agent, after)); }
+      try { return json(subagent ? subagentTranscriptJson(agent, subagent) : transcriptJson(agent)); }
       catch (error) { return json({ error: (error as Error).message }, 409); }
     }
 
-    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given;
-    // {messageId}: Esc only while that message's turn is running
+    // POST /api/agents/:name/interrupt — {text?}: Esc, then send text if given
     if (parts.length === 3 && parts[2] === "interrupt" && method === "POST") {
-      const body = await interruptBody(req);
-      if (body instanceof Response) return body;
-      const { text, messageId } = body;
+      const text = await interruptBody(req);
+      if (text instanceof Response) return text;
       const agent = readAgent(name);
       if (!agent) return json({ error: `no local agent "${name}"` }, 404);
-      if (messageId !== undefined) {
-        const result = await interruptMessage(agent.name, messageId);
-        return result ? interruptResponse(result) : messageNotFound(name, messageId);
-      }
       try {
         if (text) await interruptCommand(agent.name, text, { exact: true });
         else await abortTurn(agent.name);
@@ -1017,20 +930,10 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // POST /api/agents/:name/stop — {ifIdle?}: refuse (409 busy | queued |
-    // in_turn) unless the agent has nothing to do
+    // POST /api/agents/:name/stop
     if (parts.length === 3 && parts[2] === "stop" && method === "POST") {
-      const body = await stopBody(req);
-      if (body instanceof Response) return body;
-      if (body.ifIdle) {
-        const agent = readAgent(name);
-        if (!agent) return json({ error: `no local agent "${name}"` }, 404);
-        try {
-          return stopIfIdleResponse(await stopIfIdle(agent));
-        } catch (error) {
-          return thrownConflict(error);
-        }
-      }
+      const refused = await stopBody(req);
+      if (refused) return refused;
       try {
         stopAgent(resolveAgent(name));
         return json({ ok: true });
@@ -1039,18 +942,15 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // POST /api/agents/:name/restart — {model?, effort?, ifIdle?}: reload
-    // the provider on the same conversation, switching model/effort; with
-    // ifIdle, refuse (409 busy | queued | in_turn) as stop {ifIdle} does
+    // POST /api/agents/:name/restart — reload the provider on the same conversation
     if (parts.length === 3 && parts[2] === "restart" && method === "POST") {
-      const body = await restartBody(req);
-      if (body instanceof Response) return body;
+      const refused = await restartBody(req);
+      if (refused) return refused;
       if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
-      const { ifIdle, ...opts } = body;
       try {
-        return restartResponse(ifIdle ? await restartIfIdle(name, opts) : { ok: true, ...(await restartAgent(name, opts)) });
+        await restartAgent(name);
+        return json({ ok: true });
       } catch (error) {
-        if (error instanceof SelectionError) return json({ error: error.message }, 400);
         return json({ error: (error as Error).message }, 409);
       }
     }
