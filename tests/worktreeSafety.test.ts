@@ -6,6 +6,8 @@ import { planGc, applyGc } from "../src/gc";
 import { destroyAgent } from "../src/commands/rm";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { trashState } from "../src/trash";
+import { renameAgent } from "../src/commands/rename";
+import { restoreCommand } from "../src/commands/restore";
 
 let home: string, repo: string, wt: string;
 let oldHome: string | undefined, oldPool: string | undefined;
@@ -202,4 +204,64 @@ test("ownership lock releases after errors and status writes do not wait for it"
     writeFileSync(release, "go");
     expect(await holder.exited).toBe(0);
   } finally { holder.kill(); }
+});
+
+
+test("rename preserves missing checkout metadata without claiming a new path", async () => {
+  writeAgent({ ...agent("old"), worktreePath: wt, worktreeBranch: "fixture" });
+  git(repo, "worktree", "remove", wt);
+  await renameAgent("old", "renamed");
+  expect(readAgent("old")).toBeNull();
+  expect(readAgent("renamed")?.worktreePath).toBe(wt);
+});
+
+test("restore keeps transcript access when the checkout cannot be recreated", async () => {
+  const state = { ...agent("recover"), worktreePath: wt, worktreeBranch: "missing", repoRoot: repo };
+  trashState(state);
+  git(repo, "worktree", "remove", wt);
+  await restoreCommand("recover");
+  expect(readAgent("recover")?.dir).toBe(wt);
+  expect(readAgent("recover")?.status).toBe("exited");
+  expect(existsSync(wt)).toBe(false);
+});
+
+for (const initialized of [false, true]) test(`unused lazily initialized pool slots allow cleanup (record=${initialized})`, () => {
+  mkdirSync(join(home, "pool", "state"), { recursive: true });
+  if (initialized) writeFileSync(join(home, "pool", "state", "slot-1.json"), JSON.stringify({ lease: null }));
+  const plan = planGc(retention);
+  expect(plan.worktrees).toHaveLength(1);
+  applyGc(plan);
+  expect(existsSync(wt)).toBe(false);
+});
+
+for (const ignored of [".env", "node_modules/package/index.js"]) test(`ignored ${ignored} protects checkout at apply and rm`, () => {
+  writeFileSync(join(wt, ".gitignore"), ".env\nnode_modules/\n");
+  git(wt, "add", ".gitignore");
+  git(wt, "commit", "-qm", "ignore local data");
+  const plan = planGc(retention);
+  if (ignored.includes("/")) mkdirSync(join(wt, "node_modules", "package"), { recursive: true });
+  writeFileSync(join(wt, ignored), "valuable local content");
+  applyGc(plan);
+  expect(existsSync(join(wt, ignored))).toBe(true);
+  const owner = { ...agent("ignored"), worktreePath: wt, repoRoot: repo };
+  writeAgent(owner);
+  destroyAgent(owner, { clean: true });
+  expect(existsSync(join(wt, ignored))).toBe(true);
+});
+
+
+test("fresh registration still refuses missing checkout metadata", () => {
+  git(repo, "worktree", "remove", wt);
+  expect(() => writeAgent({ ...agent("new"), worktreePath: wt })).toThrow("missing worktree directory");
+  expect(readAgent("new")).toBeNull();
+});
+
+test("recovery cannot claim a different path or an obsolete incarnation", () => {
+  const original = agent("recover");
+  trashState(original);
+  const next = { ...original, dir: join(home, "worktrees", "missing") };
+  expect(() => writeAgent(next, { ownershipSource: { kind: "trash", owner: original } })).toThrow("ownership source changed");
+  trashState({ ...original, createdAt: "2020-01-01T00:00:00.000Z" });
+  expect(() => writeAgent(original, { ownershipSource: { kind: "trash", owner: original } })).toThrow("ownership source changed");
+  expect(readAgent("recover")).toBeNull();
 });

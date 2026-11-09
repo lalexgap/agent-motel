@@ -46,7 +46,7 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
     restorePlan(name);
     updateAgentStatus(state, "exited", "restored; not running");
     state.workingSince = undefined;
-    writeAgent(state);
+    writeAgent(state, { ownershipSource: { kind: "trash", owner: trashed } });
     console.log(`restored agent "${name}" (removed ${trashedAt})`);
 
     if (opts.resume === false) {

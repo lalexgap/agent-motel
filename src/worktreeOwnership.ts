@@ -5,6 +5,7 @@ import { agentsDir, baseDir, trashDir, worktreesDir } from "./paths";
 import { withFileLock } from "./filelock";
 
 interface Owner { name: string; dir: string; worktreePath?: string; createdAt?: string; tmuxSession?: string }
+export interface OwnershipSource { kind: "agent" | "trash"; owner: Owner }
 
 export function canonicalPath(path: string): string {
   try { return realpathSync(path); }
@@ -27,11 +28,21 @@ export function withWorktreeOwnershipLock<T>(fn: () => T): T {
   return withFileLock(join(baseDir(), "locks", "worktree-ownership.lock"), fn);
 }
 
-export function withOwnershipClaim<T>(previous: Owner | null, next: Owner, write: () => T): T {
+export function withOwnershipClaim<T>(previous: Owner | null, next: Owner, write: () => T, source?: OwnershipSource): T {
   if (previous && previous.dir === next.dir && previous.worktreePath === next.worktreePath) return write();
   const paths = [next.dir, next.worktreePath].filter((p): p is string => typeof p === "string" && p.length > 0);
   const existed = paths.map((p) => existsSync(p));
   return withWorktreeOwnershipLock(() => {
+    if (source) {
+      const dir = source.kind === "agent" ? agentsDir() : trashDir();
+      const saved = ownerPaths(JSON.parse(readFileSync(join(dir, `${source.owner.name}.json`), "utf8")));
+      if (saved.name !== source.owner.name || saved.createdAt !== source.owner.createdAt ||
+          saved.tmuxSession !== source.owner.tmuxSession || saved.createdAt !== next.createdAt ||
+          saved.dir !== next.dir || saved.worktreePath !== next.worktreePath) {
+        throw new Error("ownership source changed during identity migration");
+      }
+      return write();
+    }
     for (const [i, path] of paths.entries()) {
       if (!existsSync(path) && (existed[i] || path === next.worktreePath || contains(canonicalPath(worktreesDir()), canonicalPath(path)))) {
         throw new Error(`cannot register ownership of missing worktree directory ${path}`);
@@ -75,15 +86,20 @@ export function worktreeOwnerReason(path: string, removing?: Owner): string | nu
       }
     }
     const pool = process.env.DEV_POOL_ROOT || join(homedir(), ".dev-pool");
-    // A never-installed pool has no owners. Once present, all three slot
-    // records must be readable: missing/corrupt data cannot prove vacancy.
+    // dev-pool creates slot records lazily; absent records have never held a lease.
     try { statSync(pool); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
     for (let id = 1; id <= 3; id++) {
-      const state = JSON.parse(readFileSync(join(pool, "state", `slot-${id}.json`), "utf8"));
+      let raw: string;
+      try { raw = readFileSync(join(pool, "state", `slot-${id}.json`), "utf8"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      const state = JSON.parse(raw);
       if (!state || typeof state !== "object" || !Object.hasOwn(state, "lease")) throw new Error("invalid dev-pool slot record");
       if (state.lease === null) continue;
       if (!state.lease || typeof state.lease.worktree !== "string" || !isAbsolute(state.lease.worktree)) throw new Error("invalid dev-pool lease");
@@ -103,7 +119,7 @@ function git(path: string, ...args: string[]) {
 export function worktreeSafetyReason(path: string): string | null {
   const top = git(path, "rev-parse", "--show-toplevel");
   if (!top.ok || canonicalPath(top.out) !== canonicalPath(path)) return "not a worktree root";
-  const status = git(path, "status", "--porcelain", "--untracked-files=all", "--ignored");
+  const status = git(path, "status", "--porcelain", "--untracked-files=normal", "--ignored");
   if (!status.ok) return "git status failed";
   if (status.out) return "uncommitted or ignored files";
   const refs = git(path, "for-each-ref", "--contains=HEAD", "--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes");

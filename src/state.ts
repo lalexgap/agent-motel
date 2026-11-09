@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { agentsDir, baseDir, ensureDirs, lastAttachedFile } from "./paths";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { withFileLock } from "./filelock";
-import { withOwnershipClaim } from "./worktreeOwnership";
+import { withOwnershipClaim, type OwnershipSource } from "./worktreeOwnership";
 import { readSubagents } from "./subagents";
 
 export type AgentStatus =
@@ -163,7 +163,7 @@ export function readAgent(name: string): AgentState | null {
   return readStateFile(stateFile(name));
 }
 
-export function writeAgent(state: AgentState): void {
+export function writeAgent(state: AgentState, opts: { ownershipSource?: OwnershipSource } = {}): void {
   ensureDirs();
   withFileLock(stateLock(state.name), () => {
     const previous = readAgent(state.name);
@@ -194,7 +194,7 @@ export function writeAgent(state: AgentState): void {
       }
     }
     next.updatedAt = new Date().toISOString();
-    withOwnershipClaim(previous, next, () => writeJsonAtomic(stateFile(state.name), next));
+    withOwnershipClaim(previous, next, () => writeJsonAtomic(stateFile(state.name), next), opts.ownershipSource);
     const saved = structuredClone(next);
     for (const key of Object.keys(state) as (keyof AgentState)[]) delete state[key];
     Object.assign(state, saved);

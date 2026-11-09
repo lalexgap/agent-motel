@@ -56,10 +56,12 @@ describe("renameAgent", () => {
   });
 
   test("migrates durable identity and keeps the old name as a routing alias", async () => {
+    const worktreePath = join(home, "worktree-alpha");
+    mkdirSync(worktreePath);
     writeAgent(agent("alpha", {
       aliases: ["first-alpha"],
       provider: "codex",
-      worktreePath: "/tmp/worktree-alpha",
+      worktreePath,
       worktreeBranch: "am/alpha",
     }));
     writeAgent(agent("lead", { reportTo: "alpha" }));
@@ -82,7 +84,7 @@ describe("renameAgent", () => {
       name: "omega",
       aliases: ["first-alpha", "alpha"],
       tmuxSession: "agentmgr-omega",
-      worktreePath: "/tmp/worktree-alpha",
+      worktreePath,
       worktreeBranch: "am/alpha",
     });
     expect(resolveAgent("alpha").name).toBe("omega");
