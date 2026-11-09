@@ -1,3 +1,4 @@
+import { notifyPrEvent, trackPullRequests } from "./prMonitor";
 #!/usr/bin/env bun
 import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
@@ -116,6 +117,7 @@ usage:
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
+  am pr <agent> [URL ...]     list or register PRs for lifecycle monitoring
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
   am notifications [--json] [--limit n]
@@ -324,7 +326,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek", "subagents", "usage", "plan",
+  "report", "comms", "wait", "peek", "subagents", "usage", "plan", "pr",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -626,6 +628,12 @@ async function main(): Promise<void> {
         sort: args.flags.sort as string | undefined,
       });
       break;
+    case "pr": {
+      const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      await trackPullRequests(agent, args.positional.slice(1), undefined, notifyPrEvent);
+      console.log(JSON.stringify(readAgent(agent.name)?.prMonitor ?? { pullRequests: [] }, null, 2));
+      break;
+    }
     case "summary":
       summaryCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
       break;

@@ -1,3 +1,4 @@
+import { startPrMonitor } from "./prMonitor";
 import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
 import { recordAudit, withAuditContext } from "./audit";
@@ -377,6 +378,8 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     for (const name of lastRefusal.keys()) if (!waiting.has(name)) lastRefusal.delete(name);
   }, RECONCILE_INTERVAL_MS);
 
+  const prMonitor = startPrMonitor();
+
   const keepalive = setInterval(() => {
     const chunk = encoder.encode(": keepalive\n\n");
     for (const subscriber of subscribers) {
@@ -419,6 +422,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   return {
     stop() {
       stopped = true;
+      prMonitor.stop();
       clearInterval(reconciler);
       clearInterval(keepalive);
       codexApprovals.stop();

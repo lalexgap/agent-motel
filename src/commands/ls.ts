@@ -269,6 +269,7 @@ export interface AgentRow {
   diff?: DiffSummary | null;
   // The agent's running plan file (am plan), when it has one. JSON only.
   planFile?: string;
+  prMonitor?: AgentState["prMonitor"];
 }
 
 export interface DiffSummary {

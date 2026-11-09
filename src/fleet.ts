@@ -7,6 +7,7 @@ import { sshAm, sshAmAsync, sshRun, sshRunAsync } from "./remote";
 import { watchRemoteFleetEvents } from "./fleetEvents";
 import { splitAddr } from "./comms";
 import type { PickerItem } from "./picker";
+import { formatTrackedPullRequest } from "./prMonitorDisplay";
 
 // The merged local+remote fleet. Remote rows come from `am ls --json
 // --local-only` over ssh (--local-only so a server with remotes configured
@@ -505,6 +506,9 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
       `provider ${r.provider}`,
       r.worktreeBranch ? `branch   ${r.worktreeBranch}` : `dir      ${shortenHome(r.dir)}`,
       `reason   ${r.status === "waiting" ? (r.statusDetail ?? "—") : (r.statusReason ?? "—")}`,
+      ...(r.prMonitor?.pullRequests.slice(0, 3).map((pr) => `pr       ${formatTrackedPullRequest(pr)} · ${pr.repository}`) ?? []),
+      ...((r.prMonitor?.pullRequests.length ?? 0) > 3 ? [`prs      +${r.prMonitor!.pullRequests.length - 3} more`] : []),
+      ...(r.prMonitor?.error ? [`pr-check ${r.prMonitor.error}`] : []),
       `since    ${since}`,
       `diff     ${diffDetail(r)}`,
       `updated  ${relativeTime(r.updatedAt)}${r.diff?.dirty ? ` ${MUTED}· uncommitted${FG}` : ""}`,

@@ -24,6 +24,7 @@ export function providerBinary(provider: Provider): string {
 }
 
 export interface AgentState {
+  prMonitor?: import("./prMonitor").PrMonitorState;
   name: string;
   // Previous names kept as exact aliases after a rename. This preserves
   // peer replies, queued cross-machine mail, and old shell history without
