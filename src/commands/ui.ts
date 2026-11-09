@@ -30,6 +30,7 @@ import { catalogsForHost } from "./models";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 42;
 const HIGHLIGHT_DEBOUNCE_MS = 150;
+const REMOTE_ACTION_TIMEOUT_MS = 30_000;
 
 export function roleOptionsForHost(
   host: string | undefined,
@@ -423,22 +424,24 @@ export async function sidebarCommand(): Promise<void> {
       await restartAgent(name);
       return `restarted ${name}`;
     }),
-    stop: (key: string) => withAuditContext({ source: "interactive-hub", route: "stop" }, () => {
+    stop: async (key: string) => withAuditContext({ source: "interactive-hub", route: "stop" }, async () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
-        const result = sshAm(host, ["stop", name]);
-        if (result.exitCode !== 0) return { text: `stop failed: ${result.stderr.trim()}`, level: "error" };
+        const result = await sshAmAsync(host, ["stop", name], { timeoutMs: REMOTE_ACTION_TIMEOUT_MS });
+        if (result.exitCode === 124) return { text: "stop timed out; check the remote agent before retrying", level: "error" as const };
+        if (result.exitCode !== 0) return { text: `stop failed: ${result.stderr.trim()}`, level: "error" as const };
         return `stopped ${name} on ${host}`;
       }
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
     }),
-    remove: (key: string) => withAuditContext({ source: "interactive-hub", route: "remove" }, () => {
+    remove: async (key: string) => withAuditContext({ source: "interactive-hub", route: "remove" }, async () => {
       const { host, name } = splitFleetKey(key);
       if (host) {
-        const result = sshAm(host, ["rm", name]);
-        if (result.exitCode !== 0) return { text: `rm failed: ${result.stderr.trim()}`, level: "error" };
+        const result = await sshAmAsync(host, ["rm", name], { timeoutMs: REMOTE_ACTION_TIMEOUT_MS });
+        if (result.exitCode === 124) return { text: "rm timed out; check the remote agent before retrying", level: "error" as const };
+        if (result.exitCode !== 0) return { text: `rm failed: ${result.stderr.trim()}`, level: "error" as const };
         return `removed ${name} on ${host}`;
       }
       const agent = readAgent(name);
