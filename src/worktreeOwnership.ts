@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { agentsDir, baseDir, trashDir, worktreesDir } from "./paths";
 import { withFileLock } from "./filelock";
@@ -22,10 +23,40 @@ function contains(root: string, path: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-// Order: lifecycle/mailbox -> per-agent state -> ownership. Deletion holds
-// only ownership during inspection/git removal; never call state writers here.
+// Order: lifecycle/mailbox -> per-agent state -> ownership. Deletion takes
+// pool-allocate before ownership and never calls state writers while locked.
 export function withWorktreeOwnershipLock<T>(fn: () => T): T {
   return withFileLock(join(baseDir(), "locks", "worktree-ownership.lock"), fn);
+}
+
+function poolRoot(): string {
+  return process.env.DEV_POOL_ROOT || join(homedir(), ".dev-pool");
+}
+
+export function withWorktreeDeletionLock(fn: () => void): string | null {
+  const lock = join(poolRoot(), "locks", "pool-allocate.lock");
+  const token = randomUUID();
+  let identity: ReturnType<typeof lstatSync>;
+  try {
+    mkdirSync(dirname(lock), { recursive: true });
+    mkdirSync(lock);
+    identity = lstatSync(lock);
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, acquiredAt: Date.now(), token }));
+  } catch (error) {
+    return `dev-pool allocation lock unavailable: ${(error as Error).message}`;
+  }
+  try {
+    withWorktreeOwnershipLock(fn);
+    return null;
+  } finally {
+    try {
+      const current = lstatSync(lock);
+      const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+      if (current.dev === identity.dev && current.ino === identity.ino && owner.pid === process.pid && owner.token === token) {
+        rmSync(lock, { recursive: true });
+      }
+    } catch { /* A replaced or unreadable lock is not ours to remove. */ }
+  }
 }
 
 export function withOwnershipClaim<T>(previous: Owner | null, next: Owner, write: () => T, source?: OwnershipSource): T {
@@ -85,7 +116,7 @@ export function worktreeOwnerReason(path: string, removing?: Owner): string | nu
         }
       }
     }
-    const pool = process.env.DEV_POOL_ROOT || join(homedir(), ".dev-pool");
+    const pool = poolRoot();
     // dev-pool creates slot records lazily; absent records have never held a lease.
     try { statSync(pool); }
     catch (error) {
@@ -112,13 +143,19 @@ export function worktreeOwnerReason(path: string, removing?: Owner): string | nu
 }
 
 function git(path: string, ...args: string[]) {
-  const r = Bun.spawnSync(["git", "-C", path, ...args]);
+  const r = Bun.spawnSync(["git", "-C", path, ...args], { timeout: 5_000, killSignal: "SIGKILL" });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
 
-export function worktreeSafetyReason(path: string): string | null {
+export function worktreeSafetyReason(path: string, repoRoot?: string): string | null {
   const top = git(path, "rev-parse", "--show-toplevel");
   if (!top.ok || canonicalPath(top.out) !== canonicalPath(path)) return "not a worktree root";
+  if (repoRoot) {
+    const common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const directory = git(path, "rev-parse", "--absolute-git-dir");
+    if (!common.ok || !directory.ok || canonicalPath(common.out) === canonicalPath(directory.out) ||
+        canonicalPath(dirname(common.out)) !== canonicalPath(repoRoot)) return "worktree registration changed";
+  }
   const status = git(path, "status", "--porcelain", "--untracked-files=normal", "--ignored");
   if (!status.ok) return "git status failed";
   if (status.out) return "uncommitted or ignored files";

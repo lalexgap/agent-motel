@@ -12,7 +12,7 @@ import { destroyAgent } from "./commands/rm";
 import { inferWorktree, withWorktreeMeta } from "./commands/move";
 import { forgetCodexTrust, readCodexTrustLedger } from "./codexDaemon";
 import { forgetClaudeTrust, readClaudeTrustLedger } from "./claudeTrust";
-import { withWorktreeOwnershipLock, worktreeOwnerReason, worktreeSafetyReason } from "./worktreeOwnership";
+import { withWorktreeDeletionLock, worktreeOwnerReason, worktreeSafetyReason } from "./worktreeOwnership";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -90,7 +90,7 @@ function canon(path: string): string {
 }
 
 function git(dir: string, ...args: string[]): { ok: boolean; out: string; err: string } {
-  const r = Bun.spawnSync(["git", "-C", dir, ...args]);
+  const r = Bun.spawnSync(["git", "-C", dir, ...args], { timeout: 5_000, killSignal: "SIGKILL" });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
 
@@ -292,21 +292,17 @@ export function applyGc(plan: GcPlan): string[] {
   }
 
   for (const w of plan.worktrees) {
-    withWorktreeOwnershipLock(() => {
-      const reason = worktreeOwnerReason(w.path) ?? worktreeSafetyReason(w.path);
+    const lockReason = withWorktreeDeletionLock(() => {
+      const reason = worktreeOwnerReason(w.path) ?? worktreeSafetyReason(w.path, w.repoRoot);
       if (reason) {
         lines.push(`kept worktree ${w.path}: ${reason}`);
-        return;
-      }
-      const info = inferWorktree(w.path);
-      if (!info || canon(info.repoRoot) !== canon(w.repoRoot)) {
-        lines.push(`kept worktree ${w.path}: worktree registration changed`);
         return;
       }
       const result = git(w.repoRoot, "worktree", "remove", w.path);
       if (result.ok) lines.push(`removed worktree ${w.path}`);
       else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
     });
+    if (lockReason) lines.push(`kept worktree ${w.path}: ${lockReason}`);
   }
 
   for (const dir of plan.codexTrust) {

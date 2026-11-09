@@ -265,3 +265,75 @@ test("recovery cannot claim a different path or an obsolete incarnation", () => 
   expect(() => writeAgent(original, { ownershipSource: { kind: "trash", owner: original } })).toThrow("ownership source changed");
   expect(readAgent("recover")).toBeNull();
 });
+
+
+for (const removal of ["gc", "rm"]) test(`allocator lock blocks ${removal} before a lease is published`, () => {
+  const plan = planGc(retention);
+  const lock = join(home, "pool", "locks", "pool-allocate.lock");
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, acquiredAt: Date.now(), token: "allocator" }));
+  if (removal === "gc") applyGc(plan);
+  else {
+    const owner = { ...agent("busy-pool"), worktreePath: wt, repoRoot: repo };
+    writeAgent(owner);
+    destroyAgent(owner, { clean: true });
+  }
+  expect(existsSync(wt)).toBe(true);
+  expect(existsSync(lock)).toBe(true);
+});
+
+
+test("deletion lock releases after exceptions and preserves a replacement owner", async () => {
+  const { withWorktreeDeletionLock } = await import("../src/worktreeOwnership");
+  const lock = join(home, "pool", "locks", "pool-allocate.lock");
+  expect(() => withWorktreeDeletionLock(() => { throw new Error("fixture"); })).toThrow("fixture");
+  expect(existsSync(lock)).toBe(false);
+  expect(withWorktreeDeletionLock(() => {
+    rmSync(lock, { recursive: true });
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, acquiredAt: Date.now(), token: "replacement" }));
+  })).toBeNull();
+  expect(existsSync(lock)).toBe(true);
+});
+
+test("deletion wins allocator exclusion: a later reservation rejects the missing checkout", async () => {
+  const holding = join(home, "deleting"), release = join(home, "delete-go"), started = join(home, "allocating");
+  const lock = join(home, "pool", "locks", "pool-allocate.lock");
+  const remover = worker(`
+    import { withWorktreeDeletionLock } from '../src/worktreeOwnership';
+    import { existsSync, writeFileSync } from 'node:fs';
+    const reason = withWorktreeDeletionLock(() => {
+      writeFileSync(${JSON.stringify(holding)}, 'ready');
+      while (!existsSync(${JSON.stringify(release)})) Bun.sleepSync(10);
+      const result = Bun.spawnSync(['git', '-C', ${JSON.stringify(repo)}, 'worktree', 'remove', ${JSON.stringify(wt)}]);
+      if (result.exitCode) throw new Error(result.stderr.toString());
+    });
+    if (reason) throw new Error(reason);
+  `);
+  let allocator: ReturnType<typeof worker> | undefined;
+  try {
+    await waitFor(holding);
+    allocator = worker(`
+      import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+      writeFileSync(${JSON.stringify(started)}, 'ready');
+      for (;;) {
+        try { mkdirSync(${JSON.stringify(lock)}); break; }
+        catch (error) { if (error.code !== 'EEXIST') throw error; Bun.sleepSync(10); }
+      }
+      try {
+        const result = Bun.spawnSync(['git', '-C', ${JSON.stringify(wt)}, 'rev-parse', '--show-toplevel']);
+        if (result.exitCode) throw new Error('cannot lease missing worktree');
+        writeFileSync(${JSON.stringify(join(home, 'unexpected-lease'))}, 'leased');
+      } finally { rmSync(${JSON.stringify(lock)}, { recursive: true }); }
+    `);
+    await waitFor(started);
+    await Bun.sleep(50);
+    expect(allocator.exitCode).toBeNull();
+    writeFileSync(release, "go");
+    expect(await remover.exited).toBe(0);
+    expect(await allocator.exited).not.toBe(0);
+    expect(await new Response(allocator.stderr).text()).toContain("cannot lease missing worktree");
+    expect(existsSync(join(home, "unexpected-lease"))).toBe(false);
+    expect(existsSync(wt)).toBe(false);
+  } finally { remover.kill(); allocator?.kill(); }
+});
