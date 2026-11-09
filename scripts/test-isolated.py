@@ -2,6 +2,7 @@
 """Run tests with private HOME/state/tmux and no real provider invocations.
 
 --base REF tests an immutable git archive; other arguments go to bun test.
+--typecheck runs the locally installed TypeScript compiler in the same isolation.
 """
 import os
 from pathlib import Path
@@ -16,6 +17,9 @@ args = sys.argv[1:]
 base = None
 if args[:1] == ['--base']:
     base, args = args[1], args[2:]
+typecheck = args[:1] == ['--typecheck']
+if typecheck:
+    args = args[1:]
 with tempfile.TemporaryDirectory(prefix='am-isolated-') as directory:
     root = Path(directory)
     cwd = repo
@@ -26,6 +30,8 @@ with tempfile.TemporaryDirectory(prefix='am-isolated-') as directory:
         import io
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(cwd, filter='data')
+        if (repo / 'node_modules').exists():
+            (cwd / 'node_modules').symlink_to(repo / 'node_modules', target_is_directory=True)
     bindir = root / 'bin'
     bindir.mkdir()
     tmux = shutil.which('tmux')
@@ -54,7 +60,9 @@ with tempfile.TemporaryDirectory(prefix='am-isolated-') as directory:
                PATH=str(bindir) + ':' + env.get('PATH', ''),
                AM_TEST_SYSTEMD='0', AGENTMGR_AGENT='', AM_HOST='', TMUX='')
     try:
-        result = subprocess.run(['bun', 'test', *args], cwd=cwd, env=env)
+        command = (['bun', str(repo / 'node_modules/typescript/bin/tsc'), '--noEmit', *args]
+                   if typecheck else ['bun', 'test', *args])
+        result = subprocess.run(command, cwd=cwd, env=env)
     finally:
         if tmux:
             subprocess.run([tmux, '-L', socket, 'kill-server'],

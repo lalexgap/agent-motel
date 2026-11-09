@@ -217,7 +217,7 @@ usage:
                               or what is running right now on this host. They
                               have no pane — use \`am run\` for work you need to
                               attach to or steer
-  am search <query> [--all] [--fleet] [--limit n] [--json]
+  am search <query> [--all] [--fleet] [--limit n] [--json] [--metadata]
                               full-text search agent chats; prints matching
                               agents + snippets + the command to pick each up
                               (default: registered agents + trash; --all widens
@@ -792,6 +792,7 @@ async function main(): Promise<void> {
         fleet: !!args.flags.fleet,
         localOnly: !!args.flags["local-only"],
         json: !!args.flags.json,
+        metadata: !!args.flags.metadata,
         limit: numberFlag(args, "limit"),
       });
       break;
