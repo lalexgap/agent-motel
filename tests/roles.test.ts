@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
   setRoleModel,
   setRoleProvider,
 } from "../src/roles";
+import { roleCommand } from "../src/commands/role";
 import { roleOptionsForHost } from "../src/commands/ui";
 
 let home: string;
@@ -186,5 +187,25 @@ describe("role model defaults", () => {
     expect(requireRole(CONCIERGE_ROLE)).toMatchObject({ builtIn: true, instructions, models: { codex: "gpt-5.6-luna" } });
     expect(listRoles().find(role => role.name === CONCIERGE_ROLE)?.models?.codex).toBe("gpt-5.6-luna");
     expect(() => removeRole(CONCIERGE_ROLE)).toThrow(/built in/);
+  });
+});
+
+
+describe("role list output", () => {
+  test("explains the AM registry and native exports only in human output", () => {
+    const output = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      roleCommand("list", undefined);
+      const text = output.mock.calls.map(args => args.join(" ")).join("\n");
+      expect(text).toContain("AM role registry");
+      expect(text).toContain("engineer/reviewer/shepherd");
+      expect(text).toContain("am role export --dry-run");
+      output.mockClear();
+      roleCommand("list", undefined, { json: true });
+      expect(output.mock.calls).toHaveLength(1);
+      expect(JSON.parse(String(output.mock.calls[0]![0]))).toEqual(listRoles());
+    } finally {
+      output.mockRestore();
+    }
   });
 });

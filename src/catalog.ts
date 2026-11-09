@@ -295,8 +295,12 @@ export function validateSelection(
   const known = selection.model ? findModel(catalog, selection.model) : undefined;
   if (selection.model && !known && catalog.models.length) {
     const names = catalog.models.map((m) => m.id).join(", ");
+    const matches = [...new Set(catalog.models
+      .filter((model) => model.id.endsWith(`-${selection.model}`))
+      .map((model) => model.id))];
+    const hint = matches.length === 1 ? ` — did you mean "${matches[0]}"?` : "";
     complaints.push({
-      message: `unknown ${catalog.provider} model "${selection.model}" — known models: ${names}`,
+      message: `unknown ${catalog.provider} model "${selection.model}"${hint} — known models: ${names}`,
       fatal: catalog.modelsExhaustive,
     });
   }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  checkSelection,
   effortsForModel,
   parseCatalogs,
   parseClaudeEfforts,
@@ -138,6 +139,35 @@ describe("validateSelection", () => {
     const [complaint] = validateSelection(codex, { model: "gpt-9" });
     expect(complaint?.fatal).toBe(true);
     expect(complaint?.message).toContain("gpt-5.6-sol");
+  });
+
+  test("suggests a unique installed suffix without accepting it as an alias", () => {
+    const catalog = { ...codex, models: [{ id: "gpt-6-astra", efforts: [] }] };
+    const [complaint] = validateSelection(catalog, { model: "astra" });
+    expect(complaint?.message).toContain('did you mean "gpt-6-astra"?');
+    expect(complaint?.fatal).toBe(true);
+    expect(() => checkSelection(catalog, { model: "astra" })).toThrow(/did you mean/);
+    expect(validateSelection(catalog, { model: "gpt-6-astra" })).toEqual([]);
+  });
+
+  test("does not guess ambiguous suffixes, partial words, or absent models", () => {
+    const catalog = { ...codex, models: [
+      { id: "gpt-6-astra", efforts: [] },
+      { id: "gpt-7-astra", efforts: [] },
+    ] };
+    for (const model of ["astra", "stra", "gpt", "unknown"]) {
+      const [complaint] = validateSelection(catalog, { model });
+      expect(complaint?.fatal).toBe(true);
+      expect(complaint?.message).not.toContain("did you mean");
+    }
+    expect(validateSelection(codex, { model: "astra" })[0]?.message).not.toContain("did you mean");
+    expect(validateSelection(null, { model: "astra" })).toEqual([]);
+  });
+
+  test("a suggestion preserves a non-exhaustive catalog's warning semantics", () => {
+    const catalog = { ...claude, models: [{ id: "claude-example", efforts: [] }] };
+    expect(validateSelection(catalog, { model: "example" })[0]).toMatchObject({ fatal: false });
+    expect(() => checkSelection(catalog, { model: "example" })).not.toThrow();
   });
 
   test("an unknown claude model is only a warning", () => {
