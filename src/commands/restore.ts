@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { agentProvider, readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
 import { restorePlan } from "../plan";
-import { findRemovedWorktree } from "../gc";
+import { findRemovedWorktree, salvageSummary } from "../gc";
 import { reviveAgent } from "./resume";
 
 // `am restore <name>` brings back an agent removed with `am rm`: re-register its
@@ -43,8 +43,10 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
       if (res.exitCode === 0) {
         console.log(`recreated worktree ${state.worktreePath} from ${state.worktreeBranch}`);
         // gc saves uncommitted changes to a ref before removing a stale worktree.
-        const salvageRef = findRemovedWorktree(state.worktreePath)?.salvageRef;
-        if (salvageRef) console.log(`  gc saved its uncommitted changes as ${salvageRef}; put them back with:\n    git -C ${state.worktreePath} restore --source=${salvageRef} --worktree -- .`);
+        const removal = findRemovedWorktree(state.worktreePath);
+        const { saved, dropped } = removal ? salvageSummary(removal) : { saved: null, dropped: null };
+        if (saved) console.log(`  gc saved ${saved} as ${removal!.salvageRef}; put them back with:\n    git -C ${state.worktreePath} restore --source=${removal!.salvageRef} --worktree -- .`);
+        if (dropped) console.log(`  note: ${dropped}`);
       } else {
         console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
       }

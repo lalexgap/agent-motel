@@ -101,6 +101,8 @@ describe("autoGcDue", () => {
 
   test("off, paused, and a recent skip all hold it back", () => {
     expect(autoGcDue(at(4, 1), {}, { ...config, gcAuto: false }, false)).toBeNull();
+    // Only true turns it on: a hand-edited "false" must not.
+    expect(autoGcDue(at(4, 1), {}, { ...config, gcAuto: "false" as never }, false)).toBeNull();
     expect(autoGcDue(at(4, 1), { paused: { at: at(1).toISOString() } }, config, false)).toBeNull();
     const skipped = { lastSkip: { at: at(4, 0).toISOString(), reason: "load" } };
     expect(autoGcDue(at(4, 10), skipped, config, false)).toBeNull();
@@ -333,6 +335,16 @@ describe("runAutoGc", () => {
     }
     expect(existsSync(wt)).toBe(true);
     expect("summary" in runAutoGc({ trigger: "nightly", ...quiet })).toBe(true);
+  });
+
+  test("a scheduled sweep's reaps are audited as the daemon's", () => {
+    updateAutoGcState((state) => { state.armedPolicy = GC_POLICY_VERSION; });
+    writeAgent(agent("old"));
+    writeFileSync(join(home, "agents", "old.json"), JSON.stringify({ ...readAgent("old")!, updatedAt: new Date(Date.now() - 10 * DAY).toISOString() }));
+    runAutoGc({ trigger: "nightly", ...quiet });
+    expect(readAgent("old")).toBeNull();
+    const audit = readFileSync(join(home, "logs", "lifecycle-audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(audit.filter((entry) => entry.target === "old").map((entry) => [entry.source, entry.route])).toContainEqual(["daemon", "auto-gc"]);
   });
 
   test("reaps and files follow the mode too", () => {

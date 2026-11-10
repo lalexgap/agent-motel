@@ -209,8 +209,8 @@ A worktree that a registered agent owns is never removed, running or exited. An 
 | Exited agent whose tracked pull requests all merged | reaped to trash 3 days after the merge, and its worktree released | `gcMergedDays` |
 | Worktree of a removed (`am rm`) or reaped agent | released after 7 days; `am restore` recreates it from its branch | `gcRemovedDays` |
 | Worktree no agent owns, and subagent worktrees under `.claude/worktrees/` | after 3 days without activity | `gcOrphanDays` |
-| Released worktree that is dirty or has unpushed commits | kept until unchanged for 30 days; then its changes are committed to `refs/am-gc/<name>-<time>` in the repository and it is removed (`0` keeps these forever; ignored files are not saved) | `gcStaleDays` |
-| Released worktree whose only leftovers are git-ignored files (env files, keys, `node_modules`) | after 7 days unchanged; those files are not saved (`0`: treated like any other change) | `gcIgnoredDays` |
+| Released worktree that is dirty or has unpushed commits | kept until unchanged for 30 days; then its changes, and its small ignored files, are committed to `refs/am-gc/<name>-<time>-<id>` in the repository and it is removed (`0` keeps these forever) | `gcStaleDays` |
+| Released worktree whose only leftovers are git-ignored files (env files, keys, `node_modules`) | after 7 days unchanged; ignored files of up to 1 MiB each (50 MiB in all) are saved to a ref as above, while `node_modules`, directories of more than 5,000 entries and larger files are not, and the log lists what was left out (`0`: treated like any other change) | `gcIgnoredDays` |
 | Trash snapshots | purged after 30 days | `gcTrashDays` |
 | Handoff transcripts, cached shared files | after 30 days | `gcFileDays` |
 
@@ -218,7 +218,7 @@ Conversations, plans and inbox files stay for as long as the agent is registered
 
 The scheduled run is throttled: it runs at the lowest CPU and IO priority, inspects one worktree at a time, backs off while the host is busy, stops after `gcAutoMaxMinutes` (15) and continues the next time. Busy means the 1-minute load per CPU is above `gcAutoMaxLoad` (default 1) or Linux IO/memory pressure is above `gcAutoMaxPressure` (default 20). Only one gc runs at a time, manual or scheduled. `am gc --auto pause` stops the schedule and `resume` restarts it; `gcAuto: false` turns it off; `am gc --auto run` starts a sweep now.
 
-Every removal is logged to `~/.agent-manager/logs/gc.jsonl` with the worktree's branch and commit. `am gc --restore <name-or-path>` recreates a removed worktree from that log and puts salvaged changes back as uncommitted files.
+Every removal is logged to `~/.agent-manager/logs/gc.jsonl` with the worktree's branch and commit. `am gc --restore <name-or-path>` recreates a removed worktree from that log and puts salvaged changes and ignored files back as uncommitted files. A worktree holding a nested repository or submodule is never removed.
 
 ### Plan file
 

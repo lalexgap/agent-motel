@@ -30,7 +30,8 @@ export function readPressure(): Pressure {
 
 // A hand-edited config can hold anything: out-of-range values fall back to the default.
 export function configNumber(value: unknown, fallback: number, min: number, max = Infinity): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) && n >= min && n <= max ? n : fallback;
 }
 
 // Why the host is too busy for more disk work right now, or null.

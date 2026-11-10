@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { agentsDir, baseDir, trashDir, worktreesDir } from "./paths";
 import { withFileLock } from "./filelock";
@@ -168,9 +168,10 @@ const MAX_WORK_DIRS = 16;
 // does not already name. Returns whether the record changed.
 export function noteWorkDir(agent: Owner, cwd: string): boolean {
   const root = managedWorktreeRoot(cwd);
-  if (!root || agent.workDirs?.includes(root)) return false;
+  if (!root || agent.workDirs?.at(-1) === root) return false;
   if ([agent.dir, agent.worktreePath].some((p) => p && resolve(p) === root)) return false;
-  agent.workDirs = [...(agent.workDirs ?? []), root].slice(-MAX_WORK_DIRS);
+  // Most recent last, so the cap drops the one visited longest ago.
+  agent.workDirs = [...(agent.workDirs ?? []).filter((dir) => dir !== root), root].slice(-MAX_WORK_DIRS);
   return true;
 }
 
@@ -281,8 +282,44 @@ export function worktreeSafety(path: string, repoRoot?: string, opts: SafetyOpti
   });
   if (status.exitCode !== 0) return { kind: "other", reason: "git status failed" };
   const listing = status.stdout.toString();
-  if (listing) return { kind: "dirty", reason: "uncommitted or ignored files", files: statusPaths(listing) };
+  const hidden = hiddenChanges(path, opts.timeoutMs ?? GIT_TIMEOUT_MS);
+  if (!hidden) return { kind: "other", reason: "could not read skip-worktree files" };
+  const files = [...(listing ? statusPaths(listing) : []), ...hidden];
+  if (files.length > 0) return { kind: "dirty", reason: "uncommitted or ignored files", files };
   return worktreeCommitSafety(path, opts);
+}
+
+// Tracked files status does not look at (skip-worktree, assume-unchanged)
+// whose content differs from the index, as status-like "S " entries. A
+// sparse checkout's skipped files are absent, not changed. Null: unknown.
+function hiddenChanges(path: string, timeoutMs: number): StatusPath[] | null {
+  const listing = gitRun(path, ["ls-files", "-v", "-s", "-z"], timeoutMs);
+  if (!listing.ok) return null;
+  const flagged: { file: string; sha: string }[] = [];
+  for (const entry of listing.out.split("\0")) {
+    const tag = entry[0];
+    if (!tag || (tag !== "S" && !(tag >= "a" && tag <= "z"))) continue;
+    const tab = entry.indexOf("\t");
+    flagged.push({ file: entry.slice(tab + 1), sha: entry.slice(0, tab).split(" ")[2] ?? "" });
+  }
+  const changed: StatusPath[] = [];
+  const present: { file: string; sha: string }[] = [];
+  for (const entry of flagged) {
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(join(path, entry.file)); }
+    catch { continue; }
+    if (stat.isFile()) present.push(entry);
+    else changed.push({ code: "S ", path: entry.file });
+  }
+  if (present.length > 0) {
+    const hashed = Bun.spawnSync(["git", "--no-optional-locks", "-C", path, "hash-object", "--stdin-paths"], {
+      stdin: Buffer.from(present.map((entry) => entry.file).join("\n") + "\n"), timeout: timeoutMs, killSignal: "SIGKILL",
+    });
+    if (hashed.exitCode !== 0 || present.some((entry) => entry.file.includes("\n"))) return null;
+    const shas = hashed.stdout.toString().trim().split("\n");
+    present.forEach((entry, i) => { if (shas[i] !== entry.sha) changed.push({ code: "S ", path: entry.file }); });
+  }
+  return changed;
 }
 
 // The half of worktreeSafety that reads commits and refs only, never the
@@ -323,11 +360,72 @@ export function worktreeSafetyReason(path: string, repoRoot?: string, opts: Safe
   return worktreeSafety(path, repoRoot, opts)?.reason ?? null;
 }
 
-export interface Salvage { ref: string; commit: string; head: string; branch?: string; changes: boolean }
+export interface Salvage {
+  ref: string; commit: string; head: string; branch?: string; changes: boolean;
+  // Ignored files saved, and the ignored entries left out (a few top-level paths).
+  ignored: number; dropped: { count: number; paths: string[] };
+}
+
+const IGNORED_FILE_MAX = 1 << 20;
+const IGNORED_TOTAL_MAX = 50 << 20;
+// An ignored directory with more entries than this is build output or a cache.
+const IGNORED_DIR_MAX = 5_000;
+
+// The small ignored files worth keeping (env files, keys, notes, a dev
+// database), and what is left out. Symlinks and nested repositories are skipped.
+function ignoredFiles(path: string, entries: StatusPath[]): { files: string[]; dropped: string[] } {
+  const files: string[] = [];
+  const dropped: string[] = [];
+  let total = 0;
+  const take = (rel: string, size: number): boolean => {
+    if (size > IGNORED_FILE_MAX || total + size > IGNORED_TOTAL_MAX) return false;
+    total += size;
+    files.push(rel);
+    return true;
+  };
+  for (const { code, path: rel } of entries) {
+    if (code !== "!!") continue;
+    const top = rel.replace(/\/$/, "");
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(join(path, top)); }
+    catch { continue; }
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isFile()) {
+      if (!take(top, stat.size)) dropped.push(top);
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    const found: { rel: string; size: number }[] = [];
+    let count = 0;
+    let tooBig = top.split("/").at(-1) === "node_modules";
+    const walk = (dir: string): void => {
+      let children: import("node:fs").Dirent[];
+      try { children = readdirSync(join(path, dir), { withFileTypes: true }); }
+      catch { tooBig = true; return; }
+      for (const child of children) {
+        if (tooBig || ++count > IGNORED_DIR_MAX) { tooBig = true; return; }
+        const childRel = `${dir}/${child.name}`;
+        if (child.name === ".git" || child.name === "node_modules" || child.isSymbolicLink()) continue;
+        if (child.isDirectory()) walk(childRel);
+        else if (child.isFile()) {
+          try { found.push({ rel: childRel, size: lstatSync(join(path, childRel)).size }); }
+          catch { /* vanished */ }
+        }
+      }
+    };
+    if (!tooBig) walk(top);
+    if (tooBig) {
+      dropped.push(`${top}/`);
+      continue;
+    }
+    if (!found.every((file) => take(file.rel, file.size))) dropped.push(`${top}/`);
+  }
+  return { files, dropped };
+}
 
 // Pin everything a forced removal would otherwise drop: the uncommitted and
-// untracked files as one commit on top of HEAD, under refs/am-gc/ in the
-// repository. Ignored files are not saved. Throws when it cannot.
+// untracked files, and small ignored ones, as one commit on top of HEAD under
+// refs/am-gc/ in the repository. Throws when it cannot.
 export function salvageWorktree(path: string, label: string, timeoutMs = 120_000): Salvage {
   const run = (args: string[], env?: Record<string, string>) => {
     const r = gitRun(path, args, timeoutMs, env);
@@ -336,12 +434,24 @@ export function salvageWorktree(path: string, label: string, timeoutMs = 120_000
   };
   const head = run(["rev-parse", "HEAD"]);
   const branch = gitRun(path, ["symbolic-ref", "--short", "-q", "HEAD"], timeoutMs);
-  const index = join(run(["rev-parse", "--absolute-git-dir"]), `am-gc-index-${process.pid}`);
+  const admin = run(["rev-parse", "--absolute-git-dir"]);
+  const index = join(admin, `am-gc-index-${process.pid}`);
+  const pathspecs = join(admin, `am-gc-paths-${process.pid}`);
   let commit = head;
+  let ignored: { files: string[]; dropped: string[] } = { files: [], dropped: [] };
   try {
     const env = { GIT_INDEX_FILE: index };
     run(["read-tree", "HEAD"], env);
     run(["add", "-A"], env);
+    const status = Bun.spawnSync(["git", "--no-optional-locks", "-C", path, "status", "--porcelain", "-z", "--untracked-files=normal", "--ignored"], {
+      timeout: timeoutMs, killSignal: "SIGKILL",
+    });
+    if (status.exitCode !== 0) throw new Error("git status failed");
+    ignored = ignoredFiles(path, statusPaths(status.stdout.toString()));
+    if (ignored.files.length > 0) {
+      writeFileSync(pathspecs, ignored.files.join("\0"));
+      run(["add", "-f", `--pathspec-from-file=${pathspecs}`, "--pathspec-file-nul"], { ...env, GIT_LITERAL_PATHSPECS: "1" });
+    }
     // An embedded repository (a nested worktree, a clone) would be recorded as
     // a bare pointer and its files lost with the checkout.
     const added = run(["diff-index", "--cached", "--raw", "HEAD"], env);
@@ -358,9 +468,14 @@ export function salvageWorktree(path: string, label: string, timeoutMs = 120_000
     }
   } finally {
     rmSync(index, { force: true });
+    rmSync(pathspecs, { force: true });
   }
-  const stamp = new Date().toISOString().replaceAll(/[-:]|\.\d+/g, "");
-  const ref = `refs/am-gc/${label.replaceAll(/[^A-Za-z0-9._-]/g, "_").replace(/^[.-]+/, "") || "worktree"}-${stamp}`;
-  run(["update-ref", ref, commit]);
-  return { ref, commit, head, ...(branch.ok && branch.out ? { branch: branch.out } : {}), changes: commit !== head };
+  const stamp = new Date().toISOString().replaceAll(/[-:.]/g, "");
+  const ref = `refs/am-gc/${label.replaceAll(/[^A-Za-z0-9._-]/g, "_").replace(/^[.-]+/, "") || "worktree"}-${stamp}-${randomBytes(3).toString("hex")}`;
+  // The all-zero old value: never overwrite a ref that already exists.
+  run(["update-ref", ref, commit, "0".repeat(head.length)]);
+  return {
+    ref, commit, head, ...(branch.ok && branch.out ? { branch: branch.out } : {}), changes: commit !== head,
+    ignored: ignored.files.length, dropped: { count: ignored.dropped.length, paths: ignored.dropped.slice(0, 5) },
+  };
 }

@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { listAgents, readAgent, type AgentState } from "./state";
 import { listTrashed, removeTrashed, type TrashedState } from "./trash";
 import { hasSession } from "./tmux";
@@ -80,7 +80,8 @@ export interface GcOptions {
 // A hand-edited config can hold anything. An age that is not a number must
 // never read as "collect now", so it falls back to the cautious default.
 function days(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 export function gcPolicy(config: Config, overrides: { agentDays?: number; trashDays?: number } = {}): GcOptions {
@@ -155,7 +156,13 @@ export interface GcLogEntry {
   repoRoot?: string;
   branch?: string;
   head?: string;
+  // Set only when uncommitted changes were saved; pinRef when only HEAD was pinned.
   salvageRef?: string;
+  pinRef?: string;
+  // Ignored files saved with the changes, and those left out (too large, build output).
+  savedIgnored?: number;
+  dropped?: number;
+  droppedPaths?: string[];
   bytes?: number;
   reason?: string;
 }
@@ -359,10 +366,41 @@ function subdirs(dir: string): string[] {
   }
 }
 
+function realDir(path: string): boolean {
+  try { return lstatSync(path).isDirectory(); }
+  catch { return false; }
+}
+
 // Where provider subagents (Claude's Task tool, Codex) check out their own
-// worktrees: inside the agent's worktree.
+// worktrees: inside the agent's worktree. A symlinked .claude could point at
+// any checkout's, so neither component is followed.
 function nestedWorktrees(path: string): string[] {
-  return subdirs(join(path, ".claude", "worktrees"));
+  const claude = join(path, ".claude");
+  return realDir(claude) && realDir(join(claude, "worktrees")) ? subdirs(join(claude, "worktrees")) : [];
+}
+
+// Why a candidate may not be the managed worktree its path names: a symlink
+// anywhere in it, or a place outside the managed dir. Fails closed.
+function candidateEscape(candidate: WorktreeCandidate): string | null {
+  const reason = "path leaves the managed worktrees directory";
+  const managed = (base: string, path: string) => {
+    const parts = relative(base, path).split(sep);
+    return parts.length === 2 && parts[0] !== ".." && parts[0] !== "" && realpathSync(path) === path;
+  };
+  try {
+    const base = realpathSync(worktreesDir());
+    if (realpathSync(candidate.path) !== candidate.path) return reason;
+    if (candidate.parent === undefined) return managed(base, candidate.path) ? null : reason;
+    return managed(base, candidate.parent) && candidate.path === join(candidate.parent, ".claude", "worktrees", basename(candidate.path)) ? null : reason;
+  } catch {
+    return reason;
+  }
+}
+
+// The candidate a planned removal names, its parent derived from the path.
+function removalCandidate(path: string): WorktreeCandidate {
+  const nest = /^(.*)\/\.claude\/worktrees\/[^/]+$/.exec(path)?.[1];
+  return { path, ...(nest ? { parent: nest } : {}) };
 }
 
 // Every worktree gc may consider, without touching git: the managed ones and
@@ -370,7 +408,10 @@ function nestedWorktrees(path: string): string[] {
 // which cannot be clean while it exists.
 export function listWorktreeCandidates(): WorktreeCandidate[] {
   const candidates: WorktreeCandidate[] = [];
-  for (const repoDir of subdirs(worktreesDir())) {
+  let base: string;
+  try { base = realpathSync(worktreesDir()); }
+  catch { return candidates; }
+  for (const repoDir of subdirs(base)) {
     for (const path of subdirs(repoDir)) {
       for (const nested of nestedWorktrees(path)) candidates.push({ path: nested, parent: path });
       candidates.push({ path });
@@ -574,6 +615,8 @@ export class WorktreeJudge {
   // `fresh` ignores remembered inspections: a removal always looks again.
   cheap(candidate: WorktreeCandidate, fresh = false): KeptWorktree | "owned" | null {
     const { path } = candidate;
+    const escape = candidateEscape(candidate);
+    if (escape) return { path, kind: "other", reason: escape };
     for (const dir of [path, candidate.parent]) {
       if (dir && existsSync(join(dir, KEEP_MARKER))) return { path, kind: "marker", reason: `keep marker (${KEEP_MARKER})` };
     }
@@ -702,10 +745,16 @@ export function removeWorktree(w: WorktreeRemoval, opts: GcOptions, context: GcC
   const keep = (kind: KeptKind, reason: string) => {
     result = { removed: false, line: `kept worktree ${w.path}: ${reason}`, kept: { path: w.path, kind, reason } };
   };
+  const escape = candidateEscape(removalCandidate(w.path));
+  if (escape) {
+    keep("other", escape);
+    return result;
+  }
+  // Measured outside the lock: dev-pool waits on it, and du of a large checkout is slow.
+  const bytes = context.measure ? diskBytes(w.path) : undefined;
   const lockReason = withWorktreeDeletionLock(() => {
     const judge = new WorktreeJudge(opts);
-    const parent = w.path.includes("/.claude/worktrees/") ? dirname(dirname(dirname(w.path))) : undefined;
-    const cheap = judge.cheap({ path: w.path, ...(parent ? { parent } : {}) }, true);
+    const cheap = judge.cheap(removalCandidate(w.path), true);
     if (cheap === "owned") return keep("other", judge.ownerReason(w.path) ?? "owned by an agent");
     if (cheap) return keep(cheap.kind, cheap.reason);
     const verdict = judge.verdict(w.path, w.repoRoot);
@@ -718,7 +767,6 @@ export function removeWorktree(w: WorktreeRemoval, opts: GcOptions, context: GcC
       try { salvage = salvageWorktree(w.path, basename(w.path)); }
       catch (error) { return keep("other", `could not save its changes: ${(error as Error).message}`); }
     }
-    const bytes = context.measure ? diskBytes(w.path) : undefined;
     const removal = git(w.repoRoot, ["worktree", "remove", ...(salvage ? ["--force"] : []), w.path], REMOVE_TIMEOUT_MS);
     if (!removal.ok) {
       result = { removed: false, line: `warning: could not remove worktree ${w.path}: ${removal.err}`, kept: { path: w.path, kind: "other", reason: "git worktree remove failed" } };
@@ -729,19 +777,38 @@ export function removeWorktree(w: WorktreeRemoval, opts: GcOptions, context: GcC
       ...(context.run ? { run: context.run } : {}),
       ...(branch.ok && branch.out ? { branch: branch.out } : {}),
       ...(head.ok ? { head: head.out } : {}),
-      ...(salvage ? { salvageRef: salvage.ref, reason: verdict.salvage } : {}),
+      ...(salvage ? {
+        reason: verdict.salvage,
+        ...(salvage.changes ? { salvageRef: salvage.ref } : { pinRef: salvage.ref }),
+        ...(salvage.ignored > 0 ? { savedIgnored: salvage.ignored } : {}),
+        ...(salvage.dropped.count > 0 ? { dropped: salvage.dropped.count, droppedPaths: salvage.dropped.paths } : {}),
+      } : {}),
       ...(bytes !== undefined ? { bytes } : {}),
     });
+    const dropped = salvage && salvage.dropped.count > 0 ? `; not saved: ${droppedSummary(salvage.dropped.count, salvage.dropped.paths)}` : "";
     result = {
       removed: true,
       line: salvage
-        ? `removed stale worktree ${w.path} (${verdict.salvage}; saved as ${salvage.ref})`
+        ? `removed stale worktree ${w.path} (${verdict.salvage}; saved as ${salvage.ref}${dropped})`
         : `removed worktree ${w.path}`,
       ...(bytes !== undefined ? { bytes } : {}),
     };
   });
   if (lockReason) keep("other", lockReason);
   return result;
+}
+
+function droppedSummary(count: number, paths: string[] = []): string {
+  return `${count} ignored ${count === 1 ? "entry" : "entries"} (too large or build output)${paths.length > 0 ? `: ${paths.join(", ")}${count > paths.length ? ", …" : ""}` : ""}`;
+}
+
+// What a removal saved and left out, for `am gc --restore` and `am restore`.
+export function salvageSummary(entry: GcLogEntry): { saved: string | null; dropped: string | null } {
+  const ignored = entry.savedIgnored ? ` and ${entry.savedIgnored} ignored file${entry.savedIgnored === 1 ? "" : "s"}` : "";
+  return {
+    saved: entry.salvageRef ? `its uncommitted changes${ignored}` : null,
+    dropped: entry.dropped ? `gc did not save ${droppedSummary(entry.dropped, entry.droppedPaths)}` : null,
+  };
 }
 
 // What the removal log knows about a worktree gc took: enough to recreate it.
@@ -771,12 +838,14 @@ export function restoreWorktree(ref: string): string[] {
   if (!add.ok && entry.branch && entry.head) add = git(repoRoot, ["worktree", "add", "--detach", path, entry.head], REMOVE_TIMEOUT_MS);
   if (!add.ok) throw new Error(`could not recreate ${path}: ${add.err}`);
   const lines = [`recreated worktree ${path} from ${entry.branch ?? entry.head}`];
+  const { saved, dropped } = salvageSummary(entry);
   if (entry.salvageRef) {
     const restored = git(path, ["restore", `--source=${entry.salvageRef}`, "--worktree", "--", "."], REMOVE_TIMEOUT_MS);
     lines.push(restored.ok
-      ? `put back its uncommitted changes from ${entry.salvageRef}`
+      ? `put back ${saved} from ${entry.salvageRef}`
       : `warning: could not put back changes from ${entry.salvageRef}: ${restored.err}`);
   }
+  if (dropped) lines.push(`note: ${dropped}`);
   logGc({ source: "manual", mode: "apply", action: "restore-worktree", path, repoRoot, ...(entry.branch ? { branch: entry.branch } : {}) });
   return lines;
 }

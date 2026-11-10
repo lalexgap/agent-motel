@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig, type Config } from "./config";
+import { withAuditContext } from "./audit";
 import { withFileLock } from "./filelock";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import {
@@ -108,7 +109,7 @@ export function autoGcDue(
   config: Pick<Config, "gcAuto" | "gcAutoHour">,
   busy: boolean,
 ): { trigger: GcTrigger } | null {
-  if (!config.gcAuto || state.paused) return null;
+  if (config.gcAuto !== true || state.paused) return null;
   const nowMs = now.getTime();
   const skippedAt = state.lastSkip ? Date.parse(state.lastSkip.at) : NaN;
   if (Number.isFinite(skippedAt) && nowMs - skippedAt < SKIP_RETRY_MS) return null;
@@ -188,6 +189,12 @@ export type AutoGcResult = { summary: GcRunSummary } | { skipped: string };
 // One sweep. Safe to call from anywhere: it holds the gc lock for its whole
 // run and gives up at once when another gc has it.
 export function runAutoGc(opts: AutoGcRunOptions): AutoGcResult {
+  // Reaps are audited as the daemon's; a manual run keeps its caller's context.
+  if (opts.trigger !== "manual") return withAuditContext({ source: "daemon", route: "auto-gc" }, () => sweep(opts));
+  return sweep(opts);
+}
+
+function sweep(opts: AutoGcRunOptions): AutoGcResult {
   const release = acquireGcLock();
   if (!release) return { skipped: "another gc is running" };
   try {
@@ -315,7 +322,7 @@ export function startAutoGc(log: (message: string) => void): { stop(): void } {
     if (running) return;
     try {
       const config = loadConfig();
-      if (!config.gcAuto) return;
+      if (config.gcAuto !== true) return;
       const state = readAutoGcState();
       const due = autoGcDue(new Date(), state, config, listAgents().some((agent) => agent.status === "working"));
       if (!due) return;
@@ -331,7 +338,8 @@ export function startAutoGc(log: (message: string) => void): { stop(): void } {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "inherit",
-        env: { ...process.env },
+        // The sweep acts for the daemon, not for whoever started the daemon.
+        env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !["AGENTMGR_AGENT", "SSH_CONNECTION", "SSH_CLIENT"].includes(key))),
       });
       log(`gc: ${due.trigger} sweep started (pid ${child.pid})`);
       void child.exited.then((code) => {
@@ -362,7 +370,7 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
   const state = readAutoGcState();
   const lines: string[] = [];
   const hour = `${String(quietHour(config)).padStart(2, "0")}:00`;
-  if (!config.gcAuto) lines.push("auto gc: off (gcAuto is false in config.json)");
+  if (config.gcAuto !== true) lines.push("auto gc: off (gcAuto is not true in config.json)");
   else if (state.paused) lines.push(`auto gc: paused ${ago(state.paused.at, now.getTime())} — \`am gc --auto resume\` turns it back on`);
   else lines.push(`auto gc: on — nightly at ${hour} or when the fleet is next idle, up to ${maxMinutes(config)}m a run`);
   lines.push(autoGcArmed(state)
@@ -385,7 +393,7 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
   if (failedSinceLastRun(state)) {
     lines.push(`last failure: ${ago(state.lastFailure!.at, now.getTime())} — the sweep exited with ${state.lastFailure!.code}; see the daemon log`);
   }
-  if (config.gcAuto && !state.paused) {
+  if (config.gcAuto === true && !state.paused) {
     const pressure = pressureReason(readPressure(), config);
     const opened = windowStart(now, config);
     const ranTonight = state.lastRun && Date.parse(state.lastRun.finishedAt) >= opened.getTime();

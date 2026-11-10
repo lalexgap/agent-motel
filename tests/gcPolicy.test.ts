@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { applyGc, gcPolicy, planGc, readGcLog, restoreWorktree, type GcOptions } from "../src/gc";
+import { applyGc, gcPolicy, planGc, readGcLog, restoreWorktree, type GcOptions, type GcPlan } from "../src/gc";
 import { loadConfig } from "../src/config";
 import { destroyAgent } from "../src/commands/rm";
 import { restoreCommand } from "../src/commands/restore";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { readTrashedState, trashState } from "../src/trash";
-import { KEEP_MARKER, managedWorktreeRoot, noteWorkDir } from "../src/worktreeOwnership";
+import { KEEP_MARKER, managedWorktreeRoot, noteWorkDir, salvageWorktree } from "../src/worktreeOwnership";
 
 let home: string, repo: string, origin: string;
 let oldHome: string | undefined, oldPool: string | undefined;
@@ -127,6 +127,19 @@ describe("ownership of worktrees an agent is not registered in", () => {
     // Without the record nothing ties the agent to it.
     writeAgent({ ...readAgent("roamer")!, workDirs: undefined });
     expect(planGc(POLICY).worktrees.map((w) => w.path)).toEqual([wt]);
+  });
+
+  test("a worktree worked in again moves to the end, so the cap drops the oldest", () => {
+    const state = agent("busy");
+    const dirs = Array.from({ length: 17 }, (_, i) => join(home, "worktrees", "repo", `w${i}`));
+    noteWorkDir(state, dirs[0]!);
+    for (const dir of dirs.slice(1, 16)) noteWorkDir(state, dir);
+    expect(noteWorkDir(state, dirs[15]!)).toBe(false);
+    expect(noteWorkDir(state, dirs[0]!)).toBe(true);
+    noteWorkDir(state, dirs[16]!);
+    expect(state.workDirs).toHaveLength(16);
+    expect(state.workDirs).toContain(dirs[0]!);
+    expect(state.workDirs).not.toContain(dirs[1]!);
   });
 
   test("cwd outside the managed worktrees, or in the agent's own dir, is not recorded", () => {
@@ -430,7 +443,10 @@ describe("stale dirty worktrees", () => {
     applyGc(plan, POLICY);
     expect(existsSync(wt)).toBe(false);
     expect(git(repo, "rev-parse", "am/unpushed")).toBe(head);
-    expect(git(repo, "rev-parse", readGcLog().find((e) => e.action === "remove-worktree")!.salvageRef!)).toBe(head);
+    // Nothing uncommitted: HEAD is pinned, but there are no changes to put back.
+    const entry = readGcLog().find((e) => e.action === "remove-worktree")!;
+    expect(entry.salvageRef).toBeUndefined();
+    expect(git(repo, "rev-parse", entry.pinRef!)).toBe(head);
   });
 
   test("a stale worktree still holding subagent worktrees is kept", () => {
@@ -444,7 +460,7 @@ describe("stale dirty worktrees", () => {
     expect(plan.keptWorktrees.find((w) => w.path === wt)!.reason).toContain("contains subagent worktrees");
   });
 
-  test("only git-ignored leftovers go after ignoredDays, without being saved — unless commits under them are unpushed", () => {
+  test("only git-ignored leftovers go after ignoredDays — unless commits under them are unpushed", () => {
     writeFileSync(join(repo, ".gitignore"), ".env.local\nnode_modules/\n");
     git(repo, "add", ".gitignore");
     git(repo, "commit", "-q", "-m", "ignore");
@@ -580,6 +596,101 @@ describe("old files", () => {
   });
 });
 
+describe("hardening", () => {
+  const empty: GcPlan = { agents: [], trash: [], orphans: [], worktrees: [], keptWorktrees: [], ownedWorktrees: 0, uninspectedWorktrees: 0, codexTrust: [], claudeTrust: [] };
+
+  test("a symlinked .claude never leads gc to worktrees outside the managed dir", () => {
+    const external = join(repo, ".claude", "worktrees", "my-session");
+    mkdirSync(join(repo, ".claude", "worktrees"), { recursive: true });
+    git(repo, "worktree", "add", "-q", "-b", "mine", external);
+    writeFileSync(join(repo, ".git", "info", "exclude"), ".env.local\n.claude/\n");
+    writeFileSync(join(external, ".env.local"), "SECRET=1\n");
+    git(external, "push", "-q", "origin", "mine");
+    idle(external, 10, ".env.local");
+    const managed = addWorktree("agent-a");
+    symlinkSync(join(repo, ".claude"), join(managed, ".claude"));
+    writeAgent(agent("agent-a", { dir: managed, status: "idle" }));
+    const policy = { ...POLICY, ignoredDays: 7 };
+
+    const plan = planGc(policy);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.keptWorktrees.map((w) => w.path)).not.toContain(external);
+    // A removal that names it anyway — a stale plan, a swapped path — is refused under the lock too.
+    const lines = applyGc({ ...empty, worktrees: [{ path: join(managed, ".claude", "worktrees", "my-session"), repoRoot: repo, salvage: "x" }] }, policy);
+    expect(lines.join("\n")).toContain("path leaves the managed worktrees directory");
+    expect(readFileSync(join(external, ".env.local"), "utf8")).toBe("SECRET=1\n");
+  });
+
+  test("small ignored files are saved with the changes and put back; large ones and build output are reported", () => {
+    writeFileSync(join(repo, ".gitignore"), ".env.local\ntmp/\nbig.bin\nnode_modules/\n");
+    git(repo, "add", ".gitignore");
+    git(repo, "commit", "-q", "-m", "ignore");
+    git(repo, "push", "-q", "origin", "main");
+    const wt = addWorktree("leftovers");
+    writeFileSync(join(wt, ".env.local"), "SECRET=1\n");
+    mkdirSync(join(wt, "tmp"));
+    writeFileSync(join(wt, "tmp", "notes.md"), "notes\n");
+    writeFileSync(join(wt, "big.bin"), Buffer.alloc((1 << 20) + 1));
+    mkdirSync(join(wt, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(wt, "node_modules", "pkg", "index.js"), "x");
+    idle(wt, 9, ".env.local", join("tmp", "notes.md"), "tmp", "big.bin", join("node_modules", "pkg", "index.js"), join("node_modules", "pkg"), "node_modules");
+    const policy = { ...POLICY, ignoredDays: 7 };
+    const lines = applyGc(planGc(policy), policy);
+    expect(existsSync(wt)).toBe(false);
+    expect(lines.join("\n")).toContain("not saved: 2 ignored entries");
+    const entry = readGcLog().find((e) => e.action === "remove-worktree")!;
+    expect(entry.savedIgnored).toBe(2);
+    expect(entry.dropped).toBe(2);
+    expect(entry.droppedPaths!.sort()).toEqual(["big.bin", "node_modules/"]);
+
+    const restored = restoreWorktree("leftovers");
+    expect(restored.join("\n")).toContain("its uncommitted changes and 2 ignored files");
+    expect(restored.join("\n")).toContain("gc did not save 2 ignored entries");
+    expect(readFileSync(join(wt, ".env.local"), "utf8")).toBe("SECRET=1\n");
+    expect(readFileSync(join(wt, "tmp", "notes.md"), "utf8")).toBe("notes\n");
+    expect(git(wt, "status", "--porcelain")).toBe("");
+  });
+
+  test("local edits to skip-worktree and assume-unchanged files make a worktree dirty, and are salvaged", () => {
+    writeFileSync(join(repo, "config.yml"), "db: prod\n");
+    writeFileSync(join(repo, "sparse.txt"), "sparse\n");
+    git(repo, "add", "config.yml", "sparse.txt");
+    git(repo, "commit", "-q", "-m", "config");
+    git(repo, "push", "-q", "origin", "main");
+    const wt = addWorktree("hidden-edits");
+    git(wt, "push", "-q", "origin", "am/hidden-edits");
+    // An absent skip-worktree file is a sparse checkout, not a change.
+    git(wt, "update-index", "--skip-worktree", "sparse.txt");
+    rmSync(join(wt, "sparse.txt"));
+    git(wt, "update-index", "--skip-worktree", "config.yml");
+    idle(wt, 10);
+    expect(planGc(POLICY).worktrees.map((w) => w.path)).toEqual([wt]);
+
+    writeFileSync(join(wt, "config.yml"), "db: local-only\n");
+    idle(wt, 10, "config.yml");
+    const plan = planGc(POLICY);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.keptWorktrees[0]!.kind).toBe("dirty");
+
+    idle(wt, 40, "config.yml");
+    applyGc(planGc(POLICY), POLICY);
+    expect(existsSync(wt)).toBe(false);
+    const ref = readGcLog().find((e) => e.action === "remove-worktree")!.salvageRef!;
+    expect(git(repo, "show", `${ref}:config.yml`)).toBe("db: local-only");
+  });
+
+  test("salvage refs are unique and never overwrite one another", () => {
+    const wt = addWorktree("twice");
+    writeFileSync(join(wt, "a.txt"), "a\n");
+    const first = salvageWorktree(wt, "same");
+    writeFileSync(join(wt, "a.txt"), "b\n");
+    const second = salvageWorktree(wt, "same");
+    expect(first.ref).not.toBe(second.ref);
+    expect(git(repo, "show", `${first.ref}:a.txt`)).toBe("a");
+    expect(git(repo, "show", `${second.ref}:a.txt`)).toBe("b");
+  });
+});
+
 describe("applying", () => {
   test("a file that cannot be removed is reported and the rest of the run goes on", () => {
     const stuck = join(home, "inbox", "gone-a");
@@ -651,5 +762,7 @@ describe("gcPolicy", () => {
     expect(gcPolicy(loadConfig())).toMatchObject({ agentDays: 7, trashDays: 30, mergedDays: 3, removedDays: 7, orphanDays: 3, staleDays: 30, ignoredDays: 7, fileDays: 30 });
     const odd = gcPolicy({ ...loadConfig(), gcStaleDays: "soon" as never, gcOrphanDays: -1, gcRemovedDays: null as never }, { agentDays: 2 });
     expect(odd).toMatchObject({ agentDays: 2, staleDays: 0, orphanDays: 3, removedDays: 7 });
+    // A number written as a string means that number, not a shorter default.
+    expect(gcPolicy({ ...loadConfig(), gcRemovedDays: "30" as never, gcStaleDays: " " as never })).toMatchObject({ removedDays: 30, staleDays: 0 });
   });
 });
