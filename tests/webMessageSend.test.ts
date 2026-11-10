@@ -72,8 +72,8 @@ function composer(provider?: string, dock = false, fail = false, focusDuringSend
     submit: () => form.onsubmit({ preventDefault() {} }),
     pointerSubmit: () => {
       input.focus();
-      button.onpointerdown();
       document.activeElement = button;
+      button.onclick({ detail: 1 });
       return form.onsubmit({ preventDefault() {}, submitter: button });
     },
     keyboardSubmit: () => {

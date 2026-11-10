@@ -1467,12 +1467,13 @@ function messageSendMode(name) {
 }
 const pointerSubmitButtons = new WeakSet();
 function trackPointerSubmit(button) {
-  button.addEventListener("pointerdown", () => pointerSubmitButtons.add(button));
-  button.addEventListener("pointerup", () => setTimeout(() => pointerSubmitButtons.delete(button)));
-  button.addEventListener("pointercancel", () => pointerSubmitButtons.delete(button));
+  button.addEventListener("click", (event) => {
+    if (event.detail > 0) pointerSubmitButtons.add(button);
+    else pointerSubmitButtons.delete(button);
+  });
 }
-function takePointerSubmit(event, button) {
-  const tracked = event.submitter === button && pointerSubmitButtons.has(button);
+function takePointerSubmit(button) {
+  const tracked = pointerSubmitButtons.has(button);
   pointerSubmitButtons.delete(button);
   return tracked;
 }
@@ -1495,7 +1496,7 @@ $("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const name = state.selected;
   if (!name || state.sending.has(name) || uploadsPending(name) || !state.authenticated) return;
-  const restoreFocus = takePointerSubmit(event, messageSubmitButton);
+  const restoreFocus = takePointerSubmit(messageSubmitButton);
   const images = agentAttachments(name).filter((item) => item.status === "ready");
   const text = [$("message").value.trim(), ...images.map((item) => `[image: ${item.path}]`)]
     .filter(Boolean)
@@ -2091,7 +2092,7 @@ trackPointerSubmit(dockSubmitButton);
 $("dock-form").onsubmit = async (event) => {
   event.preventDefault();
   if (state.dockBusy || !state.authenticated) return;
-  const restoreFocus = takePointerSubmit(event, dockSubmitButton);
+  const restoreFocus = takePointerSubmit(dockSubmitButton);
   const text = $("dock-message").value.trim();
   if (!text) return;
   const epoch = state.sessionEpoch;
