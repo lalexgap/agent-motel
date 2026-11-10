@@ -1053,6 +1053,11 @@ dialog p.muted {
 .related-filter input { width: auto; margin: 0; }
 #handover-dialog { max-width: min(480px, calc(100vw - 32px)); }
 #handover-source, #handover-error { overflow-wrap: anywhere; }
+#model-dialog { max-width: min(480px, calc(100vw - 32px)); }
+#model-agent-name { overflow-wrap: anywhere; }
+#model-dialog .model-warning { margin: 12px 0 4px; padding: 10px 12px; border-left: 3px solid var(--warning-text); background: var(--warning-soft); font-size: 13.5px; line-height: 1.45; }
+#model-dialog .model-observed-note { text-align: left; line-height: 1.45; }
+#model-error { min-height: 1.4em; color: var(--danger-text); font-size: 13.5px; overflow-wrap: anywhere; }
 
 .agent-context-menu { position: fixed; z-index: 100; min-width: 170px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface); box-shadow: 0 5px 20px #0008; }
 .agent-context-menu button { display: block; width: 100%; border: 0; background: transparent; text-align: left; font-size: 13.5px; padding: 7px 10px; }

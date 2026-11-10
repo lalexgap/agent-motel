@@ -29,9 +29,9 @@ import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
 import { reviveAgent } from "./commands/resume";
-import { restartAgent } from "./commands/restart";
+import { restartAgent, restartExactAgent, type RestartPrecondition } from "./commands/restart";
 import { localCatalogs } from "./commands/models";
-import { parseCatalogs, type ProviderCatalog } from "./catalog";
+import { parseCatalogs, SelectionError, type ProviderCatalog } from "./catalog";
 import { renameAgent } from "./commands/rename";
 import { daemonRequest, notifyDaemon } from "./daemon";
 import { cancelMessage, type CancelResult } from "./deliver";
@@ -274,6 +274,45 @@ async function refuseFields(req: Request, fields: string[]): Promise<Response | 
 const stopBody = (req: Request) => refuseFields(req, ["ifIdle"]);
 const restartBody = (req: Request) => refuseFields(req, ["ifIdle", "model", "effort"]);
 
+export interface ModelSelectionBody {
+  model: string | null;
+  effort?: string | null;
+  createdAt: string;
+  status: string;
+}
+
+export function parseModelSelectionBody(value: unknown): ModelSelectionBody | Response {
+  const body = value as Record<string, unknown> | null;
+  if (!body || Array.isArray(body) || typeof body !== "object") return json({ error: "JSON object required" }, 400);
+  const fields = Object.keys(body);
+  const extra = fields.find(field => !["model", "effort", "createdAt", "status"].includes(field));
+  if (extra) return json({ error: `${extra} is not supported` }, 400);
+  if (!Object.hasOwn(body, "model")) return json({ error: "model is required" }, 400);
+  if (typeof body.createdAt !== "string" || !body.createdAt || body.createdAt.length > 128 || /[\x00-\x1f\x7f]/.test(body.createdAt)) {
+    return json({ error: "createdAt is required" }, 400);
+  }
+  if (typeof body.status !== "string" || !["starting", "idle", "waiting", "working", "needs-attention"].includes(body.status)) {
+    return json({ error: "status must identify a running agent" }, 400);
+  }
+  for (const [field, limit] of [["model", 256], ["effort", 64]] as const) {
+    if (!Object.hasOwn(body, field)) continue;
+    const value = body[field];
+    if (value !== null && typeof value !== "string") return json({ error: `${field} must be a string or null` }, 400);
+    if (typeof value === "string" && (!value.length || value.length > limit || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value) || value.startsWith("-"))) {
+      return json({ error: `${field} is invalid` }, 400);
+    }
+  }
+  return body as ModelSelectionBody;
+}
+
+async function modelSelectionBody(req: Request): Promise<ModelSelectionBody | Response> {
+  return parseModelSelectionBody(await req.json().catch(() => null));
+}
+
+export function modelSelectionPrecondition(body: ModelSelectionBody): RestartPrecondition {
+  return { createdAt: body.createdAt, status: body.status };
+}
+
 // --- models ------------------------------------------------------------------
 
 const MODELS_TTL_MS = 10 * 60_000;
@@ -496,6 +535,13 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       await run(["restart", name]);
       return json({ ok: true });
     }
+
+    if (route === "model" && method === "POST") {
+      const body = await modelSelectionBody(req);
+      if (body instanceof Response) return body;
+      await runRemoteAm(host, ["__restart-model", name], { stdin: JSON.stringify(body) });
+      return json({ ok: true, model: body.model, ...(body.effort !== undefined ? { effort: body.effort } : {}) });
+    }
   } catch (error) {
     return remoteFailure(error, fallback);
   }
@@ -551,7 +597,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
+  const actions = new Set(["stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -953,6 +999,19 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
         return json({ ok: true });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
+      }
+    }
+
+    if (parts.length === 3 && parts[2] === "model" && method === "POST") {
+      const body = await modelSelectionBody(req);
+      if (body instanceof Response) return body;
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      try {
+        const selection = await restartExactAgent(agent, body, modelSelectionPrecondition(body));
+        return json({ ok: true, ...selection });
+      } catch (error) {
+        return json({ error: (error as Error).message }, error instanceof SelectionError ? 400 : 409);
       }
     }
 

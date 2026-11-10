@@ -931,6 +931,38 @@ describe("remote agents api (host:name)", () => {
     expect(calls).toEqual([]);
   });
 
+  test("model change forwards exact host defaults and preserves an omitted effort", async () => {
+    const guard = { createdAt: "incarnation-1", status: "working" };
+    expect((await post("/api/agents/laptop:api/model", { model: "gpt-next", effort: "high", ...guard })).status).toBe(200);
+    expect((await post("/api/agents/laptop:api/model", { model: null, effort: null, ...guard })).status).toBe(200);
+    expect((await post("/api/agents/laptop:api/model", { model: "gpt-fast", ...guard })).status).toBe(200);
+    expect(calls.map(call => [call.args, call.stdin])).toEqual([
+      [["__restart-model", "api", "--local", "--exact"], JSON.stringify({ model: "gpt-next", effort: "high", ...guard })],
+      [["__restart-model", "api", "--local", "--exact"], JSON.stringify({ model: null, effort: null, ...guard })],
+      [["__restart-model", "api", "--local", "--exact"], JSON.stringify({ model: "gpt-fast", ...guard })],
+    ]);
+  });
+
+  test("invalid remote model bodies never reach the target host", async () => {
+    const guard = { createdAt: "incarnation-1", status: "working" };
+    for (const body of [{}, { model: "", ...guard }, { model: "--help", ...guard }, { model: "bad\0value", ...guard }, { model: null, effort: [], ...guard }, { model: null, unknown: true, ...guard }])
+      expect((await post("/api/agents/laptop:api/model", body)).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  test("remote model changes fail closed on old hosts and preserve catalog 400s", async () => {
+    const body = { model: "gpt-next", createdAt: "incarnation-1", status: "working" };
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown command "__restart-model"' });
+    const old = await post("/api/agents/laptop:api/model", body);
+    expect(old.status).toBe(409);
+    expect(await old.json()).toEqual({ error: 'remote am too old on laptop (unknown command "__restart-model")', reason: "remote_too_old" });
+
+    reply = () => ({ exitCode: 1, stderr: 'am: unknown codex model "gpt-next" (see `am models`)' });
+    const invalid = await post("/api/agents/laptop:api/model", body);
+    expect(invalid.status).toBe(400);
+    expect(((await invalid.json()) as any).error).toContain('unknown codex model "gpt-next"');
+  });
+
   test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {
     reply = (call) =>
       call.args[0] === "__detail"

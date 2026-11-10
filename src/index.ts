@@ -13,7 +13,7 @@ import { newCommand } from "./commands/new";
 import { runCommand } from "./commands/run";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
-import { agentDetail, agentPermissions, answerAgentPermission } from "./server";
+import { agentDetail, agentPermissions, answerAgentPermission, modelSelectionPrecondition, parseModelSelectionBody } from "./server";
 import { terminalAttachCommand } from "./webTerminal";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
@@ -32,7 +32,7 @@ import { peekCommand } from "./commands/peek";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
-import { restartAgent, restartCommand } from "./commands/restart";
+import { restartAgent, restartCommand, restartExactAgent } from "./commands/restart";
 import { switchModelCommand } from "./commands/switchModel";
 import { caretakerCommand } from "./commands/caretaker";
 import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./commands/concierge";
@@ -989,6 +989,17 @@ async function main(): Promise<void> {
       const detail = agentDetail(name);
       if (!detail) throw new Error(`no local agent "${name}"`);
       console.log(JSON.stringify(detail));
+      break;
+    }
+    case "__restart-model": {
+      // Atomic exact-incarnation/status guarded model restart for a remote
+      // web server. Older am versions reject this unknown command safely.
+      const name = requirePositional(args, 0, "agent name");
+      const body = parseModelSelectionBody(JSON.parse(await Bun.stdin.text()));
+      if (body instanceof Response) throw new Error(((await body.json()) as { error: string }).error);
+      const agent = readAgent(name);
+      if (!agent) throw new Error(`no local agent "${name}"`);
+      console.log(JSON.stringify(await restartExactAgent(agent, body, modelSelectionPrecondition(body))));
       break;
     }
     case "__cancel": {
