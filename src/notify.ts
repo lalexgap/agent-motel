@@ -143,8 +143,12 @@ export function showNotification(title: string, message: string, url?: string): 
       if (!options?.keepAlive) child.unref();
       const timeout = setTimeout(() => child.kill(), 10_000);
       if (!options?.keepAlive) timeout.unref();
+      const killTimeout = options?.keepAlive ? setTimeout(() => child.kill(9), 10_500) : undefined;
       try { return await child.exited; }
-      finally { clearTimeout(timeout); }
+      finally {
+        clearTimeout(timeout);
+        if (killTimeout) clearTimeout(killTimeout);
+      }
     },
   }).catch(error => console.error(`am: notification display failed: ${error}`));
 }
