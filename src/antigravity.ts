@@ -563,21 +563,28 @@ export function stopAntigravity(agent: AgentState): boolean {
     if (!hasSession(current.tmuxSession)) return false;
     const panes = tmux("list-panes", "-t", `=${current.tmuxSession}:`, "-F", "#{pane_pid}");
     const pid = panes.exitCode === 0 ? Number.parseInt(panes.stdout.trim().split(/\s+/)[0] ?? "", 10) : NaN;
-    if (Number.isInteger(pid) && pid > 1) {
-      const alive = () => {
-        try { process.kill(-pid, 0); return true; } catch (e) { if ((e as NodeJS.ErrnoException)?.code === "EPERM") return true; }
-        try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException)?.code === "EPERM"; }
-      };
-      try { process.kill(-pid, "SIGTERM"); } catch {}
-      try { process.kill(pid, "SIGTERM"); } catch {}
-      const termDeadline = Date.now() + 200;
-      while (Date.now() < termDeadline && alive()) Bun.sleepSync(10);
-      if (alive()) {
-        try { process.kill(-pid, "SIGKILL"); } catch {}
-        try { process.kill(pid, "SIGKILL"); } catch {}
-        const killDeadline = Date.now() + 200;
-        while (Date.now() < killDeadline && alive()) Bun.sleepSync(10);
+    if (!Number.isInteger(pid) || pid <= 1) return false;
+    const alive = () => {
+      try { process.kill(-pid, 0); return true; } catch (e) { if ((e as NodeJS.ErrnoException)?.code === "EPERM") return true; }
+      try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException)?.code === "EPERM"; }
+    };
+    const signal = (target: number, value: NodeJS.Signals): boolean => {
+      try { process.kill(target, value); return true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "EPERM") throw new Error("Antigravity native process cleanup refused; stop aborted");
+        return false;
       }
+    };
+    let initiated = signal(-pid, "SIGTERM");
+    if (signal(pid, "SIGTERM")) initiated = true;
+    if (!initiated) return false;
+    const termDeadline = Date.now() + 200;
+    while (Date.now() < termDeadline && alive()) Bun.sleepSync(10);
+    if (alive()) {
+      signal(-pid, "SIGKILL");
+      signal(pid, "SIGKILL");
+      const killDeadline = Date.now() + 200;
+      while (Date.now() < killDeadline && alive()) Bun.sleepSync(10);
     }
     return true;
   }

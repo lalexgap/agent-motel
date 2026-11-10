@@ -251,21 +251,50 @@ printf '%s\n' "$@" > "$AGENTMGR_HOME/launch"
   test("a guarded Antigravity restart may replace the session it intentionally stopped", async () => {
     writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(home, "agy"), 0o755);
+    const native = Bun.spawn(["sleep", "30"]);
     writeFileSync(join(home, "tmux"), `#!/bin/sh
 case "$1" in
   has-session) test ! -f "$AGENTMGR_HOME/vanished" ;;
+  list-panes) echo "${native.pid}" ;;
   respawn-pane) touch "$AGENTMGR_HOME/vanished"; exit 1 ;;
   new-session) printf '%s\n' "$@" > "$AGENTMGR_HOME/launch" ;;
   *) exit 0 ;;
 esac
 `);
+    try {
+      const agent = readAgent("api")!;
+      agent.provider = "antigravity";
+      writeAgent(agent);
+      const result = await restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" });
+      expect(result.model).toBe("gemini-4-argon-high");
+      expect(readFileSync(join(home, "launch"), "utf8")).toStartWith("new-session\n");
+      expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "starting", model: "gemini-4-argon-high" });
+      expect(await native.exited).not.toBe(0);
+    } finally {
+      native.kill();
+      await native.exited;
+    }
+  });
+
+  test("a guarded native Antigravity restart rejects a process that exited before teardown", async () => {
+    writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(home, "agy"), 0o755);
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  list-panes) echo 99999999 ;;
+  *) printf '%s\n' "$1" >> "$AGENTMGR_HOME/native-race-calls" ;;
+esac
+`);
     const agent = readAgent("api")!;
     agent.provider = "antigravity";
     writeAgent(agent);
-    const result = await restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" });
-    expect(result.model).toBe("gemini-4-argon-high");
-    expect(readFileSync(join(home, "launch"), "utf8")).toStartWith("new-session\n");
-    expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "starting", model: "gemini-4-argon-high" });
+    await expect(restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/exited before the guarded restart could stop its generation/);
+    const calls = existsSync(join(home, "native-race-calls")) ? readFileSync(join(home, "native-race-calls"), "utf8") : "";
+    expect(calls).not.toContain("respawn-pane");
+    expect(calls).not.toContain("new-session");
+    expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "working" });
   });
 
   test("a guarded Antigravity restart rejects a generation that naturally exited before teardown", async () => {
