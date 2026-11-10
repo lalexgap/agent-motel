@@ -107,7 +107,7 @@ function postViaIterm(title: string, message: string): boolean {
 }
 
 export interface NotificationDelivery extends NotifyEnv {
-  run: (cmd: string[], vars: Record<string, string>) => Promise<number>;
+  run: (cmd: string[], vars: Record<string, string>, options?: { keepAlive?: boolean }) => Promise<number>;
   iterm: (title: string, message: string) => boolean;
   warn: (message: string) => void;
 }
@@ -119,7 +119,7 @@ export async function deliverNotification(title: string, message: string, url: s
     if (target && delivery.has("terminal-notifier")) {
       try {
         const cmd = buildNotifyCommand(title, message, config, delivery, target)!;
-        if (await delivery.run(cmd, vars) === 0) return;
+        if (await delivery.run(cmd, vars, { keepAlive: true }) === 0) return;
       } catch { /* Preserve the alert through the existing fallback. */ }
       delivery.warn("am: clickable PR notification failed; enable terminal-notifier in macOS Notifications. Using the standard notification fallback.");
     }
@@ -138,11 +138,11 @@ export function showNotification(title: string, message: string, url?: string): 
     has: binary => !!Bun.which(binary),
     iterm: postViaIterm,
     warn: message => console.error(message),
-    run: async (cmd, vars) => {
+    run: async (cmd, vars, options) => {
       const child = Bun.spawn({ cmd, env: { ...process.env, ...vars }, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-      child.unref();
+      if (!options?.keepAlive) child.unref();
       const timeout = setTimeout(() => child.kill(), 10_000);
-      timeout.unref();
+      if (!options?.keepAlive) timeout.unref();
       try { return await child.exited; }
       finally { clearTimeout(timeout); }
     },

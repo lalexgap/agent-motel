@@ -53,12 +53,12 @@ import { loadConfig } from "../src/config";
 const prUrl = "https://github.com/owner/repo/pull/123";
 const notifyConfig = { ...loadConfig(), notifyCommand: undefined, itermNotifications: true };
 function delivery(overrides: Partial<NotificationDelivery> = {}) {
-  const calls: { cmd: string[]; vars: Record<string, string> }[] = [];
+  const calls: { cmd: string[]; vars: Record<string, string>; options?: { keepAlive?: boolean } }[] = [];
   const warnings: string[] = [];
   let itermCalls = 0;
   const deps: NotificationDelivery = {
     platform: "darwin", has: () => true,
-    run: async (cmd, vars) => { calls.push({ cmd, vars }); return 0; },
+    run: async (cmd, vars, options) => { calls.push({ cmd, vars, ...(options ? { options } : {}) }); return 0; },
     iterm: () => { itermCalls++; return true; }, warn: message => { warnings.push(message); },
     ...overrides,
   };
@@ -69,7 +69,7 @@ describe("clickable PR notifications", () => {
   test("opens the validated PR through notifier's own identity, ahead of iTerm", async () => {
     const d = delivery();
     await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
-    expect(d.calls).toEqual([{ cmd: ["terminal-notifier", "-title", "PR merged", "-message", "body", "-open", prUrl], vars: { AM_TITLE: "PR merged", AM_MESSAGE: "body", AM_URL: prUrl } }]);
+    expect(d.calls).toEqual([{ cmd: ["terminal-notifier", "-title", "PR merged", "-message", "body", "-open", prUrl], vars: { AM_TITLE: "PR merged", AM_MESSAGE: "body", AM_URL: prUrl }, options: { keepAlive: true } }]);
     expect(d.itermCalls()).toBe(0);
     expect(d.calls[0]!.cmd).not.toContain("-sender");
   });
