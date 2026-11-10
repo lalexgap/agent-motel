@@ -535,6 +535,7 @@ function renderFleet() {
           `${children.length} child agent${children.length === 1 ? "" : "s"}`,
         ),
       );
+    identity.append(el("small", "mobile-agent-context", [repoName(row), row.host || "This server", row.provider, row.queued ? `${row.queued} queued` : ""].filter(Boolean).join(" · ")));
     const status = dot(row.status);
     status.title = statusName(row.status);
     const tag = el("span", "agent-tag", row.provider || "codex");
@@ -1090,7 +1091,7 @@ function collapsibleMessage(entry) {
   const wrapped = (tag) => text.startsWith(`<${tag}>`) &&
     text.indexOf(`</${tag}>`, tag.length + 2) === text.length - tag.length - 3;
   const notice = (label, preview = "", subject = "context") => ({ label, preview: bounded(preview), subject });
-  const peer = /^\[am · from ([^\]\r\n]{1,160})\] /u.exec(text);
+  const peer = /^\[am · from ([^\]\r\n]{1,160})\](?:[ \t]*\r?\n|[ \t]+|$)/u.exec(text);
   // Sender labels are display hints only; transcript text cannot establish provenance.
   if (peer) return { peer: peer[1], body: text.slice(peer[0].length) };
   if (wrapped("task-notification")) {
@@ -1384,6 +1385,8 @@ async function refreshDetail() {
   if (lastEntry) view.dataset.lastIndex = lastEntry.index;
   else delete view.dataset.lastIndex;
   updateLatestButton();
+  const currentRow = state.rows.find(row => key(row) === name);
+  if (currentRow) state.lastSeen.set(name, currentRow.updatedAt);
   const mode = messageSendMode(name);
   $("message-mode").textContent = mode === "now" ? "Send to agent · read at its next input boundary" : "Queue · delivered when the agent is free";
 
@@ -1889,8 +1892,8 @@ function renderCommands() {
     ["Token usage", () => $("usage-nav").click()],
     ["Concierge", () => $("concierge-nav").click()],
     ["New agent…", createDialog],
-    ...(state.selected ? [["View chat", () => { setDetailMode("chat"); updateAgentView(); }],
-      ["View terminal", () => { setDetailMode("terminal"); updateAgentView(); }]] : []),
+    ...(state.selected ? [["View chat", () => $("chat-tab").click()],
+      ["View terminal", () => $("terminal-tab").click()]] : []),
     ...state.rows.map(row => [`${row.name} · ${repoName(row)} · ${row.host || "This server"} · ${statusName(row.status)}`, () => selectAgent(key(row))]),
   ];
   for (const [label, action] of commands.filter(([label]) => label.toLowerCase().includes(query))) {
@@ -1922,7 +1925,7 @@ $("command-dialog").onkeydown = event => {
   }
 };
 const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
-$("command-open").textContent = `Commands · ${modifier} K`;
+$("command-open").replaceChildren(document.createTextNode("Commands"), el("span", "keyboard-hint", ` · ${modifier} K`));
 for (const hint of document.querySelectorAll(".composer-shortcut")) hint.textContent = `Enter / Shift+Enter: new line · ${modifier}+Enter: send`;
 $("message-send").title = `Send (${modifier}+Enter)`;
 document.addEventListener("keydown", event => {

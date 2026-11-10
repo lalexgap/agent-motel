@@ -156,3 +156,12 @@ describe("transcript notices", () => {
     }
   });
 });
+
+ test("peer headers support line breaks and header-only messages", () => {
+  for (const separator of [" ", "\n", "\r\n"]) {
+    const turn = render("[am · from am-notifications]" + separator + "Ready");
+    expect(turn.children[0]!.text).toBe("am-notifications");
+    expect(turn.children[1]!.text).toBe("Ready");
+  }
+  expect(render("[am · from am-notifications]").children[0]!.text).toBe("am-notifications");
+});

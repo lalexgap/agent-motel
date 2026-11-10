@@ -178,7 +178,7 @@
                       id="search"
                       type="search"
                       aria-label="Filter agents"
-                      placeholder="Filter…  ⌘K"
+                      placeholder="Filter this overview…"
                     /><select id="sort" aria-label="Group or sort agents">
                       <option value="status">Group: Status</option>
                       <option value="repo">Sort: Repository</option>
@@ -194,7 +194,7 @@
                     >
                   </div>
                 </div>
-                <p class="fleet-guidance muted">Counts exclude the concierge. Available = CLI idle; Stopped = exited or dead.</p>
+                <p class="fleet-guidance muted">Counts exclude the concierge. Stopped includes exited and offline agents.</p>
                 <div id="agent-grid" class="agent-grid"></div>
               </section>
               <aside class="concierge-dock">
@@ -228,7 +228,7 @@
                     maxlength="100000"
                   ></textarea>
                   <div class="dock-footer">
-                    <span>⌘ Enter</span><button class="primary">Send ↗</button>
+                    <span class="composer-shortcut">Ctrl+Enter: send</span><button class="primary">Send ↗</button>
                   </div>
                 </form>
               </aside>
@@ -306,7 +306,7 @@
                   <div class="composer-footer">
                     <span id="message-status" role="status"></span
                     ><small class="composer-shortcut">Ctrl+Enter to send</small
-                    ><button id="message-send" class="primary send-button" aria-label="Send message" title="Send (⌘ Enter)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+                    ><button id="message-send" class="primary send-button" aria-label="Send message" title="Send (Ctrl+Enter)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
                   </div>
                 </form>
                 </div>

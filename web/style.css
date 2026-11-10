@@ -168,7 +168,7 @@ small,
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
-  width: var(--sidebar-width, 205px);
+  width: var(--sidebar-width, 260px);
   background: var(--sidebar);
   border-right: 1px solid var(--border);
   padding: 18px 10px;
@@ -317,7 +317,7 @@ nav {
   color: var(--fg-muted);
 }
 main {
-  margin-left: var(--sidebar-width, 205px);
+  margin-left: var(--sidebar-width, 260px);
   min-width: 0;
 }
 .topbar {
@@ -2116,4 +2116,13 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   background: var(--chat-bubble);
   color: var(--fg-strong);
   overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .sidebar-group-label { display: none; }
+}
+
+.mobile-agent-context { display: none; }
+@media (max-width: 700px) {
+  .keyboard-hint { display: none; }
+  .mobile-agent-context { display: block; color: #b8b8c4; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 }
