@@ -202,6 +202,8 @@ describe("dev bridge messages", () => {
 
   test("cancel sends DELETE without a body", async () => {
     const queued = (await send({ agent: "harbor-lights", text: "later", mode: "queue" })) as { body: { id: string } };
+    const detail = (await bridge.handle("api.get", { connection: id, path: "/api/agents/harbor-lights" })) as { body: { queue: { msgId?: string; message?: string }[] } };
+    expect(detail.body.queue.filter((item) => item.message === "later")).toEqual([{ message: "later", queuedAt: expect.any(String) }]);
     const before = fixture.requests.length;
     expect(await bridge.handle("messages.cancel", { connection: id, agent: "harbor-lights", id: queued.body.id }))
       .toEqual({ status: 200, body: { ok: true, state: "cancelled" } });

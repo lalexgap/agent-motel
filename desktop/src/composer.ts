@@ -66,21 +66,66 @@ function hashKey(scope: string, id: string | undefined, text: string): string {
   return `${scope}:text-${(hash >>> 0).toString(36)}`;
 }
 
+const queueText = (item: QueueItem): string => item.text || item.message || "";
+
+// Which queue items are our own sends: queue index -> pending message. The
+// server lists an API-queued message without its record id, so match by msgId
+// if present, else by text against items without one, each item at most once.
+// A queue item's own msgId (an inter-agent message) is not a record id.
+export function claimQueue(pending: readonly PendingMessage[], queue: readonly QueueItem[]): Map<number, PendingMessage> {
+  const claimed = new Map<number, PendingMessage>();
+  for (const message of pending) {
+    if (!message.id) continue;
+    let index = queue.findIndex((item, i) => !claimed.has(i) && item.msgId === message.id);
+    if (index < 0) {
+      index = queue.findIndex((item, i) => {
+        if (claimed.has(i) || item.msgId) return false;
+        const text = normalizeMessage(queueText(item));
+        return text === message.match || text.startsWith(message.match);
+      });
+    }
+    if (index >= 0) claimed.set(index, message);
+  }
+  return claimed;
+}
+
 // Pending messages not yet in the queue ("sent"), then the queue in order. A
-// pending message whose id is queued is shown once, as queued.
+// pending message found in the queue is shown once, as queued, and only those
+// can be cancelled.
 export function bubbles(pending: readonly PendingMessage[], queue: readonly QueueItem[] | undefined): Bubble[] {
   const items = Array.isArray(queue) ? queue : [];
-  const queued = new Set(items.map((item) => item.msgId).filter(Boolean));
+  const claimed = claimQueue(pending, items);
+  const inQueue = new Set(claimed.values());
   const result: Bubble[] = [];
   for (const message of pending) {
-    if (message.id && queued.has(message.id)) continue;
+    if (inQueue.has(message)) continue;
     result.push({ key: hashKey("pending", message.id ?? String(message.at), message.shown), text: message.shown, state: "sent" });
   }
-  for (const item of items) {
-    const text = item.text || item.message || "Queued message";
-    result.push({ key: hashKey("queue", item.msgId, text), text, state: "queued", ...(item.msgId ? { cancelId: item.msgId } : {}) });
-  }
+  const seen = new Map<string, number>();
+  items.forEach((item, index) => {
+    const own = claimed.get(index);
+    if (own) {
+      result.push({ key: hashKey("pending", own.id, own.shown), text: own.shown, state: "queued", cancelId: own.id });
+      return;
+    }
+    const text = queueText(item) || "Queued message";
+    let key = hashKey("queue", item.msgId, text);
+    const count = seen.get(key) ?? 0;
+    seen.set(key, count + 1);
+    if (count) key += `#${count}`;
+    result.push({ key, text, state: "queued" });
+  });
   return result;
+}
+
+// After cancelling `id`: drop the pending message and the queue item it claimed.
+export function withoutMessage(pending: readonly PendingMessage[], queue: readonly QueueItem[] | undefined, id: string): { pending: PendingMessage[]; queue: QueueItem[] } {
+  const items = Array.isArray(queue) ? queue : [];
+  const claimed = claimQueue(pending, items);
+  return {
+    pending: pending.filter((message) => message.id !== id),
+    queue: items.filter((_, index) => claimed.get(index)?.id !== id),
+  };
 }
 
 export const BUBBLE_LABEL: Record<BubbleState, string> = {
@@ -150,8 +195,8 @@ export function parseDrafts(raw: string | null): Drafts {
   }
 }
 
-// Keeps the newest drafts within the count and size caps. A draft too large
-// to store is dropped from storage (it stays in the box while the app is open).
+// Keeps the newest drafts within the count and size caps, for storage. A draft
+// too large to store stays in memory while the app is open.
 export function capDrafts(drafts: Drafts): Drafts {
   const entries = Object.entries(drafts)
     .filter(([, draft]) => draft.text.length <= DRAFT_MAX_CHARS)
@@ -171,7 +216,7 @@ export function putDraft(drafts: Drafts, key: string, text: string, now: number)
   const next = { ...drafts };
   if (text.trim()) next[key] = { text, at: now };
   else delete next[key];
-  return capDrafts(next);
+  return next;
 }
 
 export const AMBIGUOUS_SEND = "Couldn't reach the server. The message may or may not have been sent.";

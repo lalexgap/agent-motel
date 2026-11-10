@@ -127,7 +127,7 @@ describe("fixture message routes", () => {
     const sent = await response.json();
     expect(sent).toMatchObject({ ok: true, mode: "now" });
     expect(sent.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect((await read("/api/agents/keeper-log")).queue).toEqual([{ msgId: sent.id, text: "summarise the timeline" }]);
+    expect((await read("/api/agents/keeper-log")).queue).toEqual([{ message: "summarise the timeline", queuedAt: expect.any(String) }]);
     await until(async () => (await read("/api/agents/keeper-log/transcript")).entries.at(-1)?.text === "summarise the timeline");
     expect((await read("/api/agents/keeper-log")).status).toBe("working");
     expect((await read("/api/agents/keeper-log")).queue).toEqual([]);
@@ -143,7 +143,8 @@ describe("fixture message routes", () => {
     await Bun.sleep(200);
     const detail = await read("/api/agents/harbor-lights");
     expect(detail.status).toBe("working");
-    expect(detail.queue).toEqual([{ msgId: sent.id, text: "after this, tidy up" }]);
+    // Like am, the record id is not listed: the entry has no msgId.
+    expect(detail.queue).toEqual([{ message: "after this, tidy up", queuedAt: expect.any(String) }]);
     expect((await read("/api/agents")).rows.find((row: { name: string }) => row.name === "harbor-lights").queued).toBe(1);
     const cancel = await call("DELETE", `/api/agents/harbor-lights/messages/${sent.id}`);
     expect(await cancel.json()).toEqual({ ok: true, state: "cancelled" });
@@ -157,10 +158,15 @@ describe("fixture message routes", () => {
     expect((await read("/api/agents/harbor-lights")).status).toBe("working");
   });
 
-  test("seeded queue has cancellable ULID-shaped ids", async () => {
+  test("seeded queue: a peer message whose msgId has no record (DELETE 404), then one without a msgId", async () => {
     const detail = await read("/api/agents/tide-pilot");
     expect(detail.queue).toHaveLength(2);
-    for (const item of detail.queue) expect(item.msgId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    const [peer, plain] = detail.queue;
+    expect(peer.msgId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(plain.msgId).toBeUndefined();
+    expect(plain.message).toBeTruthy();
+    expect((await call("DELETE", `/api/agents/tide-pilot/messages/${peer.msgId}`)).status).toBe(404);
+    expect((await read("/api/agents/tide-pilot")).queue).toHaveLength(2);
   });
 
   test("request log lists every mutation, bearer-gated", async () => {

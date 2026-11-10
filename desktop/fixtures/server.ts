@@ -34,6 +34,9 @@ interface Message {
   text: string;
   mode: "queue" | "now";
   state: "queued" | "delivered" | "cancelled";
+  queuedAt: string;
+  // An inter-agent message: listed with this msgId, which has no record behind it.
+  peerMsgId?: string;
 }
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -60,8 +63,11 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
     const seeded = seedQueue(row, () => ulid());
     if (!seeded.length) continue;
     queues.set(agentId(row), seeded.map((item) => {
-      const message: Message = { id: item.msgId!, agent: agentId(row), text: item.text ?? "", mode: "queue", state: "queued" };
-      messages.set(message.id, message);
+      const message: Message = {
+        id: ulid(), agent: agentId(row), text: item.message ?? "", mode: "queue", state: "queued", queuedAt: item.queuedAt ?? new Date().toISOString(),
+        ...(item.msgId ? { peerMsgId: item.msgId } : {}),
+      };
+      if (!message.peerMsgId) messages.set(message.id, message);
       return message;
     }));
   }
@@ -152,7 +158,7 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
     if (!row) return json({ error: `no agent "${key}"` }, 404);
     if (STOPPED.has(row.status)) return json({ error: `agent "${key}" has no live tmux session`, reason: "no_session" }, 409);
     const id = agentId(row);
-    const message: Message = { id: ulid(), agent: id, text, mode: data.mode, state: "queued" };
+    const message: Message = { id: ulid(), agent: id, text, mode: data.mode, state: "queued", queuedAt: new Date().toISOString() };
     messages.set(message.id, message);
     queues.set(id, [...queueOf(id), message]);
     syncQueued(row);
@@ -207,7 +213,12 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
         if (key === null) return json({ error: "bad agent key" }, 400);
         const row = rows.find((candidate) => agentId(candidate) === key);
         if (!row) return json({ error: `no agent "${key}"` }, 404);
-        if (!sub) return json(buildDetail(row, queueOf(key).map((item): QueueItem => ({ msgId: item.id, text: item.text }))));
+        // Like am: an API-queued entry carries no msgId; its record id stays internal.
+        if (!sub) {
+          return json(buildDetail(row, queueOf(key).map((item): QueueItem => ({
+            message: item.text, queuedAt: item.queuedAt, ...(item.peerMsgId ? { msgId: item.peerMsgId } : {}),
+          }))));
+        }
         const entries = transcripts.get(key) ?? [];
         return json({ provider: row.provider, sessionId: `fixture-${row.name}`, status: row.status, total: entries.length, entries });
       }

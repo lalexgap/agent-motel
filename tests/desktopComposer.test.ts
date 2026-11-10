@@ -21,6 +21,7 @@ import {
   textAfterSend,
   TOKEN_REJECTED,
   type PendingMessage,
+  withoutMessage,
 } from "../desktop/src/composer";
 import type { TranscriptEntry } from "../desktop/src/types";
 
@@ -79,26 +80,62 @@ describe("pending messages", () => {
 describe("bubbles", () => {
   const pending = (id: string | undefined, text: string): PendingMessage => ({ ...(id ? { id } : {}), match: text, shown: text, at: T0, baseline: 0 });
 
-  test("pending first as sent, then the queue as queued; cancellable with an id", () => {
-    const list = bubbles([pending("01A", "now one")], [{ msgId: "01Q", text: "queued one" }, { message: "legacy" }]);
-    expect(list.map(({ text, state, cancelId }) => ({ text, state, cancelId }))).toEqual([
+  const view = (list: ReturnType<typeof bubbles>) => list.map(({ text, state, cancelId }) => ({ text, state, cancelId }));
+
+  test("pending first as sent, then the queue as queued; only our own sends cancel", () => {
+    const list = bubbles([pending("01A", "now one")], [{ msgId: "01Q", message: "from a peer" }, { message: "legacy" }]);
+    expect(view(list)).toEqual([
       { text: "now one", state: "sent", cancelId: undefined },
-      { text: "queued one", state: "queued", cancelId: "01Q" },
+      { text: "from a peer", state: "queued", cancelId: undefined },
       { text: "legacy", state: "queued", cancelId: undefined },
     ]);
   });
 
-  test("a pending message that is in the queue is shown once, as queued", () => {
-    const list = bubbles([pending("01A", "hold this")], [{ msgId: "01A", text: "hold this" }]);
-    expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ state: "queued", cancelId: "01A" });
+  test("a queued send (no msgId in the queue, as am lists it) is shown once, with Cancel", () => {
+    const list = bubbles([pending("01A", "hold this")], [{ message: "hold   this", queuedAt: "2026-01-01T00:00:00Z" }]);
+    expect(view(list)).toEqual([{ text: "hold this", state: "queued", cancelId: "01A" }]);
+    expect(list[0]!.key).toBe(bubbles([pending("01A", "hold this")], [])[0]!.key);
+  });
+
+  test("a queue item with our id as msgId is matched too", () => {
+    expect(view(bubbles([pending("01A", "hold this")], [{ msgId: "01A", text: "hold this" }]))).toEqual([{ text: "hold this", state: "queued", cancelId: "01A" }]);
+  });
+
+  test("a peer item with the same text is not ours", () => {
+    const list = bubbles([pending("01A", "ping")], [{ msgId: "01PEER", message: "ping" }]);
+    expect(view(list)).toEqual([
+      { text: "ping", state: "sent", cancelId: undefined },
+      { text: "ping", state: "queued", cancelId: undefined },
+    ]);
+  });
+
+  test("two identical texts queued: two bubbles, each with its own id", () => {
+    const list = bubbles([pending("01A", "again"), pending("01B", "again")], [{ message: "again" }, { message: "again" }]);
+    expect(view(list)).toEqual([
+      { text: "again", state: "queued", cancelId: "01A" },
+      { text: "again", state: "queued", cancelId: "01B" },
+    ]);
+    expect(new Set(list.map((bubble) => bubble.key)).size).toBe(2);
+    const one = bubbles([pending("01A", "again"), pending("01B", "again")], [{ message: "again" }]);
+    expect(view(one)).toEqual([
+      { text: "again", state: "sent", cancelId: undefined },
+      { text: "again", state: "queued", cancelId: "01A" },
+    ]);
+  });
+
+  test("withoutMessage drops the cancelled send and the queue item it claimed", () => {
+    const queue = [{ message: "again" }, { msgId: "01PEER", message: "again" }, { message: "again" }];
+    const next = withoutMessage([pending("01A", "again"), pending("01B", "again")], queue, "01B");
+    expect(next.pending.map((message) => message.id)).toEqual(["01A"]);
+    expect(next.queue).toEqual([{ message: "again" }, { msgId: "01PEER", message: "again" }]);
+    expect(withoutMessage([], undefined, "01A")).toEqual({ pending: [], queue: [] });
   });
 
   test("keys are stable and unique per message", () => {
-    const a = bubbles([pending(undefined, "x")], [{ text: "y" }, { msgId: "01Q", text: "z" }]);
-    const b = bubbles([pending(undefined, "x")], [{ text: "y" }, { msgId: "01Q", text: "z" }]);
+    const a = bubbles([pending(undefined, "x")], [{ text: "y" }, { msgId: "01Q", text: "z" }, { text: "y" }]);
+    const b = bubbles([pending(undefined, "x")], [{ text: "y" }, { msgId: "01Q", text: "z" }, { text: "y" }]);
     expect(a.map((bubble) => bubble.key)).toEqual(b.map((bubble) => bubble.key));
-    expect(new Set(a.map((bubble) => bubble.key)).size).toBe(3);
+    expect(new Set(a.map((bubble) => bubble.key)).size).toBe(4);
     expect(bubbles([], undefined)).toEqual([]);
     expect(bubbles([], [{}])[0]!.text).toBe("Queued message");
   });
@@ -162,13 +199,13 @@ describe("drafts", () => {
   test("keeps the newest within the count cap", () => {
     let drafts = {};
     for (let i = 0; i < DRAFT_MAX_COUNT + 5; i++) drafts = putDraft(drafts, `c/${i}`, `draft ${i}`, T0 + i);
-    const keys = Object.keys(drafts);
+    const keys = Object.keys(capDrafts(drafts));
     expect(keys).toHaveLength(DRAFT_MAX_COUNT);
     expect(keys).not.toContain("c/0");
     expect(keys).toContain(`c/${DRAFT_MAX_COUNT + 4}`);
   });
   test("size caps: an oversized draft is not stored, the total is bounded", () => {
-    expect(putDraft({}, "c/big", "x".repeat(DRAFT_MAX_CHARS + 1), T0)).toEqual({});
+    expect(capDrafts(putDraft({}, "c/big", "x".repeat(DRAFT_MAX_CHARS + 1), T0))).toEqual({});
     const drafts: Record<string, { text: string; at: number }> = {};
     for (let i = 0; i < 8; i++) drafts[`c/${i}`] = { text: "y".repeat(DRAFT_MAX_CHARS), at: T0 + i };
     const kept = capDrafts(drafts);
@@ -176,6 +213,16 @@ describe("drafts", () => {
     expect(total).toBeLessThanOrEqual(DRAFTS_MAX_TOTAL_CHARS);
     expect(Object.keys(kept)).toContain("c/7");
     expect(Object.keys(kept)).not.toContain("c/0");
+  });
+});
+
+describe("oversized drafts", () => {
+  test("stay in memory and survive switching agents; only storage drops them", () => {
+    const big = "x".repeat(DRAFT_MAX_CHARS + 1);
+    let drafts = putDraft({}, "c/a", big, T0);
+    drafts = putDraft(drafts, "c/b", "other", T0 + 1);
+    expect(drafts["c/a"]?.text).toBe(big);
+    expect(parseDrafts(JSON.stringify(capDrafts(drafts)))).toEqual({ "c/b": { text: "other", at: T0 + 1 } });
   });
 });
 

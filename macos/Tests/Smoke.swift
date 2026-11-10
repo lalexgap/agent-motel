@@ -317,16 +317,19 @@ final class SmokeRunner {
         guard queuedStatus == 200, let queuedID = queuedBody["id"] as? String, !queuedID.isEmpty else {
             throw SmokeFailure("queue send to harbor-lights: \(queuedStatus) \(queuedBody)")
         }
-        func queueIDs(_ agent: String) async throws -> [String] {
+        // Like am, detail.queue lists an API-queued message by text, without its record id.
+        func queueTexts(_ agent: String) async throws -> [String] {
             let (code, detail) = try status(try await call("api.get", ["connection": id, "path": "/api/agents/\(agent)"]), "detail")
             try expect(code == 200, "detail \(agent): \(code)")
-            return (detail["queue"] as? [[String: Any]] ?? []).compactMap { $0["msgId"] as? String }
+            let queue = detail["queue"] as? [[String: Any]] ?? []
+            try expect(!queue.contains { $0["msgId"] as? String == queuedID }, "detail.queue lists record id \(queuedID) as a msgId")
+            return queue.compactMap { ($0["message"] ?? $0["text"]) as? String }
         }
-        try expect(try await queueIDs("harbor-lights").contains(queuedID), "queued message \(queuedID) not in detail.queue")
+        try expect(try await queueTexts("harbor-lights").contains(queuedText), "queued message \(queuedID) not in detail.queue")
         let (cancelStatus, cancelBody) = try status(try await call("messages.cancel", [
             "connection": id, "agent": "harbor-lights", "id": queuedID]), "messages.cancel")
         try expect(cancelStatus == 200 && cancelBody["state"] as? String == "cancelled", "cancel: \(cancelStatus) \(cancelBody)")
-        try expect(!(try await queueIDs("harbor-lights").contains(queuedID)), "cancelled message still in detail.queue")
+        try expect(!(try await queueTexts("harbor-lights").contains(queuedText)), "cancelled message still in detail.queue")
         let (againStatus, againBody) = try status(try await call("messages.cancel", [
             "connection": id, "agent": "harbor-lights", "id": queuedID]), "messages.cancel")
         try expect(againStatus == 404 || againStatus == 409, "second cancel: \(againStatus) \(againBody)")

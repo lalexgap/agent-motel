@@ -39,6 +39,7 @@ export interface QueueItem {
   msgId?: string;
   text?: string;
   message?: string;
+  queuedAt?: string;
 }
 
 export interface AgentDetail extends AgentRow {

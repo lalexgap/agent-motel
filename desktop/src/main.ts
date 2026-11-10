@@ -5,6 +5,7 @@ import {
   BUBBLE_LABEL,
   bubbles,
   cancelOutcome,
+  capDrafts,
   FORCED_QUEUE_HINT,
   MODE_HINT,
   modeFor,
@@ -21,6 +22,7 @@ import {
   type Bubble,
   type Outcome,
   type PendingMessage,
+  withoutMessage,
 } from "./composer";
 import {
   agentKey,
@@ -111,6 +113,8 @@ interface AgentComposer {
   // User turns in the last transcript shown, the baseline for the next send.
   userCount: number;
   error: string | null;
+  // The error came from a cancel, so a later successful cancel may clear it.
+  cancelError?: boolean;
 }
 
 const prefs = loadPrefs();
@@ -654,7 +658,7 @@ function agentComposer(key: string): AgentComposer {
 function saveDrafts(): void {
   if (composer.draftTimer) clearTimeout(composer.draftTimer);
   composer.draftTimer = null;
-  saveDraftsRaw(JSON.stringify(composer.drafts));
+  saveDraftsRaw(JSON.stringify(capDrafts(composer.drafts)));
 }
 
 // The textarea's text belongs to composer.shownKey; write it back before showing another agent's.
@@ -774,18 +778,22 @@ function renderComposer(): void {
   keysBox.replaceChildren(...keys);
 }
 
-function setComposerError(key: string, error: string | null): void {
-  agentComposer(key).error = error;
+function setComposerError(key: string, error: string | null, fromCancel = false): void {
+  const agent = agentComposer(key);
+  agent.error = error;
+  agent.cancelError = fromCancel;
   if (state.selected === key) renderComposer();
 }
 
-function applyOutcome(key: string, outcome: Outcome): void {
+function applyOutcome(key: string, outcome: Outcome, fromCancel = false): void {
   if (outcome.tokenRejected) {
     const conn = state.conns.get(parseAgentKey(key)?.connection ?? "");
     if (conn) conn.tokenRejected = true;
     renderStatusbar();
   }
-  setComposerError(key, outcome.error);
+  // A cancel that worked leaves an unrelated error (say, an ambiguous send) in place.
+  if (fromCancel && !outcome.error && !agentComposer(key).cancelError) return;
+  setComposerError(key, outcome.error, fromCancel && !!outcome.error);
 }
 
 async function submitMessage(alternate: boolean): Promise<void> {
@@ -860,11 +868,19 @@ async function cancelQueued(key: string, id: string): Promise<void> {
   } finally {
     composer.cancelling.delete(id);
   }
-  if (!outcome.error || outcome.gone) {
-    const agent = agentComposer(key);
+  const agent = agentComposer(key);
+  if (outcome.gone) {
+    // The server no longer knows the id; if it still lists the text, it shows without a Cancel until the refetch.
     agent.pending = agent.pending.filter((pending) => pending.id !== id);
+  } else if (!outcome.error) {
+    const detail = state.detail?.key === key ? state.detail.detail : null;
+    const next = withoutMessage(agent.pending, detail?.queue, id);
+    agent.pending = next.pending;
+    if (detail) detail.queue = next.queue;
+    // Drop detail responses already in flight; they predate the cancel.
+    if (state.selected === key) state.detailApplied = state.detailSeq;
   }
-  applyOutcome(key, outcome);
+  applyOutcome(key, outcome, true);
   if (state.selected !== key) return;
   renderTranscript();
   void loadDetail();

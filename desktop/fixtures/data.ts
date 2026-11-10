@@ -129,11 +129,13 @@ export function buildRows(now: number): AgentRow[] {
   });
 }
 
-// Messages already waiting when the fixture starts, for agents seeded with `queued`.
-export function seedQueue(row: AgentRow, id: (index: number) => string): QueueItem[] {
+// Messages already waiting when the fixture starts, for agents seeded with
+// `queued`. The first is from another agent (msgId with no record behind it).
+export function seedQueue(row: AgentRow, id: () => string, now = Date.now()): QueueItem[] {
   return Array.from({ length: row.queued ?? 0 }, (_, index) => ({
-    msgId: id(index),
-    text: index === 0 ? "When you're done, link the PR in the release notes channel." : "Also note which endpoints still return 503 without the header.",
+    message: index === 0 ? "When you're done, link the PR in the release notes channel." : "Also note which endpoints still return 503 without the header.",
+    queuedAt: new Date(now - (row.queued! - index) * 60_000).toISOString(),
+    ...(index === 0 ? { msgId: id() } : {}),
   }));
 }
 
