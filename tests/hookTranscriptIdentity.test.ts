@@ -53,6 +53,16 @@ function hook(event: string, payload: Record<string, unknown>, inherited = false
 
 const ordinaryEvents = ["pre-tool-use", "post-tool-use", "user-prompt-submit", "stop"];
 
+describe("hook work directory", () => {
+  test("a main-session hook notes the managed worktree it runs in; a subagent's does not", () => {
+    const worktree = join(home, "worktrees", "repo", "elsewhere");
+    mkdirSync(join(worktree, "src"), { recursive: true });
+    expect(hook("pre-tool-use", { agent_id: "child", cwd: join(worktree, "src") }).workDirs).toBeUndefined();
+    expect(hook("pre-tool-use", { agent_id: "", cwd: join(worktree, "src") }).workDirs).toEqual([worktree]);
+    expect(hook("post-tool-use", { agent_id: "", cwd: home }).workDirs).toEqual([worktree]);
+  });
+});
+
 describe("hook transcript source identity", () => {
   for (const event of ordinaryEvents) {
     test(`daemon child ${event} preserves parent source and status`, () => {

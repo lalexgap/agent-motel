@@ -17,6 +17,7 @@ import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAge
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
+import { gcSummaryLine } from "./autoGc";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
@@ -650,7 +651,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/summary — the same prioritized fleet report as `am summary`.
   if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
-    return json(buildFleetSummary(cachedFleetRows()));
+    return json(buildFleetSummary(cachedFleetRows(), new Date(), gcSummaryLine()));
   }
 
   // GET /api/usage[?provider=claude|codex][&agent=name][&refresh=1][&quota=0]

@@ -5,8 +5,23 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { agentsDir, baseDir, trashDir, worktreesDir } from "./paths";
 import { withFileLock } from "./filelock";
 
-interface Owner { name: string; dir: string; worktreePath?: string; createdAt?: string; tmuxSession?: string }
-export interface OwnershipSource { kind: "agent" | "trash"; owner: Owner }
+export interface Owner {
+  name: string; dir: string; worktreePath?: string; createdAt?: string; tmuxSession?: string;
+  aliases?: string[]; workDirs?: string[]; trashedAt?: string;
+  prMonitor?: { pullRequests?: { url?: string; state?: string; mergedAt?: string }[] };
+}
+export type OwnerKind = "agent" | "trash";
+export interface OwnershipSource { kind: OwnerKind; owner: Owner }
+// One agent or trash record with its claimed paths resolved once, so a scan
+// over hundreds of worktrees reads the registry a single time.
+export interface OwnerRecord { kind: OwnerKind; owner: Owner; paths: string[] }
+export interface OwnerCheck {
+  // Records read earlier (a scan's index); absent reads the registry now.
+  records?: OwnerRecord[];
+  // A record this returns true for no longer protects its worktree.
+  released?: (owner: Owner, kind: OwnerKind) => boolean;
+}
+export const KEEP_MARKER = ".am-gc-keep";
 
 export function canonicalPath(path: string): string {
   try { return realpathSync(path); }
@@ -91,81 +106,246 @@ function entries(dir: string): string[] {
   }
 }
 
+function strings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
 function ownerPaths(value: unknown): Owner {
   const o = value as Owner | null;
   if (!o || typeof o !== "object" || typeof o.name !== "string" || typeof o.dir !== "string" || !isAbsolute(o.dir) ||
-      (o.worktreePath !== undefined && (typeof o.worktreePath !== "string" || !isAbsolute(o.worktreePath)))) {
+      (o.worktreePath !== undefined && (typeof o.worktreePath !== "string" || !isAbsolute(o.worktreePath))) ||
+      (o.workDirs !== undefined && (!strings(o.workDirs) || !o.workDirs.every((p) => isAbsolute(p)))) ||
+      (o.aliases !== undefined && !strings(o.aliases))) {
     throw new Error("invalid agent ownership record");
   }
   return o;
 }
 
-export function worktreeOwnerReason(path: string, removing?: Owner): string | null {
-  try {
-    const root = canonicalPath(path);
-    for (const dir of [agentsDir(), trashDir()]) {
-      for (const file of entries(dir)) {
-        if (file.endsWith(".corrupt")) return "unreadable agent ownership record";
-        if (!file.endsWith(".json")) continue;
-        const owner = ownerPaths(JSON.parse(readFileSync(join(dir, file), "utf8")));
-        // Only the exact live record being removed is exempt. A same-name
-        // restorable agent is a separate owner, even when it shares the root.
-        if (dir === agentsDir() && removing && owner.name === removing.name && owner.createdAt === removing.createdAt && owner.tmuxSession === removing.tmuxSession) continue;
-        if ([owner.dir, owner.worktreePath].some((p) => p && contains(root, canonicalPath(p)))) {
-          return `owned by ${dir === trashDir() ? "restorable " : ""}agent "${owner.name}"`;
-        }
-      }
+// Every registered and restorable agent's claims. Throws on a record that
+// cannot be read: unknown ownership must keep a worktree, never free it.
+export function readOwnerRecords(): OwnerRecord[] {
+  const records: OwnerRecord[] = [];
+  for (const [kind, dir] of [["agent", agentsDir()], ["trash", trashDir()]] as const) {
+    for (const file of entries(dir)) {
+      if (file.endsWith(".corrupt")) throw new Error("unreadable agent ownership record");
+      if (!file.endsWith(".json")) continue;
+      const owner = ownerPaths(JSON.parse(readFileSync(join(dir, file), "utf8")));
+      const paths = [owner.dir, owner.worktreePath, ...(owner.workDirs ?? [])]
+        .filter((p): p is string => typeof p === "string" && p.length > 0)
+        .map((p) => canonicalPath(p));
+      records.push({ kind, owner, paths });
     }
-    const pool = poolRoot();
-    // dev-pool creates slot records lazily; absent records have never held a lease.
-    try { statSync(pool); }
+  }
+  return records;
+}
+
+// worktrees/<repo>/<name> is where `am new` puts an agent's worktree. An agent
+// registered elsewhere (its home dir) that made such a worktree for itself
+// still owns it: the name protects, and is never evidence a worktree is free.
+function managedName(root: string): string | null {
+  const parts = relative(canonicalPath(worktreesDir()), root).split(sep);
+  return parts.length === 2 && parts[0] !== ".." && parts[1] ? parts[1] : null;
+}
+
+// The managed worktree (or the subagent worktree nested in one) that `cwd`
+// lies in, by path alone: this runs in every hook.
+export function managedWorktreeRoot(cwd: string): string | null {
+  const bases = [worktreesDir()];
+  try { bases.push(realpathSync(worktreesDir())); } catch { /* no worktrees yet */ }
+  for (const base of bases) {
+    const parts = relative(base, resolve(cwd)).split(sep);
+    if (parts.length < 2 || parts[0] === ".." || parts[0] === "" || isAbsolute(parts[0]!)) continue;
+    const root = join(base, parts[0]!, parts[1]!);
+    return parts[2] === ".claude" && parts[3] === "worktrees" && parts[4] ? join(root, ".claude", "worktrees", parts[4]) : root;
+  }
+  return null;
+}
+
+const MAX_WORK_DIRS = 16;
+
+// Note where a session is working when that is a managed worktree its record
+// does not already name. Returns whether the record changed.
+export function noteWorkDir(agent: Owner, cwd: string): boolean {
+  const root = managedWorktreeRoot(cwd);
+  if (!root || agent.workDirs?.includes(root)) return false;
+  if ([agent.dir, agent.worktreePath].some((p) => p && resolve(p) === root)) return false;
+  agent.workDirs = [...(agent.workDirs ?? []), root].slice(-MAX_WORK_DIRS);
+  return true;
+}
+
+function poolLeaseReason(root: string): string | null {
+  const pool = poolRoot();
+  // dev-pool creates slot records lazily; absent records have never held a lease.
+  try { statSync(pool); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  for (let id = 1; id <= 3; id++) {
+    const record = join(pool, "state", `slot-${id}.json`);
+    let raw: string;
+    try { raw = readFileSync(record, "utf8"); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try { lstatSync(record); }
+      catch (entryError) {
+        if ((entryError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw entryError;
+      }
       throw error;
     }
-    for (let id = 1; id <= 3; id++) {
-      const record = join(pool, "state", `slot-${id}.json`);
-      let raw: string;
-      try { raw = readFileSync(record, "utf8"); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        try { lstatSync(record); }
-        catch (entryError) {
-          if ((entryError as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw entryError;
-        }
-        throw error;
+    const state = JSON.parse(raw);
+    if (!state || typeof state !== "object" || !Object.hasOwn(state, "lease")) throw new Error("invalid dev-pool slot record");
+    if (state.lease === null) continue;
+    if (!state.lease || typeof state.lease.worktree !== "string" || !isAbsolute(state.lease.worktree)) throw new Error("invalid dev-pool lease");
+    if (contains(root, canonicalPath(state.lease.worktree))) return `owned by dev-pool slot-${id} lease`;
+  }
+  return null;
+}
+
+export function worktreeOwnerReason(path: string, removing?: Owner, check: OwnerCheck = {}): string | null {
+  try {
+    const root = canonicalPath(path);
+    const name = managedName(root);
+    for (const { kind, owner, paths } of check.records ?? readOwnerRecords()) {
+      // Only the exact live record being removed is exempt. A same-name
+      // restorable agent is a separate owner, even when it shares the root.
+      if (kind === "agent" && removing && owner.name === removing.name && owner.createdAt === removing.createdAt && owner.tmuxSession === removing.tmuxSession) continue;
+      if (check.released?.(owner, kind)) continue;
+      if (paths.some((p) => contains(root, p)) || (name !== null && (owner.name === name || owner.aliases?.includes(name)))) {
+        return `owned by ${kind === "trash" ? "restorable " : ""}agent "${owner.name}"`;
       }
-      const state = JSON.parse(raw);
-      if (!state || typeof state !== "object" || !Object.hasOwn(state, "lease")) throw new Error("invalid dev-pool slot record");
-      if (state.lease === null) continue;
-      if (!state.lease || typeof state.lease.worktree !== "string" || !isAbsolute(state.lease.worktree)) throw new Error("invalid dev-pool lease");
-      if (contains(root, canonicalPath(state.lease.worktree))) return `owned by dev-pool slot-${id} lease`;
     }
-    return null;
+    return poolLeaseReason(root);
   } catch (error) {
-    return `ownership information unavailable: ${(error as Error).message}`;
+    const message = (error as Error).message;
+    return message === "unreadable agent ownership record" ? message : `ownership information unavailable: ${message}`;
   }
 }
 
-function git(path: string, ...args: string[]) {
-  const r = Bun.spawnSync(["git", "-C", path, ...args], { timeout: 5_000, killSignal: "SIGKILL" });
+const GIT_TIMEOUT_MS = 5_000;
+
+function gitRun(path: string, args: string[], timeoutMs = GIT_TIMEOUT_MS, env?: Record<string, string>) {
+  // --no-optional-locks: a status must not rewrite the index of a checkout it only inspects.
+  const r = Bun.spawnSync(["git", "--no-optional-locks", "-C", path, ...args], {
+    timeout: timeoutMs, killSignal: "SIGKILL", ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
 
-export function worktreeSafetyReason(path: string, repoRoot?: string): string | null {
-  const top = git(path, "rev-parse", "--show-toplevel");
-  if (!top.ok || canonicalPath(top.out) !== canonicalPath(path)) return "not a worktree root";
+export type SafetyKind = "dirty" | "unpushed" | "unreferenced" | "other";
+export interface SafetyFinding {
+  kind: SafetyKind;
+  reason: string;
+  // Changed paths as git reports them (dirty only), relative to the worktree.
+  files?: StatusPath[];
+}
+// code is git's two-letter status: "??" untracked, "!!" ignored, " M" modified…
+export interface StatusPath { code: string; path: string }
+export interface SafetyOptions {
+  timeoutMs?: number;
+  // Also keep commits no remote has (repos with a remote only). `pushed` is
+  // outside evidence that HEAD was pushed, for a remote branch since deleted.
+  requirePushed?: boolean;
+  pushed?: (head: string) => boolean;
+}
+
+// Why removing this worktree could lose work, or null when it cannot.
+export function worktreeSafety(path: string, repoRoot?: string, opts: SafetyOptions = {}): SafetyFinding | null {
+  const git = (...args: string[]) => gitRun(path, args, opts.timeoutMs);
+  const top = git("rev-parse", "--show-toplevel");
+  if (!top.ok || canonicalPath(top.out) !== canonicalPath(path)) return { kind: "other", reason: "not a worktree root" };
   if (repoRoot) {
-    const common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
-    const directory = git(path, "rev-parse", "--absolute-git-dir");
+    const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+    const directory = git("rev-parse", "--absolute-git-dir");
     if (!common.ok || !directory.ok || canonicalPath(common.out) === canonicalPath(directory.out) ||
-        canonicalPath(dirname(common.out)) !== canonicalPath(repoRoot)) return "worktree registration changed";
+        canonicalPath(dirname(common.out)) !== canonicalPath(repoRoot)) return { kind: "other", reason: "worktree registration changed" };
   }
-  const status = git(path, "status", "--porcelain", "--untracked-files=normal", "--ignored");
-  if (!status.ok) return "git status failed";
-  if (status.out) return "uncommitted or ignored files";
-  const refs = git(path, "for-each-ref", "--contains=HEAD", "--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes");
-  if (!refs.ok || !refs.out) return "HEAD is not reachable from a durable branch or tag";
+  const status = Bun.spawnSync(["git", "--no-optional-locks", "-C", path, "status", "--porcelain", "-z", "--untracked-files=normal", "--ignored"], {
+    timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS, killSignal: "SIGKILL",
+  });
+  if (status.exitCode !== 0) return { kind: "other", reason: "git status failed" };
+  const listing = status.stdout.toString();
+  if (listing) return { kind: "dirty", reason: "uncommitted or ignored files", files: statusPaths(listing) };
+  return worktreeCommitSafety(path, opts);
+}
+
+// The half of worktreeSafety that reads commits and refs only, never the
+// working tree: whether HEAD would survive, and (requirePushed) is on a remote.
+export function worktreeCommitSafety(path: string, opts: SafetyOptions = {}): SafetyFinding | null {
+  const git = (...args: string[]) => gitRun(path, args, opts.timeoutMs);
+  const refs = git("for-each-ref", "--contains=HEAD", "--count=1", "--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes");
+  if (!refs.ok || !refs.out) return { kind: "unreferenced", reason: "HEAD is not reachable from a durable branch or tag" };
+  if (opts.requirePushed) {
+    const remotes = git("remote");
+    if (!remotes.ok) return { kind: "other", reason: "git remote failed" };
+    if (remotes.out) {
+      const ahead = git("rev-list", "-n", "1", "HEAD", "--not", "--remotes");
+      if (!ahead.ok) return { kind: "other", reason: "could not compare HEAD with the remotes" };
+      if (ahead.out) {
+        const head = git("rev-parse", "HEAD");
+        if (!head.ok || !opts.pushed?.(head.out)) return { kind: "unpushed", reason: "unpushed commits" };
+      }
+    }
+  }
   return null;
+}
+
+// `status --porcelain -z`: "XY path\0", with a rename's source as an extra field.
+function statusPaths(listing: string): StatusPath[] {
+  const fields = listing.split("\0");
+  const paths: StatusPath[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i]!;
+    if (field.length < 4) continue;
+    paths.push({ code: field.slice(0, 2), path: field.slice(3) });
+    if (field[0] === "R" || field[0] === "C") i++;
+  }
+  return paths;
+}
+
+export function worktreeSafetyReason(path: string, repoRoot?: string, opts: SafetyOptions = {}): string | null {
+  return worktreeSafety(path, repoRoot, opts)?.reason ?? null;
+}
+
+export interface Salvage { ref: string; commit: string; head: string; branch?: string; changes: boolean }
+
+// Pin everything a forced removal would otherwise drop: the uncommitted and
+// untracked files as one commit on top of HEAD, under refs/am-gc/ in the
+// repository. Ignored files are not saved. Throws when it cannot.
+export function salvageWorktree(path: string, label: string, timeoutMs = 120_000): Salvage {
+  const run = (args: string[], env?: Record<string, string>) => {
+    const r = gitRun(path, args, timeoutMs, env);
+    if (!r.ok) throw new Error(`git ${args[0]} failed: ${r.err || "no output"}`);
+    return r.out;
+  };
+  const head = run(["rev-parse", "HEAD"]);
+  const branch = gitRun(path, ["symbolic-ref", "--short", "-q", "HEAD"], timeoutMs);
+  const index = join(run(["rev-parse", "--absolute-git-dir"]), `am-gc-index-${process.pid}`);
+  let commit = head;
+  try {
+    const env = { GIT_INDEX_FILE: index };
+    run(["read-tree", "HEAD"], env);
+    run(["add", "-A"], env);
+    // An embedded repository (a nested worktree, a clone) would be recorded as
+    // a bare pointer and its files lost with the checkout.
+    const added = run(["diff-index", "--cached", "--raw", "HEAD"], env);
+    if (added.split("\n").some((line) => line.split(" ")[1] === "160000" && line.split(" ")[0] !== ":160000")) {
+      throw new Error("contains an embedded git repository");
+    }
+    const tree = run(["write-tree"], env);
+    if (tree !== run(["rev-parse", "HEAD^{tree}"])) {
+      const identity = {
+        GIT_AUTHOR_NAME: "am gc", GIT_AUTHOR_EMAIL: "am-gc@localhost",
+        GIT_COMMITTER_NAME: "am gc", GIT_COMMITTER_EMAIL: "am-gc@localhost",
+      };
+      commit = run(["commit-tree", tree, "-p", head, "-m", `am gc: uncommitted changes salvaged from ${path}`], identity);
+    }
+  } finally {
+    rmSync(index, { force: true });
+  }
+  const stamp = new Date().toISOString().replaceAll(/[-:]|\.\d+/g, "");
+  const ref = `refs/am-gc/${label.replaceAll(/[^A-Za-z0-9._-]/g, "_").replace(/^[.-]+/, "") || "worktree"}-${stamp}`;
+  run(["update-ref", ref, commit]);
+  return { ref, commit, head, ...(branch.ok && branch.out ? { branch: branch.out } : {}), changes: commit !== head };
 }

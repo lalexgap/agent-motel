@@ -62,6 +62,10 @@ export interface AgentState {
   worktreePath?: string;
   worktreeBranch?: string;
   repoRoot?: string;
+  // Managed worktrees the session has worked in besides `dir`, noted from its
+  // hooks' cwd. An agent registered in a home directory owns the worktree it
+  // made for itself only through this (see worktreeOwnership.ts).
+  workDirs?: string[];
   // Conversation/session id, captured from hook payloads — lets `am resume`
   // reopen the exact conversation after the session exits.
   sessionId?: string;

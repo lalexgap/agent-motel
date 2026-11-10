@@ -30,6 +30,8 @@ export interface FleetSummary {
   active: SummaryItem[];
   idle: SummaryItem[];
   exited: SummaryItem[];
+  // This host's last scheduled gc, in a line (see autoGc.ts).
+  gc?: string;
 }
 
 function ageSeconds(iso: string | undefined, nowMs: number): number {
@@ -83,7 +85,7 @@ function sortItems(items: SummaryItem[]): SummaryItem[] {
   return items.sort((a, b) => itemPriority(a) - itemPriority(b) || a.key.localeCompare(b.key));
 }
 
-export function buildFleetSummary(fleet: Fleet, now: Date = new Date()): FleetSummary {
+export function buildFleetSummary(fleet: Fleet, now: Date = new Date(), gc?: string | null): FleetSummary {
   const nowMs = now.getTime();
   const summary: FleetSummary = {
     generatedAt: now.toISOString(),
@@ -121,6 +123,7 @@ export function buildFleetSummary(fleet: Fleet, now: Date = new Date()): FleetSu
     });
   }
 
+  if (gc) summary.gc = gc;
   sortItems(summary.attention);
   sortItems(summary.active);
   sortItems(summary.idle);
@@ -154,7 +157,7 @@ function section(title: string, items: SummaryItem[], nameWidth: number): string
 }
 
 export function formatFleetSummary(summary: FleetSummary): string[] {
-  if (summary.totalAgents === 0 && summary.unreachableHosts === 0) return ["No agents."];
+  if (summary.totalAgents === 0 && summary.unreachableHosts === 0) return ["No agents.", ...(summary.gc ? ["", `gc: ${summary.gc}`] : [])];
   // Historical agents can number in the hundreds. Keep the default report
   // focused on current work and queued PR follow-ups; JSON retains all exits.
   const queuedExits = summary.exited.filter((item) => item.queued > 0 && item.prMonitor?.pullRequests.length);
@@ -175,5 +178,6 @@ export function formatFleetSummary(summary: FleetSummary): string[] {
   }
   const hiddenExits = summary.exited.length - queuedExits.length;
   if (hiddenExits > 0) lines.push("", `Exited (${hiddenExits})`);
+  if (summary.gc) lines.push("", `gc: ${summary.gc}`);
   return lines;
 }
