@@ -24,7 +24,7 @@ test("exact handover exports context privately and starts a new provider without
   expect(result).toMatchObject({ name: "replacement", target: "codex" });
   expect(readFileSync(result.file, "utf8")).toContain("Continue this task");
   expect(statSync(result.file).mode & 0o777).toBe(0o600);
-  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ name: "replacement", provider: "codex", dir: home, jump: false, quiet: true }));
+  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ name: "replacement", provider: "codex", dir: home, jump: false, quiet: true, inheritsContext: true }));
   expect(readAgent("source-long")).toEqual(original);
 });
 

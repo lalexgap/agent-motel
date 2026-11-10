@@ -47,7 +47,7 @@ function nextSelection(agent: AgentState, opts: RestartOpts): Selection {
 }
 
 // A change is checked against the provider's catalog as `am new` checks it.
-function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?: boolean; warn?: (message: string) => void } = {}): void {
+export function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?: boolean; warn?: (message: string) => void } = {}): void {
   if (opts.model === undefined && opts.effort === undefined) return;
   const provider = agentProvider(agent);
   // Re-probed: a long-lived `am serve` must see a provider upgrade.
@@ -72,6 +72,8 @@ function restartAudited(agent: AgentState, opts: RestartOpts, expected?: Restart
   const previous = { model: agent.model, effort: agent.effort, status: agent.status, reason: agent.statusReason };
   // Saved on the agent, so every later resume launches with them too.
   Object.assign(agent, nextSelection(agent, opts));
+  // Any restart settles a self-requested model switch; it must not fire later.
+  delete agent.pendingModelSwitch;
   // The old turn survives the pane respawn in the daemon. One deadline for
   // stop + relaunch; a daemon that misses it during the stop is skipped
   // for the relaunch.
@@ -140,7 +142,14 @@ function checkPrecondition(agent: AgentState, expected?: RestartPrecondition): v
   }
 }
 
-async function restartResolvedAgent(agent: AgentState, opts: RestartOpts, expected?: RestartPrecondition): Promise<RestartResult> {
+// `guard` runs on the current state under both locks, before anything
+// changes; throwing from it cancels the restart.
+async function restartResolvedAgent(
+  agent: AgentState,
+  opts: RestartOpts,
+  expected?: RestartPrecondition,
+  guard?: (agent: AgentState) => void,
+): Promise<RestartResult> {
   checkPrecondition(agent, expected);
   validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
   if (!acquireLifecycleLock(agent.name)) throw new Error(lifecycleBusy(agent.name));
@@ -152,6 +161,7 @@ async function restartResolvedAgent(agent: AgentState, opts: RestartOpts, expect
       if (expected && !hasSession(agent.tmuxSession)) {
         throw new Error(`agent "${agent.name}" stopped while the model change was starting — refresh and try again`);
       }
+      guard?.(agent);
       return restartLocked(agent, opts, expected);
     } finally {
       releaseDeliverLock(agent.name);
@@ -168,9 +178,9 @@ export async function restartExactAgent(agent: AgentState, opts: RestartOpts = {
   return restartResolvedAgent(agent, opts, expected);
 }
 
-export async function restartAgent(prefix: string, opts: RestartOpts = {}): Promise<RestartResult> {
+export async function restartAgent(prefix: string, opts: RestartOpts = {}, guard?: (agent: AgentState) => void): Promise<RestartResult> {
   await ensureDaemon();
-  return restartResolvedAgent(resolveAgent(prefix), opts);
+  return restartResolvedAgent(resolveAgent(prefix), opts, undefined, guard);
 }
 
 export async function restartCommand(prefix: string, opts: RestartOpts): Promise<void> {

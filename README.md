@@ -100,6 +100,14 @@ Model and effort options come from the installed CLIs rather than a hardcoded li
 
 A rejected nickname such as `astra` gets a “did you mean” hint only when it uniquely matches a full slug suffix in that machine's catalog. Pass the exact suggested slug; AM never silently selects it or chooses between ambiguous matches.
 
+#### Agents switching their own model
+
+```sh
+am switch-model sonnet --reason "simple rename, no design work"   # run by the agent itself
+```
+
+A Claude or Codex agent can move itself to a cheaper or stronger model early on. `am switch-model` validates the choice like `am restart --model`, but refuses a model `am models` does not list, and records it; when the agent's turn ends with no background work still running, the am daemon restarts it on that model, resuming the same conversation with a prompt to continue (queued messages wait for the new session). A switch re-reads the whole conversation without the provider's prompt cache, so it is allowed only during the agent's first `selfModelSwitchMaxTurns` turns (default 2; `0` disables the command and its system-prompt hint), once per agent, and only for agents `am new` started on a fresh conversation. If the switch fails, the agent stays on its model and is told so. The lifecycle audit records each switch with its reason. Operators keep using `am restart <name> --model`.
+
 ### Fleet concierge
 
 ```sh

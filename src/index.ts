@@ -33,6 +33,7 @@ import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { restartAgent, restartCommand, restartExactAgent } from "./commands/restart";
+import { switchModelCommand } from "./commands/switchModel";
 import { caretakerCommand } from "./commands/caretaker";
 import { conciergeCommand, ensureConcierge, conciergeAskFeedback } from "./commands/concierge";
 import { transcriptCommand } from "./commands/transcript";
@@ -116,6 +117,12 @@ usage:
                               reload the provider and resume the same conversation;
                               --model / --effort switch it (and stick for later
                               resumes), \`default\` returns to the provider default
+  am switch-model <model> [--effort <level>] --reason "why" [--json]
+                              (run by an agent on itself) switch to another
+                              model at the end of this turn: am restarts it on
+                              the model and tells it to continue. Only in its
+                              first turns (config.selfModelSwitchMaxTurns,
+                              default 2; 0 disables), once per agent
   am ls [--json] [--role r] [--sort status|recent|role]
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
@@ -629,6 +636,13 @@ async function main(): Promise<void> {
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
         model: selectionFlag(args, "model"),
         effort: selectionFlag(args, "effort"),
+      });
+      break;
+    case "switch-model":
+      await switchModelCommand(requirePositional(args, 0, "model"), {
+        effort: args.flags.effort as string | undefined,
+        reason: args.flags.reason as string | undefined,
+        json: !!args.flags.json,
       });
       break;
     case "resume":

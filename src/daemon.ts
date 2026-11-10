@@ -26,6 +26,7 @@ import { settleMessages } from "./messages";
 import { startCodexApprovalWatcher } from "./codexApprovals";
 import { readPermission, refreshPermissions } from "./permissions";
 import { managedServices, serviceAction, servicePid } from "./services";
+import { MODEL_SWITCH_EVENT, modelSwitchOverdue, performModelSwitch } from "./commands/switchModel";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -305,6 +306,14 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         const { agent, event } = (await req.json()) as { agent?: string; event?: string };
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
         publish(event, agent);
+        if (event === MODEL_SWITCH_EVENT) {
+          // In the daemon, because the restart respawns the pane the
+          // requesting hook runs in. Answered so the hook knows it's handled.
+          setTimeout(() => {
+            performModelSwitch(agent).catch((error) => log(`model switch for ${agent} failed: ${error}`));
+          }, DELIVERY_DELAY_MS);
+          return Response.json({ ok: true, switching: true });
+        }
         if (event === "stop" && (queueDepth(agent) > 0 || needsCodexRecovery(agent))) {
           setTimeout(() => {
             // .catch, not try/catch: deliverNext is async, so a try around a
@@ -356,6 +365,11 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       }
       // The state-file watcher publishes the change.
       if (settleCodexStart(agent)) agent.status = "idle";
+      // A due switch whose request was lost (a daemon restart) still happens.
+      if (modelSwitchOverdue(agent)) {
+        performModelSwitch(agent.name).catch((error) => log(`model switch for ${agent.name} failed: ${error}`));
+        continue;
+      }
       if (agentProvider(agent) === "antigravity" && !agent.antigravityRunId) {
         Object.assign(agent, reconcileAntigravityAgent(agent, { force: true }));
       }
@@ -553,6 +567,22 @@ export function runEventsPipe(): Promise<number> {
   return pipeEvents((chunk) => process.stdout.write(chunk));
 }
 
+// Hand a due model switch to the daemon. False when no daemon took it,
+// including one that predates switching and only acknowledges the event.
+export async function requestDaemonModelSwitch(agent: string): Promise<boolean> {
+  const res = await daemonRequest("/event", {
+    method: "POST",
+    body: JSON.stringify({ agent, event: MODEL_SWITCH_EVENT }),
+    headers: { "content-type": "application/json" },
+  });
+  if (!res?.ok) return false;
+  try {
+    return ((await res.json()) as { switching?: boolean }).switching === true;
+  } catch {
+    return false;
+  }
+}
+
 // Fire-and-forget event ping from a hook. Returns false if the daemon is
 // unreachable so the caller can fall back to direct delivery.
 export async function notifyDaemon(agent: string, event: string): Promise<boolean> {
@@ -643,13 +673,18 @@ export async function ensureDaemon(): Promise<boolean> {
   } catch {
     // can't open a log file — run the daemon silent rather than not at all
   }
+  // Its own session, so the pane it was started from can't take it down
+  // (respawn-pane -k hangs up the pane's process group), and none of the
+  // starting agent's identity: the daemon acts for no agent.
+  const { AGENTMGR_AGENT: _agent, CODEX_THREAD_ID: _thread, CODEX_SESSION_ID: _session, ...env } = process.env;
   try {
     Bun.spawn({
       cmd: [process.execPath, cliEntrypoint(), "__daemon"],
-      env: { ...process.env },
+      env,
       stdin: "ignore",
       stdout: out,
       stderr: out,
+      detached: true,
     }).unref();
   } finally {
     // The child holds its own copy — close ours so repeated failed starts

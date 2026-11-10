@@ -119,8 +119,25 @@ export interface AgentState {
   planPending?: boolean;
   // A long turn ended without touching the plan; the next prompt nudges once.
   planNudge?: boolean;
+  // Prompts received since `am new` started a fresh conversation. Absent for
+  // adopted conversations and older agents: their context age is unknown.
+  turns?: number;
+  // `am switch-model`: requested by the agent itself, carried out at the end
+  // of the turn (triggeredAt: that turn ended and the switch is due).
+  pendingModelSwitch?: PendingModelSwitch;
+  selfModelSwitches?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PendingModelSwitch {
+  model?: string;
+  effort?: string;
+  reason: string;
+  requestedAt: string;
+  triggeredAt?: string;
+  // When the agent was told background work holds the switch; once per switch.
+  heldNotifiedAt?: string;
 }
 
 export function agentProvider(state: AgentState): Provider {
@@ -257,6 +274,8 @@ export function updateAgentStatus(
   }
   state.status = status;
   state.statusReason = statusReason;
+  // A switch requested by a session that has ended must never fire later.
+  if (status === "exited") delete state.pendingModelSwitch;
 }
 
 export function setStatus(name: string, status: AgentStatus, reason?: string): void {

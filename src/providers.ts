@@ -18,12 +18,20 @@ export const CONCIERGE_NAME = CONCIERGE_ROLE;
 // list of things the operator asked for, each fanning out in-session.
 const DELEGATION = `Delegating: fan out with your own built-in subagents. They share this session's context, and am reports them — \`am subagents\` lists them and the hub nests them under you. Three are defined for you on this machine: \`engineer\` implements a settled brief and reports once, \`reviewer\` reports severity-tagged findings without editing, \`shepherd\` takes a PR to merge-ready without merging (Claude picks them by type, Codex by name). Never spawn another am agent to do part of your task; only when the operator explicitly asks for one: \`am new <name> -m "task"\`.`;
 
+// Only while the switch is still cheap (see am switch-model); the providers
+// whose restart resumes a conversation on another model.
+export function modelSwitchGuidance(provider: Provider | undefined, maxTurns = loadConfig().selfModelSwitchMaxTurns): string {
+  if (!(maxTurns > 0) || (provider !== "claude" && provider !== "codex")) return "";
+  const turns = maxTurns === 1 ? "first turn" : `first ${maxTurns} turns`;
+  return `\n\nModel: within your ${turns}, if the task is clearly simple enough for a cheaper model, or genuinely needs a stronger one, run \`am switch-model <model> --reason "<why>"\` (\`am models\` lists them) and end your turn; am restarts you on it at the turn boundary and tells you to continue (background shells, wake-ups or subagents still running then delay it to a later turn end without any). After that it is refused, because switching re-reads the whole conversation uncached. Keep your model if the operator named one for you.`;
+}
+
 // Injected via --append-system-prompt (claude) or prepended to the initial
 // prompt (codex, which has no system-prompt flag) so managed agents know they
 // live under am — otherwise "spin up an agent" reaches for built-in subagents.
 export function agentSystemPrompt(
   name: string,
-  opts: { reportTo?: string; role?: string; roleInstructions?: string } = {},
+  opts: { reportTo?: string; role?: string; roleInstructions?: string; provider?: Provider } = {},
 ): string {
   const role = opts.role ?? (name === CONCIERGE_NAME ? CONCIERGE_ROLE : undefined);
   const roleInstructions = opts.roleInstructions ?? (role ? getRole(role)?.instructions : undefined);
@@ -39,7 +47,7 @@ export function agentSystemPrompt(
 
 You are running on the host "${host}"; the operator may be reading from a DIFFERENT machine. Never present machine-local URLs or paths as theirs: localhost, 127.0.0.1, and local-DNS dev domains (e.g. *.test names like ph.test) only resolve ON ${host}. Label such a URL ("on ${host}: http://…") and give a way to reach it — the host's network address with the same port, or \`ssh -L <port>:localhost:<port> ${host}\`. For a FILE the operator should see (a screenshot, a report, a diff), never just print its path: \`am share <path> "one-line description"\` notifies them and they pull it with \`am open ${name}\`.
 
-${DELEGATION}
+${DELEGATION}${modelSwitchGuidance(opts.provider)}
 
 PR monitoring: after opening each PR, run \`am pr ${name} <PR-URL>\` to register it (pass multiple URLs for a stack). Agent Motel monitors registered PRs after branch switches and queues merge/close/reopen/conflict events, including while you are exited. Treat these as status evidence and follow your existing post-merge instructions. Once the shepherd returns a ready verdict, the parent coordinator runs \`am pr ${name} <PR-URL> --ready --dir <review-worktree>\` exactly once; it fails closed unless the current GitHub head/base, green CI, mergeability, and local review-gate evidence all agree. New and resumed managed sessions receive this guidance; an existing session may call the command explicitly.
 
@@ -155,7 +163,7 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
     "claude",
     ...permissionArgs("claude"),
     "--settings", writeHookSettings(),
-    "--append-system-prompt", agentSystemPrompt(name, opts),
+    "--append-system-prompt", agentSystemPrompt(name, { ...opts, provider: "claude" }),
     ...(opts.model ? ["--model", opts.model] : []),
     ...(opts.effort ? ["--effort", opts.effort] : []),
     ...conversation,
@@ -191,14 +199,15 @@ export function buildLaunchCommand(provider: Provider, name: string, opts: Launc
     command.push(...codexModelArgs(opts));
     command.push(...conversation);
     if (opts.codexDaemonDir) command.push(...codexDaemonArgs(opts.codexDaemonDir));
-    if (opts.message) command.push(`${agentSystemPrompt(name, opts)}\n\n# Your task\n\n${opts.message}`);
-    else if (opts.role && opts.resume !== true) command.push(agentSystemPrompt(name, opts));
+    const prompt = () => agentSystemPrompt(name, { ...opts, provider: "codex" });
+    if (opts.message) command.push(`${prompt()}\n\n# Your task\n\n${opts.message}`);
+    else if (opts.role && opts.resume !== true) command.push(prompt());
     // `codex resume <positional>` treats the positional as a session id. Keep
     // the bare interactive selector bare, then deliver the role briefing once
     // SessionStart fires for the conversation the operator chose.
     return {
       command,
-      ...(opts.role && opts.resume === true ? { deferredMessage: agentSystemPrompt(name, opts) } : {}),
+      ...(opts.role && opts.resume === true ? { deferredMessage: prompt() } : {}),
     };
   }
   return claudeCommand(name, conversationArgs(opts), opts);

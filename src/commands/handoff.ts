@@ -78,6 +78,7 @@ export async function handoffAgent(
     base,
     worktree,
     provider: target,
+    inheritsContext: true,
     role: agent.role,
     roleInstructions: agent.roleInstructions,
     noPlan: agent.noPlan,

@@ -5,7 +5,7 @@ export interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "new-name", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent", "after", "wait", "days"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "base", "model", "effort", "role", "sort", "description", "to", "new-name", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines", "provider", "subagent", "after", "wait", "days", "reason"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 export function parseArgs(argv: string[]): ParsedArgs {

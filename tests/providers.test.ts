@@ -111,6 +111,27 @@ describe("agentSystemPrompt", () => {
     }
   });
 
+  test("teaches am switch-model to claude and codex agents with the configured turn limit, and drops it when disabled", () => {
+    const home = mkdtempSync(join(tmpdir(), "am-test-"));
+    process.env.AGENTMGR_HOME = home;
+    try {
+      expect(agentSystemPrompt("worker", { provider: "claude" })).toContain('within your first 2 turns, if the task is clearly simple enough for a cheaper model, or genuinely needs a stronger one, run `am switch-model <model> --reason "<why>"`');
+      expect(agentSystemPrompt("worker")).not.toContain("am switch-model");
+      expect(agentSystemPrompt("worker", { provider: "antigravity" })).not.toContain("am switch-model");
+      const codex = buildLaunchCommand("codex", "worker", { message: "go" }).command.at(-1)!;
+      expect(codex).toContain("am switch-model");
+      const claude = buildLaunchCommand("claude", "worker", { remote: false }).command;
+      expect(claude[claude.indexOf("--append-system-prompt") + 1]).toContain("am switch-model");
+      writeFileSync(join(home, "config.json"), JSON.stringify({ selfModelSwitchMaxTurns: 1 }));
+      expect(agentSystemPrompt("worker", { provider: "codex" })).toContain("within your first turn,");
+      writeFileSync(join(home, "config.json"), JSON.stringify({ selfModelSwitchMaxTurns: 0 }));
+      expect(agentSystemPrompt("worker", { provider: "claude" })).not.toContain("am switch-model");
+    } finally {
+      delete process.env.AGENTMGR_HOME;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("the reserved concierge name selects the fleet-management prompt", () => {
     const prompt = agentSystemPrompt(CONCIERGE_NAME);
     expect(prompt).toContain("concierge");

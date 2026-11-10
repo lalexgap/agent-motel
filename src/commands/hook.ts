@@ -52,8 +52,10 @@ import {
   type PermissionRecord,
 } from "../permissions";
 import {
+  activeSubagents,
   closeOpenSubagents,
   isBackgroundSubagent,
+  reconcileOpenSubagents,
   recordSubagentStart,
   recordSubagentStop,
   subagentDescription,
@@ -61,6 +63,7 @@ import {
 } from "../subagents";
 import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
+import { holdModelSwitch, triggerModelSwitch } from "./switchModel";
 import { noteWorkDir } from "../worktreeOwnership";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
@@ -615,6 +618,21 @@ export function retiredPermissions(
   return 0;
 }
 
+// What still runs past the turn: a pane waiting indicator, or background
+// subagents the turn-end left open (after catching any whose finish only the
+// transcript reports). Null when nothing does.
+function backgroundWork(agent: AgentState, pane: string[] | null): string | null {
+  const waiting = pane ? paneWaitingInfo(pane) : null;
+  if (waiting?.waiting) return `background work (${waiting.detail ?? "shown in your pane"})`;
+  try {
+    reconcileOpenSubagents(agent);
+  } catch {
+    // the ledger as it stands
+  }
+  const open = activeSubagents(agent.name).length;
+  return open > 0 ? `${open} background subagent${open === 1 ? "" : "s"}` : null;
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
@@ -729,6 +747,8 @@ export async function hookCommand(event: string): Promise<void> {
   // key the prompt by the text am sent, so it matches the message's record.
   const inbox = event === "user-prompt-submit" && !fromSubagent && prompt ? inboxDeliveryIn(name, prompt) : null;
   if (event === "user-prompt-submit" && !fromSubagent) {
+    // Only a count `am new` started; an unknown context age stays unknown.
+    if (typeof agent.turns === "number") agent.turns += 1;
     agent.promptAt = new Date().toISOString();
     agent.promptKey = typeof payload.prompt === "string" ? promptKey(inbox?.content ?? prompt) : undefined;
   }
@@ -825,6 +845,16 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "stop" || event === "session-end") {
     pane = capturePane(agent.tmuxSession, { colors: true });
     if (pane && pane.length > 0) writeSnapshot(name, pane);
+  }
+
+  // The agent asked to change model this turn (am switch-model): it is not
+  // finished, so no report, idle notice or drain — its queue waits for the
+  // restarted session. The restart would kill background work still running,
+  // so while there is any the switch waits for a later stop.
+  if (event === "stop" && agent.pendingModelSwitch) {
+    const held = backgroundWork(agent, pane);
+    if (held) holdModelSwitch(name, agent.pendingModelSwitch, held);
+    else if (await triggerModelSwitch(name, agent.pendingModelSwitch)) return;
   }
 
   // Standing-relationship backstop: if the agent finished a real work stint
