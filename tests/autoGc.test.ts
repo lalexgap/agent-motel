@@ -270,6 +270,53 @@ describe("runAutoGc", () => {
     expect(result.waited).toBeGreaterThanOrEqual(30_000);
   });
 
+  test("dry runs cut short by the budget add up, and the sweep arms once they have covered everything", () => {
+    const paths = [addWorktree("a"), addWorktree("b"), addWorktree("c")];
+    const config = { ...loadConfig(), gcAutoMaxMinutes: 1 };
+    // Each pause between worktrees outlasts the budget: one inspection a run.
+    const run = () => {
+      const result = fakeClock((sleep) => runAutoGc({ trigger: "nightly", config, pressure: () => CALM, sleep: () => sleep(120_000) }));
+      if (!("summary" in result)) throw new Error("skipped");
+      return result.summary;
+    };
+    const first = run();
+    expect([first.mode, first.worktrees, first.uninspected]).toEqual(["dry-run", 1, 2]);
+    expect(readAutoGcState().armedPolicy).toBeUndefined();
+    expect(autoGcStatus()[1]).toContain("1 found removable so far");
+
+    const second = run();
+    expect([second.mode, second.worktrees, second.uninspected]).toEqual(["dry-run", 2, 1]);
+    expect(readAutoGcState().armedPolicy).toBeUndefined();
+
+    const third = run();
+    expect([third.mode, third.worktrees, third.uninspected, third.stopped]).toEqual(["dry-run", 3, 0, undefined]);
+    expect(readAutoGcState().armedPolicy).toBe(GC_POLICY_VERSION);
+    expect(readAutoGcState().preview).toBeUndefined();
+    // The last report lists all three, and nothing was touched until now.
+    expect(readGcLog().filter((e) => e.run === third.id && e.action === "remove-worktree")).toHaveLength(3);
+    expect(paths.every((p) => existsSync(p))).toBe(true);
+
+    const applied = run();
+    expect([applied.mode, applied.worktrees]).toEqual(["apply", 1]);
+    expect(paths.filter((p) => existsSync(p))).toHaveLength(2);
+  });
+
+  test("a previewed worktree that stops being removable is not counted again", () => {
+    const wt = addWorktree("a");
+    addWorktree("b");
+    const config = { ...loadConfig(), gcAutoMaxMinutes: 1 };
+    const run = () => fakeClock((sleep) => runAutoGc({ trigger: "nightly", config, pressure: () => CALM, sleep: () => sleep(120_000) }));
+    const first = run();
+    const previewed = Object.keys(readAutoGcState().preview!.worktrees);
+    expect(previewed).toHaveLength(1);
+    // An agent takes it over before the next sweep.
+    writeAgent(agent("taker", { dir: previewed[0]!, worktreePath: previewed[0]!, status: "idle" }));
+    const second = run();
+    expect("summary" in first && "summary" in second && second.summary.owned).toBe(1);
+    expect("summary" in second && second.summary.worktrees).toBe(1);
+    expect(existsSync(wt)).toBe(true);
+  });
+
   test("the time budget ends a sweep between worktrees", () => {
     updateAutoGcState((state) => { state.armedPolicy = GC_POLICY_VERSION; });
     addWorktree("a");

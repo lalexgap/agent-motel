@@ -129,8 +129,9 @@ export interface Config {
   gcIgnoredDays: number;
   gcFileDays: number;
   // The daemon runs gc on its own: nightly at gcAutoHour (local time), or at
-  // the next idle moment after a missed night. Its first run after an upgrade
-  // only reports; later runs apply. The sweep runs at idle CPU/IO priority,
+  // the next idle moment after a missed night. After an upgrade it only reports
+  // until its runs have looked at every worktree once; later runs apply. The
+  // sweep runs at the lowest CPU/IO priority,
   // one worktree at a time, for at most gcAutoMaxMinutes, and waits while the
   // 1-minute load per CPU is above gcAutoMaxLoad or IO/memory pressure
   // (PSI some avg10, Linux) above gcAutoMaxPressure. `am gc --auto pause`
