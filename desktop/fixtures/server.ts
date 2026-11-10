@@ -3,6 +3,7 @@
 // screenshots and tests.
 //   bun desktop/fixtures/server.ts [--port 8791]
 import { agentId } from "../src/fleet";
+import { checkMessageText } from "../src/policy";
 import type { AgentRow, QueueItem, TranscriptEntry } from "../src/types";
 import { buildDetail, buildRows, buildTranscript, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, seedQueue } from "./data";
 
@@ -154,6 +155,8 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
     const data = body && typeof body === "object" ? (body as { text?: unknown; mode?: unknown }) : {};
     const text = typeof data.text === "string" ? data.text.trim() : "";
     if (!text) return json({ error: "text required" }, 400);
+    const checked = checkMessageText(data.text);
+    if (!checked.ok) return json({ error: checked.error }, 400);
     if (data.mode !== "queue" && data.mode !== "now") return json({ error: "mode must be queue or now" }, 400);
     if (!row) return json({ error: `no agent "${key}"` }, 404);
     if (STOPPED.has(row.status)) return json({ error: `agent "${key}" has no live tmux session`, reason: "no_session" }, 409);

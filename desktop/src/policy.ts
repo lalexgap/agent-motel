@@ -80,6 +80,9 @@ export const MESSAGE_MAX_BYTES = 100_000;
 export const MESSAGE_EMPTY = "Message is empty";
 export const MESSAGE_TOO_LONG = "Message is too long (limit 100,000 bytes)";
 export const MODE_INVALID = "mode must be queue or now";
+export const MESSAGE_CONTROL = "Message contains a control character (only tabs and line breaks are allowed)";
+// am types the text into the agent's pane, where Esc or Ctrl-C would act on the agent.
+const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 
 const AGENT_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const HOST_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,254}$/;
@@ -110,6 +113,7 @@ export const utf8Length = (text: string): number => new TextEncoder().encode(tex
 // Trims the ends (the server trims too) and leaves the inside untouched.
 export function checkMessageText(value: unknown): Checked<string> {
   if (typeof value !== "string") return { ok: false, error: "text must be a string" };
+  if (CONTROL_RE.test(value)) return { ok: false, error: MESSAGE_CONTROL };
   const text = value.trim();
   if (!text) return { ok: false, error: MESSAGE_EMPTY };
   // Cheap bound first: every UTF-16 unit is at least one UTF-8 byte.

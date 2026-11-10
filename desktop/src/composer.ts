@@ -1,6 +1,6 @@
 // Pure composer logic: which bubbles to show after a send, which mode a send
 // uses, drafts, and the sentence for each failure. main.ts only wires the DOM.
-import { MESSAGE_EMPTY, MESSAGE_TOO_LONG, MODE_INVALID, type SendMode } from "./policy";
+import { MESSAGE_CONTROL, MESSAGE_EMPTY, MESSAGE_TOO_LONG, MODE_INVALID, type SendMode } from "./policy";
 import type { ApiResponse, Provider, QueueItem, TranscriptEntry } from "./types";
 
 // A message sent mid-turn is held by the agent until it reads it, so it stays
@@ -279,7 +279,7 @@ export function cancelOutcome(response: ApiResponse): Outcome {
 
 // A bridge rejection. Validation errors mean nothing was sent; anything else
 // (network failure, timeout) leaves delivery unknown, and nothing is retried.
-const DEFINITE = [MESSAGE_EMPTY, MESSAGE_TOO_LONG, MODE_INVALID, "invalid agent:", "invalid message id:", "unknown connection:", "text must be a string"];
+const DEFINITE = [MESSAGE_EMPTY, MESSAGE_TOO_LONG, MESSAGE_CONTROL, MODE_INVALID, "invalid agent:", "invalid message id:", "unknown connection:", "text must be a string"];
 export function rejectionOutcome(error: unknown, action: "send" | "cancel"): Outcome {
   const message = error instanceof Error ? error.message : String(error);
   if (DEFINITE.some((prefix) => message.startsWith(prefix))) return { error: message };

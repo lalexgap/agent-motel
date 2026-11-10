@@ -130,6 +130,16 @@ check(rejection { try MessagePolicy.text(longest + "a") } == "Message is too lon
 check((try? MessagePolicy.text(String(repeating: "é", count: 50_000))) != nil, "50,000 two-byte characters fit")
 check(rejection { try MessagePolicy.text(String(repeating: "é", count: 50_001)) } != nil, "100,002 bytes in 50,001 characters")
 check(rejection { try MessagePolicy.text(String(repeating: "☃", count: 33_334)) } != nil, "33,334 snowmen are 100,002 bytes")
+// Same vectors as tests/desktopPolicy.test.ts.
+let controlCharacters = ["\u{00}", "\u{01}", "\u{03}", "\u{04}", "\u{08}", "\u{0B}", "\u{0C}", "\u{0E}", "\u{1A}", "\u{1B}", "\u{1F}", "\u{7F}", "\u{80}", "\u{85}", "\u{9B}", "\u{9F}"]
+for control in controlCharacters {
+    for text in [control, "a\(control)b", "  hi\(control)", "\(control)[A"] {
+        check(rejection { try MessagePolicy.text(text) } == MessagePolicy.controlText, "control U+\(String(control.unicodeScalars.first!.value, radix: 16)) in \(text.debugDescription)")
+    }
+}
+for (text, expected) in [("a\tb", "a\tb"), ("a\r\nb", "a\r\nb"), ("line\n\tindented", "line\n\tindented"), ("\u{A0}x\u{A0}y", "x\u{A0}y"), ("\u{2028}x", "x")] {
+    check((try? MessagePolicy.text(text)) == expected, "allowed \(text.debugDescription)")
+}
 
 check((try? MessagePolicy.messageID("01JABCDEFGHJKMNPQRSTVWXYZ0")) == "01JABCDEFGHJKMNPQRSTVWXYZ0", "ulid id")
 check((try? MessagePolicy.messageID(String(repeating: "a", count: 128))) != nil, "128-char id")

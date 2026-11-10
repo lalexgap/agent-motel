@@ -33,6 +33,7 @@ enum MessagePolicy {
     static let emptyText = "Message is empty"
     static let longText = "Message is too long (limit 100,000 bytes)"
     static let badMode = "mode must be queue or now"
+    static let controlText = "Message contains a control character (only tabs and line breaks are allowed)"
 
     private static let nameCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".unicodeScalars)
     private static let hostCharacters = nameCharacters.union(".".unicodeScalars)
@@ -59,6 +60,10 @@ enum MessagePolicy {
     /// Returns the text with leading and trailing whitespace removed; the inside is untouched.
     static func text(_ value: Any?) throws -> String {
         guard let raw = value as? String else { throw PolicyError("text must be a string") }
+        // am types the text into the agent's pane, where Esc or Ctrl-C would act on the agent.
+        guard !raw.unicodeScalars.contains(where: { ($0.value < 0x20 && !["\t", "\n", "\r"].contains($0)) || (0x7F...0x9F).contains($0.value) }) else {
+            throw PolicyError(controlText)
+        }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PolicyError(emptyText) }
         guard trimmed.utf8.count <= maxTextBytes else { throw PolicyError(longText) }

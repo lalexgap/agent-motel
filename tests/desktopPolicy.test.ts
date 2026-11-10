@@ -5,6 +5,7 @@ import {
   checkMessageText,
   checkMode,
   externalUrlAllowed,
+  MESSAGE_CONTROL,
   messagesPath,
   normalizeServerUrl,
   plainHttpAllowed,
@@ -145,6 +146,19 @@ describe("message policy", () => {
     expect(checkMessageText("€".repeat(33_334))).toEqual({ ok: false, error: "Message is too long (limit 100,000 bytes)" });
     expect(checkMessageText("😀".repeat(25_000)).ok).toBe(true);
     expect(checkMessageText("😀".repeat(25_001)).ok).toBe(false);
+  });
+
+  // Same vectors as macos/Tests/main.swift.
+  const CONTROL_CHARACTERS = ["\u0000", "\u0001", "\u0003", "\u0004", "\u0008", "\u000b", "\u000c", "\u000e", "\u001a", "\u001b", "\u001f", "\u007f", "\u0080", "\u0085", "\u009b", "\u009f"];
+  test("text: C0 controls other than tab and line breaks, DEL and C1 are rejected", () => {
+    for (const control of CONTROL_CHARACTERS) {
+      for (const text of [control, `a${control}b`, `  hi${control}`, `${control}[A`]) {
+        expect(checkMessageText(text)).toEqual({ ok: false, error: MESSAGE_CONTROL });
+      }
+    }
+    for (const [text, expected] of [["a\tb", "a\tb"], ["a\r\nb", "a\r\nb"], ["line\n\tindented", "line\n\tindented"], ["\u00a0x\u00a0y", "x\u00a0y"], ["\u2028x", "x"]]) {
+      expect(checkMessageText(text)).toEqual({ ok: true, value: expected });
+    }
   });
 
   test("text: ends trimmed, inside untouched", () => {

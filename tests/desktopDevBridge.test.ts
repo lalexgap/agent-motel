@@ -177,6 +177,7 @@ describe("dev bridge messages", () => {
     await expect(send({ text: "  \n " })).rejects.toThrow("Message is empty");
     await expect(send({ text: "a".repeat(100_001) })).rejects.toThrow("Message is too long (limit 100,000 bytes)");
     await expect(send({ text: 42 })).rejects.toThrow();
+    for (const text of ["stop\u001b", "\u0003", "x\u007f", "x\u009b"]) await expect(send({ text })).rejects.toThrow("Message contains a control character");
     for (const mode of ["interrupt", "Now", "", "queue ", 1]) await expect(send({ mode })).rejects.toThrow("mode must be queue or now");
     await expect(send({ connection: "missing" })).rejects.toThrow("unknown connection: missing");
     await expect(bridge.handle("messages.cancel", { connection: id, agent: "keeper-log", id: "a/b" })).rejects.toThrow();

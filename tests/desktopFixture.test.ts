@@ -113,6 +113,9 @@ describe("fixture message routes", () => {
     expect((await call("POST", "/api/agents/keeper-log/messages", { text: "  ", mode: "now" })).status).toBe(400);
     expect((await call("POST", "/api/agents/keeper-log/messages", "not json")).status).toBe(400);
     expect((await call("POST", "/api/agents/keeper-log/messages", { text: "x", mode: "interrupt" })).status).toBe(400);
+    const control = await call("POST", "/api/agents/keeper-log/messages", { text: "stop\u001b", mode: "now" });
+    expect(control.status).toBe(400);
+    expect((await control.json()).error).toMatch(/control character/);
     const missing = await call("POST", "/api/agents/nobody/messages", { text: "x", mode: "now" });
     expect(missing.status).toBe(404);
     const stopped = await call("POST", "/api/agents/old-lens/messages", { text: "x", mode: "now" });
