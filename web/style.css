@@ -668,6 +668,8 @@ main {
   font-size: 11.5px;
   padding: 3px 7px;
 }
+.queue-sender { display: block; color: var(--fg-strong); font-weight: 600; }
+.queue-body { display: block; min-width: 0; overflow-wrap: anywhere; }
 #notice {
   padding: 11px 14px;
   background: var(--warning-soft);
@@ -1422,6 +1424,8 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .message-disclosure[open] .message-disclosure-collapse { display: block; }
 .message-disclosure > .turn-text { padding: 0 12px 12px; color: var(--chat-text); }
 .turn.user.queued > .turn-text { background: transparent; border: 1px dashed var(--border-strong); opacity: 0.72; }
+.turn.peer.queued > .turn-text { border-style: dashed; opacity: 0.82; }
+.turn.notice.queued { opacity: 0.82; }
 .queued-meta { display: flex; align-items: center; gap: 10px; padding: 0 4px; font-size: 12px; color: var(--fg-subtle); }
 .queued-meta .text-button { padding: 0; font-size: 12px; }
 
@@ -2047,7 +2051,6 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 
 .side-agent { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
 .side-agent-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.side-status-glyph { flex: none; font-size: 15px; }
 .side-agent-meta { font-size: 11px; line-height: 1.5; color: #b8b8c4; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .sidebar-group-label { display: flex; gap: 8px; align-items: center; padding: 0 12px 8px; font-size: 12px; color: #b8b8c4; }
 .sidebar-group-label select { min-width: 0; padding: 4px; flex: 1; }

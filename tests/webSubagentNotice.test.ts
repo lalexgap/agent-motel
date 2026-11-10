@@ -15,7 +15,7 @@ const context: any = {
   el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text),
   window: { agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } } },
 };
-const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("function pendingBubble("));
+const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("// Anchor visible content"));
 runInNewContext(renderer, context);
 const wrapped = (body: string) => `<subagent_notification>\n${body}\n</subagent_notification>`;
 const render = (text: string, kind = "user", index = 42): Node => context.chatTurn({ text, kind, index }, "Agent");
@@ -168,6 +168,46 @@ describe("transcript notices", () => {
     expect(turn.children[1]!.text).toBe("Ready");
   }
   expect(render("[am · from am-notifications]").children[0]!.text).toBe("am-notifications");
+});
+
+test("queued and optimistic messages use transcript peer and notice presentation", () => {
+  const peer = context.pendingBubble(
+    "[am · from am-token-usage-page]\nUsage is ready",
+    "Queued · sends when the agent is free",
+    "queue:receipt-1",
+  );
+  expect(peer.className).toBe("turn peer queued");
+  expect(peer.children[0]!.text).toBe("am-token-usage-page");
+  expect(peer.children[1]!.text).toBe("Usage is ready");
+  expect(peer.children[2]!.text).toBe("Queued · sends when the agent is free");
+  expect(peer.dataset.scrollKey).toBe("turn:queue:receipt-1");
+
+  const headerOnly = context.pendingBubble(
+    "[am · from am-token-usage-page]",
+    "Sent · waiting for the agent to read it",
+    "pending:receipt-2",
+  );
+  expect(headerOnly.className).toBe("turn peer queued");
+  expect(headerOnly.children[0]!.text).toBe("am-token-usage-page");
+  expect(headerOnly.children[1]!.text).toBe("");
+  expect(visible(headerOnly)).not.toContain("[am · from");
+
+  const notification = context.pendingBubble(task(), "Queued", "queue:receipt-3");
+  expect(notification.className).toBe("turn notice queued");
+  expect(notification.children[0]!.text).toContain("Shepherd PR 29905");
+  expect(visible(notification)).not.toContain("/tmp/private-output");
+  expect(details(notification)!.dataset.scrollKey).toBe("notice:queue:receipt-3");
+
+  const ordinary = context.pendingBubble("Please keep this as my message", "Queued", "queue:receipt-4");
+  expect(ordinary.className).toBe("turn user queued");
+  expect(ordinary.children[0]!.text).toBe("You");
+  expect(ordinary.children[1]!.text).toBe("Please keep this as my message");
+});
+
+test("queue fallback keys remain stable for the same message", () => {
+  expect(context.queuedMessageKey("queue", undefined, "same text"))
+    .toBe(context.queuedMessageKey("queue", undefined, "same text"));
+  expect(context.queuedMessageKey("queue", "receipt-1", "changed text")).toBe("queue:receipt-1");
 });
 
 

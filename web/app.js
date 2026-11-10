@@ -172,6 +172,7 @@ const dot = (status) => {
     "i",
     `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
+  node.setAttribute("aria-hidden", "true");
   // Re-renders replace the dot; phase the spin off a shared clock so it doesn't snap back.
   if (status === "working" || status === "waiting") node.style.animationDelay = `-${Math.round(performance.now() % 1600)}ms`;
   return node;
@@ -456,12 +457,11 @@ function renderFleet() {
     label.dataset.provider = provider.toLowerCase();
     const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
-    const glyph = el("span", "side-status-glyph", { starting: "◌", idle: "○", waiting: "◐", working: "●", "needs-attention": "⚠", exited: "✔", dead: "✕" }[row.status] || "?");
-    glyph.setAttribute("aria-hidden", "true");
     const heading = el("span", "side-agent-heading");
-    heading.append(glyph, el("span", "side-agent-name", row.name), label);
+    heading.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     const age = Date.parse(row.updatedAt || "");
     const reason = row.statusDetail || row.statusReason;
+    button.setAttribute("aria-label", [row.name, statusName(row.status), reason, provider].filter(Boolean).join(", "));
     const meta = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : "",
       Number.isFinite(age) ? `${elapsed(Math.max(0, Date.now() - age))} ago` : ""].filter(Boolean);
     const prs = row.prMonitor?.pullRequests || [];
@@ -1212,10 +1212,46 @@ function chatTurn(entry, agentName) {
   }
   return turn;
 }
-function pendingBubble(text, label) {
-  const turn = el("article", "turn user queued");
-  turn.append(el("div", "turn-text", text), el("div", "queued-meta", label));
+function queuedMessageKey(scope, id, text) {
+  if (id) return `${scope}:${id}`;
+  let hash = 2166136261;
+  for (const character of String(text || "")) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${scope}:text-${(hash >>> 0).toString(36)}`;
+}
+function pendingBubble(text, label, scrollKey, cancel) {
+  const turn = chatTurn({ kind: "user", text, index: scrollKey }, "Agent");
+  turn.className += " queued";
+  const meta = el("div", "queued-meta", label);
+  if (cancel) {
+    const button = el("button", "text-button", "Cancel");
+    button.onclick = cancel;
+    meta.append(button);
+  }
+  turn.append(meta);
   return turn;
+}
+function queueAsideItem(item, cancel) {
+  const text = item.text || item.message || "Queued message";
+  const disclosure = collapsibleMessage({ kind: "user", text });
+  const line = el("div", "queue-item");
+  if (disclosure?.peer) {
+    line.append(el("span", "queue-sender", disclosure.peer));
+    if (disclosure.body) line.append(el("span", "queue-body", disclosure.body));
+  } else if (disclosure) {
+    line.append(el("span", "queue-sender", disclosure.label));
+    if (disclosure.result) line.append(el("span", "queue-body", disclosure.result));
+  } else {
+    line.append(el("span", "queue-body", text));
+  }
+  if (cancel) {
+    const button = el("button", "", "Cancel");
+    button.onclick = cancel;
+    line.append(button);
+  }
+  return line;
 }
 // Anchor visible content as well as scrollTop: tool output and the dock's
 // sliding message window can change the height above the reader.
@@ -1359,17 +1395,7 @@ async function refreshDetail() {
   queue.replaceChildren();
   if (!detail.queue?.length) queue.append(el("p", "", "Nothing waiting."));
   for (const item of detail.queue || []) {
-    const line = el(
-      "div",
-      "queue-item",
-      item.text || item.message || "Queued message",
-    );
-    if (item.msgId) {
-      const cancel = el("button", "", "Cancel");
-      cancel.onclick = cancelQueued(item);
-      line.append(cancel);
-    }
-    queue.append(line);
+    queue.append(queueAsideItem(item, item.msgId ? cancelQueued(item) : null));
   }
   const pending = $("permissions");
   renderPromptCards(pending, detail, permissions, base);
@@ -1403,17 +1429,19 @@ async function refreshDetail() {
   transcriptQueue.replaceChildren();
   const queuedIds = new Set((detail.queue || []).map((item) => item.msgId).filter(Boolean));
   for (const pending of pendingFor(name, transcript.entries))
-    if (!queuedIds.has(pending.id)) transcriptQueue.append(pendingBubble(pending.shown, "Sent · waiting for the agent to read it"));
+    if (!queuedIds.has(pending.id)) transcriptQueue.append(pendingBubble(
+      pending.shown,
+      "Sent · waiting for the agent to read it",
+      queuedMessageKey("pending", pending.id || pending.at, pending.shown),
+    ));
   for (const item of detail.queue || []) {
-    const turn = el("article", "turn user queued");
-    const meta = el("div", "queued-meta", "Queued · sends when the agent is free");
-    if (item.msgId) {
-      const cancel = el("button", "text-button", "Cancel");
-      cancel.onclick = cancelQueued(item);
-      meta.append(cancel);
-    }
-    turn.append(el("div", "turn-text", item.text || item.message || "Queued message"), meta);
-    transcriptQueue.append(turn);
+    const text = item.text || item.message || "Queued message";
+    transcriptQueue.append(pendingBubble(
+      text,
+      "Queued · sends when the agent is free",
+      queuedMessageKey("queue", item.msgId, text),
+      item.msgId ? cancelQueued(item) : null,
+    ));
   }
   if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
   restoreScroll(rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount));
@@ -1437,6 +1465,26 @@ function messageSendMode(name) {
   const provider = detail?.provider || row?.provider;
   return provider === "claude" || provider === "codex" ? "now" : "queue";
 }
+const pointerSubmitButtons = new WeakSet();
+function trackPointerSubmit(button) {
+  button.addEventListener("click", (event) => {
+    if (event.detail > 0) pointerSubmitButtons.add(button);
+    else pointerSubmitButtons.delete(button);
+  });
+}
+function takePointerSubmit(button) {
+  const tracked = pointerSubmitButtons.has(button);
+  pointerSubmitButtons.delete(button);
+  return tracked;
+}
+function restoreComposerFocus(restore, composer, button, current) {
+  if (!restore || !current || document.querySelector("dialog[open]")) return;
+  const active = document.activeElement;
+  if (active === composer) return;
+  if (active === document.body || active === button) composer.focus({ preventScroll: true });
+}
+const messageSubmitButton = $("message-send");
+trackPointerSubmit(messageSubmitButton);
 $("message").oninput = () => {
   if (state.selected)
     state.draftRevisions.set(
@@ -1448,6 +1496,7 @@ $("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const name = state.selected;
   if (!name || state.sending.has(name) || uploadsPending(name) || !state.authenticated) return;
+  const restoreFocus = takePointerSubmit(messageSubmitButton);
   const images = agentAttachments(name).filter((item) => item.status === "ready");
   const text = [$("message").value.trim(), ...images.map((item) => `[image: ${item.path}]`)]
     .filter(Boolean)
@@ -1457,7 +1506,8 @@ $("message-form").onsubmit = async (event) => {
   const revision = state.draftRevisions.get(name) || 0;
   const request = Symbol();
   state.sending.set(name, request);
-  $("message-send").disabled = true;
+  restoreComposerFocus(restoreFocus, $("message"), messageSubmitButton, true);
+  messageSubmitButton.disabled = true;
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
@@ -2023,21 +2073,28 @@ async function refreshDock() {
   view.dataset.content = fingerprint;
   view.replaceChildren();
   for (const entry of entries) view.append(chatTurn(entry, "Concierge"));
-  for (const item of pending) view.append(pendingBubble(item.shown, "Sent · waiting for the concierge to read it"));
+  for (const item of pending) view.append(pendingBubble(
+    item.shown,
+    "Sent · waiting for the concierge to read it",
+    queuedMessageKey("dock-pending", item.id || item.at, item.shown),
+  ));
   if (!entries.length && !pending.length)
     view.append(el("p", "", "Send a task or ask about your fleet."));
   restoreScroll();
 }
+const dockSubmitButton = $("dock-form").querySelector("button");
+trackPointerSubmit(dockSubmitButton);
 $("dock-form").onsubmit = async (event) => {
   event.preventDefault();
   if (state.dockBusy || !state.authenticated) return;
+  const restoreFocus = takePointerSubmit(dockSubmitButton);
   const text = $("dock-message").value.trim();
   if (!text) return;
   const epoch = state.sessionEpoch;
   const revision = state.dockRevision;
   state.dockBusy = true;
-  const button = $("dock-form").querySelector("button");
-  button.disabled = true;
+  restoreComposerFocus(restoreFocus, $("dock-message"), dockSubmitButton, true);
+  dockSubmitButton.disabled = true;
   try {
     const target = (await api("/api/concierge", {})).key;
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
@@ -2055,7 +2112,7 @@ $("dock-form").onsubmit = async (event) => {
     $("dock-status").textContent = error.message;
   } finally {
     state.dockBusy = false;
-    button.disabled = false;
+    dockSubmitButton.disabled = false;
   }
 };
 $("dock-message").oninput = () => {
