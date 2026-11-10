@@ -7,11 +7,14 @@ class Node {
   dataset: Record<string, string> = {};
   children: Node[] = [];
   open = false;
-  constructor(readonly tag: string, readonly className = "", readonly text = "") {}
+  constructor(readonly tag: string, readonly className = "", public text = "") {}
   append(...nodes: Node[]) { this.children.push(...nodes); }
 }
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-const context: any = { el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text) };
+const context: any = {
+  el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text),
+  window: { agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } } },
+};
 const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("function pendingBubble("));
 runInNewContext(renderer, context);
 const wrapped = (body: string) => `<subagent_notification>\n${body}\n</subagent_notification>`;
@@ -25,6 +28,7 @@ const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("nod
   const turn = runInNewContext(renderer + '\\nchatTurn(entry, "Agent")', {
     entry: { text, kind: "user", index: 42 },
     el: (tag, cls, text) => new Node(tag, cls, text),
+    window: { agentMarkdown: { render: (node, text) => { node.text = text; } } },
   }, { timeout: 1000 });
   process.stdout.write(JSON.stringify(turn));
 `], { input: JSON.stringify({ renderer, text }), encoding: "utf8", timeout: 3000 }));

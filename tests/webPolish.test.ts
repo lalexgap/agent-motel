@@ -7,7 +7,7 @@ test("latest affordance only marks a visible chat read when at bottom", () => {
   const view = { scrollHeight: 2000, scrollTop: 0, clientHeight: 500, dataset: { lastIndex: "42" } };
   const button = { hidden: true };
   const state = { selected: "example", detailMode: "chat", lastRead: new Map() };
-  const context: any = { state, $: (id: string) => id === "transcript" ? view : button };
+  const context: any = { state, $: (id: string) => id === "transcript" ? view : button, markDisplayedDetailSeen() {} };
   runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf('$("transcript").addEventListener')), context);
   context.updateLatestButton();
   expect(button.hidden).toBe(false);
@@ -65,4 +65,49 @@ test("palette filters agents and routes to the selected host without executing l
   node("command-query").value = "does-not-exist";
   context.renderCommands();
   expect(node("command-results").children[0].text).toBe("No matching commands or agents.");
+});
+
+test("scroll, Jump latest and terminal transitions acknowledge only the displayed detail before leaving", () => {
+  for (const transition of ["scroll", "jump", "terminal", "chat-tab"]) {
+    const t1 = "2026-11-10T16:01:00.000Z", t2 = "2026-11-10T16:02:00.000Z", t3 = "2026-11-10T16:03:00.000Z";
+    const handlers: Record<string, () => void> = {};
+    const view = {
+      scrollHeight: 2000, scrollTop: 0, clientHeight: 500,
+      dataset: { agent: "example", detailVersion: "1", updatedAt: t2, lastIndex: "42" },
+      addEventListener: (event: string, handler: () => void) => { handlers[event] = handler; },
+    };
+    const nodes: Record<string, any> = { transcript: view };
+    const node = (id: string) => nodes[id] ??= { hidden: true, setAttribute() {} };
+    const state = {
+      selected: "example", detailVersion: 1, detailMode: "chat",
+      rows: [{ name: "example", updatedAt: t3 }], lastRead: new Map(), lastSeen: new Map([["example", t1]]),
+    };
+    const context: any = { state, $: node, renderFleet() {}, key: (row: any) => row.name,
+      agentTerminal: { open() {}, close() {} } };
+    runInNewContext(source.slice(source.indexOf("function markDetailSeen("), source.indexOf("async function refreshDetail(")), context);
+    runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf("function promptTerminalButton(")), context);
+    runInNewContext(source.slice(source.indexOf("function updateAgentView("), source.indexOf("// The Terminal/Chat choice")), context);
+    context.setDetailMode = (mode: string) => { state.detailMode = mode; };
+    runInNewContext(source.slice(source.indexOf('$("chat-tab").onclick'), source.indexOf('$("terminal-reconnect").onclick')), context);
+    context.updateLatestButton();
+    expect(state.lastSeen.get("example")).toBe(t1);
+    if (transition === "scroll") { view.scrollTop = 1500; handlers.scroll!(); }
+    else if (transition === "jump") node("jump-latest").onclick();
+    else if (transition === "chat-tab") { state.detailMode = "terminal"; node("chat-tab").onclick(); }
+    else { state.detailMode = "terminal"; context.updateAgentView(); }
+    expect(state.lastSeen.get("example")).toBe(t2);
+    expect(t2 > state.lastSeen.get("example")!).toBe(false);
+    if (transition !== "terminal") expect(state.lastRead.get("example")).toBe(42);
+    state.selected = "other";
+    state.detailVersion++;
+    context.updateLatestButton();
+    context.updateAgentView();
+    expect(state.lastSeen.get("other")).toBeUndefined();
+    expect(state.lastSeen.get("example")).toBe(t2);
+    // A newer fleet snapshot is still unread, even after viewing the displayed T2 update.
+    expect(state.rows[0]!.updatedAt > state.lastSeen.get("example")!).toBe(true);
+    state.selected = "example";
+    context.markDisplayedDetailSeen(true);
+    expect(state.lastSeen.get("example")).toBe(t2);
+  }
 });

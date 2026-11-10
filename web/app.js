@@ -70,6 +70,7 @@ function updateAgentView() {
   if (terminal && state.selected) {
     const row = state.rows.find((row) => key(row) === state.selected);
     agentTerminal.open(state.selected, row?.status);
+    markDisplayedDetailSeen(false);
   } else agentTerminal.close();
 }
 // The Terminal/Chat choice is one global preference that persists across agents and reloads.
@@ -90,6 +91,7 @@ $("chat-tab").onclick = () => {
   updateAgentView();
   // A hidden transcript can't scroll, so open the chat at its latest message.
   $("transcript").scrollTop = $("transcript").scrollHeight;
+  updateLatestButton();
 };
 $("terminal-reconnect").onclick = () => agentTerminal.reconnect();
 new MutationObserver(() => {
@@ -575,8 +577,6 @@ async function selectAgent(name, mode) {
   agentTerminal.close();
   state.selected = name;
   state.readBoundary = state.lastRead.get(name) ?? null;
-  const selectedRow = state.rows.find(row => key(row) === name);
-  if (selectedRow) state.lastSeen.set(name, selectedRow.updatedAt);
   renderFleet();
   state.detailMode = mode || preferredMode;
   state.detailVersion++;
@@ -907,6 +907,7 @@ function updateLatestButton() {
   if ($("jump-latest").hidden && state.selected && state.detailMode === "chat") {
     const index = Number(view.dataset.lastIndex);
     if (Number.isFinite(index)) state.lastRead.set(state.selected, index);
+    markDisplayedDetailSeen(true);
   }
 }
 $("transcript").addEventListener("scroll", updateLatestButton);
@@ -1249,6 +1250,11 @@ function markDetailSeen(name, updatedAt, chatAtLatest) {
   const previous = state.lastSeen.get(name);
   if (!previous || updatedAt > previous) state.lastSeen.set(name, updatedAt);
 }
+function markDisplayedDetailSeen(chatAtLatest) {
+  const snapshot = $("transcript").dataset;
+  if (snapshot.agent !== state.selected || snapshot.detailVersion !== String(state.detailVersion)) return;
+  markDetailSeen(snapshot.agent, snapshot.updatedAt, chatAtLatest);
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -1401,8 +1407,11 @@ async function refreshDetail() {
   const lastEntry = transcript.entries.at(-1);
   if (lastEntry) view.dataset.lastIndex = lastEntry.index;
   else delete view.dataset.lastIndex;
+  view.dataset.agent = name;
+  view.dataset.detailVersion = String(version);
+  view.dataset.updatedAt = detail.updatedAt || "";
   updateLatestButton();
-  markDetailSeen(name, detail.updatedAt, state.detailMode === "chat" && $("jump-latest").hidden);
+  markDisplayedDetailSeen(false);
   const mode = messageSendMode(name);
   $("message-mode").textContent = mode === "now" ? "Send to agent · read at its next input boundary" : "Queue · delivered when the agent is free";
 
