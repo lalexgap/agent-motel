@@ -3,6 +3,10 @@ import { loadConfig, localHostIdentity, type Config } from "./config";
 import { tmux } from "./tmux";
 import { notificationPrUrl, recordNotification, type NotificationKind } from "./notifications";
 
+function terminalNotifierValue(value: string): string {
+  return /^[\[({"]/.test(value) ? `\\${value}` : value;
+}
+
 // Desktop/push notifications, portable across the laptop (macOS) and a
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
@@ -28,7 +32,7 @@ export function buildNotifyCommand(
   if (config.notifyCommand) return ["sh", "-c", config.notifyCommand];
   if (env.platform === "darwin") {
     const target = notificationPrUrl(url);
-    if (target && env.has("terminal-notifier")) return ["terminal-notifier", "-title", title, "-message", message, "-open", target];
+    if (target && env.has("terminal-notifier")) return ["terminal-notifier", "-title", title, "-message", terminalNotifierValue(message), "-open", target];
     const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     return ["osascript", "-e", `display notification "${esc(message)}" with title "${esc(title)}"`];
   }

@@ -13,7 +13,7 @@ export function isNotificationKind(value: unknown): value is NotificationKind {
 
 export function notificationPrUrl(value: unknown): string | undefined {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return undefined;
-  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(value);
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?)\/([A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?)\/pull\/([1-9][0-9]*)$/.exec(value);
   if (!match) return undefined;
   const number = Number(match[3]);
   return Number.isSafeInteger(number) && value === `https://github.com/${match[1]}/${match[2]}/pull/${number}` ? value : undefined;

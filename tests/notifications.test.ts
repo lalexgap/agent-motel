@@ -39,6 +39,7 @@ const PR_URL = "https://github.com/owner/repo/pull/123";
 describe("notificationPrUrl", () => {
   test("accepts only canonical GitHub pull request URLs", () => {
     expect(notificationPrUrl(PR_URL)).toBe(PR_URL);
+    expect(notificationPrUrl("https://github.com/acme-inc/repo.name/pull/123")).toBe("https://github.com/acme-inc/repo.name/pull/123");
     for (const value of [
       undefined,
       123,
@@ -54,6 +55,8 @@ describe("notificationPrUrl", () => {
       "https://github.com/owner/repo/pull/0",
       "https://github.com/owner/repo/pull/01",
       "https://github.com/owner/repo/pull/9007199254740992",
+      "https://github.com/owner/../pull/123",
+      "https://github.com/../repo/pull/123",
       "https://github.com/owner/repo/pull/123\nhttps://evil.test",
     ]) expect(notificationPrUrl(value)).toBeUndefined();
   });

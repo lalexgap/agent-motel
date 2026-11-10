@@ -74,6 +74,12 @@ describe("clickable PR notifications", () => {
     expect(d.calls[0]!.cmd).not.toContain("-sender");
   });
 
+  test("escapes property-list prefixes in terminal notifier messages", async () => {
+    const d = delivery();
+    await deliverNotification("PR merged", "[am] PR #123 merged", prUrl, notifyConfig, d.deps);
+    expect(d.calls[0]!.cmd[4]).toBe("\\[am] PR #123 merged");
+  });
+
   test("permission denial keeps the notification via iTerm and explains the failure", async () => {
     const d = delivery({ run: async () => 3 });
     await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
