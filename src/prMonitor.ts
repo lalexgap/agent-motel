@@ -11,6 +11,7 @@ import { acquireMailboxLock, releaseMailboxLock, withMailboxWrite } from "./mail
 import { queueAppendOnceLocked, queueReceived, queueRecordReceipt } from "./queue";
 import { loadConfig } from "./config";
 import { acquireLifecycleLock, releaseLifecycleLock } from "./lifecycle";
+import { notificationPrUrl } from "./notifications";
 
 export interface TrackedPullRequest {
   repository: string;
@@ -22,7 +23,7 @@ export interface TrackedPullRequest {
   mergeCommit?: string;
   updatedAt: string;
 }
-interface PrEvent { id: string; message: string }
+interface PrEvent { id: string; message: string; url?: string }
 export interface PrMonitorState {
   pullRequests: TrackedPullRequest[];
   bootstrapped?: boolean;
@@ -39,8 +40,8 @@ const command: PrCommand = async (cwd, executable, args) => (await exec(executab
 })).stdout;
 
 export function parsePrUrl(url: string): { repository: string; number: number } {
-  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)\/?$/.exec(url);
-  if (!match || !Number.isSafeInteger(Number(match[2]))) throw new Error("Expected a GitHub pull request URL");
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(notificationPrUrl(url) ?? "");
+  if (!match) throw new Error("Expected a GitHub pull request URL");
   return { repository: match[1]!, number: Number(match[2]) };
 }
 export function parsePullRequest(repository: string, value: any): TrackedPullRequest {
@@ -109,7 +110,7 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
         Date.parse(pr.mergedAt ?? pr.closedAt ?? "") >= Date.parse(current.createdAt);
       if (changed) {
         const id = newMsgId();
-        if (!pending.some(event => event.id === id)) pending.push({ id, message: prEventMessage(pr) });
+        if (!pending.some(event => event.id === id)) pending.push({ id, message: prEventMessage(pr), url: pr.url });
       }
       byUrl.set(pr.url, pr);
     }
@@ -118,8 +119,11 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
   }, strict, true);
 }
 
-export type PrNotifier = (name: string, message: string) => void;
-export const notifyPrEvent: PrNotifier = (name, message) => notify(`PR update · ${name}`, message, { agent: name, kind: "pr" });
+export type PrNotifier = (name: string, message: string, url?: string) => void;
+export const notifyPrEvent: PrNotifier = (name, message, url) => {
+  const meta: { agent: string; kind: "pr"; url?: string } = { agent: name, kind: "pr", ...(url ? { url } : {}) };
+  notify(`PR update · ${name}`, message, meta);
+};
 
 export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = false): boolean {
   return withMonitorOwnership(agent, strict, () => {
@@ -143,7 +147,7 @@ export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = 
         if (!queueReceived(current.name, event.id)) {
           queueAppendOnceLocked(current.name, event.message, event.id);
           queueRecordReceipt(current.name, event.id);
-          try { onEvent?.(current.name, event.message); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
+          try { onEvent?.(current.name, event.message, event.url); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
         }
         updateAgentIf(current.name, state => {
           if (state.createdAt !== current.createdAt || !state.prMonitor) return false;
