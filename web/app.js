@@ -172,6 +172,7 @@ const dot = (status) => {
     "i",
     `dot ${["working", "idle", "needs-attention", "waiting", "dead", "exited", "starting"].includes(status) ? status : ""}`,
   );
+  node.setAttribute("aria-hidden", "true");
   // Re-renders replace the dot; phase the spin off a shared clock so it doesn't snap back.
   if (status === "working" || status === "waiting") node.style.animationDelay = `-${Math.round(performance.now() % 1600)}ms`;
   return node;
@@ -456,12 +457,11 @@ function renderFleet() {
     label.dataset.provider = provider.toLowerCase();
     const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
-    const glyph = el("span", "side-status-glyph", { starting: "◌", idle: "○", waiting: "◐", working: "●", "needs-attention": "⚠", exited: "✔", dead: "✕" }[row.status] || "?");
-    glyph.setAttribute("aria-hidden", "true");
     const heading = el("span", "side-agent-heading");
-    heading.append(glyph, el("span", "side-agent-name", row.name), label);
+    heading.append(dot(row.status), el("span", "side-agent-name", row.name), label);
     const age = Date.parse(row.updatedAt || "");
     const reason = row.statusDetail || row.statusReason;
+    button.setAttribute("aria-label", [row.name, statusName(row.status), reason, provider].filter(Boolean).join(", "));
     const meta = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : "",
       Number.isFinite(age) ? `${elapsed(Math.max(0, Date.now() - age))} ago` : ""].filter(Boolean);
     const prs = row.prMonitor?.pullRequests || [];
