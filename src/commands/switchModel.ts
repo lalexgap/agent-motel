@@ -1,4 +1,5 @@
 import { recordAudit, withAuditContext } from "../audit";
+import { findModel, providerCatalog, validateSelection } from "../catalog";
 import { loadConfig } from "../config";
 import { ensureDaemon, requestDaemonModelSwitch } from "../daemon";
 import { deliverNext } from "../deliver";
@@ -62,7 +63,14 @@ export function requestModelSwitch(agentName: string | undefined, request: Switc
   if (model === agent.model && (effort === undefined || effort === agent.effort)) {
     throw new Error(`you are already running on ${describeTarget({ model, effort: agent.effort })}`);
   }
-  validateChange(agent, { model, effort }, { refresh: true, warn: (message) => console.error(message) });
+  // Claude's catalog is non-exhaustive, so am restart only warns on an unknown
+  // model; here that would spend the one switch and persist a bad --model.
+  const catalog = providerCatalog(provider, { refresh: true });
+  if (!findModel(catalog, model)) {
+    const why = validateSelection(catalog, { model })[0]?.message ?? `the ${provider} model catalog on this machine does not confirm "${model}"`;
+    throw new Error(`refused: ${why} — a self-switch only goes to a model \`am models\` lists`);
+  }
+  validateChange(agent, { model, effort }, { warn: (message) => console.error(message) });
   const pending: PendingModelSwitch = { model, ...(effort ? { effort } : {}), reason, requestedAt: new Date().toISOString() };
   const recorded = updateAgentIf(agent.name, (current) => {
     if (current.createdAt !== agent.createdAt || current.pendingModelSwitch || (current.selfModelSwitches ?? 0) > 0) return false;

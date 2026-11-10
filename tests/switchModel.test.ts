@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { auditLogFile } from "../src/audit";
 import { newCommand } from "../src/commands/new";
-import { restartAgent } from "../src/commands/restart";
+import { restartAgent, validateChange } from "../src/commands/restart";
 import { stopAgent } from "../src/commands/rm";
 import {
   continueMessage,
@@ -47,6 +47,7 @@ case "$1" in
     printf '%s\\n' "$@" > "$AGENTMGR_HOME/launch"
     test ! -f "$AGENTMGR_HOME/fail"
     ;;
+  capture-pane) cat "$AGENTMGR_HOME/pane" 2>/dev/null ;;
   *) exit 0 ;;
 esac
 `);
@@ -153,6 +154,32 @@ describe("am switch-model request", () => {
     expect(() => request()).toThrow(/unknown codex effort "medium" for gpt-6.1-sol/);
     expect(readAgent("api")!.pendingModelSwitch).toBeUndefined();
   });
+
+  test("refuses a claude model the catalog does not list, unlike am restart, which only warns", async () => {
+    const help = "Options:\n  --effort <level>  Effort level (low, medium, high)\n  --model <model>  Model alias ('sonnet' or 'opus') or full name\n  -h, --help\n";
+    writeFileSync(join(home, "claude"), `#!/bin/sh\nprintf '%s' '${help}'\n`);
+    const warnings = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      update({ provider: "claude", model: "haiku" });
+      expect(() => request({ model: "sonet" })).toThrow(/refused: unknown claude model "sonet" — known models: .*sonnet.* — a self-switch only goes to a model `am models` lists/);
+      expect(readAgent("api")!.pendingModelSwitch).toBeUndefined();
+      expect(() => validateChange(readAgent("api")!, { model: "sonet" }, { refresh: true, warn: (m) => console.error(m) })).not.toThrow();
+      for (const model of ["sonnet", "opus", "fable"]) {
+        update({ pendingModelSwitch: undefined });
+        expect(request({ model }).pending.model).toBe(model);
+      }
+      expect(warnings).toHaveBeenCalledTimes(1);
+    } finally {
+      warnings.mockRestore();
+    }
+    // A full id passes once the CLI's cached model options list it.
+    update({ pendingModelSwitch: undefined });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ additionalModelOptionsCache: [{ value: "claude-opus-5-5[1m]" }] }));
+    const { CODEX_THREAD_ID: _t, ...env } = process.env;
+    const child = Bun.spawn([process.execPath, CLI, "switch-model", "claude-opus-5-5[1m]", "--reason", "x"], { env: { ...env, HOME: home, AGENTMGR_AGENT: "api" }, stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).toBe(0);
+    expect(readAgent("api")!.pendingModelSwitch?.model).toBe("claude-opus-5-5[1m]");
+  }, 30_000);
 
   test("refuses antigravity agents", () => {
     update({ provider: "antigravity" });
@@ -334,6 +361,41 @@ describe("the Stop hook trigger", () => {
     expect(readAgent("api")!.pendingModelSwitch).toEqual({ model: "gpt-6.1-sol", reason: "deeper", requestedAt });
     await Bun.sleep(800);
     expect(launched()).toBe(false);
+  }, 30_000);
+
+  test("background subagents still running hold it until a later stop with none", async () => {
+    const transcript = join(home, "session.jsonl");
+    writeFileSync(transcript, "");
+    mkdirSync(join(home, "session", "subagents"), { recursive: true });
+    writeFileSync(join(home, "session", "subagents", "agent-bg-1.meta.json"), JSON.stringify({ requestShape: "background" }));
+    update({ provider: "claude", transcriptPath: transcript, status: "working", pendingModelSwitch: { model: "sonnet", reason: "deeper", requestedAt } });
+    await hook("subagent-start", { agent_id: "bg-1", agent_type: "general-purpose" });
+    await hook("stop");
+    expect(readAgent("api")).toMatchObject({ status: "idle", model: "gpt-6-luna" });
+    expect(readAgent("api")!.pendingModelSwitch!.triggeredAt).toBeUndefined();
+    await Bun.sleep(800);
+    expect(launched()).toBe(false);
+
+    await hook("subagent-stop", { agent_id: "bg-1" });
+    update({ status: "working" });
+    await hook("stop");
+    await until(launched);
+    expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'sonnet'");
+    expect(readAgent("api")).toMatchObject({ model: "sonnet", selfModelSwitches: 1 });
+  }, 30_000);
+
+  test("a pane showing background shells holds it", async () => {
+    writeFileSync(join(home, "pane"), "────────────────\n  ⏵⏵ accept edits on · 1 shell · ← for agents\n");
+    update({ status: "working", pendingModelSwitch: { model: "gpt-6.1-sol", reason: "deeper", requestedAt } });
+    await hook("stop");
+    expect(readAgent("api")).toMatchObject({ status: "idle", model: "gpt-6-luna" });
+    expect(readAgent("api")!.pendingModelSwitch!.triggeredAt).toBeUndefined();
+
+    rmSync(join(home, "pane"));
+    update({ status: "working" });
+    await hook("stop");
+    await until(launched);
+    expect(readAgent("api")).toMatchObject({ model: "gpt-6.1-sol", selfModelSwitches: 1 });
   }, 30_000);
 
   test("a subagent's stop does not trigger it", async () => {

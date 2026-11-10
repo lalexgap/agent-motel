@@ -52,8 +52,10 @@ import {
   type PermissionRecord,
 } from "../permissions";
 import {
+  activeSubagents,
   closeOpenSubagents,
   isBackgroundSubagent,
+  reconcileOpenSubagents,
   recordSubagentStart,
   recordSubagentStop,
   subagentDescription,
@@ -615,6 +617,18 @@ export function retiredPermissions(
   return 0;
 }
 
+// Background subagents the turn-end left open (after catching any whose
+// finish only the transcript reports), or a pane showing a waiting indicator.
+function backgroundWorkRunning(agent: AgentState, pane: string[] | null): boolean {
+  if (pane && paneWaitingInfo(pane).waiting) return true;
+  try {
+    reconcileOpenSubagents(agent);
+  } catch {
+    // the ledger as it stands
+  }
+  return activeSubagents(agent.name).length > 0;
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
@@ -829,8 +843,10 @@ export async function hookCommand(event: string): Promise<void> {
 
   // The agent asked to change model this turn (am switch-model): it is not
   // finished, so no report, idle notice or drain — its queue waits for the
-  // restarted session.
-  if (event === "stop" && agent.pendingModelSwitch && (await triggerModelSwitch(name, agent.pendingModelSwitch))) return;
+  // restarted session. The restart would kill background work still running,
+  // so while there is any the switch waits for a later stop.
+  if (event === "stop" && agent.pendingModelSwitch && !backgroundWorkRunning(agent, pane)
+      && (await triggerModelSwitch(name, agent.pendingModelSwitch))) return;
 
   // Standing-relationship backstop: if the agent finished a real work stint
   // and didn't post its own update to reportTo, send a terse heads-up so the
