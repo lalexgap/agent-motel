@@ -32,7 +32,7 @@ define(["claude-sonnet-4-6"], price(3, 15, 3.75, 6, 0.3, M));
 define(["claude-haiku-5-5"], price(0.1, 0.5, 0.125, 0.2, 0.01, M));
 define(["claude-haiku-4-5"], price(1, 5, 1.25, 2, 0.1, 200 * K));
 
-const FAST_MODELS = new Set(["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"]);
+const FAST_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-2", "claude-mythos-5-2"]);
 const FAST_MULTIPLIER = 2;
 const LONG_PROMPT_MODELS = new Set(["claude-haiku-5-5"]);
 const LONG_PROMPT_TOKENS = 100_000;

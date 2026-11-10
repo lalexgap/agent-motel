@@ -38,6 +38,8 @@ describe("pricing", () => {
     expect(costUSD(c, bucketKey("claude-opus-5-5", { fast: true }))).toBeCloseTo(base * 2, 6);
     expect(costUSD(c, bucketKey("claude-fable-5-2", { fast: true }))).toBeCloseTo((8 + 40 + 0.2 + 10 + 16) * 2, 6);
     expect(costUSD(c, bucketKey("claude-mythos-5-2", { fast: true }))).toBeCloseTo((8 + 40 + 0.2 + 10 + 16) * 2, 6);
+    expect(costUSD(c, bucketKey("claude-opus-5", { fast: true }))).toBeCloseTo((5 + 25 + 0.5 + 6.25 + 10) * 2, 6);
+    expect(costUSD(c, bucketKey("claude-opus-4-8", { fast: true }))).toBeCloseTo((5 + 25 + 0.5 + 6.25 + 10) * 2, 6);
     // Not a fast-mode model: no multiplier.
     expect(costUSD(c, bucketKey("claude-sonnet-4-6", { fast: true }))).toBeCloseTo(3 + 15 + 0.3 + 3.75 + 6, 6);
   });
