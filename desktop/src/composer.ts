@@ -3,7 +3,6 @@
 import { MESSAGE_EMPTY, MESSAGE_TOO_LONG, MODE_INVALID, type SendMode } from "./policy";
 import type { ApiResponse, Provider, QueueItem, TranscriptEntry } from "./types";
 
-// ---- Pending messages ------------------------------------------------------
 // A message sent mid-turn is held by the agent until it reads it, so it stays
 // on screen until a user turn logged after the send matches it (the browser
 // UI's notePending/pendingFor, kept pure here).
@@ -89,8 +88,6 @@ export const BUBBLE_LABEL: Record<BubbleState, string> = {
   queued: "Queued · sends when the agent is free",
 };
 
-// ---- Mode -----------------------------------------------------------------
-
 export const MODE_HINT: Record<SendMode, string> = {
   now: "Read at the agent's next input boundary",
   queue: "Delivered when the agent is free",
@@ -115,8 +112,6 @@ export const sendModeFor = (choice: ModeChoice, alternate: boolean): SendMode =>
 
 export const parseModePreference = (raw: string | null): SendMode | null => (raw === "now" || raw === "queue" ? raw : null);
 
-// ---- After a send ---------------------------------------------------------
-
 // What stays in the box once `sent` was accepted: nothing if it is unchanged,
 // the rest if the user kept typing after it, otherwise everything they have.
 export function textAfterSend(current: string, sent: string): { text: string; removed: number } {
@@ -128,8 +123,6 @@ export function textAfterSend(current: string, sent: string): { text: string; re
   }
   return { text: current, removed: 0 };
 }
-
-// ---- Drafts ---------------------------------------------------------------
 
 export const DRAFT_MAX_COUNT = 50;
 export const DRAFT_MAX_CHARS = 200_000;
@@ -180,8 +173,6 @@ export function putDraft(drafts: Drafts, key: string, text: string, now: number)
   else delete next[key];
   return capDrafts(next);
 }
-
-// ---- Errors ---------------------------------------------------------------
 
 export const AMBIGUOUS_SEND = "Couldn't reach the server. The message may or may not have been sent.";
 export const TOKEN_REJECTED = "The server rejected the access token. Update it from Connections in the status bar.";

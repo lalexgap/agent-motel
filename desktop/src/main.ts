@@ -642,8 +642,6 @@ function bubbleNode(bubble: Bubble, agentName: string): HTMLElement {
   return turn;
 }
 
-// ---- Composer --------------------------------------------------------------
-
 const composerInput = () => $<HTMLTextAreaElement>("composer-input");
 const isMac = (): boolean => isNative() || /Mac|iPhone|iPad/.test(navigator.platform);
 
