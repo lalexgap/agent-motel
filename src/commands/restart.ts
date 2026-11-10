@@ -105,17 +105,13 @@ function restartAudited(agent: AgentState, opts: RestartOpts, expected?: Restart
     env: { ...agentEnv(agent.name, provider), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
     command: scrubNestedSessionEnv(plan.command),
   };
-  const sessionAlive = hasSession(agent.tmuxSession);
-  if (expected && !sessionAlive) {
-    throw new Error(`agent "${agent.name}" stopped while the model change was starting — refresh and try again`);
-  }
   updateAgentStatus(agent, "starting", "restarting");
   writeAgent(agent);
   try {
-    if (sessionAlive) {
+    if (expected || hasSession(agent.tmuxSession)) {
       try {restartSession(launch);}
       catch(error) {
-        if(expected || provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+        if(provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
         newSession(launch);
       }
     } else newSession(launch);
@@ -150,6 +146,9 @@ async function restartResolvedAgent(agent: AgentState, opts: RestartOpts, expect
     checkPrecondition(agent, expected);
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is busy or being moved — retry restart`);
     try {
+      if (expected && !hasSession(agent.tmuxSession)) {
+        throw new Error(`agent "${agent.name}" stopped while the model change was starting — refresh and try again`);
+      }
       return restartLocked(agent, opts, expected);
     } finally {
       releaseDeliverLock(agent.name);
