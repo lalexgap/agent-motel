@@ -25,6 +25,7 @@ import { readSubagents, reconcileOpenSubagents } from "./subagents";
 import { jsonRecords } from "./commands/subagents";
 import { collectUsage, type ProviderUsage } from "./usage";
 import { collectAgentTokenUsage, collectFleetTokenUsage, enrichSubagentsWithTokens } from "./tokenUsage";
+import { ledgerAgeMs, readUsageLedger, refreshUsageLedger, SUMMARY_RANGES, usageSummary, type SummaryRange } from "./usageLedger";
 import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
@@ -332,6 +333,32 @@ async function cachedQuotaUsage(refresh: boolean): Promise<ProviderUsage[]> {
   const report = await collectUsage();
   quotaCache = { at: Date.now(), data: report.providers };
   return report.providers;
+}
+
+const USAGE_LEDGER_STALE_MS = 60_000;
+
+export async function usageSummaryResponse(params: URLSearchParams): Promise<Response> {
+  const rawRange = params.get("range") ?? "7";
+  const range = Number(rawRange) as SummaryRange;
+  if (!/^\d+$/.test(rawRange) || !SUMMARY_RANGES.includes(range)) {
+    return json({ error: `invalid range "${rawRange}" (expected 1, 7, or 30)` }, 400);
+  }
+  const rawProvider = params.get("provider") || null;
+  if (rawProvider !== null && !isProvider(rawProvider)) {
+    return json({ error: `unknown provider "${rawProvider}"` }, 400);
+  }
+  const repo = params.get("repo")?.trim() || undefined;
+  const refresh = params.get("refresh") === "1";
+  try {
+    if (refresh || ledgerAgeMs(readUsageLedger()) > USAGE_LEDGER_STALE_MS) {
+      refreshUsageLedger({ budgetMs: 1500 });
+    }
+    const summary = usageSummary({ range, repo, provider: rawProvider ?? undefined });
+    const quota = params.get("quota") !== "0" ? await cachedQuotaUsage(refresh) : undefined;
+    return json({ summary, ...(quota ? { quota } : {}) });
+  } catch (error) {
+    return json({ error: (error as Error).message }, 500);
+  }
 }
 
 // `am models --json` here or on a fleet host, cached per host.
@@ -698,6 +725,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   // GET /api/summary — the same prioritized fleet report as `am summary`.
   if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
     return json(buildFleetSummary(cachedFleetRows(), new Date(), gcSummaryLine()));
+  }
+
+  // GET /api/usage/summary?range=1|7|30[&repo=][&provider=][&quota=0][&refresh=1]
+  // — the stored usage ledger, refreshed by one bounded slice when stale.
+  if (parts.length === 2 && parts[0] === "usage" && parts[1] === "summary" && method === "GET") {
+    return usageSummaryResponse(new URL(req.url).searchParams);
   }
 
   // GET /api/usage[?provider=claude|codex][&agent=name][&refresh=1][&quota=0]
