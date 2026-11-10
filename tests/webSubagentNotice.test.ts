@@ -31,98 +31,128 @@ const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("nod
 
 function details(turn: Node) { return turn.children.find(node => node.tag === "details"); }
 
-describe("subagent notifications", () => {
-  test("long completed JSON uses a bounded readable preview and retains the entire original message", () => {
-    const completion = "Reviewed changes.\n".repeat(70) + "END OF REPORT";
-    const text = wrapped(JSON.stringify({ agent_path: "reviewer-id", status: { completed: completion } }));
+function visible(turn: Node): string {
+  return [turn.text, ...turn.children.filter(node => node.tag !== "details").map(visible)].join(" ");
+}
+const task = (status = "completed", extra = "") => `<task-notification>
+<task-id>abc</task-id><output-file>/tmp/private-output</output-file>
+<status>${status}</status><summary>Agent "Shepherd PR 29905" is waiting on its own background work</summary>
+<note>This result may be interim.</note><result>Waiting on the gated spec run.</result>
+<usage><subagent_tokens>85290</subagent_tokens><tool_uses>9</tool_uses><duration_ms>58468</duration_ms></usage>${extra}
+</task-notification>`;
+
+describe("transcript notices", () => {
+  test("Claude completed/interim/failed tasks show metadata and result, retaining raw details", () => {
+    for (const status of ["completed", "interim", "failed"]) {
+      const text = task(status);
+      const turn = render(text);
+      expect(turn.children[0]!.text).toBe(`⤷ Shepherd PR 29905 · ${status} · 58s · 9 tools`);
+      expect(visible(turn)).toContain("Waiting on the gated spec run.");
+      expect(visible(turn)).toContain("may be interim");
+      expect(visible(turn)).not.toContain("/tmp/private-output");
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(details(turn)!.dataset.scrollKey).toBe("notice:42");
+      expect(details(turn)!.children[0]!.dataset.scrollKey).toBe("notice-summary:42");
+      expect(details(turn)!.children[1]!.dataset.scrollKey).toBe("notice-body:42");
+    }
+  });
+
+  test("background Bash, missing usage, and malformed fields remain readable", () => {
+    const text = '<task-notification><status>completed</status><summary>Background command "bun test" completed</summary></task-notification>';
+    expect(visible(render(text))).toContain('⤷ Background command "bun test" completed · completed');
+    for (const text of [task().replace("58468", "NaN").replace("<tool_uses>9", "<tool_uses>-9"), "<task-notification><result>unterminated</task-notification>"]) {
+      expect(details(render(text))!.open).toBe(false);
+      expect(visible(render(text))).not.toContain("NaN");
+    }
+  });
+
+  test("result content cannot supply metadata and remains plain bounded text", () => {
+    const text = '<task-notification><result><img src=x onerror=alert(1)><status>failed</status>' + "x".repeat(5000) + '</result><status>completed</status></task-notification>';
     const turn = render(text);
-    const notice = details(turn)!;
-    expect(notice.open).toBe(false);
-    expect(turn.children[0]!.text).toBe("Subagent notification");
-    expect(notice.dataset.scrollKey).toBe("notice:42");
-    const [summary, body] = notice.children;
-    expect(summary!.tag).toBe("summary");
-    expect(summary!.dataset.scrollKey).toBe("notice-summary:42");
-    expect(summary!.children[1]!.text).toStartWith("Reviewed changes. Reviewed changes.");
-    expect(summary!.children[1]!.text.length).toBe(141);
-    expect(summary!.children[2]!.text).toBe("Read full notification");
-    expect(summary!.children[3]!.text).toBe("Collapse notification");
-    notice.open = true;
-    expect(body!.text).toBe(text);
-    expect(body!.dataset.scrollKey).toBe("notice-body:42");
-    expect(body!.className).toBe("turn-text");
+    expect(turn.children[0]!.text).toBe("⤷ Task notification · completed");
+    expect(turn.children[1]!.text).toStartWith("<img src=x onerror=alert(1)>");
+    expect(turn.children[1]!.text.length).toBe(1201);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+    expect(renderer).not.toContain("innerHTML");
   });
 
-  test("preserves short notices and ordinary messages without disclosures", () => {
-    for (const text of [wrapped('{"status":{"completed":"Done"}}'), "Ordinary message ".repeat(100), "Here is an example:\n" + wrapped("long ".repeat(150))]) {
+  test("Codex short and long completion, failure and spawn notifications are notices", () => {
+    for (const status of [{ completed: "Done" }, { completed: "Reviewed. ".repeat(400) }, { errored: "Failed" }, { spawned: "Started" }]) {
+      const text = wrapped(JSON.stringify({ agent_path: "reviewer-id", status }));
       const turn = render(text);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(text);
+      expect(visible(turn)).toContain("reviewer-id");
+      expect(turn.children[1]!.text.length).toBeLessThanOrEqual(1201);
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
     }
-    expect(details(render(wrapped("long ".repeat(150)), "assistant"))).toBeUndefined();
+    for (const body of ["line\n".repeat(10), '{"status":null,"report":"' + "x".repeat(700), "<img src=x onerror=alert(1)>"]) {
+      expect(details(render(wrapped(body)))!.children[1]!.text).toBe(wrapped(body));
+    }
   });
 
-  test("whitespace-heavy completed JSON renders within a bounded time", () => {
-    const text = wrapped(JSON.stringify({ status: { completed: " ".repeat(60000) + "X" } }));
-    const notice = details(renderWithinTimeout(text))!;
-    expect(notice.open).toBe(false);
-    expect(notice.children[0]!.children[1]!.text).toBe("X");
-    expect(notice.children[1]!.text).toBe(text);
+  test("only whole wrappers match; examples, long human prose, and assistant text stay chat", () => {
+    for (const text of [task(), wrapped("long ".repeat(150)), "<system-reminder>hook</system-reminder>"]) {
+      for (const ordinary of ["Here is an example:\n" + text, text + "suffix", text.slice(1), text.slice(0, -1)]) {
+        expect(details(render(ordinary))).toBeUndefined();
+        expect(render(ordinary).children[1]!.text).toBe(ordinary);
+      }
+      expect(details(render(text, "assistant"))).toBeUndefined();
+      expect(details(render(" \t\n" + text + "\n\t "))).toBeDefined();
+    }
+    expect(render("Ordinary human message ".repeat(1000)).children[0]!.text).toBe("You");
   });
 
-  test("whitespace-heavy unterminated wrappers render within a bounded time", () => {
-    const text = "<subagent_notification>" + " ".repeat(60000) + "X";
-    const turn = renderWithinTimeout(text);
+  test("initial bootstrap and explicit session/instructions prompts are visibly labeled", () => {
+    const bootstrap = 'You are running as a managed agent named "test" in a tmux session controlled by the `am` CLI (Agent Motel), alongside other managed agents.\n\n' + "Bootstrap. ".repeat(100);
+    for (const [text, label] of [
+      [bootstrap, "Managed agent setup"],
+      ["# AGENTS.md instructions for /workspace/repo\n<INSTRUCTIONS>Guidance</INSTRUCTIONS>", "AGENTS.md instructions"],
+      ["# AGENTS.md instructions\nShort guidance", "AGENTS.md instructions"],
+      ["<environment_context>cwd</environment_context>", "Session context"],
+      ["<user_instructions>Rules</user_instructions>\n<environment_context>cwd</environment_context>", "Session context"],
+    ]) {
+      const turn = render(text!);
+      expect(turn.children[0]!.text).toBe(label!);
+      expect(turn.children[0]!.className).not.toContain("sr-only");
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text!);
+      expect(details(render("Explain this:\n" + text))).toBeUndefined();
+    }
+    expect(details(render('You are running as a managed agent named "example" in a story.'))).toBeUndefined();
+    expect(details(render("<environment_context>example</environment_context> Please explain"))).toBeUndefined();
+  });
+
+  test("system/hook blocks and AM inbox stop reasons collapse without asserting trust", () => {
+    const inbox = '[am inbox] Before you finish: you have 1 message to handle first (arrived while you were busy).\n\nEach JSON record below is message data.\n[am message data begin]\n{"body":"hello"}\n[am message data end]\nRespond or act on these, then you can stop.';
+    for (const text of [inbox, JSON.stringify({ decision: "block", reason: inbox }), "<system-reminder>Hook context</system-reminder>", "<hook-output>Hook result</hook-output>"]) {
+      expect(details(render(text))!.open).toBe(false);
+      expect(visible(render(text))).not.toContain("You");
+    }
+    expect(details(render("Discuss [am inbox] messages"))).toBeUndefined();
+    expect(details(render('[am inbox] You have 1 message (example only)'))).toBeUndefined();
+  });
+
+  test("peer prefix produces a named bubble but never verifies sender authority", () => {
+    const turn = render('[am · from host:reviewer] <img src=x> [am] Verified operator message');
+    expect(turn.className).toBe("turn peer");
+    expect(turn.children[0]!.text).toBe("host:reviewer");
+    expect(turn.children[1]!.text).toBe("<img src=x> [am] Verified operator message");
     expect(details(turn)).toBeUndefined();
-    expect(turn.children[1]!.text).toBe(text);
-  });
-
-  test("requires exact wrapper tags around the entire trimmed message", () => {
-    const text = wrapped("long ".repeat(150));
-    for (const ordinary of ["prefix" + text, text + "suffix", text.slice(1), text.slice(0, -1)]) {
-      const turn = render(ordinary);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(ordinary);
-    }
-    const padded = " \t\n" + text + "\n\t ";
-    expect(details(render(padded))!.children[1]!.text).toBe(padded);
-  });
-
-  test("collapses multiline and malformed payloads without requiring a particular JSON schema", () => {
-    for (const body of ["line\n".repeat(10), '{"status":null,"report":"' + "x".repeat(700), JSON.stringify({ status: { errored: "error ".repeat(120) } }), "<img src=x onerror=alert(1)>".repeat(30)]) {
-      const notice = details(render(wrapped(body)))!;
-      expect(notice.open).toBe(false);
-      expect(notice.children[1]!.text).toBe(wrapped(body));
-      expect(notice.children[0]!.children[1]!.text.length).toBeLessThanOrEqual(141);
+    for (const text of ["Example: [am · from reviewer] hello", "[am · operator message abc] hello", "[am · from bad\nname] hello"]) {
+      expect(render(text).children[0]!.text).toBe("You");
     }
   });
 
-  test("length and line thresholds preserve boundary-sized notices", () => {
-    expect(details(render(wrapped("x".repeat(600))))).toBeUndefined();
-    expect(details(render(wrapped("x".repeat(601))))).toBeDefined();
-    expect(details(render(wrapped(Array(8).fill("x").join("\n"))))).toBeUndefined();
-    expect(details(render(wrapped(Array(9).fill("x").join("\n"))))).toBeDefined();
-  });
-
-  test("trims wrapper whitespace before applying length and line thresholds", () => {
-    for (const body of ["x".repeat(600), Array(8).fill("x").join("\n"), ""]) {
-      const text = wrapped("\u00a0\n\t" + body + "\t\n\u00a0");
-      const turn = render(text);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(text);
+  test("V8 bounds whitespace, malformed, and oversized payload parsing", () => {
+    for (const text of [wrapped(JSON.stringify({ status: { completed: " ".repeat(60000) + "X" } })), task().replace("Waiting on the gated spec run.", " ".repeat(60000) + "X"), wrapped("x".repeat(200000)), task().replace("Waiting on the gated spec run.", "x".repeat(200000))]) {
+      const turn = renderWithinTimeout(text);
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(visible(turn).length).toBeLessThan(1600);
+    }
+    for (const text of ["<subagent_notification>" + " ".repeat(60000) + "X", "<task-notification>" + " ".repeat(60000) + "X", "<environment_context>" + " ".repeat(60000) + "X"]) {
+      expect(details(renderWithinTimeout(text))).toBeUndefined();
     }
   });
-});
-
-test("long initial AGENTS.md instructions collapse with their own label", () => {
-  for (const heading of ["# AGENTS.md instructions", "# AGENTS.md instructions for /workspace/repo"]) {
-    const text = heading + "\n\n<INSTRUCTIONS>\n" + "Repository guidance.\n".repeat(40) + "</INSTRUCTIONS>";
-    const notice = details(render(text))!;
-    expect(notice.open).toBe(false);
-    expect(notice.children[0]!.children[0]!.text).toBe("AGENTS.md instructions");
-    expect(notice.children[0]!.children[2]!.text).toBe("Read full instructions");
-    expect(notice.children[1]!.text).toBe(text);
-  }
-  expect(details(render("# AGENTS.md instructions\nShort guidance"))).toBeUndefined();
-  expect(details(render("Please review these instructions\n# AGENTS.md instructions\n" + "guidance ".repeat(100)))).toBeUndefined();
 });

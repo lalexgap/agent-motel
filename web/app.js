@@ -2,6 +2,9 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   rows: [],
+  lastSeen: new Map(),
+  lastRead: new Map(),
+  readBoundary: null,
   selected: null,
   filter: "live",
   sort: "status",
@@ -174,11 +177,11 @@ const dot = (status) => {
 const statusName = (status) =>
   ({
     working: "Working",
-    idle: "Available",
+    idle: "Idle",
     "needs-attention": "Needs attention",
     waiting: "Waiting on background tasks",
     dead: "Offline",
-    exited: "Stopped",
+    exited: "Exited",
     starting: "Starting",
   })[status] || status;
 function badge(status) {
@@ -219,6 +222,9 @@ function lock() {
   state.authenticated = false;
   state.detailVersion++;
   state.rows = [];
+  state.lastSeen.clear();
+  state.lastRead.clear();
+  $("command-dialog").close();
   clearConversationSearch();
   $("advanced-results").replaceChildren();
   $("advanced-search-form").reset();
@@ -424,7 +430,11 @@ function renderFleet() {
   nav.replaceChildren();
   const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
   const sidebarRank = { "needs-attention": 0, waiting: 1, working: 1, starting: 2, idle: 3 };
+  const grouping = $("sidebar-group").value;
+  let sidebarGroup = null;
+  const groupName = row => grouping === "repo" ? repoName(row) : row.host || "This server";
   const sidebarRows = [...rows].sort((a, b) =>
+    (grouping ? groupName(a).localeCompare(groupName(b)) : 0) ||
     (sidebarRank[a.status] ?? 4) - (sidebarRank[b.status] ?? 4) || a.name.localeCompare(b.name));
   for (const row of sidebarRows) {
     if (
@@ -434,13 +444,31 @@ function renderFleet() {
       continue;
     if (!`${row.name} ${row.task || ""} ${row.host || ""} ${row.dir || ""}`
       .toLowerCase().includes(sidebarQuery)) continue;
+    if (grouping && sidebarGroup !== groupName(row)) {
+      sidebarGroup = groupName(row);
+      nav.append(el("h3", "sidebar-group-title", sidebarGroup));
+    }
     const button = el("button", "side-agent");
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : row.provider === "antigravity" ? "Antigravity" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
     const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
-    button.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    const glyph = el("span", "side-status-glyph", { starting: "◌", idle: "○", waiting: "◐", working: "●", "needs-attention": "⚠", exited: "✔", dead: "✕" }[row.status] || "?");
+    glyph.setAttribute("aria-hidden", "true");
+    const heading = el("span", "side-agent-heading");
+    heading.append(glyph, el("span", "side-agent-name", row.name), label);
+    const age = Date.parse(row.updatedAt || "");
+    const reason = row.statusDetail || row.statusReason;
+    const meta = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : "",
+      Number.isFinite(age) ? `${elapsed(Math.max(0, Date.now() - age))} ago` : ""].filter(Boolean);
+    const prs = row.prMonitor?.pullRequests || [];
+    if (prs.length) meta.push(prs.map(pr => `PR #${pr.number} · ${pr.state.toLowerCase()}`).join(", "));
+    const seen = state.lastSeen.get(key(row));
+    if (seen && row.updatedAt > seen && state.selected !== key(row)) heading.append(el("span", "unread-badge", "New"));
+    const metadata = el("span", "side-agent-meta", meta.join(" · "));
+    metadata.title = meta.join(" · ");
+    button.append(heading, metadata);
     button.classList.toggle("selected", key(row) === state.selected);
     if (key(row) === state.selected) button.setAttribute("aria-current", "page");
     button.dataset.agentKey = key(row);
@@ -545,6 +573,9 @@ async function selectAgent(name, mode) {
   saveDraft();
   agentTerminal.close();
   state.selected = name;
+  state.readBoundary = state.lastRead.get(name) ?? null;
+  const selectedRow = state.rows.find(row => key(row) === name);
+  if (selectedRow) state.lastSeen.set(name, selectedRow.updatedAt);
   renderFleet();
   state.detailMode = mode || preferredMode;
   state.detailVersion++;
@@ -827,7 +858,10 @@ function toolGroup(entry) {
       const iconBox = el("span", "work-icon");
       iconBox.append(icon(kind));
       row.append(iconBox, name);
-      const output = el("pre", "work-detail", [entry.input, entry.output].filter(Boolean).join("\n\n"));
+      const outputText = [entry.input, entry.output].filter(Boolean).join("\n\n");
+      const size = `${outputText.split("\n").length} lines · ${outputText.length.toLocaleString()} characters`;
+      row.append(el("span", "tool-size", size));
+      const output = el("pre", "work-detail", outputText);
       output.dataset.scrollKey = "output:" + entry.index;
       call.append(row, output);
       list.append(call);
@@ -866,6 +900,18 @@ setInterval(() => {
   for (const box of document.querySelectorAll(".working-indicator:not([hidden])")) tickWorking(box);
 }, 1000);
 const transcriptQueue = el("div", "transcript-queue");
+function updateLatestButton() {
+  const view = $("transcript");
+  $("jump-latest").hidden = view.scrollHeight - view.scrollTop - view.clientHeight < 100;
+  if ($("jump-latest").hidden && state.selected && state.detailMode === "chat") {
+    const index = Number(view.dataset.lastIndex);
+    if (Number.isFinite(index)) state.lastRead.set(state.selected, index);
+  }
+}
+$("transcript").addEventListener("scroll", updateLatestButton);
+$("jump-latest").onclick = () => { $("transcript").scrollTop = $("transcript").scrollHeight; updateLatestButton(); };
+$("sidebar-group").onchange = renderFleet;
+
 function promptTerminalButton() {
   const button = el("button", "text-button", "Open terminal");
   button.onclick = () => { setDetailMode("terminal"); updateAgentView(); };
@@ -1037,41 +1083,111 @@ function pendingFor(name, entries) {
 function collapsibleMessage(entry) {
   if (entry.kind !== "user") return null;
   const text = entry.text?.trim() || "";
-  const opening = "<subagent_notification>", closing = "</subagent_notification>";
-  const notification = text.startsWith(opening) && text.endsWith(closing);
-  const instructions = /^# AGENTS\.md instructions(?: for [^\n]+)?(?:\r?\n|$)/.test(text);
-  if (!notification && !instructions) return null;
-  let preview = notification ? text.slice(opening.length, -closing.length).trim() : text.slice(text.indexOf("\n") + 1).trim();
-  if (preview.length <= 600 && preview.split("\n").length <= 8) return null;
-  if (notification) {
+  const bounded = (value, max = 140) => {
+    const clean = String(value || "").slice(0, 131072).replace(/\s+/g, " ").trim();
+    return clean.length > max ? clean.slice(0, max) + "…" : clean;
+  };
+  const wrapped = (tag) => text.startsWith(`<${tag}>`) &&
+    text.indexOf(`</${tag}>`, tag.length + 2) === text.length - tag.length - 3;
+  const notice = (label, preview = "", subject = "context") => ({ label, preview: bounded(preview), subject });
+  const peer = /^\[am · from ([^\]\r\n]{1,160})\] /u.exec(text);
+  // Sender labels are display hints only; transcript text cannot establish provenance.
+  if (peer) return { peer: peer[1], body: text.slice(peer[0].length) };
+  if (wrapped("task-notification")) {
+    const info = notice("⤷ Task notification", "", "notification");
+    if (text.length > 131072) return info;
+    // Scan top-level fields so tags quoted inside a result cannot become metadata.
+    const fields = (body) => {
+      const values = {};
+      let offset = 0;
+      for (let i = 0; i < 32; i++) {
+        while (/\s/.test(body[offset] || "") && offset < body.length) offset++;
+        const start = /^<([a-z_-]{1,40})>/.exec(body.slice(offset, offset + 43));
+        if (!start) break;
+        const end = body.indexOf(`</${start[1]}>`, offset + start[0].length);
+        if (end < 0) break;
+        values[start[1]] = body.slice(offset + start[0].length, end).trim();
+        offset = end + start[1].length + 3;
+      }
+      return values;
+    };
+    const data = fields(text.slice(19, -20));
+    const summary = bounded(data.summary);
+    const named = /^(?:Agent|Task) "([^"\n]{1,120})"/.exec(summary);
+    const title = named ? named[1] : summary || "Task notification";
+    const status = bounded(data.status, 30);
+    const usage = fields(data.usage || "");
+    const parts = ["⤷ " + title, status];
+    if (/^\d{1,12}$/.test(usage.duration_ms || "")) parts.push(Math.round(Number(usage.duration_ms) / 1000) + "s");
+    if (/^\d{1,9}$/.test(usage.tool_uses || "")) parts.push(usage.tool_uses + " tools");
+    info.label = parts.filter(Boolean).join(" · ");
+    info.result = bounded(data.result, 1200);
+    info.preview = bounded(data.note, 240);
+    return info;
+  }
+  if (wrapped("subagent_notification")) {
+    const info = notice("Subagent notification", "", "notification");
+    if (text.length > 131072) return info;
+    const body = text.slice(23, -24).trim();
     try {
-      const notice = JSON.parse(preview);
-      if (typeof notice.status?.completed === "string") preview = notice.status.completed;
+      const data = JSON.parse(body);
+      const status = data?.status;
+      const key = ["completed", "errored", "failed", "running", "spawned"].find(key => typeof status?.[key] === "string");
+      if (key) {
+        info.label = "⤷ " + bounded(data.agent_nickname || data.agent_path || data.agent_id || "Subagent", 100) + " · " + key;
+        info.result = bounded(status[key], 1200);
+        return info;
+      }
+    } catch {}
+    info.preview = bounded(body);
+    return info;
+  }
+  if (/^# AGENTS\.md instructions(?: for [^\n]+)?(?:\r?\n|$)/.test(text))
+    return notice("AGENTS.md instructions", "Repository guidance", "instructions");
+  if (/^You are running as a managed agent named "[^"\r\n]{1,160}" in a tmux session controlled by the `am` CLI \(Agent Motel\), alongside other managed agents\.(?:\r?\n|$)/.test(text))
+    return notice("Managed agent setup", "Agent Motel bootstrap and role instructions", "instructions");
+  const contextTags = ["environment_context", "user_instructions", "turn_context", "permissions", "system-reminder", "hook", "hook-output"];
+  let rest = text, firstTag = "";
+  for (let i = 0; i < 32 && rest; i++) {
+    const tag = contextTags.find(tag => rest.startsWith(`<${tag}>`));
+    if (!tag) break;
+    const end = rest.indexOf(`</${tag}>`, tag.length + 2);
+    if (end < 0) break;
+    firstTag ||= tag;
+    rest = rest.slice(end + tag.length + 3).trimStart();
+  }
+  if (!rest && firstTag) {
+    const hook = ["system-reminder", "hook", "hook-output"].includes(firstTag);
+    return notice(hook ? "System / hook notice" : "Session context", "", hook ? "notice" : "context");
+  }
+  const inbox = (value) => /^\[am inbox\] (?:Before you finish: you have \d+ messages? to handle first |You have \d+ messages? \()/.test(value) &&
+    value.includes("\n[am message data begin]\n") && value.includes("\n[am message data end]");
+  if (inbox(text)) return notice("AM inbox", "Messages delivered while the agent was busy", "messages");
+  if (text.startsWith("{") && text.length <= 131072) {
+    try {
+      const data = JSON.parse(text);
+      if (data.decision === "block" && typeof data.reason === "string" && inbox(data.reason))
+        return notice("AM stop inbox", "Messages to handle before finishing", "messages");
     } catch {}
   }
-  preview = preview.replace(/\s+/g, " ").trim();
-  return {
-    label: instructions ? "AGENTS.md instructions" : "Subagent notification",
-    subject: instructions ? "instructions" : "notification",
-    preview: preview.length > 140 ? preview.slice(0, 140) + "…" : preview,
-  };
+  return null;
 }
 function chatTurn(entry, agentName) {
   const user = entry.kind === "user";
-  const turn = el("article", `turn ${user ? "user" : "assistant"}`);
-  turn.dataset.scrollKey = "turn:" + entry.index;
   const disclosure = collapsibleMessage(entry);
-  turn.append(el("span", "turn-label sr-only", disclosure !== null ? disclosure.label : user ? "You" : agentName));
-  if (disclosure === null) turn.append(el("div", "turn-text", entry.text));
+  const peer = disclosure?.peer;
+  const turn = el("article", `turn ${peer ? "peer" : disclosure ? "notice" : user ? "user" : "assistant"}`);
+  turn.dataset.scrollKey = "turn:" + entry.index;
+  const label = peer || disclosure?.label || (user ? "You" : agentName);
+  turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
+  if (!disclosure || peer) turn.append(el("div", "turn-text", peer ? disclosure.body : entry.text));
   else {
+    if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
+    if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));
     const notice = el("details", "message-disclosure");
     notice.dataset.scrollKey = "notice:" + entry.index;
-    const summary = el("summary", "message-disclosure-summary");
+    const summary = el("summary", "message-disclosure-summary", "Details · " + disclosure.subject);
     summary.dataset.scrollKey = "notice-summary:" + entry.index;
-    summary.append(el("strong", "", disclosure.label),
-      el("span", "message-disclosure-preview", disclosure.preview),
-      el("span", "message-disclosure-expand", "Read full " + disclosure.subject),
-      el("span", "message-disclosure-collapse", "Collapse " + disclosure.subject));
     const body = el("div", "turn-text", entry.text);
     body.dataset.scrollKey = "notice-body:" + entry.index;
     notice.append(summary, body);
@@ -1229,8 +1345,13 @@ async function refreshDetail() {
       view.append(
         el("p", "", "The conversation starts here. Send a message below."),
       );
-    let tools = null;
+    let tools = null, markedUnread = false;
     for (const entry of transcript.entries) {
+      if (!markedUnread && state.readBoundary !== null && entry.index > state.readBoundary) {
+        view.append(el("div", "unread-marker", "New since your last visit"));
+        markedUnread = true;
+        tools = null;
+      }
       if (entry.kind === "tool") {
         if (!tools) view.append(tools = toolGroup(entry));
         tools.add(entry);
@@ -1259,6 +1380,13 @@ async function refreshDetail() {
   if (view.lastChild !== transcriptQueue) view.append(transcriptQueue);
   restoreScroll(rerender || transcriptQueue.dataset.shown !== String(transcriptQueue.childElementCount));
   transcriptQueue.dataset.shown = String(transcriptQueue.childElementCount);
+  const lastEntry = transcript.entries.at(-1);
+  if (lastEntry) view.dataset.lastIndex = lastEntry.index;
+  else delete view.dataset.lastIndex;
+  updateLatestButton();
+  const mode = messageSendMode(name);
+  $("message-mode").textContent = mode === "now" ? "Send to agent · read at its next input boundary" : "Queue · delivered when the agent is free";
+
 }
 function messageSendMode(name) {
   const row = state.rows.find((row) => key(row) === name);
@@ -1750,11 +1878,56 @@ $("create-form").onsubmit = async (event) => {
     $("create-submit").disabled = false;
   }
 };
-document.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "k") {
+function renderCommands() {
+  const query = $("command-query").value.trim().toLowerCase();
+  const list = $("command-results");
+  list.replaceChildren();
+  const commands = [
+    ["Overview", () => showOverview()],
+    ["Needs attention", () => showOverview("attention")],
+    ["Search conversations", () => $("search-nav").click()],
+    ["Token usage", () => $("usage-nav").click()],
+    ["Concierge", () => $("concierge-nav").click()],
+    ["New agent…", createDialog],
+    ...(state.selected ? [["View chat", () => { setDetailMode("chat"); updateAgentView(); }],
+      ["View terminal", () => { setDetailMode("terminal"); updateAgentView(); }]] : []),
+    ...state.rows.map(row => [`${row.name} · ${repoName(row)} · ${row.host || "This server"} · ${statusName(row.status)}`, () => selectAgent(key(row))]),
+  ];
+  for (const [label, action] of commands.filter(([label]) => label.toLowerCase().includes(query))) {
+    const button = el("button", "command-result", label);
+    button.type = "button";
+    button.onclick = () => { $("command-dialog").close(); action(); };
+    list.append(button);
+  }
+  if (!list.childNodes.length) list.append(el("p", "", "No matching commands or agents."));
+}
+function openCommands() {
+  if (!state.authenticated) return;
+  $("command-query").value = "";
+  renderCommands();
+  if (!$("command-dialog").open) $("command-dialog").showModal();
+  $("command-query").focus();
+}
+$("command-open").onclick = openCommands;
+$("command-close").onclick = () => $("command-dialog").close();
+$("command-query").oninput = renderCommands;
+$("command-dialog").onkeydown = event => {
+  const buttons = [...$("command-results").querySelectorAll("button")];
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
-    showOverview();
-    $("search").focus();
+    const index = buttons.indexOf(document.activeElement);
+    buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+  } else if (event.key === "Enter" && event.target === $("command-query")) {
+    event.preventDefault(); buttons[0]?.click();
+  }
+};
+const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+$("command-open").textContent = `Commands · ${modifier} K`;
+for (const hint of document.querySelectorAll(".composer-shortcut")) hint.textContent = `Enter / Shift+Enter: new line · ${modifier}+Enter: send`;
+$("message-send").title = `Send (${modifier}+Enter)`;
+document.addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault(); openCommands();
   }
 });
 document.addEventListener("visibilitychange", () => {
