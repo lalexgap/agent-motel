@@ -603,7 +603,8 @@ async function selectAgent(name, mode) {
   $("message").value = state.drafts.get(name) || "";
   $("message-status").textContent = "";
   renderAttachments();
-  delete $("transcript").dataset.content;
+  for (const field of ["content", "lastIndex", "agent", "detailVersion", "updatedAt"])
+    delete $("transcript").dataset[field];
   $("transcript").replaceChildren(el("p", "", "Loading conversation…"));
   $("chat-working").hidden = true;
   $("permissions").replaceChildren();
@@ -905,8 +906,6 @@ function updateLatestButton() {
   const view = $("transcript");
   $("jump-latest").hidden = view.scrollHeight - view.scrollTop - view.clientHeight < 100;
   if ($("jump-latest").hidden && state.selected && state.detailMode === "chat") {
-    const index = Number(view.dataset.lastIndex);
-    if (Number.isFinite(index)) state.lastRead.set(state.selected, index);
     markDisplayedDetailSeen(true);
   }
 }
@@ -1253,6 +1252,10 @@ function markDetailSeen(name, updatedAt, chatAtLatest) {
 function markDisplayedDetailSeen(chatAtLatest) {
   const snapshot = $("transcript").dataset;
   if (snapshot.agent !== state.selected || snapshot.detailVersion !== String(state.detailVersion)) return;
+  if (chatAtLatest && state.detailMode === "chat") {
+    const index = Number(snapshot.lastIndex);
+    if (Number.isFinite(index)) state.lastRead.set(state.selected, index);
+  }
   markDetailSeen(snapshot.agent, snapshot.updatedAt, chatAtLatest);
 }
 async function refreshDetail() {
