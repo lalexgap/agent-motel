@@ -329,7 +329,6 @@ function fleets(): ConnectionFleet[] {
     conciergeKey: conn.conciergeKey,
   }));
 }
-// The fleet the counts describe: every agent but the concierge.
 function allRows(): AgentRow[] {
   return fleets().flatMap(fleetRows);
 }
@@ -1309,9 +1308,7 @@ function openConcierge(): void {
   const item = state.tree.items.find((candidate) => isPinnedConcierge(candidate) && candidate.key === key);
   if (item) state.cursor = item.id;
   selectAgent(key);
-  // Scrolls the pinned entry back into view when the list was scrolled down.
   focusCursor();
-  // Opened to ask it something: go straight to the message box, as Enter does.
   if (!composerInput().disabled) composerInput().focus();
 }
 
