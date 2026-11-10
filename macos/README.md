@@ -2,7 +2,7 @@
 
 A small AppKit app for watching an Agent Motel fleet: a sidebar of agents with live status, each agent's chat, and a composer to send it a message. The page is bundled inside the app and served from `am-app://app/`; all server traffic goes through a native bridge that holds the access token. Requires macOS 12.3 or later.
 
-The app can send exactly two kinds of write request: send a message to an agent (`POST /api/agents/:key/messages` with `{text, mode}`, `mode` being `queue` or `now`) and cancel a message that is still queued (`DELETE /api/agents/:key/messages/:id`). Every other request is a `GET`, so the app cannot interrupt, start, stop, rename or remove agents, answer permission prompts or upload files.
+The app can send exactly two kinds of write request: send a message to an agent (`POST /api/agents/:key/messages` with `{text, mode}`, `mode` being `queue` or `now`) and cancel a message that is still queued (`DELETE /api/agents/:key/messages/:id`). Every other request is a `GET`, so the app cannot call am's interrupt, start, stop, rename or remove endpoints, answer permission prompts or upload files. A message is still typed input: its text can be anything you could type at the agent's prompt, including a slash command such as `/exit`.
 
 ## Build
 
