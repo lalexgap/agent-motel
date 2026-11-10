@@ -76,6 +76,11 @@ interface Preview { at: number; repoRoot: string; bytes?: number; reason?: strin
 // A preview older than this is inspected again before it counts.
 const PREVIEW_MS = 7 * 24 * 60 * MINUTE_MS;
 
+function previewed(state: AutoGcState): Record<string, Preview> {
+  const worktrees = state.preview?.worktrees;
+  return worktrees && typeof worktrees === "object" && !Array.isArray(worktrees) ? worktrees : {};
+}
+
 export function readAutoGcState(): AutoGcState {
   const state = readJsonOrNull<AutoGcState>(gcStateFile());
   return state && typeof state === "object" && !Array.isArray(state) ? state : {};
@@ -266,7 +271,7 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
     const arming = mode === "dry-run" && !autoGcArmed(before);
     const ages = `${policy.staleDays ?? 0}/${policy.ignoredDays ?? 0}`;
     const earlier = arming && before.preview?.policy === GC_POLICY_VERSION && before.preview.ages === ages
-      ? before.preview.worktrees
+      ? previewed(before)
       : {};
     const previews: Record<string, Preview> = {};
     const preview = (path: string, seen: Preview) => {
@@ -280,8 +285,13 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
     };
     const unseen = pending.filter((candidate) => {
       const seen = earlier[candidate.path];
-      if (!seen || started - seen.at > PREVIEW_MS) return true;
-      preview(candidate.path, seen);
+      const age = typeof seen?.at === "number" ? started - seen.at : NaN;
+      if (!(age >= 0 && age <= PREVIEW_MS) || typeof seen!.repoRoot !== "string") return true;
+      preview(candidate.path, {
+        at: seen!.at, repoRoot: seen!.repoRoot,
+        ...(typeof seen!.reason === "string" ? { reason: seen!.reason } : {}),
+        ...(typeof seen!.bytes === "number" ? { bytes: seen!.bytes } : {}),
+      });
       return false;
     });
     const queue = judge.inspectionOrder(unseen);
@@ -406,7 +416,7 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
   else lines.push(`auto gc: on — nightly at ${hour} or when the fleet is next idle, up to ${maxMinutes(config)}m a run`);
   lines.push(autoGcArmed(state)
     ? "mode: apply"
-    : `mode: dry run — sweeps only report until they have looked at every worktree${state.preview ? ` (${Object.keys(state.preview.worktrees).length} found removable so far)` : ""}; then they apply`);
+    : `mode: dry run — sweeps only report until they have looked at every worktree${state.preview ? ` (${Object.keys(previewed(state)).length} found removable so far)` : ""}; then they apply`);
   if (state.lastRun) {
     const run = state.lastRun;
     const seconds = Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000);

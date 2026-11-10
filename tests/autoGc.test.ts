@@ -332,6 +332,26 @@ describe("runAutoGc", () => {
     expect(readAutoGcState().armedPolicy).toBeUndefined();
   });
 
+  test("a malformed or future-dated preview is inspected again rather than carried", () => {
+    addWorktree("a");
+    addWorktree("b");
+    const config = { ...loadConfig(), gcAutoMaxMinutes: 1 };
+    const run = () => {
+      const result = fakeClock((sleep) => runAutoGc({ trigger: "nightly", config, pressure: () => CALM, sleep: () => sleep(120_000) }));
+      if (!("summary" in result)) throw new Error("skipped");
+      return result.summary;
+    };
+    run();
+    updateAutoGcState((state) => {
+      for (const seen of Object.values(state.preview!.worktrees)) seen.at = Date.now() + DAY;
+    });
+    expect([run().worktrees, readAutoGcState().armedPolicy]).toEqual([1, undefined]);
+
+    updateAutoGcState((state) => { (state.preview as { worktrees: unknown }).worktrees = null; });
+    expect(autoGcStatus()[1]).toContain("0 found removable so far");
+    expect([run().uninspected, readAutoGcState().armedPolicy]).toEqual([1, undefined]);
+  });
+
   test("the time budget ends a sweep between worktrees", () => {
     updateAutoGcState((state) => { state.armedPolicy = GC_POLICY_VERSION; });
     addWorktree("a");
