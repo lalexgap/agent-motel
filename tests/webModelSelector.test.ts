@@ -24,7 +24,7 @@ function fixture(api: (path: string, body?: unknown) => Promise<any>) {
   };
   const state = {
     selected: "laptop:agent", authenticated: true, sessionEpoch: 4,
-    detailCapabilities: { name: "laptop:agent", detail: { provider: "codex", model: "gpt-current", effort: "high" } },
+    detailCapabilities: { name: "laptop:agent", detail: { provider: "codex", model: "gpt-current", effort: "high", createdAt: "incarnation-1", status: "working" } },
   };
   const notices: string[] = [];
   let refreshes = 0;
@@ -93,7 +93,7 @@ test("catalog responses cannot cross a logout session or agent selection switch"
 
   f.state.authenticated = true;
   f.state.selected = "laptop:agent";
-  f.state.detailCapabilities = { name: "laptop:agent", detail: { provider: "codex", model: "gpt-current", effort: "high" } };
+  f.state.detailCapabilities = { name: "laptop:agent", detail: { provider: "codex", model: "gpt-current", effort: "high", createdAt: "incarnation-1", status: "working" } };
   const switched = f.node("change-model-agent").onclick();
   f.state.selected = "other-host:agent";
   pending.shift()!([catalog]);
@@ -118,7 +118,9 @@ test("submit is an explicit restart confirmation, blocks duplicates and reports 
   const pending = f.node("model-form").onsubmit(event);
   await f.node("model-form").onsubmit(event);
   expect(calls.filter(call => call.path.endsWith("/model"))).toEqual([{
-    path: "/api/agents/laptop%3Aagent/model", body: { model: "gpt-next", effort: "medium" },
+    path: "/api/agents/laptop%3Aagent/model", body: {
+      model: "gpt-next", effort: "medium", createdAt: "incarnation-1", status: "working",
+    },
   }]);
   expect(f.node("model-submit").textContent).toBe("Restarting…");
   rejectRestart(new Error("selection rejected"));

@@ -14,6 +14,7 @@ import { codexResumeDaemon, type ResumeOpts } from "./resume";
 import { CODEX_LAUNCH_BUDGET_MS, CODEX_STOP_BUDGET_MS, codexDeadline, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 import { ensureAgentPlan } from "../plan";
+import { displayStatus } from "./ls";
 
 export interface RestartOpts extends ResumeOpts {
   // undefined keeps the agent's current value; null returns to the provider
@@ -26,6 +27,11 @@ export interface RestartOpts extends ResumeOpts {
 export interface RestartResult {
   model: string | null;
   effort: string | null;
+}
+
+export interface RestartPrecondition {
+  createdAt: string;
+  status: string;
 }
 
 interface Selection {
@@ -124,13 +130,20 @@ function lifecycleBusy(name: string): string {
   return `agent "${name}" is being stopped, removed, renamed, or restarted — retry restart`;
 }
 
-export async function restartAgent(prefix: string, opts: RestartOpts = {}): Promise<RestartResult> {
-  await ensureDaemon();
-  let agent = resolveAgent(prefix);
+function checkPrecondition(agent: AgentState, expected?: RestartPrecondition): void {
+  if (!expected) return;
+  if (agent.createdAt !== expected.createdAt || displayStatus(agent) !== expected.status) {
+    throw new Error(`agent "${agent.name}" changed or stopped since it was selected — refresh and try again`);
+  }
+}
+
+async function restartResolvedAgent(agent: AgentState, opts: RestartOpts, expected?: RestartPrecondition): Promise<RestartResult> {
+  checkPrecondition(agent, expected);
   validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
   if (!acquireLifecycleLock(agent.name)) throw new Error(lifecycleBusy(agent.name));
   try {
     agent = currentLifecycleAgent(agent);
+    checkPrecondition(agent, expected);
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is busy or being moved — retry restart`);
     try {
       return restartLocked(agent, opts);
@@ -140,6 +153,18 @@ export async function restartAgent(prefix: string, opts: RestartOpts = {}): Prom
   } finally {
     releaseLifecycleLock(agent.name);
   }
+}
+
+// API callers already resolved an exact name. Keep that exact incarnation
+// through lifecycle acquisition instead of resolving the name a second time.
+export async function restartExactAgent(agent: AgentState, opts: RestartOpts = {}, expected?: RestartPrecondition): Promise<RestartResult> {
+  await ensureDaemon();
+  return restartResolvedAgent(agent, opts, expected);
+}
+
+export async function restartAgent(prefix: string, opts: RestartOpts = {}): Promise<RestartResult> {
+  await ensureDaemon();
+  return restartResolvedAgent(resolveAgent(prefix), opts);
 }
 
 export async function restartCommand(prefix: string, opts: RestartOpts): Promise<void> {

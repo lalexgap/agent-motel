@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { restartAgent } from "../src/commands/restart";
+import { restartAgent, restartExactAgent } from "../src/commands/restart";
 import type { MessageProvenance } from "../src/comms";
 import { reviveAgent } from "../src/commands/resume";
 import { newCommand } from "../src/commands/new";
@@ -14,6 +14,7 @@ import { queueTrackedMessage, readMessage } from "../src/messages";
 import { SelectionError } from "../src/catalog";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 
 let home: string;
 let oldPath: string | undefined;
@@ -218,6 +219,15 @@ esac
     expect(await child.exited).toBe(0);
     expect(readAgent("api")?.status).toBe("starting");
   });
+
+  test("an exact checked agent cannot fall through to a later prefix match", async () => {
+    const exact = readAgent("api")!;
+    destroyAgent(exact, { clean: false });
+    writeAgent({ ...exact, name: "api-long", tmuxSession: "agentmgr-api-long", createdAt: "replacement-prefix", updatedAt: "replacement-prefix" });
+    await expect(restartExactAgent(exact)).rejects.toThrow(/changed while the command was starting/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api-long")!.status).toBe("working");
+  });
 });
 
 describe("restart with a model change", () => {
@@ -303,6 +313,10 @@ describe("POST /api/agents/:name/restart", () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify(body),
     });
+  const guarded = (body: Record<string, unknown> = {}) => {
+    const agent = readAgent("api")!;
+    return { createdAt: agent.createdAt, status: agent.status, ...body };
+  };
 
   test("restarts on the agent's current model and answers ok; 404 for an unknown agent", async () => {
     await restartAgent("api", { model: "sonnet", effort: "low" });
@@ -323,13 +337,13 @@ describe("POST /api/agents/:name/restart", () => {
   });
 
   test("changes configured model and effort through the dedicated endpoint", async () => {
-    const changed = await changeModel("api", { model: "opus", effort: "high" });
+    const changed = await changeModel("api", guarded({ model: "opus", effort: "high" }));
     expect(changed.status).toBe(200);
     expect(await changed.json()).toEqual({ ok: true, model: "opus", effort: "high" });
     expect(readAgent("api")).toMatchObject({ model: "opus", effort: "high", sessionId: "conversation-123" });
     expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'opus' '--effort' 'high' '--resume' 'conversation-123'");
 
-    const defaults = await changeModel("api", { model: null, effort: null });
+    const defaults = await changeModel("api", guarded({ model: null, effort: null }));
     expect(defaults.status).toBe(200);
     expect(await defaults.json()).toEqual({ ok: true, model: null, effort: null });
     expect(readAgent("api")!.model).toBeUndefined();
@@ -338,13 +352,48 @@ describe("POST /api/agents/:name/restart", () => {
 
   test("model endpoint validates the exact agent and body before lifecycle side effects", async () => {
     for (const body of [
-      {}, { model: 1 }, { model: "" }, { model: " opus" }, { model: "--help" }, { model: "bad\nmodel" },
-      { model: "x".repeat(257) }, { model: "opus", effort: 1 }, { model: "opus", effort: "" },
-      { model: "opus", extra: true }, [], null,
+      {}, guarded({ model: 1 }), guarded({ model: "" }), guarded({ model: " opus" }), guarded({ model: "--help" }), guarded({ model: "bad\nmodel" }),
+      guarded({ model: "x".repeat(257) }), guarded({ model: "opus", effort: 1 }), guarded({ model: "opus", effort: "" }),
+      guarded({ model: "opus", extra: true }), { model: "opus", createdAt: readAgent("api")!.createdAt },
+      { model: "opus", status: "working" }, { model: "opus", createdAt: readAgent("api")!.createdAt, status: "exited" }, [], null,
     ]) expect((await changeModel("api", body)).status).toBe(400);
-    expect((await changeModel("ap", { model: "opus" })).status).toBe(404);
+    expect((await changeModel("ap", guarded({ model: "opus" }))).status).toBe(404);
     expect(existsSync(join(home, "launch"))).toBe(false);
     expect(readAgent("api")).toMatchObject({ status: "working", sessionId: "conversation-123" });
+  });
+
+  test("catalog selection errors are 400 while lifecycle conflicts remain 409", async () => {
+    const catalog = JSON.stringify({ models: [{ slug: "gpt-known", supported_reasoning_levels: [{ effort: "low" }] }] });
+    writeFileSync(join(home, "codex"), `#!/bin/sh\nif [ "$1" = debug ]; then printf '%s' '${catalog}'; fi\nexit 0\n`);
+    writeAgent({ ...readAgent("api")!, provider: "codex" });
+    const invalid = await changeModel("api", guarded({ model: "gpt-unknown", effort: "low" }));
+    expect(invalid.status).toBe(400);
+    expect(((await invalid.json()) as any).error).toContain('unknown codex model "gpt-unknown"');
+    expect(acquireLifecycleLock("api")).toBe(true);
+    try {
+      const busy = await changeModel("api", guarded({ model: "gpt-known", effort: "low" }));
+      expect(busy.status).toBe(409);
+      expect(((await busy.json()) as any).error).toContain("being stopped, removed, renamed, or restarted");
+    } finally { releaseLifecycleLock("api"); }
+    expect(existsSync(join(home, "launch"))).toBe(false);
+  });
+
+  test("a stale dialog cannot restart a stopped or same-name replacement agent", async () => {
+    const original = readAgent("api")!;
+    const stale = { model: "opus", createdAt: original.createdAt, status: "working" };
+    stopAgent(original);
+    const stopped = await changeModel("api", stale);
+    expect(stopped.status).toBe(409);
+    expect(((await stopped.json()) as any).error).toContain("changed or stopped");
+    expect(existsSync(join(home, "launch"))).toBe(false);
+
+    destroyAgent(readAgent("api")!, { clean: false });
+    writeAgent({ ...original, status: "working", createdAt: "same-name-replacement", updatedAt: "same-name-replacement" });
+    const replaced = await changeModel("api", stale);
+    expect(replaced.status).toBe(409);
+    expect(((await replaced.json()) as any).error).toContain("changed or stopped");
+    expect(readAgent("api")).toMatchObject({ createdAt: "same-name-replacement", status: "working" });
+    expect(existsSync(join(home, "launch"))).toBe(false);
   });
 
   test("detail reports the model and effort", async () => {

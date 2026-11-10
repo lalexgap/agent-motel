@@ -1780,6 +1780,7 @@ async function openModelDialog(name) {
   const context = {
     name, provider: detail.provider, epoch: state.sessionEpoch,
     model: detail.model ?? null, effort: detail.effort ?? null,
+    createdAt: detail.createdAt, status: detail.status,
     catalog: null, pending: false,
   };
   modelDialog = context;
@@ -1824,6 +1825,8 @@ $("model-form").onsubmit = async event => {
     await api("/api/agents/" + encodeURIComponent(context.name) + "/model", {
       model: $("model-select").value || null,
       effort: $("model-effort").value || null,
+      createdAt: context.createdAt,
+      status: context.status,
     });
     if (modelDialog !== context || !state.authenticated || context.epoch !== state.sessionEpoch) return;
     closeModelDialog();
