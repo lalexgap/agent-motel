@@ -1094,6 +1094,16 @@ function collapsibleMessage(entry) {
   const peer = /^\[am · from ([^\]\r\n]{1,160})\](?:[ \t]*\r?\n|[ \t]+|$)/u.exec(text);
   // Sender labels are display hints only; transcript text cannot establish provenance.
   if (peer) return { peer: peer[1], body: text.slice(peer[0].length) };
+  const pr = /^\[am\] PR #([1-9]\d{0,9}) (merged(?: at [a-f0-9]{7,64} on [^\r\n]{1,80})?|closed without merging|reopened)(?:\r?\n|$)/.exec(text);
+  if (pr) {
+    const status = pr[2].startsWith("merged") ? "merged" : pr[2] === "reopened" ? "reopened" : "closed";
+    const lines = text.slice(0, 1024).split(/\r?\n/);
+    const repository = /^Repository: ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(lines[1] || "")?.[1];
+    const info = notice(`↗ PR #${pr[1]} · ${status}`, repository || "", "PR update");
+    const url = repository && `https://github.com/${repository}/pull/${pr[1]}`;
+    if (url && lines[2] === url) info.link = url;
+    return info;
+  }
   if (wrapped("task-notification")) {
     const info = notice("⤷ Task notification", "", "notification");
     if (text.length > 131072) return info;
@@ -1190,6 +1200,7 @@ function chatTurn(entry, agentName) {
   else {
     if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
     if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));
+    if (disclosure.link) turn.append(turnText(`[Open pull request](${disclosure.link})`, ":link"));
     const notice = el("details", "message-disclosure");
     notice.dataset.scrollKey = "notice:" + entry.index;
     const summary = el("summary", "message-disclosure-summary", "Details · " + disclosure.subject);

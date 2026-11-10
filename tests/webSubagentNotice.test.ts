@@ -169,3 +169,25 @@ describe("transcript notices", () => {
   }
   expect(render("[am · from am-notifications]").children[0]!.text).toBe("am-notifications");
 });
+
+
+test("AM pull-request lifecycle updates collapse generated follow-up text", () => {
+  for (const [event, status] of [["merged at " + "a".repeat(40) + " on 2026-11-10T12:00:00Z", "merged"], ["closed without merging", "closed"], ["reopened", "reopened"]]) {
+    const text = `[am] PR #42 ${event}\nRepository: example/repo\nhttps://github.com/example/repo/pull/42\nGenerated follow-up instructions.`;
+    const turn = render(text);
+    expect(turn.children[0]!.text).toBe(`↗ PR #42 · ${status}`);
+    expect(visible(turn)).toContain("example/repo");
+    expect(visible(turn)).toContain("[Open pull request](https://github.com/example/repo/pull/42)");
+    expect(visible(turn)).not.toContain("Generated follow-up");
+    expect(details(turn)!.open).toBe(false);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+  }
+  expect(details(render("[am] PR #42 reopened"))).toBeDefined();
+  for (const text of ["Please explain [am] PR #42 reopened", "[am] PR #42 is an example"]) {
+    expect(details(render(text))).toBeUndefined();
+    expect(render(text).children[0]!.text).toBe("You");
+  }
+  for (const url of ["https://evil.example/pull/42", "https://github.com/example/repo/pull/43"]) {
+    expect(visible(render(`[am] PR #42 reopened\nRepository: example/repo\n${url}`))).not.toContain("Open pull request");
+  }
+});
