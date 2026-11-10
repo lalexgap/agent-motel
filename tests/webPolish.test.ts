@@ -22,6 +22,30 @@ test("latest affordance only marks a visible chat read when at bottom", () => {
   expect(state.lastRead.get("example")).toBe(42);
 });
 
+test("detail-first refresh advances the seen snapshot only when the selected detail is visible", async () => {
+  const start = source.indexOf("function markDetailSeen(");
+  const end = source.indexOf("async function refreshDetail", start);
+  const state = { detailMode: "chat", lastSeen: new Map<string, string>() };
+  const context: any = { state };
+  runInNewContext(source.slice(start, end), context);
+  const detail = Promise.resolve({ updatedAt: "2026-11-10T16:02:00.000Z" });
+  const fleet = new Promise<{ rows: { updatedAt: string }[] }>(resolve =>
+    queueMicrotask(() => resolve({ rows: [{ updatedAt: "2026-11-10T16:02:00.000Z" }] })));
+
+  context.markDetailSeen("example", (await detail).updatedAt, true);
+  const rows = (await fleet).rows;
+  expect(state.lastSeen.get("example")).toBe(rows[0]!.updatedAt);
+  expect(rows[0]!.updatedAt > state.lastSeen.get("example")!).toBe(false);
+
+  context.markDetailSeen("example", "2026-11-10T16:03:00.000Z", false);
+  expect(state.lastSeen.get("example")).toBe("2026-11-10T16:02:00.000Z");
+  state.detailMode = "terminal";
+  context.markDetailSeen("example", "2026-11-10T16:03:00.000Z", false);
+  expect(state.lastSeen.get("example")).toBe("2026-11-10T16:03:00.000Z");
+  context.markDetailSeen("example", "2026-11-10T16:01:00.000Z", true);
+  expect(state.lastSeen.get("example")).toBe("2026-11-10T16:03:00.000Z");
+});
+
 test("palette filters agents and routes to the selected host without executing lifecycle actions", () => {
   const nodes = new Map<string, any>();
   const node = (id: string) => {

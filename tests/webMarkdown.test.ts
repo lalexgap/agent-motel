@@ -4,6 +4,7 @@ import { runInNewContext } from "node:vm";
 
 class Node {
   tag: string; textContent = ""; href = ""; target = ""; rel = ""; className = ""; children: Node[] = []; attrs: Record<string, string> = {};
+  dataset: Record<string, string> = {};
   type = ""; disabled = false; tabIndex = -1;
   listeners: Record<string, () => unknown> = {};
   addEventListener(name: string, handler: () => unknown) { this.listeners[name] = handler; }
@@ -14,12 +15,12 @@ class Node {
   setAttribute(name: string, value: string) { this.attrs[name] = value; }
 }
 
-function render(text: string, clipboard?: { writeText: (text: string) => unknown }) {
+function render(text: string, clipboard?: { writeText: (text: string) => unknown }, renderKey = "") {
   const window: any = { navigator: { clipboard } };
   const document = { createElement: (tag: string) => new Node(tag), createTextNode: (text: string) => Object.assign(new Node("text"), { textContent: text }) };
   for (const file of ["links.js", "markdown.js"])
     runInNewContext(readFileSync(new URL("../web/" + file, import.meta.url), "utf8"), { window, document, URL });
-  return window.agentMarkdown.render(new Node("div"), text) as Node;
+  return window.agentMarkdown.render(new Node("div"), text, renderKey) as Node;
 }
 const html = (node: Node): string => node.tag === "text" ? node.textContent :
   node.tag === "a" ? `<a href="${node.href}">${node.textContent}</a>` :
@@ -133,6 +134,23 @@ test("code controls are accessible and wrap only their own block", async () => {
   await first.wrap.click();
   expect(first.pre.className).toBe("");
   expect(first.wrap.attrs["aria-pressed"]).toBe("false");
+});
+
+test("assigns stable code block identities within a transcript turn", () => {
+  const source = "```\none\n```\n\n```\ntwo\n```";
+  const first = render(source, undefined, "turn:17");
+  const second = render(source + "\n\nnew reply text", undefined, "turn:17");
+  const keys = (root: Node) => {
+    const found: string[] = [];
+    const walk = (node: Node) => {
+      if (node.dataset.wrapKey) found.push(node.dataset.wrapKey);
+      node.children.forEach(walk);
+    };
+    walk(root);
+    return found;
+  };
+  expect(keys(first)).toEqual(["turn:17:code:0", "turn:17:code:1"]);
+  expect(keys(second)).toEqual(keys(first));
 });
 
 test("copy preserves raw code, whitespace and links, excluding controls", async () => {

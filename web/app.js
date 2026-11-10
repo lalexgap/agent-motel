@@ -1179,9 +1179,14 @@ function chatTurn(entry, agentName) {
   const peer = disclosure?.peer;
   const turn = el("article", `turn ${peer ? "peer" : disclosure ? "notice" : user ? "user" : "assistant"}`);
   turn.dataset.scrollKey = "turn:" + entry.index;
+  const turnText = (text, suffix = "") => {
+    const body = el("div", "turn-text");
+    window.agentMarkdown.render(body, text, `turn:${entry.index}${suffix}`);
+    return body;
+  };
   const label = peer || disclosure?.label || (user ? "You" : agentName);
   turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
-  if (!disclosure || peer) turn.append(el("div", "turn-text", peer ? disclosure.body : entry.text));
+  if (!disclosure || peer) turn.append(turnText(peer ? disclosure.body : entry.text));
   else {
     if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
     if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));
@@ -1189,7 +1194,7 @@ function chatTurn(entry, agentName) {
     notice.dataset.scrollKey = "notice:" + entry.index;
     const summary = el("summary", "message-disclosure-summary", "Details · " + disclosure.subject);
     summary.dataset.scrollKey = "notice-summary:" + entry.index;
-    const body = el("div", "turn-text", entry.text);
+    const body = turnText(entry.text, ":notice");
     body.dataset.scrollKey = "notice-body:" + entry.index;
     notice.append(summary, body);
     turn.append(notice);
@@ -1208,6 +1213,8 @@ function preserveConversationScroll(view, threshold) {
   const atBottom = view.scrollHeight - scroll - view.clientHeight < threshold;
   const top = view.getBoundingClientRect().top;
   const nodes = [...view.querySelectorAll("[data-scroll-key]")];
+  const wrapStates = new Map([...view.querySelectorAll("[data-wrap-key]")]
+    .map(node => [node.dataset.wrapKey, node.dataset.wrapped === "true"]));
   const focused = nodes.find(node => node === view.ownerDocument?.activeElement)?.dataset.scrollKey;
   const open = new Set(nodes.filter(node => node.open).map(node => node.dataset.scrollKey));
   const positions = new Map(nodes.map(node => [node.dataset.scrollKey, { top: node.scrollTop, left: node.scrollLeft }]));
@@ -1219,6 +1226,11 @@ function preserveConversationScroll(view, threshold) {
     .map(node => ({ key: node.dataset.scrollKey, offset: node.getBoundingClientRect().top - top }));
   return (follow = true) => {
     const updated = [...view.querySelectorAll("[data-scroll-key]")];
+    for (const node of view.querySelectorAll("[data-wrap-key]")) {
+      const wrapped = wrapStates.get(node.dataset.wrapKey);
+      if (wrapped !== undefined && wrapped !== (node.dataset.wrapped === "true"))
+        node.querySelector('[aria-label="Wrap code lines"]')?.click();
+    }
     for (const node of updated)
       if (node.tagName === "DETAILS") node.open = open.has(node.dataset.scrollKey);
     for (const node of updated) {
@@ -1231,6 +1243,11 @@ function preserveConversationScroll(view, threshold) {
     const node = anchor && updated.find(node => node.dataset.scrollKey === anchor.key);
     view.scrollTop = node ? view.scrollTop + node.getBoundingClientRect().top - view.getBoundingClientRect().top - anchor.offset : scroll;
   };
+}
+function markDetailSeen(name, updatedAt, chatAtLatest) {
+  if (!updatedAt || (state.detailMode !== "terminal" && !chatAtLatest)) return;
+  const previous = state.lastSeen.get(name);
+  if (!previous || updatedAt > previous) state.lastSeen.set(name, updatedAt);
 }
 async function refreshDetail() {
   const name = state.selected,
@@ -1385,8 +1402,7 @@ async function refreshDetail() {
   if (lastEntry) view.dataset.lastIndex = lastEntry.index;
   else delete view.dataset.lastIndex;
   updateLatestButton();
-  const currentRow = state.rows.find(row => key(row) === name);
-  if (currentRow) state.lastSeen.set(name, currentRow.updatedAt);
+  markDetailSeen(name, detail.updatedAt, state.detailMode === "chat" && $("jump-latest").hidden);
   const mode = messageSendMode(name);
   $("message-mode").textContent = mode === "now" ? "Send to agent · read at its next input boundary" : "Queue · delivered when the agent is free";
 

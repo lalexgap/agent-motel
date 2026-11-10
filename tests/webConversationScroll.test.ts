@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
-type Entry = { key?: string; height: number; open?: boolean; children?: Entry[]; tagName?: string; maxHeight?: number };
+type Entry = { key?: string; wrapKey?: string; wrapped?: boolean; height: number; open?: boolean; children?: Entry[]; tagName?: string; maxHeight?: number };
 
 function load() {
   const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
@@ -16,7 +16,7 @@ function load() {
 }
 
 class Node {
-  readonly dataset: { scrollKey?: string };
+  readonly dataset: { scrollKey?: string; wrapKey?: string; wrapped?: string };
   readonly tagName: string;
   readonly children: Node[];
   open: boolean;
@@ -24,7 +24,7 @@ class Node {
   scrollLeft = 0;
 
   constructor(readonly view: View, readonly entry: Entry) {
-    this.dataset = { scrollKey: entry.key };
+    this.dataset = { scrollKey: entry.key, wrapKey: entry.wrapKey, wrapped: String(entry.wrapped ?? false) };
     this.tagName = entry.tagName ?? (entry.children ? "DETAILS" : "ARTICLE");
     this.open = entry.open ?? false;
     this.children = (entry.children ?? []).map(child => new Node(view, child));
@@ -32,6 +32,11 @@ class Node {
 
   contains(node: Node): boolean {
     return this === node || this.children.some(child => child.contains(node));
+  }
+
+  querySelector(selector: string) {
+    expect(selector).toBe('[aria-label="Wrap code lines"]');
+    return { click: () => { this.dataset.wrapped = String(this.dataset.wrapped !== "true"); } };
   }
 
   append(...nodes: Node[]) { this.children.push(...nodes); }
@@ -85,9 +90,10 @@ class View {
   }
 
   querySelectorAll(selector: string): Node[] {
-    expect(selector).toBe("[data-scroll-key]");
     const flatten = (nodes: Node[]): Node[] => nodes.flatMap(node => [node, ...flatten(node.children)]);
-    return flatten(this.nodes).filter(node => node.dataset.scrollKey !== undefined);
+    if (selector === "[data-scroll-key]") return flatten(this.nodes).filter(node => node.dataset.scrollKey !== undefined);
+    expect(selector).toBe("[data-wrap-key]");
+    return flatten(this.nodes).filter(node => node.dataset.wrapKey !== undefined);
   }
 
   node(key: string): Node {
@@ -123,6 +129,18 @@ const turns = (start: number, count: number): Entry[] =>
   Array.from({ length: count }, (_, index) => ({ key: `turn:${start + index}`, height: 100 }));
 
 describe("preserveConversationScroll", () => {
+  test("restores a wrapped code block after transcript rerender", () => {
+    const view = new View([{ key: "turn:17", height: 100, children: [
+      { wrapKey: "turn:17:code:0", wrapped: true, height: 40 },
+    ] }]);
+    const restore = load()(view, 90);
+    view.replace([{ key: "turn:17", height: 100, children: [
+      { wrapKey: "turn:17:code:0", wrapped: false, height: 40 },
+    ] }, { key: "turn:18", height: 100 }]);
+    restore();
+    expect(view.querySelectorAll("[data-wrap-key]")[0]!.dataset.wrapped).toBe("true");
+  });
+
   test("appending while scrolled up preserves the partially visible turn", () => {
     const view = new View(turns(0, 10), 235);
     const offset = view.offset("turn:2");
