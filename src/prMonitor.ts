@@ -21,9 +21,15 @@ export interface TrackedPullRequest {
   closedAt?: string;
   mergedAt?: string;
   mergeCommit?: string;
+  headSha?: string;
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  conflictActive?: boolean;
+  conflictNotifiedHead?: string;
+  readyNotifiedHead?: string;
+  readyNotifiedAt?: string;
   updatedAt: string;
 }
-interface PrEvent { id: string; message: string; url?: string }
+interface PrEvent { id: string; message: string; url?: string; title?: string }
 export interface PrMonitorState {
   pullRequests: TrackedPullRequest[];
   bootstrapped?: boolean;
@@ -32,7 +38,7 @@ export interface PrMonitorState {
   pending?: PrEvent[];
 }
 const exec = promisify(execFile);
-const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt,headRepository";
+const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt,headRepository,headRefOid,mergeable";
 export type PrCommand = (cwd: string, executable: string, args: string[]) => Promise<string>;
 const command: PrCommand = async (cwd, executable, args) => (await exec(executable, args, {
   cwd, timeout: 15_000, maxBuffer: 1024 * 1024,
@@ -52,12 +58,31 @@ export function parsePullRequest(repository: string, value: any): TrackedPullReq
   const url = `https://github.com/${repository}/pull/${value.number}`;
   if (value.url !== url) throw new Error("GitHub returned a different repository");
   const sha = value.mergeCommit?.oid;
+  if (value.headRefOid !== undefined && value.headRefOid !== null && !/^[a-f0-9]{40,64}$/.test(value.headRefOid)) {
+    throw new Error("Invalid GitHub PR head");
+  }
+  if (value.mergeable !== undefined && value.mergeable !== null && !["MERGEABLE", "CONFLICTING", "UNKNOWN"].includes(value.mergeable)) {
+    throw new Error("Invalid GitHub PR mergeability");
+  }
+  const headSha = typeof value.headRefOid === "string" && /^[a-f0-9]{40,64}$/.test(value.headRefOid) ? value.headRefOid : undefined;
+  const mergeable = ["MERGEABLE", "CONFLICTING", "UNKNOWN"].includes(value.mergeable) ? value.mergeable : undefined;
   if (value.state === "MERGED" && (!/^[a-f0-9]{40,64}$/.test(sha ?? "") || !Number.isFinite(Date.parse(value.mergedAt)))) {
     throw new Error("Merged PR is missing merge evidence");
   }
   return { repository, number: value.number, url, state: value.state, updatedAt: value.updatedAt,
+    ...(headSha ? { headSha } : {}), ...(mergeable ? { mergeable } : {}),
     ...(Number.isFinite(Date.parse(value.closedAt)) ? { closedAt: value.closedAt } : {}),
     ...(value.state === "MERGED" ? { mergedAt: value.mergedAt, mergeCommit: sha } : {}) };
+}
+
+function conflictEvent(pr: TrackedPullRequest): PrEvent {
+  const short = pr.headSha!.slice(0, 12);
+  return {
+    id: newMsgId(),
+    title: `PR #${pr.number} has merge conflicts`,
+    url: pr.url,
+    message: `[am] GitHub reports merge conflicts for PR #${pr.number}\nRepository: ${pr.repository}\nHead: ${pr.headSha} (${short})\n${pr.url}\nReconcile the branch with its base and follow the existing review/shepherd workflow. This event does not authorize merging, deployment, or cleanup.`,
+  };
 }
 
 export function prEventMessage(pr: TrackedPullRequest): string {
@@ -86,7 +111,7 @@ function withMonitorOwnership(agent: AgentState, strict: boolean, fn: () => bool
   }
 }
 
-function mutateMonitor(agent: AgentState, fn: (current: AgentState) => void, strict: boolean, durable = false): boolean {
+export function mutatePrMonitor(agent: AgentState, fn: (current: AgentState) => void, strict: boolean, durable = false): boolean {
   return withMonitorOwnership(agent, strict, () => {
     const changed = updateAgentIf(agent.name, current => {
       if (current.createdAt !== agent.createdAt || current.tmuxSession !== agent.tmuxSession) return false;
@@ -99,7 +124,7 @@ function mutateMonitor(agent: AgentState, fn: (current: AgentState) => void, str
 }
 
 export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[], now = new Date().toISOString(), strict = true, discovered = false): boolean {
-  return mutateMonitor(agent, current => {
+  return mutatePrMonitor(agent, current => {
     const monitor = current.prMonitor ?? { pullRequests: [] };
     const byUrl = new Map(monitor.pullRequests.map(pr => [pr.url, pr]));
     const pending = [...(monitor.pending ?? [])];
@@ -112,17 +137,28 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
         const id = newMsgId();
         if (!pending.some(event => event.id === id)) pending.push({ id, message: prEventMessage(pr), url: pr.url });
       }
-      byUrl.set(pr.url, pr);
+      const next: TrackedPullRequest = { ...previous, ...pr };
+      if (pr.state === "OPEN" && pr.mergeable === "MERGEABLE") next.conflictActive = false;
+      if (pr.state === "OPEN" && pr.mergeable === "CONFLICTING" && pr.headSha) {
+        const newEpisode = previous?.conflictActive !== true || previous.conflictNotifiedHead !== pr.headSha;
+        next.conflictActive = true;
+        if (newEpisode) {
+          const event = conflictEvent(pr);
+          pending.push(event);
+          next.conflictNotifiedHead = pr.headSha;
+        }
+      }
+      byUrl.set(pr.url, next);
     }
     current.prMonitor = { pullRequests: [...byUrl.values()], pending, checkedAt: now,
       bootstrapped: discovered ? true : monitor.bootstrapped };
   }, strict, true);
 }
 
-export type PrNotifier = (name: string, message: string, url?: string) => void;
-export const notifyPrEvent: PrNotifier = (name, message, url) => {
+export type PrNotifier = (name: string, message: string, url?: string, title?: string) => void;
+export const notifyPrEvent: PrNotifier = (name, message, url, title) => {
   const meta: { agent: string; kind: "pr"; url?: string } = { agent: name, kind: "pr", ...(url ? { url } : {}) };
-  notify(`PR update · ${name}`, message, meta);
+  notify(title ?? `PR update · ${name}`, message, meta);
 };
 
 export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = false): boolean {
@@ -147,7 +183,7 @@ export function flushPrEvents(agent: AgentState, onEvent?: PrNotifier, strict = 
         if (!queueReceived(current.name, event.id)) {
           queueAppendOnceLocked(current.name, event.message, event.id);
           queueRecordReceipt(current.name, event.id);
-          try { onEvent?.(current.name, event.message, event.url); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
+          try { onEvent?.(current.name, event.message, event.url, event.title); } catch { /* Owner inbox remains durable if desktop delivery fails. */ }
         }
         updateAgentIf(current.name, state => {
           if (state.createdAt !== current.createdAt || !state.prMonitor) return false;
@@ -215,7 +251,7 @@ export async function pollPullRequests(run: PrCommand = command, active: () => b
           if (failed) throw new Error("PR lookup unavailable");
         } catch {
           if (!active()) return;
-          mutateMonitor(agent, current => {
+          mutatePrMonitor(agent, current => {
             current.prMonitor = { ...(current.prMonitor ?? { pullRequests: [] }), error: "PR lookup or delivery unavailable; retrying next sweep." };
           }, false);
         }

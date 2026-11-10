@@ -34,6 +34,13 @@ describe("agentSystemPrompt", () => {
     expect(prompt).not.toContain("You are reporting to");
   });
 
+  test("teaches explicit post-shepherd readiness verification", () => {
+    const prompt = agentSystemPrompt("worker");
+    expect(prompt).toContain("am pr worker <PR-URL> --ready --dir <review-worktree>");
+    expect(prompt).toContain("fails closed");
+    expect(prompt).toContain("merge/close/reopen/conflict");
+  });
+
   test("delegates through built-in subagents and never spawns am agents itself", () => {
     const prompt = agentSystemPrompt("worker");
     expect(prompt).toContain("fan out with your own built-in subagents");
