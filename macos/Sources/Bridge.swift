@@ -2,7 +2,9 @@ import AppKit
 import WebKit
 
 /// The page's only route to the network: `window.webkit.messageHandlers.am.postMessage({method, params})`.
-/// Milestone 1 is read-only, so nothing here can send anything but a GET.
+/// Every request is a GET except two: `messages.send` (`POST /api/agents/:key/messages`) and
+/// `messages.cancel` (`DELETE /api/agents/:key/messages/:id`), whose paths are built here from
+/// validated values. There is no generic POST or DELETE.
 @MainActor
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "am"
@@ -64,6 +66,14 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             return [String: Any]()
         case "api.get":
             return try await get(params)
+        case "messages.send":
+            let connection = try savedConnection(params)
+            return try await message(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],
+                                                        mode: params["mode"]), connection: connection)
+        case "messages.cancel":
+            let connection = try savedConnection(params)
+            return try await message(MessagePolicy.cancel(base: connection.url, agent: params["agent"], id: params["id"]),
+                                     connection: connection)
         case "events.start":
             let id = try connectionID(params, "connection")
             if let stream = streams[id] {
@@ -164,6 +174,20 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         let url = try ConnectionPolicy.apiURL(base: connection.url, path: path)
         guard let token = store.token(for: id) else { throw PolicyError("This connection has no saved token") }
         let response = try await api.get(url, token: token)
+        let body = (try? JSONSerialization.jsonObject(with: response.body, options: [.fragmentsAllowed])) ?? NSNull()
+        return ["status": response.status, "body": body]
+    }
+
+    private func savedConnection(_ params: [String: Any]) throws -> Connection {
+        let id = try connectionID(params, "connection")
+        guard let connection = store.get(id) else { throw PolicyError("unknown connection: \(id)") }
+        return connection
+    }
+
+    /// Sent once; a network failure rejects so the page can say the delivery state is unknown.
+    private func message(_ request: MessageRequest, connection: Connection) async throws -> [String: Any] {
+        guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
+        let response = try await api.send(request, token: token)
         let body = (try? JSONSerialization.jsonObject(with: response.body, options: [.fragmentsAllowed])) ?? NSNull()
         return ["status": response.status, "body": body]
     }

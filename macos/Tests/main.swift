@@ -91,6 +91,83 @@ for token in ["fixture-token", "abc.DEF_123~"] { check((try? ConnectionPolicy.va
 for token in ["", "has space", "line\nbreak", "tab\t", "é"] { check((try? ConnectionPolicy.validateToken(token)) == nil, token.debugDescription) }
 print("PASS token validation")
 
+func rejection(_ body: () throws -> Any) -> String? {
+    do {
+        _ = try body()
+        return nil
+    } catch {
+        return (error as? PolicyError)?.message ?? "\(error)"
+    }
+}
+for agent in ["harbor-lights", "annex:kelp-forest", "a_b-1", "host.example:agent", String(repeating: "n", count: 64)] {
+    check((try? MessagePolicy.agent(agent)) == agent, "agent rejected: \(agent)")
+}
+for agent in ["", "a/b", "a:b:c", "../x", "a b", ":x", "x:", "host:../x", "a%2Fb", "-host:x", ".host:x",
+              String(repeating: "n", count: 65), "é", "a\u{0}", "a?b", "a#b", "a\nb"] {
+    check(rejection { try MessagePolicy.agent(agent) } == "invalid agent: \(agent)", "agent accepted: \(agent.debugDescription)")
+}
+for value in [nil, 7, NSNull(), ["harbor-lights"]] as [Any?] {
+    check(rejection { try MessagePolicy.agent(value) }?.hasPrefix("invalid agent: ") == true, "agent type \(String(describing: value))")
+}
+check(MessagePolicy.encodedAgent("annex:kelp-forest") == "annex%3Akelp-forest", "host:name is one segment")
+check(MessagePolicy.encodedAgent("host.example:a_b-1") == "host.example%3Aa_b-1", "dots, dashes, underscores kept")
+
+check((try? MessagePolicy.mode("queue")) == .queue && (try? MessagePolicy.mode("now")) == .now, "modes")
+for value in ["interrupt", "Now", "", "queue ", nil, 1, true, NSNull()] as [Any?] {
+    check(rejection { try MessagePolicy.mode(value) } == "mode must be queue or now", "mode accepted: \(String(describing: value))")
+}
+
+check(rejection { try MessagePolicy.text("") } == "Message is empty", "empty text")
+check(rejection { try MessagePolicy.text("   \n ") } == "Message is empty", "blank text")
+for value in [nil, 7, NSNull(), ["x"]] as [Any?] {
+    check(rejection { try MessagePolicy.text(value) } != nil, "text type \(String(describing: value))")
+}
+check((try? MessagePolicy.text("  hi\n  there \n")) == "hi\n  there", "trims only the ends")
+let longest = String(repeating: "a", count: MessagePolicy.maxTextBytes)
+check((try? MessagePolicy.text(longest))?.utf8.count == 100_000, "100,000 bytes accepted")
+check((try? MessagePolicy.text("  " + longest + "\n")) == longest, "length counted after trimming")
+check(rejection { try MessagePolicy.text(longest + "a") } == "Message is too long (limit 100,000 bytes)", "100,001 bytes")
+check((try? MessagePolicy.text(String(repeating: "é", count: 50_000))) != nil, "50,000 two-byte characters fit")
+check(rejection { try MessagePolicy.text(String(repeating: "é", count: 50_001)) } != nil, "100,002 bytes in 50,001 characters")
+check(rejection { try MessagePolicy.text(String(repeating: "☃", count: 33_334)) } != nil, "33,334 snowmen are 100,002 bytes")
+
+check((try? MessagePolicy.messageID("01JABCDEFGHJKMNPQRSTVWXYZ0")) == "01JABCDEFGHJKMNPQRSTVWXYZ0", "ulid id")
+check((try? MessagePolicy.messageID(String(repeating: "a", count: 128))) != nil, "128-char id")
+for value in ["", "a/b", "..", "a b", String(repeating: "a", count: 129), "a%2Fb", "a.b", "é", nil, 5] as [Any?] {
+    check(rejection { try MessagePolicy.messageID(value) }?.hasPrefix("invalid message id") == true, "id accepted: \(String(describing: value))")
+}
+
+do {
+    let send = try MessagePolicy.send(base: base, agent: "annex:kelp-forest", text: "  Ship it. \"/\" é\n", mode: "now")
+    check(send.method == .post, "send method")
+    check(send.url.absoluteString == "http://127.0.0.1:8790/api/agents/annex%3Akelp-forest/messages", "send url \(send.url)")
+    check(send.url.host == "127.0.0.1" && send.url.port == 8790 && send.url.scheme == "http", "send host")
+    let json = try JSONSerialization.jsonObject(with: send.body ?? Data()) as? [String: Any] ?? [:]
+    check(Set(json.keys) == ["text", "mode"] && json["text"] as? String == "Ship it. \"/\" é" && json["mode"] as? String == "now",
+          "send body \(json)")
+    let cancel = try MessagePolicy.cancel(base: "https://am.example.com", agent: "harbor-lights", id: "01JABCDEFGHJKMNPQRSTVWXYZ0")
+    check(cancel.method == .delete && cancel.body == nil, "cancel method and body")
+    check(cancel.url.absoluteString == "https://am.example.com/api/agents/harbor-lights/messages/01JABCDEFGHJKMNPQRSTVWXYZ0",
+          "cancel url \(cancel.url)")
+
+    let post = APIClient.request(send, token: "fixture-token")
+    check(post.httpMethod == "POST" && post.url == send.url && post.httpBody == send.body, "POST request")
+    check(post.value(forHTTPHeaderField: "Content-Type") == "application/json", "POST content type")
+    check(post.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token", "POST bearer")
+    check(post.timeoutInterval == 60 && !post.httpShouldHandleCookies, "POST timeout and cookies")
+    let delete = APIClient.request(cancel, token: "fixture-token")
+    check(delete.httpMethod == "DELETE" && delete.httpBody == nil && delete.value(forHTTPHeaderField: "Content-Type") == nil,
+          "DELETE has no body")
+    check(delete.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token" && delete.timeoutInterval == 60, "DELETE headers")
+} catch {
+    check(false, "message request: \(error)")
+}
+for (agent, id) in [("a/b", "x"), ("harbor-lights", "../x"), ("harbor-lights", "a?b")] {
+    check((try? MessagePolicy.cancel(base: base, agent: agent, id: id)) == nil, "cancel accepted \(agent) \(id)")
+}
+check((try? MessagePolicy.send(base: base, agent: "harbor-lights", text: "hi", mode: "interrupt")) == nil, "interrupt send")
+print("PASS message policy (agent, mode, text bytes, id, paths, request shape)")
+
 func parse(_ chunks: [String]) -> [SSEEvent] {
     var parser = SSEParser()
     return chunks.flatMap { try! parser.feed(Data($0.utf8)) }

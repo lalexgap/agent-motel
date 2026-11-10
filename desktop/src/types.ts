@@ -1,5 +1,7 @@
 // Shapes shared by the page, the dev bridge and the fixture server. Mirrors the
-// milestone 1 bridge contract and the subset of the am HTTP API the app reads.
+// bridge contract and the subset of the am HTTP API the app uses.
+import type { SendMode } from "./policy";
+export type { SendMode };
 
 export interface Connection {
   id: string;
@@ -87,6 +89,9 @@ export interface BridgeMethods {
   "connections.save": { params: { id?: string; name: string; url: string; token?: string }; result: Connection };
   "connections.remove": { params: { id: string }; result: Record<string, never> };
   "api.get": { params: { connection: string; path: string }; result: ApiResponse };
+  // The only two mutations. The bridge builds the path from `agent` (and `id`).
+  "messages.send": { params: { connection: string; agent: string; text: string; mode: SendMode }; result: ApiResponse };
+  "messages.cancel": { params: { connection: string; agent: string; id: string }; result: ApiResponse };
   "events.start": { params: { connection: string }; result: Record<string, never> };
   "events.stop": { params: { connection: string }; result: Record<string, never> };
   "open.external": { params: { url: string }; result: Record<string, never> };

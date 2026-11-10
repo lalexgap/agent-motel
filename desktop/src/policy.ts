@@ -71,3 +71,55 @@ export function externalUrlAllowed(input: unknown): boolean {
     return false;
   }
 }
+
+// messages.send / messages.cancel. The bridge builds the request path from these
+// parts itself, so the page can never aim a mutation anywhere else. The Swift
+// MessagePolicy applies the same rules to the same test vectors.
+export type SendMode = "queue" | "now";
+export const MESSAGE_MAX_BYTES = 100_000;
+export const MESSAGE_EMPTY = "Message is empty";
+export const MESSAGE_TOO_LONG = "Message is too long (limit 100,000 bytes)";
+export const MODE_INVALID = "mode must be queue or now";
+
+const AGENT_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const HOST_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,254}$/;
+const MESSAGE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
+
+const describe = (value: unknown): string => (value === undefined || value === null ? "null" : String(value));
+
+// `name` or `host:name`.
+export function checkAgent(value: unknown): Checked<string> {
+  const invalid = { ok: false as const, error: `invalid agent: ${describe(value)}` };
+  if (typeof value !== "string") return invalid;
+  const parts = value.split(":");
+  if (parts.length > 2) return invalid;
+  const name = parts.pop()!;
+  const host = parts[0];
+  if (!AGENT_NAME_RE.test(name) || (host !== undefined && !HOST_RE.test(host))) return invalid;
+  return { ok: true, value };
+}
+
+export function checkMode(value: unknown): Checked<SendMode> {
+  return value === "queue" || value === "now" ? { ok: true, value } : { ok: false, error: MODE_INVALID };
+}
+
+export const utf8Length = (text: string): number => new TextEncoder().encode(text).length;
+
+// Trims the ends (the server trims too) and leaves the inside untouched.
+export function checkMessageText(value: unknown): Checked<string> {
+  if (typeof value !== "string") return { ok: false, error: "text must be a string" };
+  const text = value.trim();
+  if (!text) return { ok: false, error: MESSAGE_EMPTY };
+  // Cheap bound first: every UTF-16 unit is at least one UTF-8 byte.
+  if (text.length > MESSAGE_MAX_BYTES || utf8Length(text) > MESSAGE_MAX_BYTES) return { ok: false, error: MESSAGE_TOO_LONG };
+  return { ok: true, value: text };
+}
+
+export function checkMessageId(value: unknown): Checked<string> {
+  return typeof value === "string" && MESSAGE_ID_RE.test(value) ? { ok: true, value } : { ok: false, error: `invalid message id: ${describe(value)}` };
+}
+
+export const messagesPath = (agent: string, id?: string): string =>
+  `/api/agents/${encodeURIComponent(agent)}/messages${id === undefined ? "" : `/${encodeURIComponent(id)}`}`;

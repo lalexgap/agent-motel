@@ -1,12 +1,12 @@
 # Agent Motel for macOS
 
-A small AppKit app for watching an Agent Motel fleet: a sidebar of agents with live status and a read-only view of each agent's chat. The page is bundled inside the app and served from `am-app://app/`; all server traffic goes through a native bridge that holds the access token. Requires macOS 12.3 or later.
+A small AppKit app for watching an Agent Motel fleet: a sidebar of agents with live status, each agent's chat, and a composer to send it a message. The page is bundled inside the app and served from `am-app://app/`; all server traffic goes through a native bridge that holds the access token. Requires macOS 12.3 or later.
 
-This milestone is read-only. The bridge can only send `GET` requests, so the app cannot message, start, stop or change agents.
+The app can send exactly two kinds of write request: send a message to an agent (`POST /api/agents/:key/messages` with `{text, mode}`, `mode` being `queue` or `now`) and cancel a message that is still queued (`DELETE /api/agents/:key/messages/:id`). Every other request is a `GET`, so the app cannot interrupt, start, stop, rename or remove agents, answer permission prompts or upload files.
 
 ## Build
 
-Run `bash macos/build.sh` on a Mac with Xcode Command Line Tools and [Bun](https://bun.sh). It runs the unit tests (navigation policy, connection URL policy, SSE parser, API path validation, bundle file resolution), builds the frontend with `bun desktop/build.ts`, copies `desktop/dist` into `Contents/Resources/web`, and produces `macos/build/Agent Motel.app` plus a zip for the build machine's architecture. Set `WEB_DIST` (relative to `macos/`, or absolute) to use an already built frontend instead. Copy the app into `~/Applications` and open it.
+Run `bash macos/build.sh` on a Mac with Xcode Command Line Tools and [Bun](https://bun.sh). It runs the unit tests (navigation policy, connection URL policy, API path validation, message validation and request shape, SSE parser, bundle file resolution), builds the frontend with `bun desktop/build.ts`, copies `desktop/dist` into `Contents/Resources/web`, and produces `macos/build/Agent Motel.app` plus a zip for the build machine's architecture. Set `WEB_DIST` (relative to `macos/`, or absolute) to use an already built frontend instead. Copy the app into `~/Applications` and open it.
 
 ## First run
 
@@ -16,7 +16,8 @@ The app opens on the connection form. Enter a name, the server URL (for example 
 
 - The token is stored in the login Keychain as a generic password (service = the bundle identifier, account = the connection id). It is sent only as an `Authorization: Bearer` header, never logged, never put in a URL, and never returned to the page, which only sees `hasToken`. Changing a connection's URL requires entering the token again.
 - The page has no network access: its Content Security Policy sets `connect-src 'none'`, and only bundled scripts run. Every request goes through the bridge, which accepts messages only from the app page's main frame, validates every parameter, and builds request URLs from the saved server plus an `/api/...` path, so the page cannot redirect a request to another host.
-- Requests use an ephemeral session (no cookies, cache or credential storage), time out after 30 seconds, cap responses at 32 MiB and refuse redirects so the token is never replayed elsewhere.
+- `api.get` only ever sends `GET`. The two write methods take values, not paths: `messages.send` takes an agent (`name` or `host:name`, checked against am's name rules and percent-encoded into one path segment), the text (trimmed, non-empty, at most 100,000 UTF-8 bytes) and the mode (`queue` or `now`; the server's `interrupt` mode is not reachable), and sends a JSON body of exactly `text` and `mode`. `messages.cancel` takes an agent and a message id and sends a `DELETE` with no body. A send is never retried: after a network failure or timeout (60 seconds for these two) the call fails and the message may or may not have been delivered.
+- Requests use an ephemeral session (no cookies, cache or credential storage), time out after 30 seconds (60 for message requests), cap responses at 32 MiB and refuse redirects so the token is never replayed elsewhere.
 - Plain `http` is accepted only for localhost, `127.0.0.0/8`, `[::1]`, Tailscale addresses (`100.64.0.0/10`) and `*.ts.net`; anything else must use `https`. URLs with a user name or password are rejected.
 - The app is sandboxed with outbound network access only. Only `am-app://app/` pages load in the window; clicked `http(s)` links open in the default browser.
 
@@ -26,7 +27,7 @@ The app opens on the connection form. Enter a name, the server URL (for example 
 
 ## Smoke test
 
-`bash macos/smoke.sh` is an opt-in integration check on a Mac with a logged-in desktop session. It builds the app under a separate bundle id (`ca.alexgap.agent-motel.smoke`, with its own defaults and Keychain items), starts the synthetic fixture server (`bun desktop/fixtures/server.ts --port 8791`) and launches the app in the background without activating it. It saves a connection through the real bridge, checks `/api/health`, a wrong token, rejected API paths, the page's blocked network access and the event stream, opens an agent's chat, writes a screenshot (`SMOKE_SCREENSHOT`, default in the temp directory), then removes the connection and its Keychain item. To test against another server, set `SMOKE_URL` and pipe its token on stdin. `SMOKE_BRIDGE_ONLY=1` skips the UI steps.
+`bash macos/smoke.sh` is an opt-in integration check on a Mac with a logged-in desktop session. It builds the app under a separate bundle id (`ca.alexgap.agent-motel.smoke`, with its own defaults and Keychain items), starts the synthetic fixture server (`bun desktop/fixtures/server.ts --port 8791`) and launches the app in the background without activating it. It saves a connection through the real bridge, checks `/api/health`, a wrong token, rejected API paths, the page's blocked network access and the event stream, rejects invalid messages, sends and cancels a queued message and sends a `now` message (checking the fixture's log of received requests), opens an agent's chat, sends from the composer, queues and cancels a message there, writes a screenshot (`SMOKE_SCREENSHOT`, default in the temp directory), then removes the connection and its Keychain item. The message checks need the fixture server (its `/__fixture/requests` log and its `harbor-lights` and `keeper-log` agents); `smoke.sh` refuses a `SMOKE_URL` that is not on loopback, because the smoke test sends messages. `SMOKE_BRIDGE_ONLY=1` skips the UI steps.
 
 ## Signing
 

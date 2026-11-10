@@ -7,8 +7,8 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 source web.sh
 mkdir -p build
-xcrun swiftc Sources/NavigationPolicy.swift Sources/ConnectionPolicy.swift Sources/SSEParser.swift \
-  Sources/BundleResource.swift Tests/main.swift -o build/unit-tests
+xcrun swiftc Sources/NavigationPolicy.swift Sources/ConnectionPolicy.swift Sources/MessagePolicy.swift \
+  Sources/APIClient.swift Sources/SSEParser.swift Sources/BundleResource.swift Tests/main.swift -o build/unit-tests
 build/unit-tests
 app="$PWD/build/Agent Motel.app"
 rm -rf "$app"

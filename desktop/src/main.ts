@@ -1,6 +1,27 @@
-// Agent Motel desktop frontend, milestone 1: connections, live fleet sidebar,
-// read-only chat. All server traffic goes through the bridge.
+// Agent Motel desktop frontend: connections, live fleet sidebar, chat and the
+// composer. All server traffic goes through the bridge.
 import { call, isNative, on, startBridge } from "./bridge";
+import {
+  BUBBLE_LABEL,
+  bubbles,
+  cancelOutcome,
+  FORCED_QUEUE_HINT,
+  MODE_HINT,
+  modeFor,
+  notePending,
+  parseDrafts,
+  parseModePreference,
+  putDraft,
+  reconcilePending,
+  rejectionOutcome,
+  sendModeFor,
+  sendOutcome,
+  textAfterSend,
+  userTexts,
+  type Bubble,
+  type Outcome,
+  type PendingMessage,
+} from "./composer";
 import {
   agentKey,
   agentPath,
@@ -20,8 +41,8 @@ import {
   type TreeModel,
 } from "./fleet";
 import { duration, firstLine, relativeTime } from "./format";
-import { normalizeServerUrl } from "./policy";
-import { loadPrefs, savePrefs } from "./store";
+import { checkMessageText, MESSAGE_EMPTY, normalizeServerUrl, type SendMode } from "./policy";
+import { loadDraftsRaw, loadPrefs, loadSendModeRaw, saveDraftsRaw, savePrefs, saveSendModeRaw } from "./store";
 import type {
   AgentDetail,
   AgentRow,
@@ -38,6 +59,7 @@ import type {
 interface AgentTranscriptApi {
   icon(name: string, className?: string): SVGElement;
   renderEntries(view: HTMLElement, entries: TranscriptEntry[], options: { agentName: string; readBoundary?: number | null }): void;
+  chatTurn(entry: { kind: "user"; text: string; index: string }, agentName: string): HTMLElement;
   preserveConversationScroll(view: HTMLElement, threshold: number): (follow?: boolean) => void;
 }
 declare global {
@@ -50,6 +72,7 @@ const AGENTS_DEBOUNCE_MS = 150;
 const DETAIL_POLL_MS = 4000;
 const FLEET_POLL_MS = 5000;
 const SIDEBAR_MIN = 200;
+const DRAFT_SAVE_MS = 400;
 
 class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -82,7 +105,26 @@ interface DetailState {
   notFound: boolean;
 }
 
+// Per agent key. Survives switching agents; pending bubbles last for the session.
+interface AgentComposer {
+  pending: PendingMessage[];
+  // User turns in the last transcript shown, the baseline for the next send.
+  userCount: number;
+  error: string | null;
+}
+
 const prefs = loadPrefs();
+const composer = {
+  agents: new Map<string, AgentComposer>(),
+  // In-flight sends, one per agent: the guard against double sends.
+  sending: new Set<string>(),
+  cancelling: new Set<string>(),
+  drafts: parseDrafts(loadDraftsRaw()),
+  preference: parseModePreference(loadSendModeRaw()),
+  // Whose draft the textarea holds.
+  shownKey: null as string | null,
+  draftTimer: null as ReturnType<typeof setTimeout> | null,
+};
 const state = {
   conns: new Map<string, ConnState>(),
   info: null as AppInfo | null,
@@ -409,6 +451,7 @@ function showChat(open: boolean): void {
 
 function selectAgent(key: string | null, focusTranscript = false): void {
   if (key !== state.selected) {
+    stashDraft();
     state.selected = key;
     state.detail = key ? { key, detail: null, transcript: null, notFound: false } : null;
     state.taskExpanded = false;
@@ -427,6 +470,7 @@ function selectAgent(key: string | null, focusTranscript = false): void {
     return;
   }
   showChat(true);
+  showDraft(key);
   renderHeader();
   if (!state.detail?.transcript) {
     const view = $("transcript");
@@ -487,14 +531,18 @@ function metaItem(label: string, value: string | undefined, mono = false): HTMLE
   return node;
 }
 
+// Prefer the fresher of the fleet row and the detail for status.
+function agentSource(key: string): Partial<AgentRow> {
+  const row = findRow(key);
+  const detail = state.detail?.key === key ? state.detail.detail : null;
+  return { ...(detail ?? {}), ...(row && (!detail || Date.parse(row.updatedAt) >= Date.parse(detail.updatedAt)) ? row : {}) };
+}
+
 function renderHeader(): void {
   const key = state.selected;
   if (!key) return;
   const parsed = parseAgentKey(key);
-  const row = findRow(key);
-  const detail = state.detail?.detail;
-  // Prefer the fresher of the fleet row and the detail for status.
-  const source: Partial<AgentRow> = { ...(detail ?? {}), ...(row && (!detail || Date.parse(row.updatedAt) >= Date.parse(detail.updatedAt)) ? row : {}) };
+  const source = agentSource(key);
   const conn = parsed ? state.conns.get(parsed.connection) : undefined;
   const name = source.name ?? parsed?.id.split(":").pop() ?? key;
   $("am-agent-name").textContent = name;
@@ -528,26 +576,339 @@ function renderHeader(): void {
   toggle.textContent = state.taskExpanded ? "Less" : "More";
   toggle.setAttribute("aria-expanded", String(state.taskExpanded));
   updateWorking(status, source.workingSince || source.statusChangedAt);
+  renderComposer();
 }
 
-function renderTranscript(): void {
+// Entries re-render only when they change; the pending/queued bubbles after
+// them re-render on their own fingerprint so a poll never rebuilds either for nothing.
+function renderTranscript(pin = false): void {
   const detailState = state.detail;
   const transcript = detailState?.transcript;
   if (!detailState || !transcript) return;
   const view = $("transcript");
   const entries = Array.isArray(transcript.entries) ? transcript.entries : [];
+  const agent = agentComposer(detailState.key);
+  agent.pending = reconcilePending(agent.pending, entries, Date.now());
+  agent.userCount = userTexts(entries).length;
+  const list = bubbles(agent.pending, detailState.detail?.queue);
   const fingerprint = JSON.stringify(entries);
-  if (view.dataset.content === fingerprint && view.dataset.agent === detailState.key) return;
+  const bubbleFingerprint = JSON.stringify(list.map((bubble) => [bubble.key, bubble.state, bubble.cancelId && composer.cancelling.has(bubble.cancelId)]));
   const firstRender = view.dataset.agent !== detailState.key;
+  const entriesChanged = firstRender || view.dataset.content !== fingerprint;
+  if (!entriesChanged && view.dataset.bubbles === bubbleFingerprint) {
+    if (pin) view.scrollTop = view.scrollHeight;
+    return;
+  }
   const restore = firstRender ? null : window.agentTranscript.preserveConversationScroll(view, 90);
-  view.replaceChildren();
-  view.dataset.content = fingerprint;
-  view.dataset.agent = detailState.key;
-  if (!entries.length) view.append(h("p", "am-transcript-note", "No messages yet."));
-  else window.agentTranscript.renderEntries(view, entries, { agentName: detailState.detail?.name ?? "", readBoundary: null });
+  const focusedCancel = (document.activeElement as HTMLElement | null)?.dataset?.cancelMessage;
+  if (entriesChanged) {
+    view.replaceChildren();
+    view.dataset.content = fingerprint;
+    view.dataset.agent = detailState.key;
+    if (!entries.length) view.append(h("p", "am-transcript-note", "No messages yet."));
+    else window.agentTranscript.renderEntries(view, entries, { agentName: detailState.detail?.name ?? "", readBoundary: null });
+  }
+  let box = view.querySelector<HTMLElement>(":scope > .am-outbox");
+  if (!box) box = h("div", "am-outbox");
+  box.replaceChildren(...list.map((bubble) => bubbleNode(bubble, detailState.detail?.name ?? "")));
+  if (view.lastChild !== box) view.append(box);
+  view.dataset.bubbles = bubbleFingerprint;
+  if (focusedCancel) {
+    const again = box.querySelector<HTMLElement>(`[data-cancel-message="${CSS.escape(focusedCancel)}"]`);
+    if (again) again.focus({ preventScroll: true });
+    else if (!composerInput().disabled) composerInput().focus({ preventScroll: true });
+  }
   if (restore) restore();
-  else view.scrollTop = view.scrollHeight;
+  if (!restore || pin) view.scrollTop = view.scrollHeight;
   updateJump();
+}
+
+function bubbleNode(bubble: Bubble, agentName: string): HTMLElement {
+  const turn = window.agentTranscript.chatTurn({ kind: "user", text: bubble.text, index: bubble.key }, agentName);
+  turn.classList.add("queued", "pending");
+  turn.dataset.messageState = bubble.state;
+  const meta = h("div", "queued-meta", BUBBLE_LABEL[bubble.state]);
+  if (bubble.cancelId) {
+    const id = bubble.cancelId;
+    const busy = composer.cancelling.has(id);
+    const button = h("button", "text-button", busy ? "Cancelling…" : "Cancel");
+    button.type = "button";
+    button.dataset.cancelMessage = id;
+    button.disabled = busy;
+    button.setAttribute("aria-label", busy ? "Cancelling the queued message" : "Cancel this queued message");
+    meta.append(button);
+  }
+  turn.append(meta);
+  return turn;
+}
+
+// ---- Composer --------------------------------------------------------------
+
+const composerInput = () => $<HTMLTextAreaElement>("composer-input");
+const isMac = (): boolean => isNative() || /Mac|iPhone|iPad/.test(navigator.platform);
+
+function agentComposer(key: string): AgentComposer {
+  let agent = composer.agents.get(key);
+  if (!agent) composer.agents.set(key, agent = { pending: [], userCount: 0, error: null });
+  return agent;
+}
+
+function saveDrafts(): void {
+  if (composer.draftTimer) clearTimeout(composer.draftTimer);
+  composer.draftTimer = null;
+  saveDraftsRaw(JSON.stringify(composer.drafts));
+}
+
+// The textarea's text belongs to composer.shownKey; write it back before showing another agent's.
+function stashDraft(): void {
+  const key = composer.shownKey;
+  if (!key) return;
+  composer.drafts = putDraft(composer.drafts, key, composerInput().value, Date.now());
+  saveDrafts();
+}
+
+function showDraft(key: string): void {
+  if (composer.shownKey === key) return;
+  composer.shownKey = key;
+  const input = composerInput();
+  input.value = composer.drafts[key]?.text ?? "";
+  input.setSelectionRange(input.value.length, input.value.length);
+  input.scrollTop = 0;
+  autosize();
+}
+
+function onComposerInput(): void {
+  const key = composer.shownKey;
+  if (key) {
+    composer.drafts = putDraft(composer.drafts, key, composerInput().value, Date.now());
+    if (composer.draftTimer) clearTimeout(composer.draftTimer);
+    composer.draftTimer = setTimeout(saveDrafts, DRAFT_SAVE_MS);
+  }
+  autosize();
+}
+
+// Grows with the text up to 40% of the chat pane, then scrolls. (The transcript
+// shrinks to make room; its resize observer keeps it pinned.)
+function autosize(): void {
+  const input = composerInput();
+  const scroll = input.scrollTop;
+  const max = Math.max(72, Math.round($("am-chat").clientHeight * 0.4));
+  input.style.height = "auto";
+  const height = Math.min(input.scrollHeight, max);
+  input.style.height = `${height}px`;
+  input.style.overflowY = input.scrollHeight > max ? "auto" : "hidden";
+  input.scrollTop = scroll;
+}
+
+// Whether the reader was at the bottom of the transcript before its box
+// changed size (composer growth, an error line, the working indicator).
+let transcriptPinned = true;
+function trackTranscriptPin(): void {
+  const view = $("transcript");
+  view.addEventListener("scroll", () => {
+    transcriptPinned = view.scrollHeight - view.scrollTop - view.clientHeight < 4;
+  }, { passive: true });
+  new ResizeObserver(() => {
+    if (transcriptPinned && state.selected) view.scrollTop = view.scrollHeight;
+  }).observe(view);
+}
+
+function modeChoice(key: string) {
+  return modeFor(agentSource(key).provider, composer.preference);
+}
+
+// Why the selected agent cannot take a message, or null.
+function blockedReason(key: string): string | null {
+  if (state.detail?.key === key && state.detail.notFound) return "This agent is not on the server any more.";
+  const source = agentSource(key);
+  if (source.status && STOPPED.has(source.status)) {
+    return `This agent is stopped. Resume it with am resume ${source.name ?? parseAgentKey(key)?.id ?? ""} or from the web UI to send.`;
+  }
+  return null;
+}
+
+function keyHint(label: string, keys: string[]): HTMLElement {
+  const node = h("span", "am-key-hint");
+  for (const key of keys) node.append(h("kbd", "", key));
+  node.append(document.createTextNode(label));
+  return node;
+}
+
+function renderComposer(): void {
+  const key = state.selected;
+  if (!key) return;
+  const input = composerInput();
+  const blocked = blockedReason(key);
+  const known = !!agentSource(key).provider;
+  const choice = modeChoice(key);
+  const sending = composer.sending.has(key);
+  const form = $("am-composer");
+  form.classList.toggle("blocked", !!blocked);
+  const note = $("am-composer-blocked");
+  note.hidden = !blocked;
+  if (note.textContent !== (blocked ?? "")) note.textContent = blocked ?? "";
+  if (input.disabled !== !!blocked) input.disabled = !!blocked;
+  const error = agentComposer(key).error;
+  const errorLine = $("composer-error");
+  errorLine.hidden = !error;
+  if (errorLine.textContent !== (error ?? "")) errorLine.textContent = error ?? "";
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-send-mode]")) {
+    const mode = button.dataset.sendMode as SendMode;
+    button.setAttribute("aria-pressed", String(mode === choice.mode));
+    button.disabled = !!blocked || (!choice.choosable && mode !== choice.mode);
+    button.title = !choice.choosable && mode === "now" ? FORCED_QUEUE_HINT : MODE_HINT[mode];
+  }
+  $("am-composer").dataset.mode = choice.mode;
+  $("composer-mode-hint").textContent = blocked ? "" : choice.choosable ? MODE_HINT[choice.mode] : FORCED_QUEUE_HINT;
+  const send = $<HTMLButtonElement>("composer-send");
+  send.disabled = !!blocked || sending || !known;
+  const label = sending ? "Sending…" : choice.mode === "now" ? "Send now" : "Queue";
+  if (send.textContent !== label) send.textContent = label;
+  input.placeholder = blocked ? "" : choice.mode === "now" ? "Message the agent" : "Message the agent when it is free";
+  const keysBox = $("am-composer-keys");
+  const keysFor = `${choice.mode}/${choice.choosable}`;
+  if (keysBox.dataset.for === keysFor) return;
+  keysBox.dataset.for = keysFor;
+  const alt = isMac() ? "⌥" : "Alt";
+  const keys = [keyHint(choice.mode === "now" ? "send now" : "queue", ["Enter"]), keyHint("new line", ["Shift", "Enter"])];
+  if (choice.choosable) keys.push(keyHint(choice.mode === "now" ? "queue instead, once" : "send now instead, once", [alt, "Enter"]));
+  keys.push(keyHint("back to the list", ["Esc"]));
+  keysBox.replaceChildren(...keys);
+}
+
+function setComposerError(key: string, error: string | null): void {
+  agentComposer(key).error = error;
+  if (state.selected === key) renderComposer();
+}
+
+function applyOutcome(key: string, outcome: Outcome): void {
+  if (outcome.tokenRejected) {
+    const conn = state.conns.get(parseAgentKey(key)?.connection ?? "");
+    if (conn) conn.tokenRejected = true;
+    renderStatusbar();
+  }
+  setComposerError(key, outcome.error);
+}
+
+async function submitMessage(alternate: boolean): Promise<void> {
+  const key = state.selected;
+  const parsed = key ? parseAgentKey(key) : null;
+  // One send per agent at a time: held Enter, Enter plus a click, or a second
+  // submit while the first is in flight all stop here.
+  if (!key || !parsed || composer.sending.has(key) || composer.shownKey !== key) return;
+  const input = composerInput();
+  if (input.disabled || blockedReason(key) || !agentSource(key).provider) return;
+  const raw = input.value;
+  const text = checkMessageText(raw);
+  if (!text.ok) {
+    if (text.error !== MESSAGE_EMPTY) setComposerError(key, text.error);
+    return;
+  }
+  const mode = sendModeFor(modeChoice(key), alternate);
+  const baseline = agentComposer(key).userCount;
+  composer.sending.add(key);
+  setComposerError(key, null);
+  let outcome: Outcome;
+  let id: string | undefined;
+  try {
+    const response = await call("messages.send", { connection: parsed.connection, agent: parsed.id, text: text.value, mode });
+    outcome = sendOutcome(response);
+    const body = response.body as { id?: unknown } | null;
+    if (!outcome.error && typeof body?.id === "string") id = body.id;
+  } catch (error) {
+    outcome = rejectionOutcome(error, "send");
+  } finally {
+    composer.sending.delete(key);
+  }
+  applyOutcome(key, outcome);
+  if (outcome.error) {
+    // The text stays where it was; give the user the box back to fix or resend.
+    if (state.selected === key && !input.disabled) input.focus({ preventScroll: true });
+    return;
+  }
+  const agent = agentComposer(key);
+  agent.pending = notePending(agent.pending, text.value, id, baseline, Date.now());
+  if (state.selected === key && composer.shownKey === key) {
+    const after = textAfterSend(input.value, raw);
+    if (after.text !== input.value) {
+      const start = Math.max(0, input.selectionStart - after.removed);
+      const end = Math.max(0, input.selectionEnd - after.removed);
+      input.value = after.text;
+      input.setSelectionRange(start, end);
+      autosize();
+    }
+    composer.drafts = putDraft(composer.drafts, key, input.value, Date.now());
+  } else {
+    const draft = composer.drafts[key]?.text ?? "";
+    composer.drafts = putDraft(composer.drafts, key, textAfterSend(draft, raw).text, Date.now());
+  }
+  saveDrafts();
+  if (state.selected !== key) return;
+  renderComposer();
+  renderTranscript(true);
+  void loadDetail();
+}
+
+async function cancelQueued(key: string, id: string): Promise<void> {
+  const parsed = parseAgentKey(key);
+  if (!parsed || composer.cancelling.has(id)) return;
+  composer.cancelling.add(id);
+  if (state.selected === key) renderTranscript();
+  let outcome: Outcome;
+  try {
+    outcome = cancelOutcome(await call("messages.cancel", { connection: parsed.connection, agent: parsed.id, id }));
+  } catch (error) {
+    outcome = rejectionOutcome(error, "cancel");
+  } finally {
+    composer.cancelling.delete(id);
+  }
+  if (!outcome.error || outcome.gone) {
+    const agent = agentComposer(key);
+    agent.pending = agent.pending.filter((pending) => pending.id !== id);
+  }
+  applyOutcome(key, outcome);
+  if (state.selected !== key) return;
+  renderTranscript();
+  void loadDetail();
+}
+
+function wireComposer(): void {
+  const input = composerInput();
+  input.addEventListener("input", onComposerInput);
+  input.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      stashDraft();
+      focusCursor();
+      return;
+    }
+    if (event.key !== "Enter" || (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey)) return;
+    // Also stops ⌥Enter from typing a character on macOS keyboards.
+    event.preventDefault();
+    if (event.repeat) return;
+    void submitMessage(event.altKey);
+  });
+  $("am-composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitMessage(false);
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-send-mode]")) {
+    button.addEventListener("click", () => {
+      const key = state.selected;
+      if (!key || !modeChoice(key).choosable) return;
+      composer.preference = button.dataset.sendMode as SendMode;
+      saveSendModeRaw(composer.preference);
+      renderComposer();
+    });
+  }
+  $("transcript").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLElement>("[data-cancel-message]");
+    if (button?.dataset.cancelMessage && state.selected) void cancelQueued(state.selected, button.dataset.cancelMessage);
+  });
+  trackTranscriptPin();
+  window.addEventListener("pagehide", stashDraft);
+  window.addEventListener("resize", autosize);
 }
 
 function updateJump(): void {
@@ -932,6 +1293,8 @@ function onKeydown(event: KeyboardEvent): void {
       if (!current) return;
       event.preventDefault();
       activateItem(current);
+      // Enter opens the agent to write to it; Space only opens it.
+      if (event.key === "Enter" && current.kind === "agent" && !composerInput().disabled) composerInput().focus();
       break;
     case "ArrowLeft":
       if (!current) return;
@@ -950,6 +1313,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 function wire(): void {
   document.addEventListener("keydown", onKeydown);
+  wireComposer();
   const tree = $("am-tree");
   tree.addEventListener("click", (event) => {
     const node = (event.target as HTMLElement).closest<HTMLElement>("[data-item-id]");
@@ -1068,7 +1432,9 @@ function tick(): void {
   }
   const row = state.selected ? findRow(state.selected) : null;
   const status = row?.status ?? state.detail?.detail?.status ?? "";
-  if (state.selected && BUSY.has(status) && !state.detailInFlight && now - state.detailFetchedAt >= DETAIL_POLL_MS) void loadDetail();
+  // Pending and queued bubbles also need the poll: delivery need not change the agent's status.
+  const outstanding = !!state.selected && (agentComposer(state.selected).pending.length > 0 || (state.detail?.detail?.queue?.length ?? 0) > 0);
+  if (state.selected && (BUSY.has(status) || outstanding) && !state.detailInFlight && now - state.detailFetchedAt >= DETAIL_POLL_MS) void loadDetail();
 }
 
 async function start(): Promise<void> {
