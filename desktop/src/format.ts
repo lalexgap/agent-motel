@@ -1,5 +1,3 @@
-// Compact time formatting for rows ("3m") and the working indicator ("2m 14s").
-
 export function relativeTime(since: string | undefined, now = Date.now()): string {
   const start = Date.parse(since || "");
   if (!Number.isFinite(start)) return "";

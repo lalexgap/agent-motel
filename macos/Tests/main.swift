@@ -7,7 +7,6 @@ func check(_ condition: Bool, _ message: @autoclosure () -> String, line: Int = 
     }
 }
 
-// Navigation
 for value in ["am-app://app/index.html", "am-app://app/", "am-app://app/web/style.css?v=1#x"] {
     check(NavigationPolicy.decide(URL(string: value), userInitiated: false, newWindow: false) == .allow, value)
     check(NavigationPolicy.decide(URL(string: value), userInitiated: true, newWindow: true) == .cancel, "new window \(value)")
@@ -28,7 +27,6 @@ for value in ["https://user:secret@example.com", "https://user@example.com", "fi
 check(NavigationPolicy.decide(nil, userInitiated: true, newWindow: false) == .cancel, "nil url")
 print("PASS navigation policy")
 
-// Connection URLs
 let accepted = [
     ("https://am.example.com/", "https://am.example.com"),
     ("https://AM.Example.com:443/agents?x=1#y", "https://am.example.com"),
@@ -70,7 +68,6 @@ do {
 }
 print("PASS connection URL policy and normalisation")
 
-// api.get paths
 let base = "http://127.0.0.1:8790"
 for path in ["/api/health", "/api/agents", "/api/agents/annex%3Akelp-forest/transcript", "/api/agents?all=1&x=a%20b"] {
     do {
@@ -90,12 +87,10 @@ check((try? ConnectionPolicy.apiURL(base: "https://am.example.com", path: "/api/
       "userinfo-looking segment changed host")
 print("PASS api path validation")
 
-// Tokens
 for token in ["fixture-token", "abc.DEF_123~"] { check((try? ConnectionPolicy.validateToken(token)) != nil, token) }
 for token in ["", "has space", "line\nbreak", "tab\t", "é"] { check((try? ConnectionPolicy.validateToken(token)) == nil, token.debugDescription) }
 print("PASS token validation")
 
-// SSE parser
 func parse(_ chunks: [String]) -> [SSEEvent] {
     var parser = SSEParser()
     return chunks.flatMap { try! parser.feed(Data($0.utf8)) }
@@ -123,7 +118,6 @@ var huge = SSEParser()
 check((try? huge.feed(Data(repeating: 0x61, count: SSEParser.maxLineBytes + 1))) == nil, "oversized line")
 print("PASS SSE parser")
 
-// Bundle resources
 let root = FileManager.default.temporaryDirectory.appendingPathComponent("am-resource-test-\(getpid())", isDirectory: true)
 let outside = FileManager.default.temporaryDirectory.appendingPathComponent("am-resource-outside-\(getpid()).js")
 try! FileManager.default.createDirectory(at: root.appendingPathComponent("web"), withIntermediateDirectories: true)

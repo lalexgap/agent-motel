@@ -70,7 +70,6 @@ export class DevBridge {
     for (const listener of this.listeners) listener(name, payload);
   }
 
-  // Used by `dev.ts --fixture` to pre-create a connection.
   addConnection(name: string, url: string, token: string): Connection {
     const normalized = normalizeServerUrl(url);
     if (!normalized.ok) throw new Error(normalized.error);

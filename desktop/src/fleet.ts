@@ -198,7 +198,6 @@ export function countStatuses(rows: Iterable<AgentRow>): StatusCounts {
   return counts;
 }
 
-// Keyboard movement over the flat visible list.
 export function moveCursor(items: readonly TreeItem[], current: string | null, delta: number): string | null {
   if (!items.length) return null;
   const index = current ? items.findIndex((item) => item.id === current) : -1;

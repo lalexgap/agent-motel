@@ -131,8 +131,6 @@ function badge(status: string): HTMLElement {
   return node;
 }
 
-// ---------- server access ----------
-
 async function apiGet<T>(id: string, path: string): Promise<T> {
   const conn = state.conns.get(id);
   const response = await call("api.get", { connection: id, path });
@@ -238,8 +236,6 @@ async function reloadAll(): Promise<void> {
   }
   if (state.selected) void loadDetail();
 }
-
-// ---------- sidebar ----------
 
 let sidebarWidth = prefs.sidebarWidth;
 const sidebarMax = () => Math.max(SIDEBAR_MIN, Math.min(560, Math.round(window.innerWidth * 0.5)));
@@ -379,8 +375,6 @@ function renderFleet(): void {
   else syncHeaderFromRow();
 }
 
-// ---------- empty state ----------
-
 function renderEmpty(): void {
   const rows = allRows();
   const counts = countStatuses(rows);
@@ -400,8 +394,6 @@ function renderEmpty(): void {
     return item;
   }));
 }
-
-// ---------- chat ----------
 
 function showChat(open: boolean): void {
   $("am-chat").hidden = !open;
@@ -578,8 +570,6 @@ function tickWorking(): void {
   if (text) text.textContent = label + (Number.isFinite(start) ? ` for ${duration(Date.now() - start)}` : "");
 }
 
-// ---------- status bar ----------
-
 function streamLabel(conn: ConnState): { text: string; tone: string } {
   if (conn.stream === "open") return { text: "Live", tone: "open" };
   if (!conn.everOpen && conn.stream !== "closed") return { text: "Connecting", tone: "connecting" };
@@ -627,8 +617,6 @@ function renderStatusbar(): void {
   $("am-sb-counts").replaceChildren(...(state.conns.size ? parts : []));
   $("am-sb-version").textContent = state.info ? `v${state.info.version}${state.info.build && state.info.build !== state.info.version ? ` (${state.info.build})` : ""}` : "";
 }
-
-// ---------- connections / setup ----------
 
 function setView(view: "setup" | "fleet"): void {
   document.body.dataset.view = view;
@@ -806,8 +794,6 @@ async function removeConnection(id: string): Promise<void> {
   else renderSetup();
 }
 
-// ---------- events ----------
-
 function onStreamState(payload: BridgeEvents["events.state"]): void {
   const conn = state.conns.get(payload.connection);
   if (!conn) return;
@@ -851,8 +837,6 @@ function focusFilter(): void {
   filter.focus();
   filter.select();
 }
-
-// ---------- keyboard ----------
 
 const isTyping = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
@@ -948,8 +932,6 @@ function onKeydown(event: KeyboardEvent): void {
       break;
   }
 }
-
-// ---------- wiring ----------
 
 function wire(): void {
   document.addEventListener("keydown", onKeydown);

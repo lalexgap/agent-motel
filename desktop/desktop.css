@@ -50,7 +50,6 @@ kbd {
   display: none;
 }
 
-/* Sidebar */
 #am-sidebar {
   display: flex;
   flex-direction: column;
@@ -302,7 +301,6 @@ body.am-resizing {
   cursor: col-resize;
 }
 
-/* Main pane */
 #am-main {
   position: relative;
   min-width: 0;
@@ -533,7 +531,6 @@ body.am-resizing {
   background: var(--surface-hover);
 }
 
-/* Setup / connections */
 #am-setup {
   overflow: auto;
   display: grid;
@@ -679,7 +676,6 @@ body.am-resizing {
   flex: 1;
 }
 
-/* Status bar */
 #statusbar {
   display: flex;
   align-items: center;
