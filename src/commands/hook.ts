@@ -63,7 +63,7 @@ import {
 } from "../subagents";
 import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
-import { triggerModelSwitch } from "./switchModel";
+import { holdModelSwitch, triggerModelSwitch } from "./switchModel";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -617,16 +617,19 @@ export function retiredPermissions(
   return 0;
 }
 
-// Background subagents the turn-end left open (after catching any whose
-// finish only the transcript reports), or a pane showing a waiting indicator.
-function backgroundWorkRunning(agent: AgentState, pane: string[] | null): boolean {
-  if (pane && paneWaitingInfo(pane).waiting) return true;
+// What still runs past the turn: a pane waiting indicator, or background
+// subagents the turn-end left open (after catching any whose finish only the
+// transcript reports). Null when nothing does.
+function backgroundWork(agent: AgentState, pane: string[] | null): string | null {
+  const waiting = pane ? paneWaitingInfo(pane) : null;
+  if (waiting?.waiting) return `background work (${waiting.detail ?? "shown in your pane"})`;
   try {
     reconcileOpenSubagents(agent);
   } catch {
     // the ledger as it stands
   }
-  return activeSubagents(agent.name).length > 0;
+  const open = activeSubagents(agent.name).length;
+  return open > 0 ? `${open} background subagent${open === 1 ? "" : "s"}` : null;
 }
 
 export async function hookCommand(event: string): Promise<void> {
@@ -845,8 +848,11 @@ export async function hookCommand(event: string): Promise<void> {
   // finished, so no report, idle notice or drain — its queue waits for the
   // restarted session. The restart would kill background work still running,
   // so while there is any the switch waits for a later stop.
-  if (event === "stop" && agent.pendingModelSwitch && !backgroundWorkRunning(agent, pane)
-      && (await triggerModelSwitch(name, agent.pendingModelSwitch))) return;
+  if (event === "stop" && agent.pendingModelSwitch) {
+    const held = backgroundWork(agent, pane);
+    if (held) holdModelSwitch(name, agent.pendingModelSwitch, held);
+    else if (await triggerModelSwitch(name, agent.pendingModelSwitch)) return;
+  }
 
   // Standing-relationship backstop: if the agent finished a real work stint
   // and didn't post its own update to reportTo, send a terse heads-up so the

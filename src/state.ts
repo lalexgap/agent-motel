@@ -132,6 +132,8 @@ export interface PendingModelSwitch {
   reason: string;
   requestedAt: string;
   triggeredAt?: string;
+  // When the agent was told background work holds the switch; once per switch.
+  heldNotifiedAt?: string;
 }
 
 export function agentProvider(state: AgentState): Provider {

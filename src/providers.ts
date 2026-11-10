@@ -23,7 +23,7 @@ const DELEGATION = `Delegating: fan out with your own built-in subagents. They s
 export function modelSwitchGuidance(provider: Provider | undefined, maxTurns = loadConfig().selfModelSwitchMaxTurns): string {
   if (!(maxTurns > 0) || (provider !== "claude" && provider !== "codex")) return "";
   const turns = maxTurns === 1 ? "first turn" : `first ${maxTurns} turns`;
-  return `\n\nModel: within your ${turns}, if the task is clearly simple enough for a cheaper model, or genuinely needs a stronger one, run \`am switch-model <model> --reason "<why>"\` (\`am models\` lists them) and end your turn; am restarts you on it at the turn boundary and tells you to continue. After that it is refused, because switching re-reads the whole conversation uncached. Keep your model if the operator named one for you.`;
+  return `\n\nModel: within your ${turns}, if the task is clearly simple enough for a cheaper model, or genuinely needs a stronger one, run \`am switch-model <model> --reason "<why>"\` (\`am models\` lists them) and end your turn; am restarts you on it at the turn boundary and tells you to continue (background shells, wake-ups or subagents still running then delay it to a later turn end without any). After that it is refused, because switching re-reads the whole conversation uncached. Keep your model if the operator named one for you.`;
 }
 
 // Injected via --append-system-prompt (claude) or prepended to the initial

@@ -89,6 +89,7 @@ export async function switchModelCommand(model: string, opts: { effort?: string;
   }
   console.log(`Switch to ${describeTarget(pending)} scheduled for the end of this turn.`);
   console.log("Finish this turn now without starting more work; am will restart you on the new model and prompt you to continue.");
+  console.log("Background work still running when the turn ends (a shell, a wake-up, a background subagent) delays the switch until a turn ends without any.");
 }
 
 // A switch whose turn ended but that nothing carried out (its daemon request
@@ -122,6 +123,27 @@ export function abandonModelSwitch(name: string, pending: PendingModelSwitch, wh
     return true;
   } catch {
     return false;
+  }
+}
+
+export function heldMessage(pending: PendingModelSwitch, what: string): string {
+  return `[am] Your switch to ${describeTarget(pending)} is waiting: ${what} is still running, and the restart would kill it. It happens at the first turn end with no background work, so stop that work and end your turn — or keep working normally and the switch stays pending.`;
+}
+
+// A turn ended with background work still running: the switch stays pending
+// and untriggered. Tell the agent once, through its queue, so it does not sit
+// idle expecting the restart.
+export function holdModelSwitch(name: string, pending: PendingModelSwitch, what: string): void {
+  const first = updateAgentIf(name, (current) => {
+    if (current.pendingModelSwitch?.requestedAt !== pending.requestedAt || current.pendingModelSwitch.heldNotifiedAt) return false;
+    current.pendingModelSwitch.heldNotifiedAt = new Date().toISOString();
+    return true;
+  });
+  if (!first) return;
+  try {
+    queueAppendForAgent(name, heldMessage(pending, what));
+  } catch {
+    // the agent is gone
   }
 }
 

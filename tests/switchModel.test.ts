@@ -373,10 +373,12 @@ describe("the Stop hook trigger", () => {
     await hook("stop");
     expect(readAgent("api")).toMatchObject({ status: "idle", model: "gpt-6-luna" });
     expect(readAgent("api")!.pendingModelSwitch!.triggeredAt).toBeUndefined();
-    await Bun.sleep(800);
+    expect(queueList("api").map((e) => e.message)).toEqual([expect.stringContaining("is waiting: 1 background subagent is still running")]);
     expect(launched()).toBe(false);
 
     await hook("subagent-stop", { agent_id: "bg-1" });
+    update({ status: "working" });
+    expect(JSON.parse(await hook("stop")).decision).toBe("block");
     update({ status: "working" });
     await hook("stop");
     await until(launched);
@@ -384,12 +386,26 @@ describe("the Stop hook trigger", () => {
     expect(readAgent("api")).toMatchObject({ model: "sonnet", selfModelSwitches: 1 });
   }, 30_000);
 
-  test("a pane showing background shells holds it", async () => {
+  test("a pane showing background shells holds it, telling the agent once", async () => {
     writeFileSync(join(home, "pane"), "────────────────\n  ⏵⏵ accept edits on · 1 shell · ← for agents\n");
     update({ status: "working", pendingModelSwitch: { model: "gpt-6.1-sol", reason: "deeper", requestedAt } });
-    await hook("stop");
+    expect(await hook("stop")).toBe("");
     expect(readAgent("api")).toMatchObject({ status: "idle", model: "gpt-6-luna" });
-    expect(readAgent("api")!.pendingModelSwitch!.triggeredAt).toBeUndefined();
+    const held = readAgent("api")!.pendingModelSwitch!;
+    expect(held.triggeredAt).toBeUndefined();
+    expect(held.heldNotifiedAt).toBeString();
+    expect(queueList("api").map((e) => e.message)).toEqual([
+      "[am] Your switch to gpt-6.1-sol is waiting: background work (accept edits on · 1 shell · ← for agents) is still running, and the restart would kill it. It happens at the first turn end with no background work, so stop that work and end your turn — or keep working normally and the switch stays pending.",
+    ]);
+
+    // The inbox gate hands the notice over; a later held stop adds none.
+    update({ status: "working" });
+    expect(JSON.parse(await hook("stop")).reason).toContain("Your switch to gpt-6.1-sol is waiting");
+    update({ status: "working" });
+    expect(await hook("stop")).toBe("");
+    expect(queueList("api")).toEqual([]);
+    expect(readAgent("api")!.pendingModelSwitch).toEqual(held);
+    expect(launched()).toBe(false);
 
     rmSync(join(home, "pane"));
     update({ status: "working" });
