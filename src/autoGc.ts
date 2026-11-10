@@ -87,7 +87,6 @@ function quietHour(config: Pick<Config, "gcAutoHour">): number {
   return Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 4;
 }
 
-// The most recent time the nightly window opened.
 function windowStart(now: Date, config: Pick<Config, "gcAutoHour">): Date {
   const start = new Date(now);
   start.setHours(quietHour(config), 0, 0, 0);
@@ -336,7 +335,6 @@ function clock(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-// `am gc --auto status`.
 export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date()): string[] {
   const state = readAutoGcState();
   const lines: string[] = [];

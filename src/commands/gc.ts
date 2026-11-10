@@ -103,7 +103,6 @@ export function gcCommand(opts: GcCommandOptions): void {
   }
 }
 
-// `am gc --auto status|run|pause|resume`: the daemon's scheduled sweep.
 export function gcAutoCommand(action: string | undefined, opts: { dryRun?: boolean; force?: boolean } = {}): void {
   switch (action ?? "status") {
     case "status":
@@ -132,7 +131,6 @@ export function gcAutoCommand(action: string | undefined, opts: { dryRun?: boole
   }
 }
 
-// `am gc --restore <worktree>`: recreate a worktree gc removed.
 export function gcRestoreCommand(ref: string): void {
   for (const line of restoreWorktree(ref)) console.log(line);
 }
