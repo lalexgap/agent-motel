@@ -7,16 +7,26 @@ class Node {
   dataset: Record<string, string> = {};
   children: Node[] = [];
   open = false;
-  constructor(readonly tag: string, readonly className = "", public text = "") {}
+  className = "";
+  text = "";
+  constructor(readonly tag: string) {}
+  set textContent(text: string) { this.text = text; }
   append(...nodes: Node[]) { this.children.push(...nodes); }
 }
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-const context: any = {
-  el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text),
-  window: { agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } } },
-};
-const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("// Anchor visible content"));
-runInNewContext(renderer, context);
+const renderer = readFileSync(new URL("../web/transcript.js", import.meta.url), "utf8");
+const stubs = () => ({
+  document: { createElement: (tag: string) => new Node(tag) },
+  window: {
+    agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } },
+    agentLinks: { render: (node: Node, text: string) => { node.text = text; } },
+  } as any,
+});
+const { document, window } = stubs();
+runInNewContext(renderer, { document, window });
+const context: any = { el: window.agentTranscript.el, chatTurn: window.agentTranscript.chatTurn };
+// pendingBubble and queuedMessageKey stay in app.js on top of the shared chatTurn.
+runInNewContext(source.slice(source.indexOf("function queuedMessageKey("), source.indexOf("function queueAsideItem(")), context);
 const wrapped = (body: string) => `<subagent_notification>\n${body}\n</subagent_notification>`;
 const render = (text: string, kind = "user", index = 42): Node => context.chatTurn({ text, kind, index }, "Agent");
 // Run the regressions in V8, where the original regex backtracked; Bun uses JavaScriptCore.
@@ -24,11 +34,11 @@ const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("nod
   import { readFileSync } from "node:fs";
   import { runInNewContext } from "node:vm";
   ${Node.toString()}
+  const stubs = ${stubs.toString()};
   const { renderer, text } = JSON.parse(readFileSync(0, "utf8"));
-  const turn = runInNewContext(renderer + '\\nchatTurn(entry, "Agent")', {
+  const turn = runInNewContext(renderer + '\\nwindow.agentTranscript.chatTurn(entry, "Agent")', {
     entry: { text, kind: "user", index: 42 },
-    el: (tag, cls, text) => new Node(tag, cls, text),
-    window: { agentMarkdown: { render: (node, text) => { node.text = text; } } },
+    ...stubs(),
   }, { timeout: 1000 });
   process.stdout.write(JSON.stringify(turn));
 `], { input: JSON.stringify({ renderer, text }), encoding: "utf8", timeout: 3000 }));

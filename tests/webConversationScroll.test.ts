@@ -4,15 +4,17 @@ import { runInNewContext } from "node:vm";
 
 type Entry = { key?: string; wrapKey?: string; wrapped?: boolean; height: number; open?: boolean; children?: Entry[]; tagName?: string; maxHeight?: number };
 
+type Transcript = {
+  preserveConversationScroll(view: View, threshold: number): (follow?: boolean) => void;
+  toolGroup(entry: { index: number }): Node & { add(entry: { index: number; name: string }): void };
+};
+function loadTranscript(document: object = {}): Transcript {
+  const window: { agentTranscript?: Transcript; agentLinks: object } = { agentLinks: { render() {} } };
+  runInNewContext(readFileSync(new URL("../web/transcript.js", import.meta.url), "utf8"), { window, document });
+  return window.agentTranscript!;
+}
 function load() {
-  const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-  const start = source.indexOf("function preserveConversationScroll(");
-  const end = source.indexOf("async function refreshDetail", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  const context: { preserveConversationScroll?: (view: View, threshold: number) => (follow?: boolean) => void } = {};
-  runInNewContext(source.slice(start, end), context);
-  return context.preserveConversationScroll!;
+  return loadTranscript().preserveConversationScroll;
 }
 
 class Node {
@@ -189,21 +191,19 @@ describe("preserveConversationScroll", () => {
 
   test("keeps a capped tool list's independent position with collapsed calls after rebuilding", () => {
     const view = new View([]);
-    const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-    const context = {
-      el: (tag: string, className: string) => new Node(view, {
-        tagName: tag.toUpperCase(), height: tag === "details" ? 24 : 0,
-        maxHeight: className === "work-list" ? 288 : undefined,
-      }),
-      icon: () => new Node(view, { height: 0 }),
-      toolKind: () => "other", toolLabel: () => "Tool call",
-      TOOL_SUMMARY: { other: ["Used", "tool", "tools"] },
-      toolGroup: undefined as undefined | ((entry: { index: number }) => Node & { add(entry: { index: number }): void }),
-    };
-    runInNewContext(source.slice(source.indexOf("function toolGroup("), source.indexOf("function duration(")), context);
+    // Real toolGroup over layout nodes; the work list is the capped, independently scrolling box.
+    const { toolGroup } = loadTranscript({
+      createElement: (tag: string) => {
+        const entry: Entry = { tagName: tag.toUpperCase(), height: tag === "details" ? 24 : 0 };
+        return Object.defineProperty(new Node(view, entry), "className", {
+          set(value: string) { if (value === "work-list") entry.maxHeight = 288; },
+        });
+      },
+      createElementNS: () => Object.assign(new Node(view, { height: 0 }), { setAttribute() {} }),
+    });
     const rebuild = (count: number) => {
-      const group = context.toolGroup!({ index: 10 });
-      for (let index = 10; index < 30; index++) group.add({ index });
+      const group = toolGroup({ index: 10 });
+      for (let index = 10; index < 30; index++) group.add({ index, name: "Task" });
       view.replace(turns(0, 2));
       view.nodes.push(group, ...turns(30, count).map(entry => new Node(view, entry)));
       return { group, list: group.children[1]! };
