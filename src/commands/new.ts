@@ -155,6 +155,8 @@ export interface NewOptions {
   // provider's interactive session picker inside the new agent.
   resume?: string | boolean;
   continue?: boolean;
+  // A handoff target: its fresh conversation starts by reading another's.
+  inheritsContext?: boolean;
   // Attach to the new session after spawning. Defaults to true when run from
   // a terminal; always false for non-TTY callers (agents spawning agents).
   jump?: boolean;
@@ -356,6 +358,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     reportTo,
     spawnedBy,
     ...(opts.noPlan ? { noPlan: true } : {}),
+    // Counted from a fresh conversation only, for am switch-model's gate.
+    ...(provider !== "antigravity" && !opts.resume && !opts.continue && !opts.inheritsContext ? { turns: 0 } : {}),
     createdAt: now,
     updatedAt: now,
   };

@@ -279,6 +279,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
   try {
     const agent = readAgent(name);
     if (!agent || !hasSession(agent.tmuxSession)) return { status: "queued", reason: "unavailable" };
+    // A due self-requested model switch restarts this session next; a turn
+    // started now would be cut off. The messages wait for the new session.
+    if (agent.pendingModelSwitch?.triggeredAt) return { status: "queued", reason: "locked" };
     const provider = agentProvider(agent);
     if (provider === "antigravity") {
       const head = queueHead(name);

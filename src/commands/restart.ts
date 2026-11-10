@@ -41,7 +41,7 @@ function nextSelection(agent: AgentState, opts: RestartOpts): Selection {
 }
 
 // A change is checked against the provider's catalog as `am new` checks it.
-function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?: boolean; warn?: (message: string) => void } = {}): void {
+export function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?: boolean; warn?: (message: string) => void } = {}): void {
   if (opts.model === undefined && opts.effort === undefined) return;
   const provider = agentProvider(agent);
   // Re-probed: a long-lived `am serve` must see a provider upgrade.
@@ -66,6 +66,8 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
   const previous = { model: agent.model, effort: agent.effort, status: agent.status, reason: agent.statusReason };
   // Saved on the agent, so every later resume launches with them too.
   Object.assign(agent, nextSelection(agent, opts));
+  // Any restart settles a self-requested model switch; it must not fire later.
+  delete agent.pendingModelSwitch;
   // The old turn survives the pane respawn in the daemon. One deadline for
   // stop + relaunch; a daemon that misses it during the stop is skipped
   // for the relaunch.
@@ -124,7 +126,9 @@ function lifecycleBusy(name: string): string {
   return `agent "${name}" is being stopped, removed, renamed, or restarted — retry restart`;
 }
 
-export async function restartAgent(prefix: string, opts: RestartOpts = {}): Promise<RestartResult> {
+// `guard` runs on the current state under both locks, before anything
+// changes; throwing from it cancels the restart.
+export async function restartAgent(prefix: string, opts: RestartOpts = {}, guard?: (agent: AgentState) => void): Promise<RestartResult> {
   await ensureDaemon();
   let agent = resolveAgent(prefix);
   validateChange(agent, opts, { refresh: true, warn: (message) => console.error(message) });
@@ -133,6 +137,7 @@ export async function restartAgent(prefix: string, opts: RestartOpts = {}): Prom
     agent = currentLifecycleAgent(agent);
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is busy or being moved — retry restart`);
     try {
+      guard?.(agent);
       return restartLocked(agent, opts);
     } finally {
       releaseDeliverLock(agent.name);

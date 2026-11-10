@@ -61,6 +61,7 @@ import {
 } from "../subagents";
 import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
+import { triggerModelSwitch } from "./switchModel";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -728,6 +729,8 @@ export async function hookCommand(event: string): Promise<void> {
   // key the prompt by the text am sent, so it matches the message's record.
   const inbox = event === "user-prompt-submit" && !fromSubagent && prompt ? inboxDeliveryIn(name, prompt) : null;
   if (event === "user-prompt-submit" && !fromSubagent) {
+    // Only a count `am new` started; an unknown context age stays unknown.
+    if (typeof agent.turns === "number") agent.turns += 1;
     agent.promptAt = new Date().toISOString();
     agent.promptKey = typeof payload.prompt === "string" ? promptKey(inbox?.content ?? prompt) : undefined;
   }
@@ -823,6 +826,11 @@ export async function hookCommand(event: string): Promise<void> {
     pane = capturePane(agent.tmuxSession, { colors: true });
     if (pane && pane.length > 0) writeSnapshot(name, pane);
   }
+
+  // The agent asked to change model this turn (am switch-model): it is not
+  // finished, so no report, idle notice or drain — its queue waits for the
+  // restarted session.
+  if (event === "stop" && agent.pendingModelSwitch && (await triggerModelSwitch(name, agent.pendingModelSwitch))) return;
 
   // Standing-relationship backstop: if the agent finished a real work stint
   // and didn't post its own update to reportTo, send a terse heads-up so the
