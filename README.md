@@ -35,7 +35,7 @@ bun link
 
 ## Quick start
 
-For a desktop window with the web UI, see [Agent Motel for macOS](macos/README.md).
+For a native desktop client, see [Agent Motel for macOS](macos/README.md).
 
 ```sh
 am new api-refactor -m "refactor the API layer"  # create and attach

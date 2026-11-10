@@ -5,6 +5,10 @@ import WebKit
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     private(set) var window: NSWindow!
     private(set) var webView: WKWebView!
+    let store = ConnectionStore()
+    private(set) lazy var bridge = Bridge(store: store)
+    /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
+    var activatesWindow = true
     private var errorPanel: NSStackView!
     private var errorLabel: NSTextField!
 
@@ -13,10 +17,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         makeMenus()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        let webRoot = Bundle.main.resourceURL?.appendingPathComponent("web", isDirectory: true)
+            ?? URL(fileURLWithPath: "/nonexistent")
+        configuration.setURLSchemeHandler(AppSchemeHandler(root: webRoot), forURLScheme: NavigationPolicy.scheme)
+        configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: Bridge.handlerName)
+        let debug = ProcessInfo.processInfo.environment["AM_DEBUG"] == "1"
+        if debug, #unavailable(macOS 13.3) {
+            configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        }
         webView = WKWebView(frame: .zero, configuration: configuration)
+        if debug, #available(macOS 13.3, *) { webView.isInspectable = true }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.underPageBackgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
+        bridge.webView = webView
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -39,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         ])
         errorLabel = NSTextField(wrappingLabelWithString: "")
         errorLabel.alignment = .center
-        let retry = NSButton(title: "Reconnect", target: self, action: #selector(goHome))
+        let retry = NSButton(title: "Reload", target: self, action: #selector(loadHome))
         errorPanel = NSStackView(views: [errorLabel, retry])
         errorPanel.orientation = .vertical
         errorPanel.spacing = 16
@@ -52,29 +66,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             errorPanel.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -48),
         ])
         showWindow()
-        goHome()
+        loadHome()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        bridge.stopAllStreams()
     }
 
     private func makeMenus() {
         let menu = NSMenu()
         NSApp.mainMenu = menu
-        func section(_ title: String, _ entries: [(String, Selector, String)]) {
+        func section(_ title: String, _ entries: [(String, Selector, String)?]) {
             let root = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let submenu = NSMenu(title: title)
             root.submenu = submenu
             menu.addItem(root)
-            for (label, action, key) in entries {
+            for entry in entries {
+                guard let (label, action, key) = entry else {
+                    submenu.addItem(.separator())
+                    continue
+                }
                 submenu.addItem(withTitle: label, action: action, keyEquivalent: key)
             }
         }
         section("Agent Motel", [
             ("About Agent Motel", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+            nil,
+            ("Connections…", #selector(showConnections), ","),
+            nil,
             ("Hide Agent Motel", #selector(NSApplication.hide(_:)), "h"),
             ("Quit Agent Motel", #selector(NSApplication.terminate(_:)), "q"),
         ])
         section("Edit", [
             ("Undo", Selector(("undo:")), "z"),
             ("Redo", Selector(("redo:")), "Z"),
+            nil,
             ("Cut", #selector(NSText.cut(_:)), "x"),
             ("Copy", #selector(NSText.copy(_:)), "c"),
             ("Paste", #selector(NSText.paste(_:)), "v"),
@@ -82,34 +108,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         ])
         section("View", [
             ("Reload", #selector(reloadPage), "r"),
-            ("Fleet", #selector(goHome), "1"),
-            ("Open in Browser", #selector(openInBrowser), ""),
+            ("Find", #selector(find), "f"),
         ])
         section("Window", [
             ("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             ("Close", #selector(NSWindow.performClose(_:)), "w"),
+            nil,
             ("Show Agent Motel", #selector(showWindow), "0"),
         ])
         NSApp.windowsMenu = menu.items.last?.submenu
     }
 
     @objc func showWindow() {
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if activatesWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderBack(nil)
+        }
     }
 
-    @objc func goHome() {
+    @objc func loadHome() {
         errorPanel.isHidden = true
         webView.isHidden = false
         webView.load(URLRequest(url: NavigationPolicy.home))
     }
 
+    /// Tells the page to refresh its data; reloads the page itself only if it never became ready.
     @objc func reloadPage() {
-        if !errorPanel.isHidden { goHome() } else { webView.reload() }
+        guard errorPanel.isHidden else { return loadHome() }
+        bridge.emit("menu.command", ["command": "reload"])
+        Task {
+            let ready = try? await webView.evaluateJavaScript("document.body?.dataset.ready === 'true'")
+            if ready as? Bool != true { loadHome() }
+        }
     }
 
-    @objc func openInBrowser() {
-        NSWorkspace.shared.open(NavigationPolicy.home)
+    @objc func showConnections() {
+        showWindow()
+        bridge.emit("menu.command", ["command": "connections"])
+    }
+
+    @objc func find() {
+        bridge.emit("menu.command", ["command": "find"])
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -117,22 +158,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return true
     }
 
+    // MARK: Navigation
+
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = action.request.url else { decisionHandler(.cancel); return }
-        if NavigationPolicy.isInternal(url) {
-            if action.targetFrame == nil {
-                decisionHandler(.cancel)
-                webView.load(action.request)
-            } else {
-                decisionHandler(.allow)
-            }
-        } else {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        let newWindow = action.targetFrame == nil
+        switch NavigationPolicy.decide(action.request.url, userInitiated: action.navigationType == .linkActivated || newWindow,
+                                       newWindow: newWindow) {
+        case .allow:
+            decisionHandler(.allow)
+        case .openExternally:
             decisionHandler(.cancel)
-            if action.navigationType == .linkActivated && NavigationPolicy.canOpenExternally(url) {
-                NSWorkspace.shared.open(url)
-            }
+            if let url = action.request.url { NSWorkspace.shared.open(url) }
+        case .cancel:
+            decisionHandler(.cancel)
         }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+        if response.isForMainFrame, let status = (response.response as? HTTPURLResponse)?.statusCode, status != 200 {
+            decisionHandler(.cancel)
+            showError("The app’s page is missing from this build (HTTP \(status)).")
+        } else {
+            decisionHandler(.allow)
+        }
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if NavigationPolicy.decide(action.request.url, userInitiated: true, newWindow: true) == .openExternally,
+           let url = action.request.url {
+            NSWorkspace.shared.open(url)
+        }
+        return nil
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -143,20 +202,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         showError(error)
     }
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        showError("The page stopped unexpectedly.")
+    }
+
     private func showError(_ error: Error) {
         let failure = error as NSError
-        guard !(failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled) else { return }
-        errorLabel.stringValue = "Couldn’t connect to Agent Motel.\nCheck your connection and try again."
+        guard !(failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled),
+              !(failure.domain == "WebKitErrorDomain" && failure.code == 102) else { return }
+        showError("Couldn’t load Agent Motel.\n\(failure.localizedDescription)")
+    }
+
+    private func showError(_ message: String) {
+        errorLabel.stringValue = message
         webView.isHidden = true
         errorPanel.isHidden = false
     }
 
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        showError(NSError(domain: "AgentMotel", code: 1))
-    }
-
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
         guard frame.isMainFrame, frame.request.url.map(NavigationPolicy.isInternal) == true else {
             completionHandler(false)
             return

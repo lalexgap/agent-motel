@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Agent Motel</title>
+    <link rel="icon" type="image/svg+xml" href="web/favicon.svg" />
+    <link rel="stylesheet" href="web/style.css" />
+    <link rel="stylesheet" href="desktop.css" />
+    <script src="web/links.js" defer></script>
+    <script src="web/markdown.js" defer></script>
+    <script src="web/transcript.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-view="fleet">
+    <div id="am-root">
+      <div id="am-shell">
+        <div id="am-sidebar">
+          <div class="am-sidebar-head">
+            <div class="am-brand"><span class="am-brand-mark">am<span>✳</span></span>Agent Motel</div>
+            <input id="am-filter" type="search" placeholder="Filter agents" aria-label="Filter agents" autocomplete="off" spellcheck="false" />
+            <div class="am-sidebar-tools">
+              <span id="am-fleet-summary"></span>
+              <button id="am-show-stopped" type="button" class="am-chip" aria-pressed="false">Show stopped</button>
+            </div>
+          </div>
+          <div id="am-tree" role="tree" aria-label="Agents"></div>
+        </div>
+        <div id="am-divider" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
+        <div id="am-main">
+          <section id="am-empty" aria-label="Fleet overview">
+            <div class="am-empty-card">
+              <div class="am-brand-mark am-empty-mark">am<span>✳</span></div>
+              <h1 id="am-empty-title">No agent open</h1>
+              <p id="am-empty-sub">Pick an agent in the sidebar to read its conversation.</p>
+              <ul id="am-empty-counts"></ul>
+              <dl class="am-keys">
+                <dt><kbd>↑</kbd><kbd>↓</kbd> or <kbd>j</kbd><kbd>k</kbd></dt><dd>Move through agents</dd>
+                <dt><kbd>Enter</kbd></dt><dd>Open the agent</dd>
+                <dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Collapse or expand a group</dd>
+                <dt><kbd>/</kbd></dt><dd>Filter agents</dd>
+                <dt><kbd>Esc</kbd></dt><dd>Back to the list</dd>
+              </dl>
+            </div>
+          </section>
+          <section id="am-chat" aria-label="Conversation" hidden>
+            <header id="am-chat-header">
+              <div class="am-chat-title">
+                <h1 id="am-agent-name"></h1>
+                <span id="am-agent-status"></span>
+                <span id="am-agent-flag" hidden></span>
+              </div>
+              <div id="am-agent-meta" class="am-chat-meta"></div>
+              <p id="am-agent-reason" hidden></p>
+              <div id="am-agent-task" class="am-chat-task" hidden>
+                <span id="am-agent-task-text"></span>
+                <button id="am-agent-task-toggle" type="button" class="text-button" aria-expanded="false">More</button>
+              </div>
+            </header>
+            <div id="am-chat-body">
+              <div id="transcript" tabindex="0" aria-label="Transcript"></div>
+              <button id="am-jump-latest" type="button" hidden>↓ Jump to latest</button>
+            </div>
+            <div id="am-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
+            <div id="am-readonly"><span class="am-readonly-pill">Read-only</span>Read-only preview — sending arrives in the next milestone</div>
+          </section>
+        </div>
+      </div>
+      <div id="am-setup" hidden>
+        <div class="am-setup-card">
+          <div class="am-setup-head">
+            <div class="am-brand-mark">am<span>✳</span></div>
+            <button id="am-setup-close" type="button" class="am-chip" hidden>Close</button>
+          </div>
+          <h1 id="am-setup-title">Connect to your am server</h1>
+          <p id="am-setup-intro">Agent Motel reads your fleet from the <code>am serve</code> web server. Add its address and access token.</p>
+          <div id="am-conn-list" role="list" aria-label="Connections"></div>
+          <button id="am-conn-add" type="button" hidden>Add connection</button>
+          <form id="am-conn-form" autocomplete="off" novalidate>
+            <h2 id="am-conn-form-title">New connection</h2>
+            <label class="am-field">Name<input id="connection-name" type="text" placeholder="Home server" spellcheck="false" /></label>
+            <label class="am-field">Server URL<input id="connection-url" type="url" placeholder="https://am.example.com" spellcheck="false" autocapitalize="off" /></label>
+            <label class="am-field">Access token<input id="connection-token" type="password" autocomplete="off" spellcheck="false" /></label>
+            <small id="am-token-hint">Run <code>am token</code> on the server to print it.</small>
+            <div id="am-conn-result" role="status"></div>
+            <div class="am-form-actions">
+              <button id="am-conn-test" type="button">Test connection</button>
+              <span class="am-spacer"></span>
+              <button id="am-conn-cancel" type="button" hidden>Cancel</button>
+              <button id="connection-save" type="submit" class="primary">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
+      <div id="statusbar">
+        <div id="am-sb-left"></div>
+        <div id="am-sb-right">
+          <span id="am-sb-counts"></span>
+          <button id="am-sb-connections" type="button">Connections</button>
+          <span id="am-sb-version"></span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

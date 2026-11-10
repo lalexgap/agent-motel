@@ -8,7 +8,9 @@
     "am": "src/index.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "desktop:build": "bun desktop/build.ts",
+    "desktop:dev": "bun desktop/dev.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
