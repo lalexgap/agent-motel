@@ -2716,7 +2716,10 @@ function renderUsageChart() {
   const side = document.querySelector("#usage-page .usage-dash-side");
   if (card && side && side.offsetLeft > card.offsetLeft + card.offsetWidth - 1) {
     const overhead = wrap.getBoundingClientRect().top - card.getBoundingClientRect().top + 17;
-    height = Math.max(height, Math.min(600, Math.floor(side.offsetHeight - overhead)));
+    // The side column stretches to the row, so measure its content, not its box.
+    const last = side.lastElementChild;
+    const sideHeight = last ? last.getBoundingClientRect().bottom - side.getBoundingClientRect().top : 0;
+    height = Math.max(height, Math.min(600, Math.floor(sideHeight - overhead)));
   }
   const geo = U.stackedBars(series, days.length, { width, height, left: narrow ? 40 : 48, top: narrow ? 10 : 22 });
   const svg = svgEl("svg", {
