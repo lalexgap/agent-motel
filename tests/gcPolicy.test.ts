@@ -153,19 +153,38 @@ describe("ownership of worktrees an agent is not registered in", () => {
     finally { console.log = log; }
     expect(existsSync(wt)).toBe(false);
 
-    // gc, once the removed agent's snapshot has released it.
-    const later = addWorktree("visited-later");
-    idle(later, 10);
-    noteWorkDir(concierge, later);
-    writeAgent(concierge);
-    trash(agent("visited-later", { dir: later, worktreePath: later, repoRoot: repo }), 8);
-    expect(planGc(POLICY).worktrees.map((w) => w.path)).toEqual([later]);
-    // A subagent worktree nested in it is not the visitor's either.
-    const sub = addWorktree("visited-sub", join(later, ".claude", "worktrees", "agent-1"));
+    // gc: a subagent worktree nested in a live agent's worktree is not the visitor's either.
+    const host = addWorktree("visited-host");
+    writeAgent(agent("visited-host", { dir: host, worktreePath: host, status: "idle" }));
+    const sub = addWorktree("visited-sub", join(host, ".claude", "worktrees", "agent-1"));
     idle(sub, 10);
     noteWorkDir(concierge, sub);
     writeAgent(concierge);
-    expect(planGc(POLICY).worktrees.map((w) => w.path)).toContain(sub);
+    expect(planGc(POLICY).worktrees.map((w) => w.path)).toEqual([sub]);
+  });
+
+  test("an agent's main session in its own nested worktree still owns it", () => {
+    const parent = addWorktree("nest-owner");
+    const owner = agent("nest-owner", { dir: parent, worktreePath: parent, status: "idle" });
+    const foo = addWorktree("nest-foo", join(parent, ".claude", "worktrees", "foo"));
+    idle(foo, 10);
+    expect(noteWorkDir(owner, join(foo, "src"))).toBe(true);
+    writeAgent(owner);
+    const plan = planGc(POLICY);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.ownedWorktrees).toBe(2);
+  });
+
+  test("an agent still working in a removed agent's worktree keeps it once the snapshot releases it", () => {
+    const wt = addWorktree("handed-over");
+    idle(wt, 10);
+    trash(agent("handed-over", { dir: wt, worktreePath: wt, repoRoot: repo }), 8);
+    const heir = agent("heir", { status: "idle" });
+    noteWorkDir(heir, wt);
+    writeAgent(heir);
+    const plan = planGc(POLICY);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.ownedWorktrees).toBe(1);
   });
 
   test("a home-dir agent still owns a worktree it works in that no record is registered in", () => {
@@ -459,6 +478,25 @@ describe("stale dirty worktrees", () => {
     expect(planGc(POLICY).worktrees).toEqual([]);
   });
 
+  test("a file rewritten inside an old ignored directory counts as a recent change", () => {
+    writeFileSync(join(repo, ".gitignore"), "tmp/\n");
+    git(repo, "add", ".gitignore");
+    git(repo, "commit", "-q", "-m", "ignore");
+    git(repo, "push", "-q", "origin", "main");
+    const policy = { ...POLICY, ignoredDays: 7 };
+    const wt = addWorktree("ignored-edit");
+    mkdirSync(join(wt, "tmp", "db"), { recursive: true });
+    writeFileSync(join(wt, "tmp", "db", "local.sqlite3"), "data");
+    touch(join(wt, "tmp", "db", "local.sqlite3"), 2);
+    idle(wt, 9, join("tmp", "db"), "tmp");
+    const plan = planGc(policy);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.keptWorktrees.find((w) => w.path === wt)!.reason).toBe("only git-ignored files");
+    touch(join(wt, "tmp", "db", "local.sqlite3"), 9);
+    idle(wt, 9, join("tmp", "db"), "tmp");
+    expect(planGc({ ...policy, staleDays: 8 }).worktrees.map((w) => w.path)).toEqual([wt]);
+  });
+
   test("a nested repository in an ignored or untracked path keeps the worktree, at plan and at removal", () => {
     writeFileSync(join(repo, ".gitignore"), "tmp/\nnode_modules/\n");
     git(repo, "add", ".gitignore");
@@ -483,7 +521,7 @@ describe("stale dirty worktrees", () => {
     const late = addWorktree("late-clone");
     mkdirSync(join(late, "tmp"));
     writeFileSync(join(late, "tmp", "x"), "x");
-    idle(late, 9, "tmp");
+    idle(late, 9, join("tmp", "x"), "tmp");
     const latePlan = planGc(policy);
     expect(latePlan.worktrees.map((w) => w.path)).toEqual([late]);
     git(join(late, "tmp"), "clone", "-q", origin, "other-repo");

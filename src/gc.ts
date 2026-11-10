@@ -410,11 +410,11 @@ function lastActivity(path: string): number {
   return Math.max(mtime(path), admin ? mtime(join(admin, "HEAD")) : 0, admin ? lastReflogEntry(admin) : 0);
 }
 
-const WALK_LIMIT = 2_000;
+const WALK_LIMIT = 200_000;
 
 // When the uncommitted work was last touched: the newest of the changed files
-// themselves. Untracked directories are walked (bounded); ignored ones are
-// build output and dependencies, so only the entry itself counts.
+// themselves. Untracked and ignored directories are walked (bounded), except
+// node_modules, where only the directory itself counts.
 function lastChange(path: string, finding: SafetyFinding): number {
   let newest = lastActivity(path);
   let budget = WALK_LIMIT;
@@ -426,14 +426,14 @@ function lastChange(path: string, finding: SafetyFinding): number {
       if (budget-- <= 0) return;
       const child = join(dir, entry.name);
       newest = Math.max(newest, mtime(child));
-      if (entry.isDirectory()) walk(child);
+      if (entry.isDirectory() && entry.name !== "node_modules") walk(child);
     }
   };
   for (const file of finding.files ?? []) {
     if (budget-- <= 0) break;
     const target = join(path, file.path);
     newest = Math.max(newest, mtime(target));
-    if (file.code !== "!!" && file.path.endsWith("/")) walk(target);
+    if (file.path.endsWith("/") && basename(target) !== "node_modules") walk(target);
   }
   // An unreadable tree past the budget is treated as changed just now.
   return budget <= 0 ? Infinity : newest;

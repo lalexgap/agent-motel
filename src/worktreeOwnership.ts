@@ -215,18 +215,19 @@ export function worktreeOwnerReason(path: string, removing?: Owner, check: Owner
       return paths.some((p) => contains(home, p)) || (name !== null && (owner.name === name || !!owner.aliases?.includes(name)));
     });
     const records = check.records ?? readOwnerRecords();
-    // Working in another agent's worktree (a visit, a review) is no claim on it:
-    // workDirs only protect a worktree no record is registered in.
-    const unclaimed = !records.some(registered);
+    // Only the exact live record being removed is exempt. A same-name
+    // restorable agent is a separate owner, even when it shares the root.
+    const isRemoving = ({ kind, owner }: OwnerRecord) =>
+      kind === "agent" && !!removing && owner.name === removing.name && owner.createdAt === removing.createdAt && owner.tmuxSession === removing.tmuxSession;
+    // Working in another agent's worktree (a visit, a review) is no claim on it
+    // while that agent still holds it; the one being removed still counts.
+    const holders = records.filter((r) => registered(r) && (isRemoving(r) || !check.released?.(r.owner, r.kind)));
     const name = managedName(root);
     for (const record of records) {
       const { kind, owner, paths, workDirs } = record;
-      // Only the exact live record being removed is exempt. A same-name
-      // restorable agent is a separate owner, even when it shares the root.
-      if (kind === "agent" && removing && owner.name === removing.name && owner.createdAt === removing.createdAt && owner.tmuxSession === removing.tmuxSession) continue;
-      if (check.released?.(owner, kind)) continue;
+      if (isRemoving(record) || check.released?.(owner, kind)) continue;
       if (paths.some((p) => contains(root, p)) || (name !== null && (owner.name === name || owner.aliases?.includes(name))) ||
-          (unclaimed && workDirs.some((p) => contains(root, p)))) {
+          (workDirs.some((p) => contains(root, p)) && !holders.some((h) => h !== record))) {
         return `owned by ${kind === "trash" ? "restorable " : ""}agent "${owner.name}"`;
       }
     }
