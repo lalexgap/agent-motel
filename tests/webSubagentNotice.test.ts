@@ -46,6 +46,36 @@ const task = (status = "completed", extra = "") => `<task-notification>
 </task-notification>`;
 
 describe("transcript notices", () => {
+  test("question replies show questions and answers without the transport wrapper or IDs", () => {
+    const text = `<send_user_message_question_reply>${JSON.stringify([
+      { question: "Does Firefox work?", answer: "Firefox seems to work okay.", questionItemId: "private-call-id" },
+      { question: "Browser?", answer: "<img src=x onerror=alert(1)>" },
+    ])}</send_user_message_question_reply>`;
+    const turn = render(text);
+    expect(turn.className).toBe("turn notice");
+    expect(visible(turn)).toContain("2 questions answered");
+    expect(visible(turn)).toContain("Q: Does Firefox work?\nA: Firefox seems to work okay.");
+    expect(visible(turn)).toContain("<img src=x onerror=alert(1)>");
+    expect(visible(turn)).not.toContain("private-call-id");
+    expect(visible(turn)).not.toContain("send_user_message_question_reply");
+    expect(details(turn)!.open).toBe(false);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+    expect(context.pendingBubble(text, "Queued", "reply:1").className).toBe("turn notice queued");
+    expect(details(render("Example: " + text))).toBeUndefined();
+    expect(details(render(text, "assistant"))).toBeUndefined();
+  });
+
+  test("malformed and oversized question replies stay compact with full details available", () => {
+    for (const body of ["not JSON", "null", "[]", '[{"answer":42}]', "x".repeat(200000),
+      JSON.stringify(Array.from({ length: 5 }, () => ({ question: "q".repeat(1000), answer: "a".repeat(5000) })))]) {
+      const text = `<send_user_message_question_reply>${body}</send_user_message_question_reply>`;
+      const turn = renderWithinTimeout(text);
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(visible(turn).length).toBeLessThan(4500);
+    }
+  });
+
   test("Claude completed/interim/failed tasks show metadata and result, retaining raw details", () => {
     for (const status of ["completed", "interim", "failed"]) {
       const text = task(status);

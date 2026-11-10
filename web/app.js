@@ -1107,6 +1107,22 @@ function collapsibleMessage(entry) {
     if (url && lines[2] === url) info.link = url;
     return info;
   }
+  if (wrapped("send_user_message_question_reply")) {
+    const info = notice("Question answered", "", "question reply");
+    if (text.length > 131072) return info;
+    try {
+      const tag = "send_user_message_question_reply";
+      const replies = JSON.parse(text.slice(tag.length + 2, -tag.length - 3));
+      if (Array.isArray(replies) && replies.length && replies.every(reply =>
+        reply && typeof reply.question === "string" && typeof reply.answer === "string")) {
+        info.label = replies.length === 1 ? "Question answered" : `${replies.length} questions answered`;
+        info.result = replies.slice(0, 3).map(reply =>
+          `Q: ${bounded(reply.question, 240)}\nA: ${bounded(reply.answer, 1200)}`).join("\n\n");
+        if (replies.length > 3) info.preview = `${replies.length - 3} more in details`;
+      }
+    } catch {}
+    return info;
+  }
   if (wrapped("task-notification")) {
     const info = notice("⤷ Task notification", "", "notification");
     if (text.length > 131072) return info;
@@ -1960,7 +1976,7 @@ async function refresh() {
       refreshDetail(),
       refreshDock(),
       refreshSubagent(),
-      !$("usage-page")?.hidden ? refreshUsage() : Promise.resolve(),
+      !$("usage-page")?.hidden ? refreshUsageSummary({ periodic: true }) : Promise.resolve(),
     ]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
@@ -2356,18 +2372,18 @@ async function refreshSubagent() {
 // --- Token Usage Page --------------------------------------------------------
 
 let usageRequestSeq = 0;
+let usageSummarySeq = 0;
 let lastUsageQuota = null;
+let usageBreakdownKey = null;
 const expandedUsageAgents = new Set();
+const usageView = { range: 7, unit: "usd", summary: null, fetchedAt: 0, showAllAgents: false, chartWidth: 0 };
+const USAGE_SUMMARY_INTERVAL_MS = 30_000;
+const USAGE_RANGE_LABEL = { 1: "today", 7: "last 7 days", 30: "last 30 days" };
+const USAGE_RANGE_SPEND = { 1: "Today's spend", 7: "7-day spend", 30: "30-day spend" };
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 function formatCompactTokens(n) {
-  const num = Number(n) || 0;
-  if (num <= 0) return "0";
-  if (num >= 1e9) return `${(num / 1e9).toFixed(1)}B`;
-  if (num >= 1e7) return `${Math.round(num / 1e6)}M`;
-  if (num >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
-  if (num >= 1e4) return `${Math.round(num / 1e3)}k`;
-  if (num >= 1e3) return `${(num / 1e3).toFixed(1)}k`;
-  return String(Math.round(num));
+  return window.usageDashboard.compactTokens(n);
 }
 
 function formatResetCountdown(iso) {
@@ -2421,46 +2437,87 @@ function showUsage(agentName) {
   $("page-title").textContent = "Token usage";
   $("page-title").classList.remove("agent-title");
   $("page-subtitle").textContent =
-    "Attribution across agents, subagents, workflows, tools, and cache anomalies.";
+    "What the fleet costs, who is spending it, and whether caching is paying off. Dollars are API-equivalent list prices, not a bill.";
   $("breadcrumb").textContent = "Token usage";
   document
     .querySelectorAll(".nav")
     .forEach((button) => button.classList.toggle("active", button.id === "usage-nav"));
   populateUsageAgentSelect();
-  if (typeof agentName === "string") {
-    if (agentName && ![...$("usage-agent").options].some((o) => o.value === agentName)) {
-      $("usage-agent").add(new Option(agentName, agentName));
-    }
-    $("usage-agent").value = agentName;
-  }
-  $("usage-clear-agent").hidden = !$("usage-agent").value;
   renderFleet();
-  refreshUsage();
+  refreshUsageSummary();
+  if (typeof agentName === "string") openUsageBreakdown(agentName);
 }
 
-async function refreshUsage(forceQuota = false) {
-  if (!state.authenticated || $("usage-page")?.hidden) return;
+function usageBreakdownScope() {
+  return `${$("usage-agent").value}\u0000${$("usage-provider").value}`;
+}
+
+// Expands the detailed breakdown scoped to one agent ("" = all); fetches only when needed.
+function openUsageBreakdown(agentName) {
+  const select = $("usage-agent");
+  if (agentName && ![...select.options].some((o) => o.value === agentName)) {
+    select.add(new Option(agentName, agentName));
+  }
+  select.value = agentName;
+  $("usage-clear-agent").hidden = !select.value;
+  const details = $("usage-breakdown");
+  if (details.open) refreshUsage();
+  else details.open = true;
+}
+
+async function refreshUsage() {
+  if (!state.authenticated || $("usage-page")?.hidden || !$("usage-breakdown").open) return;
   const reqId = ++usageRequestSeq;
   const epoch = state.sessionEpoch;
   const agent = $("usage-agent").value;
   const provider = $("usage-provider").value;
+  usageBreakdownKey = usageBreakdownScope();
   $("usage-clear-agent").hidden = !agent;
-  $("usage-status").textContent = "Loading token usage…";
-  const params = new URLSearchParams();
+  $("usage-breakdown-status").textContent = "Scanning transcripts…";
+  const params = new URLSearchParams({ quota: "0" });
   if (agent) params.set("agent", agent);
   if (provider) params.set("provider", provider);
-  if (forceQuota) params.set("refresh", "1");
-  else if (lastUsageQuota) params.set("quota", "0");
   try {
-    const data = await api("/api/usage" + (params.toString() ? "?" + params.toString() : ""));
+    const data = await api("/api/usage?" + params.toString());
     if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageRequestSeq) return;
-    if (data.quota) lastUsageQuota = data.quota;
-    renderUsage(data.tokens, lastUsageQuota);
-    $("usage-status").textContent = agent
+    renderUsage(data.tokens);
+    $("usage-breakdown-status").textContent = agent
       ? `Filtered to ${agent}`
       : `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
   } catch (error) {
     if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageRequestSeq) return;
+    usageBreakdownKey = null;
+    $("usage-breakdown-status").textContent = error.message;
+  }
+}
+
+// The summary is cheap (stored ledger); the periodic fleet refresh calls it at most every 30s.
+async function refreshUsageSummary({ periodic = false, refresh = false } = {}) {
+  if (!state.authenticated || $("usage-page")?.hidden) return;
+  if (periodic && Date.now() - usageView.fetchedAt < USAGE_SUMMARY_INTERVAL_MS) return;
+  usageView.fetchedAt = Date.now();
+  const reqId = ++usageSummarySeq;
+  const epoch = state.sessionEpoch;
+  const params = new URLSearchParams({ range: String(usageView.range) });
+  if ($("usage-repo").value) params.set("repo", $("usage-repo").value);
+  if ($("usage-summary-provider").value) params.set("provider", $("usage-summary-provider").value);
+  if (refresh) params.set("refresh", "1");
+  else if (lastUsageQuota) params.set("quota", "0");
+  if (!usageView.summary || !periodic) $("usage-status").textContent = "Loading…";
+  try {
+    const data = await api("/api/usage/summary?" + params.toString());
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageSummarySeq) return;
+    if (data.quota) lastUsageQuota = data.quota;
+    usageView.summary = data.summary;
+    renderUsageQuota(lastUsageQuota);
+    renderUsageDashboard();
+    const pending = data.summary?.indexing?.pendingFiles || 0;
+    const at = new Date(data.summary?.generatedAt || Date.now());
+    $("usage-status").textContent = pending > 0
+      ? `Indexing history… ${pending} file${pending === 1 ? "" : "s"} left`
+      : `Updated ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  } catch (error) {
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== usageSummarySeq) return;
     $("usage-status").textContent = error.message;
   }
 }
@@ -2499,10 +2556,451 @@ function renderUsageQuota(quotaList) {
   }
 }
 
-function renderUsage(report, quotaList) {
+const svgEl = (tag, attrs = {}) => {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+  return node;
+};
+
+function usageSwatch(color) {
+  const node = el("i", "usage-swatch");
+  node.style.background = color;
+  node.setAttribute("aria-hidden", "true");
+  return node;
+}
+
+function usageEmpty(text = "No usage recorded in this range.") {
+  return el("p", "empty usage-empty", text);
+}
+
+function showUsageTooltip(event, lines) {
+  const tip = $("usage-tooltip");
+  tip.replaceChildren(...lines.map((line, i) => el(i === 0 ? "strong" : "span", "", line)));
+  tip.hidden = false;
+  const pad = 12;
+  const { offsetWidth: w, offsetHeight: h } = tip;
+  let x = event.clientX + pad;
+  let y = event.clientY + pad;
+  if (x + w > window.innerWidth - 4) x = event.clientX - w - pad;
+  if (y + h > window.innerHeight - 4) y = event.clientY - h - pad;
+  tip.style.left = `${Math.max(4, x)}px`;
+  tip.style.top = `${Math.max(4, y)}px`;
+}
+
+function hideUsageTooltip() {
+  $("usage-tooltip").hidden = true;
+}
+
+function bindUsageTooltip(node, lines) {
+  node.addEventListener("pointerenter", (event) => showUsageTooltip(event, lines));
+  node.addEventListener("pointermove", (event) => showUsageTooltip(event, lines));
+  node.addEventListener("pointerleave", hideUsageTooltip);
+}
+
+function usageMeter(pct, severity = "") {
+  const track = el("div", "usage-bar-track");
+  const fill = el("div", "usage-bar-fill" + (severity ? ` ${severity}` : ""));
+  fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  track.append(fill);
+  return track;
+}
+
+function populateUsageFilter(select, values, label = (v) => v) {
+  const previous = select.value;
+  const list = [...values];
+  if (previous && !list.includes(previous)) list.unshift(previous);
+  const sig = JSON.stringify(list);
+  if (select.dataset.options !== sig) {
+    select.replaceChildren(new Option("All", ""), ...list.map((v) => new Option(label(v), v)));
+    select.dataset.options = sig;
+  }
+  select.value = previous;
+}
+
+function renderUsageDashboard() {
+  const summary = usageView.summary;
+  if (!summary) return;
+  const unit = usageView.unit;
+  populateUsageFilter($("usage-repo"), summary.filters?.repos || [], (r) => (r === "~" ? "~ (home)" : r));
+  populateUsageFilter($("usage-summary-provider"), summary.filters?.providers || [], (p) => p[0].toUpperCase() + p.slice(1));
+  for (const button of $("usage-range").querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.range) === usageView.range));
+  }
+  for (const button of $("usage-unit").querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.unit === unit));
+  }
+  const rangeLabel = USAGE_RANGE_LABEL[usageView.range];
+  document.querySelectorAll("#usage-page .usage-range-note").forEach((node) => (node.textContent = rangeLabel));
+  $("usage-chart-unit").textContent = unit === "tokens" ? "Active tokens" : "API-equivalent $";
+  $("usage-chart-heading").textContent = `Daily ${unit === "tokens" ? "tokens" : "spend"} by agent · last 14 days`;
+  $("usage-classes-heading").textContent = unit === "tokens" ? "Tokens by class" : "Spend by token class";
+
+  renderUsageKpis(summary, unit);
+  renderUsageClasses(summary, unit);
+  renderUsageModels(summary, unit);
+  renderUsageRepos(summary, unit);
+  renderUsageChart();
+  renderUsageTopAgents(summary, unit);
+}
+
+function renderUsageKpis(summary, unit) {
+  const U = window.usageDashboard;
+  const k = U.kpis(summary, unit);
+  const fmt = (n) => U.formatValue(n, unit);
+  const wrap = $("usage-dash-kpis");
+  wrap.replaceChildren();
+  const tile = (label, value, ...sub) => {
+    const card = el("div", "usage-kpi-card usage-dash-kpi");
+    const valueNode = el("strong", "usage-kpi-value");
+    valueNode.append(...[].concat(value));
+    const subNode = el("small", "muted");
+    subNode.append(...sub);
+    card.append(el("span", "usage-kpi-label", label), valueNode, subNode);
+    wrap.append(card);
+  };
+  const delta = [];
+  if (k.todayVsAverage !== null) {
+    const up = k.todayVsAverage >= 0;
+    delta.push(
+      " · ",
+      el("span", up ? "usage-delta up" : "usage-delta down", `${up ? "▲" : "▼"} ${Math.abs(Math.round(k.todayVsAverage * 100))}%`),
+      " vs 7-day daily avg",
+    );
+  }
+  tile("Today", fmt(k.today), `${k.activeToday} agent${k.activeToday === 1 ? "" : "s"} active`, ...delta);
+  tile(
+    "Last 7 days",
+    fmt(k.last7),
+    `${fmt(k.averagePerDay)} / day` + (k.peak ? ` · peak ${fmt(k.peak.value)} on ${U.longDay(k.peak.day)}` : ""),
+  );
+  tile(
+    "Last 30 days",
+    fmt(k.last30),
+    k.detached > 0 ? `${fmt(k.detached)} not tied to a current agent` : "All tied to current agents",
+  );
+  const cache = k.cache;
+  tile(
+    "Cache re-writes",
+    [U.percent(cache.ratio), el("small", "usage-kpi-unit", unit === "tokens" ? "of cache tokens" : "of spend")],
+    unit === "tokens"
+      ? `${U.compactTokens(cache.writes)} written vs ${U.compactTokens(cache.reads)} read · ${USAGE_RANGE_LABEL[usageView.range]}`
+      : `${U.money(cache.writes)} writing vs ${U.money(cache.reads)} reading · ${USAGE_RANGE_LABEL[usageView.range]}`,
+  );
+}
+
+function renderUsageChart() {
+  const summary = usageView.summary;
+  const wrap = $("usage-chart");
+  const legend = $("usage-chart-legend");
+  if (!summary || !wrap) return;
+  const U = window.usageDashboard;
+  const unit = usageView.unit;
+  const { days, series } = U.chartSeries(summary, unit, 14);
+  legend.replaceChildren();
+  wrap.replaceChildren();
+  if (!series.length) {
+    wrap.append(usageEmpty("No usage recorded in the last 14 days."));
+    return;
+  }
+  for (const s of series) {
+    const item = el("span", "usage-legend-item");
+    item.append(usageSwatch(s.color), el("span", "", s.label));
+    legend.append(item);
+  }
+  usageView.chartWidth = wrap.clientWidth;
+  const width = Math.max(240, wrap.clientWidth || 0);
+  const narrow = width < 520;
+  let height = narrow ? 230 : 300;
+  // Beside the right column, grow the plot to the column's height.
+  const card = wrap.closest(".usage-card");
+  const side = document.querySelector("#usage-page .usage-dash-side");
+  if (card && side && side.offsetLeft > card.offsetLeft + card.offsetWidth - 1) {
+    const overhead = wrap.getBoundingClientRect().top - card.getBoundingClientRect().top + 17;
+    // The side column stretches to the row, so measure its content, not its box.
+    const last = side.lastElementChild;
+    const sideHeight = last ? last.getBoundingClientRect().bottom - side.getBoundingClientRect().top : 0;
+    height = Math.max(height, Math.min(600, Math.floor(sideHeight - overhead)));
+  }
+  const geo = U.stackedBars(series, days.length, { width, height, left: narrow ? 40 : 48, top: narrow ? 10 : 22 });
+  const svg = svgEl("svg", {
+    width,
+    height,
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": `Daily ${unit === "tokens" ? "active tokens" : "API-equivalent spend"} by agent, last 14 days`,
+  });
+  for (const tick of geo.ticks) {
+    svg.append(svgEl("line", { x1: geo.left, x2: width - geo.right, y1: tick.y, y2: tick.y, class: "usage-grid-line" }));
+    const label = svgEl("text", { x: geo.left - 8, y: tick.y + 4, "text-anchor": "end", class: "usage-axis-label" });
+    label.textContent = U.axisLabel(tick.value, unit);
+    svg.append(label);
+  }
+  const showTotals = geo.slot >= 40;
+  const labelEvery = geo.slot >= 30 ? 1 : 2;
+  let labelled = 0;
+  for (const bar of geo.bars) {
+    const day = days[bar.index];
+    for (const seg of bar.segments) {
+      const s = series[seg.seriesIndex];
+      if (seg.height > 0) svg.append(svgEl("path", { d: seg.path, fill: s.color }));
+      const hit = svgEl("rect", {
+        x: bar.x,
+        y: seg.slotY,
+        width: bar.width,
+        height: Math.max(seg.slotHeight, 1),
+        class: "usage-hit",
+      });
+      bindUsageTooltip(hit, [s.label, `${U.longDay(day)} · ${U.formatValue(seg.value, unit)}`]);
+      svg.append(hit);
+    }
+    if (showTotals && bar.total > 0) {
+      const total = svgEl("text", { x: bar.center, y: bar.top - 6, "text-anchor": "middle", class: "usage-bar-total" });
+      total.textContent = U.formatValue(bar.total, unit);
+      svg.append(total);
+    }
+    if (bar.index % labelEvery === (days.length - 1) % labelEvery) {
+      const tick = svgEl("text", {
+        x: bar.center,
+        y: geo.baseline + 16,
+        "text-anchor": "middle",
+        class: "usage-axis-label" + (U.isWeekend(day) ? " weekend" : ""),
+      });
+      tick.textContent = U.dayTick(day, labelled++);
+      svg.append(tick);
+    }
+  }
+  svg.append(svgEl("line", { x1: geo.left, x2: width - geo.right, y1: geo.baseline, y2: geo.baseline, class: "usage-axis-line" }));
+  wrap.append(svg);
+}
+
+function renderUsageClasses(summary, unit) {
+  const U = window.usageDashboard;
+  const wrap = $("usage-classes");
+  wrap.replaceChildren();
+  const { total, rows } = U.tokenClasses(summary, unit);
+  if (!(total > 0)) {
+    wrap.append(usageEmpty());
+    return;
+  }
+  const bar = el("div", "usage-class-bar");
+  const list = el("div", "usage-class-list");
+  for (const row of rows) {
+    const value = unit === "tokens" ? U.compactTokens(row.value) : U.money(row.value);
+    const lines = [row.label, `${U.percent(row.share)} · ${value}`];
+    if (row.share > 0) {
+      const seg = el("div", "usage-class-seg");
+      seg.style.flexGrow = String(row.share);
+      seg.style.background = row.color;
+      bindUsageTooltip(seg, lines);
+      bar.append(seg);
+    }
+    const item = el("div", "usage-class-row");
+    const name = el("span", "usage-class-name");
+    name.append(usageSwatch(row.color), el("span", "", row.label));
+    item.append(name, el("strong", "usage-num", U.percent(row.share)), el("span", "usage-num muted", value));
+    bindUsageTooltip(item, lines);
+    list.append(item);
+  }
+  wrap.append(bar, list);
+}
+
+function renderUsageModels(summary, unit) {
+  const U = window.usageDashboard;
+  const wrap = $("usage-models");
+  wrap.replaceChildren();
+  const models = summary.byModel || [];
+  if (!models.length) {
+    wrap.append(usageEmpty());
+    return;
+  }
+  const valueOf = (m) => (unit === "tokens" ? m.activeTokens : m.costUSD) || 0;
+  const max = Math.max(0, ...models.map(valueOf));
+  const list = el("div", "usage-kv");
+  for (const m of models) {
+    const value = valueOf(m);
+    const name = el("span", "usage-kv-name", U.shortModel(m.model));
+    name.title = m.model;
+    const valueCell = el("span", "usage-num");
+    if (unit !== "tokens" && !m.priced) {
+      valueCell.append(el("span", "usage-pill", "unpriced"), " ", el("span", "muted", `${U.compactTokens(m.activeTokens)} tok`));
+    } else {
+      valueCell.textContent = U.formatValue(value, unit);
+    }
+    list.append(name, usageMeter(max > 0 ? (value / max) * 100 : 0), valueCell);
+  }
+  wrap.append(list);
+}
+
+function renderUsageRepos(summary, unit) {
+  const U = window.usageDashboard;
+  const wrap = $("usage-repos");
+  wrap.replaceChildren();
+  const repos = summary.byRepo || [];
+  if (!repos.length) {
+    wrap.append(usageEmpty());
+    return;
+  }
+  const valueOf = (r) => (unit === "tokens" ? r.activeTokens : r.costUSD) || 0;
+  const max = Math.max(0, ...repos.map(valueOf));
+  const list = el("div", "usage-kv usage-kv-repos");
+  for (const r of repos) {
+    const value = valueOf(r);
+    const valueCell = el("span", "usage-num");
+    valueCell.append(
+      el("span", "", U.formatValue(value, unit)),
+      el("span", "usage-subtle", ` · ${r.agents} agent${r.agents === 1 ? "" : "s"}`),
+    );
+    list.append(
+      el("span", "usage-kv-name", r.repo === "~" ? "~ (home)" : r.repo),
+      usageMeter(max > 0 ? (value / max) * 100 : 0),
+      valueCell,
+    );
+  }
+  wrap.append(list);
+}
+
+function renderUsageTopAgents(summary, unit) {
+  const U = window.usageDashboard;
+  const range = usageView.range;
+  const wrap = $("usage-top-agents");
+  wrap.replaceChildren();
+  const agents = U.topAgents(summary, unit);
+  $("usage-top-heading").textContent = `Top agents · ${USAGE_RANGE_LABEL[range]}`;
+  if (!agents.length) {
+    wrap.append(usageEmpty());
+    return;
+  }
+  const shown = usageView.showAllAgents ? agents : agents.slice(0, 10);
+  const max = Math.max(0, ...agents.map((a) => U.amountValue(a.range, unit)));
+  const table = el("table", "usage-table usage-top-table");
+  const htr = el("tr");
+  for (const [label, cls] of [
+    ["Agent", "usage-col-agent"],
+    [unit === "tokens" ? USAGE_RANGE_SPEND[range].replace("spend", "tokens") : USAGE_RANGE_SPEND[range], "usage-col-spend"],
+    ["Today", "num"],
+    ["Main / subagents", "usage-col-split"],
+    ["Cache writes", "num usage-col-cache"],
+    ["Context now", "usage-col-context"],
+    ["14 days", "usage-col-spark"],
+  ]) {
+    htr.append(el("th", cls, label));
+  }
+  const thead = el("thead");
+  thead.append(htr);
+  const tbody = el("tbody");
+  for (const agent of shown) {
+    const removed = agent.status === "removed";
+    const tr = el("tr", removed ? "usage-top-row removed" : "usage-top-row clickable");
+
+    const nameCell = el("td", "usage-col-agent");
+    const nameLine = el("div", "usage-agent-name");
+    nameLine.append(dot(agent.status), el("span", "usage-agent-label", agent.name));
+    const meta = [agent.repo === "~" ? "~ (home)" : agent.repo, U.shortModel(agent.model), agent.status].filter(Boolean).join(" · ");
+    nameCell.append(nameLine, el("div", "usage-agent-meta", meta));
+    nameCell.title = agent.name;
+
+    const spend = U.amountLabel(agent.range, unit);
+    const spendCell = el("td", "usage-col-spend");
+    const spendWrap = el("div", "usage-spend");
+    const value = U.amountValue(agent.range, unit);
+    spendWrap.append(
+      usageMeter(max > 0 ? (value / max) * 100 : 0),
+      el("span", "usage-num" + (spend.unpriced ? " muted" : ""), spend.text),
+    );
+    spendCell.append(spendWrap);
+
+    const todayValue = U.amountValue(agent.today, unit);
+    const todayLabel = U.amountLabel(agent.today, unit);
+    const todayCell = (agent.today?.calls || 0) > 0 || todayValue > 0
+      ? el("td", "num usage-num" + (todayLabel.unpriced ? " muted" : ""), todayLabel.text)
+      : el("td", "num usage-subtle", "—");
+
+    const splitCell = el("td", "usage-col-split");
+    const mainCost = agent.mainCostUSD || 0;
+    const subCost = agent.subagentCostUSD || 0;
+    const splitTotal = mainCost + subCost;
+    const split = el("div", "usage-split-track");
+    if (splitTotal > 0) {
+      const main = el("div", "usage-split-main");
+      main.style.flexGrow = String(mainCost / splitTotal);
+      const sub = el("div", "usage-split-sub");
+      sub.style.flexGrow = String(subCost / splitTotal);
+      split.append(main, sub);
+    }
+    splitCell.append(
+      split,
+      el(
+        "div",
+        "usage-agent-meta",
+        splitTotal > 0
+          ? `${Math.round((subCost / splitTotal) * 100)}% subagents (${agent.subagents})`
+          : `${agent.subagents} subagent${agent.subagents === 1 ? "" : "s"}`,
+      ),
+    );
+
+    const writeCell = el("td", "num usage-col-cache");
+    if (agent.cacheWriteShare === null || agent.cacheWriteShare === undefined) {
+      writeCell.append(el("span", "usage-subtle", "—"));
+    } else {
+      const sev = U.severity(agent.cacheWriteShare, 0.45, 0.6);
+      writeCell.append(el("span", "usage-pill" + (sev ? ` ${sev}` : ""), U.percent(agent.cacheWriteShare)));
+    }
+
+    const ctxCell = el("td", "usage-col-context");
+    const ctx = agent.context;
+    if (!ctx || !ctx.window || ctx.pct === null || ctx.pct === undefined) {
+      ctxCell.append(el("span", "usage-subtle", "—"));
+      if (ctx) ctxCell.title = `${formatCompactTokens(ctx.tokens)} tokens · window unknown`;
+    } else {
+      const sev = U.severity(ctx.pct, 60, 80);
+      const meter = el("div", "usage-context");
+      meter.append(usageMeter(ctx.pct, sev), el("span", "usage-num" + (sev ? " strong" : " muted"), formatCompactTokens(ctx.tokens)));
+      ctxCell.append(meter);
+      ctxCell.title = `${ctx.pct}% of ${formatCompactTokens(ctx.window)} · peak ${formatCompactTokens(ctx.peak)}` +
+        (ctx.compactions ? ` · ${ctx.compactions} compaction${ctx.compactions === 1 ? "" : "s"}` : "");
+    }
+
+    const sparkCell = el("td", "usage-col-spark");
+    const spark = U.sparkline(U.lastN(U.dailyValues(agent, unit), 14), { width: 86, height: 22 });
+    const svg = svgEl("svg", { width: 86, height: 22, viewBox: "0 0 86 22", role: "img", "aria-label": "14-day trend" });
+    svg.append(svgEl("polyline", { points: spark.points, class: "usage-spark-line" }));
+    if (spark.last) svg.append(svgEl("circle", { cx: spark.last.x, cy: spark.last.y, r: 2.5, class: "usage-spark-dot" }));
+    sparkCell.append(svg);
+
+    tr.append(nameCell, spendCell, todayCell, splitCell, writeCell, ctxCell, sparkCell);
+    if (!removed) {
+      tr.tabIndex = 0;
+      tr.setAttribute("aria-label", `Open the detailed breakdown for ${agent.name}`);
+      const open = () => {
+        openUsageBreakdown(agent.name);
+        $("usage-breakdown").scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+      tr.onclick = open;
+      tr.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      };
+    }
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  wrap.append(table);
+  if (agents.length > 10) {
+    const toggle = el("button", "text-button usage-show-all", usageView.showAllAgents ? "Show top 10" : `Show all ${agents.length}`);
+    toggle.type = "button";
+    toggle.onclick = () => {
+      usageView.showAllAgents = !usageView.showAllAgents;
+      renderUsageTopAgents(usageView.summary, usageView.unit);
+    };
+    wrap.append(toggle);
+  }
+}
+
+function renderUsage(report) {
   if (!report) return;
   populateUsageAgentSelect(report.agents || []);
-  renderUsageQuota(quotaList);
 
   const { main, subagents, combined } = report.totals || {
     main: {},
@@ -2716,7 +3214,7 @@ function renderUsage(report, quotaList) {
         toggleBtn.onclick = () => {
           if (expandedUsageAgents.has(agent.name)) expandedUsageAgents.delete(agent.name);
           else expandedUsageAgents.add(agent.name);
-          renderUsage(report, quotaList);
+          renderUsage(report);
         };
         moreTd.append(toggleBtn);
         moreTr.append(moreTd);
@@ -2860,10 +3358,36 @@ function renderUsage(report, quotaList) {
 }
 
 $("usage-nav").onclick = () => showUsage();
+$("usage-range").onclick = (event) => {
+  const button = event.target.closest("button[data-range]");
+  if (!button || Number(button.dataset.range) === usageView.range) return;
+  usageView.range = Number(button.dataset.range);
+  refreshUsageSummary();
+};
+$("usage-unit").onclick = (event) => {
+  const button = event.target.closest("button[data-unit]");
+  if (!button || button.dataset.unit === usageView.unit) return;
+  usageView.unit = button.dataset.unit;
+  renderUsageDashboard();
+};
+$("usage-repo").onchange = () => refreshUsageSummary();
+$("usage-summary-provider").onchange = () => refreshUsageSummary();
+$("usage-refresh").onclick = () => refreshUsageSummary({ refresh: true });
+$("usage-breakdown").addEventListener("toggle", () => {
+  if ($("usage-breakdown").open && usageBreakdownKey !== usageBreakdownScope()) refreshUsage();
+});
 $("usage-agent").onchange = () => refreshUsage();
 $("usage-provider").onchange = () => refreshUsage();
-$("usage-refresh").onclick = () => refreshUsage(true);
+$("usage-breakdown-refresh").onclick = () => refreshUsage();
 $("usage-clear-agent").onclick = () => {
   $("usage-agent").value = "";
   refreshUsage();
 };
+let usageChartFrame = 0;
+new ResizeObserver(() => {
+  cancelAnimationFrame(usageChartFrame);
+  usageChartFrame = requestAnimationFrame(() => {
+    const width = $("usage-chart").clientWidth;
+    if (width > 0 && Math.abs(width - usageView.chartWidth) > 1 && usageView.summary) renderUsageChart();
+  });
+}).observe($("usage-chart"));

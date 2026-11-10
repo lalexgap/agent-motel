@@ -139,6 +139,9 @@ usage:
                               by agent/subagent, workflow, tool category, and
                               top budget anomalies (with <name>, deep-dives
                               that agent; --tokens skips the live quota check)
+  am usage --summary [--days 1|7|30] [--json]
+                              spend from the stored usage ledger: $ today/7d/30d
+                              and the top agents with cost and context fill
   am caretaker [question...]  open the Codex housekeeping agent; asks before cleanup
                               --scan performs an inspection-only pass (no attach)
   am concierge [question...]  open the fleet concierge: a reserved agent whose
@@ -688,6 +691,8 @@ async function main(): Promise<void> {
         agent: args.positional[0],
         tokensOnly: !!args.flags.tokens,
         quotaOnly: !!args.flags["quota-only"],
+        summary: !!args.flags.summary,
+        days: numberFlag(args, "days"),
       });
       break;
     case "caretaker":

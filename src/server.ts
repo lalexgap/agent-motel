@@ -25,6 +25,7 @@ import { readSubagents, reconcileOpenSubagents } from "./subagents";
 import { jsonRecords } from "./commands/subagents";
 import { collectUsage, type ProviderUsage } from "./usage";
 import { collectAgentTokenUsage, collectFleetTokenUsage, enrichSubagentsWithTokens } from "./tokenUsage";
+import { ledgerAgeMs, readUsageLedger, refreshUsageLedger, SUMMARY_RANGES, usageSummary, type SummaryRange } from "./usageLedger";
 import { transcriptJson, subagentTranscriptJson } from "./commands/transcript";
 import { newCommand } from "./commands/new";
 import { stopAgent, destroyAgent } from "./commands/rm";
@@ -332,6 +333,32 @@ async function cachedQuotaUsage(refresh: boolean): Promise<ProviderUsage[]> {
   const report = await collectUsage();
   quotaCache = { at: Date.now(), data: report.providers };
   return report.providers;
+}
+
+const USAGE_LEDGER_STALE_MS = 60_000;
+
+export async function usageSummaryResponse(params: URLSearchParams): Promise<Response> {
+  const rawRange = params.get("range") ?? "7";
+  const range = Number(rawRange) as SummaryRange;
+  if (!/^\d+$/.test(rawRange) || !SUMMARY_RANGES.includes(range)) {
+    return json({ error: `invalid range "${rawRange}" (expected 1, 7, or 30)` }, 400);
+  }
+  const rawProvider = params.get("provider") || null;
+  if (rawProvider !== null && !isProvider(rawProvider)) {
+    return json({ error: `unknown provider "${rawProvider}"` }, 400);
+  }
+  const repo = params.get("repo")?.trim() || undefined;
+  const refresh = params.get("refresh") === "1";
+  try {
+    if (refresh || ledgerAgeMs(readUsageLedger()) > USAGE_LEDGER_STALE_MS) {
+      refreshUsageLedger({ budgetMs: 1500 });
+    }
+    const summary = usageSummary({ range, repo, provider: rawProvider ?? undefined });
+    const quota = params.get("quota") !== "0" ? await cachedQuotaUsage(refresh) : undefined;
+    return json({ summary, ...(quota ? { quota } : {}) });
+  } catch (error) {
+    return json({ error: (error as Error).message }, 500);
+  }
 }
 
 // `am models --json` here or on a fleet host, cached per host.
@@ -700,6 +727,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     return json(buildFleetSummary(cachedFleetRows(), new Date(), gcSummaryLine()));
   }
 
+  // GET /api/usage/summary?range=1|7|30[&repo=][&provider=][&quota=0][&refresh=1]
+  // — the stored usage ledger, refreshed by one bounded slice when stale.
+  if (parts.length === 2 && parts[0] === "usage" && parts[1] === "summary" && method === "GET") {
+    return usageSummaryResponse(new URL(req.url).searchParams);
+  }
+
   // GET /api/usage[?provider=claude|codex][&agent=name][&refresh=1][&quota=0]
   if (parts.length === 1 && parts[0] === "usage" && method === "GET") {
     const params = new URL(req.url).searchParams;
@@ -1066,7 +1099,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/usage.js": "web/usage.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

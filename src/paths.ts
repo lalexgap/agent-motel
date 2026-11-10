@@ -133,6 +133,18 @@ export function planFile(name: string): string {
   return join(plansDir(), `${name}.md`);
 }
 
+export function usageDir(): string {
+  return join(baseDir(), "usage");
+}
+
+export function usageLedgerFile(): string {
+  return join(usageDir(), "ledger.json");
+}
+
+export function usageMessageIdsFile(): string {
+  return join(usageDir(), "message-ids.log");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }

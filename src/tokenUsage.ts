@@ -526,16 +526,37 @@ export interface ParsedTranscriptUsage {
   anomalies: BudgetAnomaly[];
 }
 
-interface StepEvent {
+export interface StepEvent {
   timestamp?: string;
   model?: string;
+  messageId?: string;
   inputTokens: number;
   cacheCreationTokens: number;
+  // Split of cacheCreationTokens by cache TTL (Claude only; others count as 5m).
+  cacheCreation5mTokens?: number;
+  cacheCreation1hTokens?: number;
   cacheReadTokens: number;
   outputTokens: number;
   thinkingTokens: number;
+  fast?: boolean;
   tools: Array<{ category: string; workflow?: string; summary: string }>;
   workflow: string;
+}
+
+export function stepHasTokens(s: StepEvent): boolean {
+  return s.inputTokens > 0 || s.cacheCreationTokens > 0 || s.cacheReadTokens > 0 || s.outputTokens > 0;
+}
+
+export interface ClaudeCompaction {
+  timestamp?: string;
+  preTokens?: number;
+}
+
+export interface ClaudeSteps {
+  // In first-seen order, merged by message.id (last line's usage wins); includes zero-token steps.
+  steps: StepEvent[];
+  costUSD?: number;
+  compactions: ClaudeCompaction[];
 }
 
 function addWorkflowStep(
@@ -713,11 +734,20 @@ export function parseClaudeTranscriptTokens(
     ownFile?: boolean;
   },
 ): ParsedTranscriptUsage {
+  const { steps, costUSD } = parseClaudeSteps(jsonl, context);
+  return foldSteps(steps.filter(stepHasTokens), { ...context, costUSD });
+}
+
+export function parseClaudeSteps(
+  jsonl: string,
+  context: { subagentLabel?: string; initialWorkflow?: string; ownFile?: boolean } = {},
+): ClaudeSteps {
   let activeWorkflow =
     context.initialWorkflow ??
     detectWorkflowFromText(context.subagentLabel) ??
     "general";
   let costUSD: number | undefined;
+  const compactions: ClaudeCompaction[] = [];
 
   // Group assistant entries by message.id so multi-block responses are counted once.
   const byMessageId = new Map<string, StepEvent>();
@@ -740,6 +770,7 @@ export function parseClaudeTranscriptTokens(
       !line.includes('"type":"assistant"') &&
       !line.includes('"type": "assistant"') &&
       !line.includes('"cost-state"') &&
+      !line.includes('"compact_boundary"') &&
       !line.includes("/skills/") &&
       !line.includes("Base directory for this skill")
     ) {
@@ -759,6 +790,15 @@ export function parseClaudeTranscriptTokens(
     }
 
     if (!context.ownFile && entry.isSidechain === true) continue;
+
+    if (entry.type === "system" && entry.subtype === "compact_boundary") {
+      const preTokens = Number(entry.compactMetadata?.preTokens);
+      compactions.push({
+        ...(typeof entry.timestamp === "string" ? { timestamp: entry.timestamp } : {}),
+        ...(Number.isFinite(preTokens) ? { preTokens } : {}),
+      });
+      continue;
+    }
 
     if (entry.type === "user") {
       const content = entry.message?.content;
@@ -795,12 +835,14 @@ export function parseClaudeTranscriptTokens(
       pendingUserToolsReset = false;
     }
 
-    const msgId = typeof msg.id === "string" && msg.id ? msg.id : `anon_${++anonymousSeq}`;
+    const realId = typeof msg.id === "string" && msg.id ? msg.id : undefined;
+    const msgId = realId ?? `anon_${++anonymousSeq}`;
     let step = byMessageId.get(msgId);
     if (!step) {
       step = {
         timestamp: typeof entry.timestamp === "string" ? entry.timestamp : undefined,
         model: typeof msg.model === "string" ? msg.model : undefined,
+        ...(realId ? { messageId: realId } : {}),
         inputTokens: 0,
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
@@ -842,20 +884,21 @@ export function parseClaudeTranscriptTokens(
       step.cacheReadTokens = Number(usage.cache_read_input_tokens) || 0;
       step.outputTokens = Number(usage.output_tokens) || 0;
       step.thinkingTokens = Number(usage.output_tokens_details?.thinking_tokens) || 0;
+      const split = usage.cache_creation;
+      const has5m = split && typeof split === "object" && split.ephemeral_5m_input_tokens !== undefined;
+      const has1h = split && typeof split === "object" && split.ephemeral_1h_input_tokens !== undefined;
+      if (has5m || has1h) {
+        step.cacheCreation5mTokens = Number(split.ephemeral_5m_input_tokens) || 0;
+        step.cacheCreation1hTokens = Number(split.ephemeral_1h_input_tokens) || 0;
+      } else {
+        step.cacheCreation5mTokens = step.cacheCreationTokens;
+        step.cacheCreation1hTokens = 0;
+      }
+      step.fast = usage.speed === "fast";
     }
   }
 
-  const steps = messageOrder
-    .map((id) => byMessageId.get(id)!)
-    .filter(
-      (s) =>
-        s.inputTokens > 0 ||
-        s.cacheCreationTokens > 0 ||
-        s.cacheReadTokens > 0 ||
-        s.outputTokens > 0,
-    );
-
-  return foldSteps(steps, { ...context, costUSD });
+  return { steps: messageOrder.map((id) => byMessageId.get(id)!), costUSD, compactions };
 }
 
 export function parseCodexTranscriptTokens(
@@ -867,6 +910,15 @@ export function parseCodexTranscriptTokens(
     initialWorkflow?: string;
   },
 ): ParsedTranscriptUsage {
+  const { steps, codexMeta } = parseCodexSteps(jsonl, context);
+  const folded = foldSteps(steps, context);
+  return { ...folded, ...(codexMeta ? { codexMeta } : {}) };
+}
+
+export function parseCodexSteps(
+  jsonl: string,
+  context: { subagentLabel?: string; initialWorkflow?: string } = {},
+): { steps: StepEvent[]; codexMeta?: { nickname?: string; role?: string; firstPrompt?: string } } {
   let activeWorkflow =
     context.initialWorkflow ??
     detectWorkflowFromText(context.subagentLabel) ??
@@ -980,6 +1032,8 @@ export function parseCodexTranscriptTokens(
         model: currentModel,
         inputTokens,
         cacheCreationTokens,
+        cacheCreation5mTokens: cacheCreationTokens,
+        cacheCreation1hTokens: 0,
         cacheReadTokens,
         outputTokens,
         thinkingTokens,
@@ -1007,9 +1061,8 @@ export function parseCodexTranscriptTokens(
     }
   }
 
-  const folded = foldSteps(steps, context);
   return {
-    ...folded,
+    steps,
     ...(nickname || metaRole || firstPrompt
       ? { codexMeta: { nickname, role: metaRole, firstPrompt } }
       : {}),
@@ -1041,6 +1094,19 @@ export function parseAntigravityTranscriptTokens(
     initialWorkflow?: string;
   },
 ): ParsedTranscriptUsage {
+  const { steps, antigravitySubagents, finishedAt } = parseAntigravitySteps(jsonl, context);
+  const folded = foldSteps(steps, context);
+  return {
+    ...folded,
+    ...(antigravitySubagents.length > 0 ? { antigravitySubagents } : {}),
+    ...(finishedAt ? { finishedAt } : {}),
+  };
+}
+
+export function parseAntigravitySteps(
+  jsonl: string,
+  context: { subagentLabel?: string; initialWorkflow?: string } = {},
+): { steps: StepEvent[]; antigravitySubagents: SubagentRecord[]; finishedAt?: string } {
   let activeWorkflow =
     context.initialWorkflow ??
     detectWorkflowFromText(context.subagentLabel) ??
@@ -1175,6 +1241,8 @@ export function parseAntigravityTranscriptTokens(
         model: currentModel,
         inputTokens,
         cacheCreationTokens,
+        cacheCreation5mTokens: cacheCreationTokens,
+        cacheCreation1hTokens: 0,
         cacheReadTokens,
         outputTokens,
         thinkingTokens,
@@ -1190,12 +1258,7 @@ export function parseAntigravityTranscriptTokens(
     }
   }
 
-  const folded = foldSteps(steps, context);
-  return {
-    ...folded,
-    ...(antigravitySubagents.length > 0 ? { antigravitySubagents } : {}),
-    ...(finishedAt ? { finishedAt } : {}),
-  };
+  return { steps, antigravitySubagents, ...(finishedAt ? { finishedAt } : {}) };
 }
 
 // Build a single sessionId -> file path index across ~/.codex/sessions so we
@@ -1318,7 +1381,7 @@ export function enrichSubagentsWithTokens(
   });
 }
 
-function discoverExtraClaudeSubagents(
+export function discoverExtraClaudeSubagents(
   mainTranscript: string | null,
   knownIds: Set<string>,
 ): SubagentRecord[] {
