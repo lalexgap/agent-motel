@@ -63,7 +63,8 @@ export interface AutoGcState {
   // What the dry runs before arming have already reported as removable, so
   // the next one continues instead of starting over: on a host with hundreds
   // of worktrees no single run reaches them all inside its budget.
-  preview?: { policy: number; worktrees: Record<string, Preview> };
+  // Keyed by the age settings too: changing them changes what is removable.
+  preview?: { policy: number; ages?: string; worktrees: Record<string, Preview> };
   lastRun?: GcRunSummary;
   lastSkip?: { at: string; reason: string };
   // A sweep that exited abnormally; no retry until the next night's window.
@@ -263,7 +264,10 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
       else pending.push(candidate);
     }
     const arming = mode === "dry-run" && !autoGcArmed(before);
-    const earlier = arming && before.preview?.policy === GC_POLICY_VERSION ? before.preview.worktrees : {};
+    const ages = `${policy.staleDays ?? 0}/${policy.ignoredDays ?? 0}`;
+    const earlier = arming && before.preview?.policy === GC_POLICY_VERSION && before.preview.ages === ages
+      ? before.preview.worktrees
+      : {};
     const previews: Record<string, Preview> = {};
     const preview = (path: string, seen: Preview) => {
       previews[path] = seen;
@@ -322,7 +326,7 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
       // what this policy collects; one cut short is continued by the next.
       if (!summary.stopped && summary.uninspected === 0) state.armedPolicy = GC_POLICY_VERSION;
       if (autoGcArmed(state)) delete state.preview;
-      else if (arming) state.preview = { policy: GC_POLICY_VERSION, worktrees: previews };
+      else if (arming) state.preview = { policy: GC_POLICY_VERSION, ages, worktrees: previews };
     });
     return { summary };
   } finally {

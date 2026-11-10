@@ -317,6 +317,21 @@ describe("runAutoGc", () => {
     expect(existsSync(wt)).toBe(true);
   });
 
+  test("previews from before an age setting changed are inspected again", () => {
+    addWorktree("a");
+    addWorktree("b");
+    const base = { ...loadConfig(), gcAutoMaxMinutes: 1 };
+    const run = (config: typeof base) => {
+      const result = fakeClock((sleep) => runAutoGc({ trigger: "nightly", config, pressure: () => CALM, sleep: () => sleep(120_000) }));
+      if (!("summary" in result)) throw new Error("skipped");
+      return result.summary;
+    };
+    expect(run(base).worktrees).toBe(1);
+    const second = run({ ...base, gcStaleDays: base.gcStaleDays + 1 });
+    expect([second.worktrees, second.uninspected]).toEqual([1, 1]);
+    expect(readAutoGcState().armedPolicy).toBeUndefined();
+  });
+
   test("the time budget ends a sweep between worktrees", () => {
     updateAutoGcState((state) => { state.armedPolicy = GC_POLICY_VERSION; });
     addWorktree("a");
