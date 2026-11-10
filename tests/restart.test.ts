@@ -297,6 +297,12 @@ describe("POST /api/agents/:name/restart", () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+  const changeModel = (name: string, body: unknown) =>
+    fetch(`${server.url}/api/agents/${name}/model`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    });
 
   test("restarts on the agent's current model and answers ok; 404 for an unknown agent", async () => {
     await restartAgent("api", { model: "sonnet", effort: "low" });
@@ -314,6 +320,31 @@ describe("POST /api/agents/:name/restart", () => {
       expect(((await res.json()) as any).error).toContain(`${Object.keys(body)[0]} is not supported`);
     }
     expect(existsSync(join(home, "launch"))).toBe(false);
+  });
+
+  test("changes configured model and effort through the dedicated endpoint", async () => {
+    const changed = await changeModel("api", { model: "opus", effort: "high" });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toEqual({ ok: true, model: "opus", effort: "high" });
+    expect(readAgent("api")).toMatchObject({ model: "opus", effort: "high", sessionId: "conversation-123" });
+    expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'opus' '--effort' 'high' '--resume' 'conversation-123'");
+
+    const defaults = await changeModel("api", { model: null, effort: null });
+    expect(defaults.status).toBe(200);
+    expect(await defaults.json()).toEqual({ ok: true, model: null, effort: null });
+    expect(readAgent("api")!.model).toBeUndefined();
+    expect(readAgent("api")!.effort).toBeUndefined();
+  });
+
+  test("model endpoint validates the exact agent and body before lifecycle side effects", async () => {
+    for (const body of [
+      {}, { model: 1 }, { model: "" }, { model: " opus" }, { model: "--help" }, { model: "bad\nmodel" },
+      { model: "x".repeat(257) }, { model: "opus", effort: 1 }, { model: "opus", effort: "" },
+      { model: "opus", extra: true }, [], null,
+    ]) expect((await changeModel("api", body)).status).toBe(400);
+    expect((await changeModel("ap", { model: "opus" })).status).toBe(404);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({ status: "working", sessionId: "conversation-123" });
   });
 
   test("detail reports the model and effort", async () => {

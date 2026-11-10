@@ -931,6 +931,26 @@ describe("remote agents api (host:name)", () => {
     expect(calls).toEqual([]);
   });
 
+  test("model change forwards exact host defaults and preserves an omitted effort", async () => {
+    expect((await post("/api/agents/laptop:api/model", { model: "gpt-next", effort: "high" })).status).toBe(200);
+    expect((await post("/api/agents/laptop:api/model", { model: null, effort: null })).status).toBe(200);
+    expect((await post("/api/agents/laptop:api/model", { model: "gpt-fast" })).status).toBe(200);
+    expect(calls.map(call => call.args)).toEqual([
+      ["__detail", "api", "--local", "--exact"],
+      ["restart", "api", "--model", "gpt-next", "--effort", "high", "--local", "--exact"],
+      ["__detail", "api", "--local", "--exact"],
+      ["restart", "api", "--model", "default", "--effort", "default", "--local", "--exact"],
+      ["__detail", "api", "--local", "--exact"],
+      ["restart", "api", "--model", "gpt-fast", "--local", "--exact"],
+    ]);
+  });
+
+  test("invalid remote model bodies never reach the target host", async () => {
+    for (const body of [{}, { model: "" }, { model: "--help" }, { model: "bad\0value" }, { model: null, effort: [] }, { model: null, unknown: true }])
+      expect((await post("/api/agents/laptop:api/model", body)).status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
   test("an am without __detail (ignores --exact) is refused before any agent operation", async () => {
     reply = (call) =>
       call.args[0] === "__detail"

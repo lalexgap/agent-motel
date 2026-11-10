@@ -250,6 +250,7 @@ function lock() {
   $("create-dialog").close();
   $("handover-dialog").close();
   handoverSource = null;
+  closeModelDialog();
   manageAgent = null;
   diffRequest = null;
   $("workspace-diff-dialog").close();
@@ -327,6 +328,7 @@ $("logout").onclick = async () => {
 };
 $("mobile-logout").onclick = () => $("logout").click();
 function showOverview(filter = "live") {
+  closeModelDialog();
   $("search-page").hidden = true;
   $("search-nav").classList.remove("active");
   if ($("usage-page")) $("usage-page").hidden = true;
@@ -571,6 +573,7 @@ function saveDraft() {
   if (state.selected) state.drafts.set(state.selected, $("message").value);
 }
 async function selectAgent(name, mode) {
+  if (modelDialog && modelDialog.name !== name) closeModelDialog();
   $("search-page").hidden = true;
   if ($("usage-page")) $("usage-page").hidden = true;
   saveDraft();
@@ -1294,6 +1297,8 @@ async function refreshDetail() {
   );
   if (state.detailMode === "terminal") agentTerminal.open(name, detail.status);
   updateAgentActions(detail, document.querySelector(".actions"), name);
+  $("change-model-agent").hidden = !actionAvailable(detail, "model");
+  $("change-model-agent").disabled = pendingActions.has(name);
   $("handover-agent").hidden = !actionAvailable(detail, "handover");
   moreActions.hidden = [...moreActions.querySelectorAll(".more-menu button")].every((button) => button.hidden);
   $("detail-meta").textContent = detail.statusReason || detail.task || "";
@@ -1699,11 +1704,11 @@ function capabilityAvailable(row, capability) {
 }
 function actionAvailable(row, action) {
   if (!row) return false;
-  const capability = { handover: "handoff", interrupt: "interruptByReceipt" }[action] || action;
+  const capability = { handover: "handoff", interrupt: "interruptByReceipt", model: "restart" }[action] || action;
   if (!capabilityAvailable(row, capability)) return false;
   const stopped = ["dead", "exited"].includes(row.status);
   if (action === "resume") return stopped;
-  if (["stop", "restart", "terminal"].includes(action)) return !stopped;
+  if (["stop", "restart", "model", "terminal"].includes(action)) return !stopped;
   if (action === "interrupt") return ["working", "waiting", "needs-attention"].includes(row.status);
   if (action === "rename") return row.name !== "concierge";
   if (action === "handover") return row.provider !== "antigravity" && row.capabilities?.handoff !== false && (row.role?.name || row.role) !== "concierge" && row.name !== "concierge";
@@ -1737,6 +1742,104 @@ async function runAgentAction(name, action) {
   }
 }
 document.querySelectorAll("[data-action]").forEach(button => { button.onclick = () => runAgentAction(state.selected, button.dataset.action); });
+
+let modelDialog = null;
+function modelChoices(catalog, current) {
+  const choices = [{ value: "", label: "Provider default" }];
+  for (const model of catalog?.models || []) choices.push({ value: model.id, label: model.label || model.id });
+  if (current && !choices.some(choice => choice.value === current) && catalog?.modelsExhaustive === false)
+    choices.push({ value: current, label: current + " (configured)" });
+  return choices;
+}
+function effortChoices(catalog, modelId, current) {
+  const model = catalog?.models?.find(model => model.id === modelId);
+  const efforts = model?.efforts?.length ? model.efforts : catalog?.efforts || [];
+  const choices = [{ value: "", label: "Provider default" }, ...efforts.map(value => ({ value, label: value }))];
+  if (current && !choices.some(choice => choice.value === current) && catalog?.effortsExhaustive === false)
+    choices.push({ value: current, label: current + " (configured)" });
+  return choices;
+}
+function replaceOptions(select, choices, selected) {
+  select.replaceChildren(...choices.map(choice => new Option(choice.label, choice.value)));
+  select.value = choices.some(choice => choice.value === selected) ? selected : "";
+}
+function loadModelDialogEfforts(context, selected = $("model-effort").value) {
+  if (modelDialog !== context) return;
+  replaceOptions($("model-effort"), effortChoices(context.catalog, $("model-select").value, selected), selected);
+}
+function closeModelDialog() {
+  modelDialog = null;
+  if ($("model-dialog").open) $("model-dialog").close();
+}
+$("close-model-dialog").onclick = closeModelDialog;
+$("model-dialog").onclose = () => { modelDialog = null; };
+async function openModelDialog(name) {
+  if (!name || !state.authenticated || pendingActions.has(name)) return;
+  const detail = state.detailCapabilities?.name === name ? state.detailCapabilities.detail : null;
+  if (!detail?.provider) { notice("Agent details are still loading. Try again shortly."); return; }
+  const context = {
+    name, provider: detail.provider, epoch: state.sessionEpoch,
+    model: detail.model ?? null, effort: detail.effort ?? null,
+    catalog: null, pending: false,
+  };
+  modelDialog = context;
+  $("model-form").reset();
+  $("model-agent-name").textContent = name + " · " + detail.provider;
+  $("model-error").textContent = "";
+  $("model-submit").textContent = "Restart with model";
+  replaceOptions($("model-select"), [{ value: "", label: "Loading models…" }], "");
+  replaceOptions($("model-effort"), [{ value: "", label: "Loading efforts…" }], "");
+  $("model-select").disabled = $("model-effort").disabled = $("model-submit").disabled = true;
+  $("model-dialog").showModal();
+  const host = name.includes(":") ? name.split(":", 1)[0] : "";
+  try {
+    const catalogs = await api("/api/models" + (host ? "?host=" + encodeURIComponent(host) : ""));
+    if (modelDialog !== context || !state.authenticated || context.epoch !== state.sessionEpoch || state.selected !== name || !$("model-dialog").open) return;
+    context.catalog = (Array.isArray(catalogs) ? catalogs : catalogs.catalogs || []).find(catalog => catalog.provider === context.provider);
+    if (!context.catalog) throw new Error(`No ${context.provider} model catalog is available on ${host || "this server"}.`);
+    replaceOptions($("model-select"), modelChoices(context.catalog, context.model), context.model || "");
+    loadModelDialogEfforts(context, context.effort || "");
+    $("model-select").disabled = $("model-effort").disabled = $("model-submit").disabled = false;
+  } catch (error) {
+    if (modelDialog === context && context.epoch === state.sessionEpoch && $("model-dialog").open)
+      $("model-error").textContent = "Models could not be loaded: " + error.message;
+  }
+}
+$("change-model-agent").onclick = () => openModelDialog(state.selected);
+$("model-select").onchange = () => {
+  $("model-error").textContent = "";
+  if (modelDialog) loadModelDialogEfforts(modelDialog);
+};
+$("model-effort").onchange = () => { $("model-error").textContent = ""; };
+$("model-form").onsubmit = async event => {
+  event.preventDefault();
+  const context = modelDialog;
+  if (!context?.catalog || context.pending || !state.authenticated || context.epoch !== state.sessionEpoch) return;
+  context.pending = true;
+  pendingActions.add(context.name);
+  $("model-submit").disabled = true;
+  $("model-submit").textContent = "Restarting…";
+  $("model-error").textContent = "";
+  try {
+    await api("/api/agents/" + encodeURIComponent(context.name) + "/model", {
+      model: $("model-select").value || null,
+      effort: $("model-effort").value || null,
+    });
+    if (modelDialog !== context || !state.authenticated || context.epoch !== state.sessionEpoch) return;
+    closeModelDialog();
+    await refresh();
+  } catch (error) {
+    if (modelDialog === context && context.epoch === state.sessionEpoch)
+      $("model-error").textContent = error.message + " Refresh and check the agent's configured model before retrying.";
+  } finally {
+    pendingActions.delete(context.name);
+    context.pending = false;
+    if (modelDialog === context) {
+      $("model-submit").disabled = !context.catalog;
+      $("model-submit").textContent = "Restart with model";
+    }
+  }
+};
 let manageAgent = null;
 $("close-manage-agent").onclick = () => $("manage-agent-dialog").close();
 async function openManageAgent(name, action) {

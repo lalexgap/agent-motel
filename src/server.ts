@@ -273,6 +273,29 @@ async function refuseFields(req: Request, fields: string[]): Promise<Response | 
 const stopBody = (req: Request) => refuseFields(req, ["ifIdle"]);
 const restartBody = (req: Request) => refuseFields(req, ["ifIdle", "model", "effort"]);
 
+interface ModelSelectionBody {
+  model: string | null;
+  effort?: string | null;
+}
+
+async function modelSelectionBody(req: Request): Promise<ModelSelectionBody | Response> {
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || Array.isArray(body) || typeof body !== "object") return json({ error: "JSON object required" }, 400);
+  const fields = Object.keys(body);
+  const extra = fields.find(field => field !== "model" && field !== "effort");
+  if (extra) return json({ error: `${extra} is not supported` }, 400);
+  if (!Object.hasOwn(body, "model")) return json({ error: "model is required" }, 400);
+  for (const [field, limit] of [["model", 256], ["effort", 64]] as const) {
+    if (!Object.hasOwn(body, field)) continue;
+    const value = body[field];
+    if (value !== null && typeof value !== "string") return json({ error: `${field} must be a string or null` }, 400);
+    if (typeof value === "string" && (!value.length || value.length > limit || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value) || value.startsWith("-"))) {
+      return json({ error: `${field} is invalid` }, 400);
+    }
+  }
+  return body as ModelSelectionBody;
+}
+
 // --- models ------------------------------------------------------------------
 
 const MODELS_TTL_MS = 10 * 60_000;
@@ -495,6 +518,16 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       await run(["restart", name]);
       return json({ ok: true });
     }
+
+    if (route === "model" && method === "POST") {
+      const body = await modelSelectionBody(req);
+      if (body instanceof Response) return body;
+      await ensureExactCapable(host, name);
+      const args = ["restart", name, "--model", body.model ?? "default"];
+      if (body.effort !== undefined) args.push("--effort", body.effort ?? "default");
+      await runRemoteAm(host, args);
+      return json({ ok: true, model: body.model, ...(body.effort !== undefined ? { effort: body.effort } : {}) });
+    }
   } catch (error) {
     return remoteFailure(error, fallback);
   }
@@ -550,7 +583,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
+  const actions = new Set(["stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -950,6 +983,20 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       try {
         await restartAgent(name);
         return json({ ok: true });
+      } catch (error) {
+        return json({ error: (error as Error).message }, 409);
+      }
+    }
+
+    // POST /api/agents/:name/model — restart on a configured model while
+    // preserving the conversation and queued messages.
+    if (parts.length === 3 && parts[2] === "model" && method === "POST") {
+      const body = await modelSelectionBody(req);
+      if (body instanceof Response) return body;
+      if (!readAgent(name)) return json({ error: `no local agent "${name}"` }, 404);
+      try {
+        const selection = await restartAgent(name, body);
+        return json({ ok: true, ...selection });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
       }
