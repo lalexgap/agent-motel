@@ -1,5 +1,5 @@
 import { loadConfig, localHostIdentity } from "./config";
-import { isNotificationKind, planRelayDisplay, readRelayCursors, writeRelayCursor, type NotificationBatch } from "./notifications";
+import { isNotificationKind, notificationPrUrl, planRelayDisplay, readRelayCursors, writeRelayCursor, type NotificationBatch } from "./notifications";
 import { canShowNotifications, showNotification } from "./notify";
 import { sshAmAsync, type SshResult } from "./remote";
 
@@ -13,7 +13,7 @@ const DISABLED_RECHECK_MS = 60_000;
 
 export interface RelayDeps {
   run: (host: string, args: string[], timeoutMs: number) => Promise<SshResult>;
-  show: (title: string, message: string) => void;
+  show: (title: string, message: string, url?: string) => void;
   cursor: (host: string) => string | undefined;
   saveCursor: (host: string, cursor: string) => void;
   now: () => number;
@@ -42,8 +42,12 @@ export async function relayOnce(host: string, deps: RelayDeps = defaultDeps, wai
   }
   if (!Array.isArray(batch?.entries) || typeof batch.cursor !== "string") return false;
   const local = localHostIdentity();
-  const entries = batch.entries.filter((e) => e && typeof e.message === "string" && isNotificationKind(e.kind) && e.host !== local);
-  for (const display of planRelayDisplay(host, entries, deps.now())) deps.show(display.title, display.message);
+  const entries = batch.entries.flatMap((e) => {
+    if (!e || typeof e.message !== "string" || !isNotificationKind(e.kind) || e.host === local) return [];
+    const url = notificationPrUrl(e.url);
+    return [{ ...e, url }];
+  });
+  for (const display of planRelayDisplay(host, entries, deps.now())) deps.show(display.title, display.message, display.url);
   if (batch.cursor !== after) deps.saveCursor(host, batch.cursor);
   return true;
 }

@@ -46,3 +46,67 @@ describe("iTerm2 notifications", () => {
     expect(hostile.slice(1, -1)).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
   });
 });
+
+import { buildNotifyCommand, deliverNotification, type NotificationDelivery } from "../src/notify";
+import { loadConfig } from "../src/config";
+
+const prUrl = "https://github.com/owner/repo/pull/123";
+const notifyConfig = { ...loadConfig(), notifyCommand: undefined, itermNotifications: true };
+function delivery(overrides: Partial<NotificationDelivery> = {}) {
+  const calls: { cmd: string[]; vars: Record<string, string> }[] = [];
+  const warnings: string[] = [];
+  let itermCalls = 0;
+  const deps: NotificationDelivery = {
+    platform: "darwin", has: () => true,
+    run: async (cmd, vars) => { calls.push({ cmd, vars }); return 0; },
+    iterm: () => { itermCalls++; return true; }, warn: message => { warnings.push(message); },
+    ...overrides,
+  };
+  return { deps, calls, warnings, itermCalls: () => itermCalls };
+}
+
+describe("clickable PR notifications", () => {
+  test("opens the validated PR through notifier's own identity, ahead of iTerm", async () => {
+    const d = delivery();
+    await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
+    expect(d.calls).toEqual([{ cmd: ["terminal-notifier", "-title", "PR merged", "-message", "body", "-open", prUrl], vars: { AM_TITLE: "PR merged", AM_MESSAGE: "body", AM_URL: prUrl } }]);
+    expect(d.itermCalls()).toBe(0);
+    expect(d.calls[0]!.cmd).not.toContain("-sender");
+  });
+
+  test("permission denial keeps the notification via iTerm and explains the failure", async () => {
+    const d = delivery({ run: async () => 3 });
+    await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
+    expect(d.itermCalls()).toBe(1);
+    expect(d.warnings[0]).toContain("enable terminal-notifier");
+  });
+
+  test("missing notifier and tmux fall back to a plain notification", async () => {
+    const d = delivery({ has: () => false, iterm: () => { throw new Error("tmux missing"); } });
+    await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
+    expect(d.calls[0]!.cmd[0]).toBe("osascript");
+  });
+
+  test("invalid URL never becomes an open action or custom command variable", async () => {
+    const d = delivery();
+    await deliverNotification("PR", "body", "file:///private/file", { ...notifyConfig, notifyCommand: "my-notifier" }, d.deps);
+    expect(d.calls[0]!.cmd).toEqual(["sh", "-c", "my-notifier"]);
+    expect(d.calls[0]!.vars.AM_URL).toBe("");
+    expect(buildNotifyCommand("PR", "body", notifyConfig, d.deps, "javascript:alert(1)")![0]).toBe("osascript");
+  });
+
+  test("custom notifier keeps precedence and receives the validated URL", async () => {
+    const d = delivery();
+    await deliverNotification("PR", "body", prUrl, { ...notifyConfig, notifyCommand: "my-notifier" }, d.deps);
+    expect(d.calls[0]!.cmd).toEqual(["sh", "-c", "my-notifier"]);
+    expect(d.calls[0]!.vars.AM_URL).toBe(prUrl);
+    expect(d.itermCalls()).toBe(0);
+  });
+
+  test("legacy notifications retain the existing iTerm path", async () => {
+    const d = delivery();
+    await deliverNotification("Agent idle", "body", undefined, notifyConfig, d.deps);
+    expect(d.calls).toHaveLength(0);
+    expect(d.itermCalls()).toBe(1);
+  });
+});

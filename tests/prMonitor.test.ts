@@ -92,6 +92,23 @@ test("a crash between enqueue and receipt reuses the queued entry", () => {
   expect(readAgent(owner.name)?.prMonitor?.pending).toEqual([]);
 });
 
+test("durable pending recovery propagates the PR URL and accepts legacy missing metadata", () => {
+  const owner = agent();
+  recordPrObservations(owner, [pr("MERGED")]);
+  expect(readAgent(owner.name)!.prMonitor!.pending![0]!.url).toBe(pr().url);
+  const delivered: unknown[][] = [];
+  flushPrEvents(readAgent(owner.name)!, (...args) => delivered.push(args));
+  expect(delivered).toEqual([[owner.name, expect.stringContaining("merged at"), pr().url]]);
+
+  const legacyOwner = agent("legacy");
+  recordPrObservations(legacyOwner, [pr("CLOSED")]);
+  const legacy = readAgent(legacyOwner.name)!;
+  delete legacy.prMonitor!.pending![0]!.url;
+  writeAgent(legacy);
+  flushPrEvents(readAgent(legacyOwner.name)!, (...args) => delivered.push(args));
+  expect(delivered.at(-1)).toEqual([legacyOwner.name, expect.stringContaining("closed without merging"), undefined]);
+});
+
 test("a crash after receipt and consumer drain does not recreate a notification", () => {
   const owner = agent();
   recordPrObservations(owner, [pr("MERGED")]);
@@ -238,6 +255,7 @@ test("branch discovery excludes same-named branches from forks", async () => {
 test("explicit registration validates URLs and API identity", async () => {
   const owner = agent("owner", "exited");
   expect(() => parsePrUrl("https://evil.test/owner/repo/pull/1")).toThrow();
+  expect(() => parsePrUrl(`${pr().url}/`)).toThrow();
   expect(() => parsePullRequest("owner/repo", api({ ...pr("MERGED"), mergeCommit: undefined }))).toThrow();
   await expect(trackPullRequests(owner, [pr().url], async () => JSON.stringify(api(pr("OPEN", 2))))).rejects.toThrow("different PR");
   await trackPullRequests(owner, [pr().url, pr("OPEN", 2).url], async (_cwd, _exe, args) => JSON.stringify(api(pr("OPEN", Number(args[2])))));

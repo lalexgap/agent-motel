@@ -1,14 +1,14 @@
 import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { loadConfig, localHostIdentity, type Config } from "./config";
 import { tmux } from "./tmux";
-import { recordNotification, type NotificationKind } from "./notifications";
+import { notificationPrUrl, recordNotification, type NotificationKind } from "./notifications";
 
 // Desktop/push notifications, portable across the laptop (macOS) and a
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
 //      $AM_MESSAGE (e.g. a curl to ntfy.sh for phone push from a server)
-//   2. macOS: iTerm2's own notification (OSC 9 to an attached iTerm2 tmux
-//      client, for its icon), else osascript (Script Editor icon)
+//   2. macOS: clickable PRs use terminal-notifier; other alerts/failures use
+//      iTerm2 when attached, then osascript (Script Editor icon)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
 // Every notification is also journaled so remote daemons can relay it.
@@ -23,9 +23,12 @@ export function buildNotifyCommand(
   message: string,
   config: Config,
   env: NotifyEnv,
+  url?: string,
 ): string[] | null {
   if (config.notifyCommand) return ["sh", "-c", config.notifyCommand];
   if (env.platform === "darwin") {
+    const target = notificationPrUrl(url);
+    if (target && env.has("terminal-notifier")) return ["terminal-notifier", "-title", title, "-message", message, "-open", target];
     const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     return ["osascript", "-e", `display notification "${esc(message)}" with title "${esc(title)}"`];
   }
@@ -33,13 +36,14 @@ export function buildNotifyCommand(
   return null;
 }
 
-export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind }): void {
+export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind; url?: string }): void {
+  const url = notificationPrUrl(meta.url);
   try {
-    recordNotification({ host: localHostIdentity(), agent: meta.agent, kind: meta.kind, title, message });
+    recordNotification({ host: localHostIdentity(), agent: meta.agent, kind: meta.kind, title, message, ...(url ? { url } : {}) });
   } catch {
     // the journal is best-effort, like the notifier
   }
-  showNotification(title, message);
+  showNotification(title, message, url);
 }
 
 export function canShowNotifications(config: Config = loadConfig()): boolean {
@@ -102,22 +106,45 @@ function postViaIterm(title: string, message: string): boolean {
   }
 }
 
+export interface NotificationDelivery extends NotifyEnv {
+  run: (cmd: string[], vars: Record<string, string>) => Promise<number>;
+  iterm: (title: string, message: string) => boolean;
+  warn: (message: string) => void;
+}
+
+export async function deliverNotification(title: string, message: string, url: string | undefined, config: Config, delivery: NotificationDelivery): Promise<void> {
+  const target = notificationPrUrl(url);
+  const vars = { AM_TITLE: title, AM_MESSAGE: message, AM_URL: target ?? "" };
+  if (!config.notifyCommand && delivery.platform === "darwin") {
+    if (target && delivery.has("terminal-notifier")) {
+      try {
+        const cmd = buildNotifyCommand(title, message, config, delivery, target)!;
+        if (await delivery.run(cmd, vars) === 0) return;
+      } catch { /* Preserve the alert through the existing fallback. */ }
+      delivery.warn("am: clickable PR notification failed; enable terminal-notifier in macOS Notifications. Using the standard notification fallback.");
+    }
+    if (config.itermNotifications !== false) {
+      try { if (delivery.iterm(title, message)) return; } catch { /* A missing tmux binary must not lose the alert. */ }
+    }
+  }
+  const cmd = buildNotifyCommand(title, message, config, delivery);
+  if (cmd) await delivery.run(cmd, vars);
+}
+
 // Display without journaling, so relayed notifications don't bounce back.
-export function showNotification(title: string, message: string): void {
-  const config = loadConfig();
-  if (!config.notifyCommand && process.platform === "darwin" && config.itermNotifications !== false && postViaIterm(title, message)) return;
-  const cmd = buildNotifyCommand(title, message, config, {
+export function showNotification(title: string, message: string, url?: string): void {
+  void deliverNotification(title, message, url, loadConfig(), {
     platform: process.platform,
-    has: (binary) => !!Bun.which(binary),
-  });
-  if (!cmd) return;
-  // Fire-and-forget: hooks run these, and a notifier that blocks must never
-  // stall a hook.
-  Bun.spawn({
-    cmd,
-    env: { ...process.env, AM_TITLE: title, AM_MESSAGE: message },
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  }).unref();
+    has: binary => !!Bun.which(binary),
+    iterm: postViaIterm,
+    warn: message => console.error(message),
+    run: async (cmd, vars) => {
+      const child = Bun.spawn({ cmd, env: { ...process.env, ...vars }, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      child.unref();
+      const timeout = setTimeout(() => child.kill(), 10_000);
+      timeout.unref();
+      try { return await child.exited; }
+      finally { clearTimeout(timeout); }
+    },
+  }).catch(error => console.error(`am: notification display failed: ${error}`));
 }

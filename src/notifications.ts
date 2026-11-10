@@ -11,6 +11,14 @@ export function isNotificationKind(value: unknown): value is NotificationKind {
   return value === "attention" || value === "idle" || value === "share" || value === "pr";
 }
 
+export function notificationPrUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return undefined;
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(value);
+  if (!match) return undefined;
+  const number = Number(match[3]);
+  return Number.isSafeInteger(number) && value === `https://github.com/${match[1]}/${match[2]}/pull/${number}` ? value : undefined;
+}
+
 export interface NotificationEntry {
   id: string;
   at: string;
@@ -19,6 +27,7 @@ export interface NotificationEntry {
   kind: NotificationKind;
   title: string;
   message: string;
+  url?: string;
 }
 
 export interface NotificationBatch {
@@ -64,7 +73,13 @@ export function readNotifications(): NotificationEntry[] {
 }
 
 export function recordNotification(entry: Omit<NotificationEntry, "id" | "at"> & { at?: string }): NotificationEntry {
-  const full: NotificationEntry = { id: newMsgId(), at: entry.at ?? new Date().toISOString(), ...entry };
+  const { url, ...rest } = entry;
+  const full: NotificationEntry = {
+    id: newMsgId(),
+    at: entry.at ?? new Date().toISOString(),
+    ...rest,
+    ...(notificationPrUrl(url) ? { url } : {}),
+  };
   withFileLock(lockFile(), () => {
     appendFileSync(notificationsFile(), JSON.stringify(full) + "\n");
     if (statSync(notificationsFile()).size > MAX_BYTES) {
@@ -145,6 +160,7 @@ export function writeRelayCursor(host: string, cursor: string): void {
 export interface Display {
   title: string;
   message: string;
+  url?: string;
 }
 
 // Stale or over-cap entries (the laptop slept) collapse into one summary.
@@ -165,6 +181,10 @@ export function planRelayDisplay(
     const who = agents.length ? `: ${agents.slice(0, 4).join(", ")}${agents.length > 4 ? ", …" : ""}` : "";
     displays.push({ title: `am (${host})`, message: `${collapsed} earlier notification${collapsed === 1 ? "" : "s"}${who}` });
   }
-  for (const e of shown) displays.push({ title: `${e.title} (${host})`, message: e.message });
+  for (const e of shown) displays.push({
+    title: `${e.title} (${host})`,
+    message: e.message,
+    ...(notificationPrUrl(e.url) ? { url: e.url } : {}),
+  });
   return displays;
 }
