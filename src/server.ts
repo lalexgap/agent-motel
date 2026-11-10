@@ -290,7 +290,7 @@ export function parseModelSelectionBody(value: unknown): ModelSelectionBody | Re
   if (typeof body.createdAt !== "string" || !body.createdAt || body.createdAt.length > 128 || /[\x00-\x1f\x7f]/.test(body.createdAt)) {
     return json({ error: "createdAt is required" }, 400);
   }
-  if (typeof body.status !== "string" || !["starting", "idle", "waiting", "working", "needs-attention", "dead"].includes(body.status)) {
+  if (typeof body.status !== "string" || !["starting", "idle", "waiting", "working", "needs-attention"].includes(body.status)) {
     return json({ error: "status must identify a running agent" }, 400);
   }
   for (const [field, limit] of [["model", 256], ["effort", 64]] as const) {

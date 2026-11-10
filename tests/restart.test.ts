@@ -228,6 +228,25 @@ esac
     expect(existsSync(join(home, "launch"))).toBe(false);
     expect(readAgent("api-long")!.status).toBe("working");
   });
+
+  test("a guarded restart cannot relaunch a session that exits after its status check", async () => {
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+if [ "$1" = has-session ]; then
+  count=0
+  test -f "$AGENTMGR_HOME/has-session-count" && count=$(cat "$AGENTMGR_HOME/has-session-count")
+  count=$((count + 1))
+  printf '%s' "$count" > "$AGENTMGR_HOME/has-session-count"
+  test "$count" -lt 3
+  exit
+fi
+printf '%s\n' "$@" > "$AGENTMGR_HOME/launch"
+`);
+    const agent = readAgent("api")!;
+    await expect(restartExactAgent(agent, { model: "opus" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/stopped while the model change was starting/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({ status: "working" });
+  });
 });
 
 describe("restart with a model change", () => {
@@ -355,7 +374,8 @@ describe("POST /api/agents/:name/restart", () => {
       {}, guarded({ model: 1 }), guarded({ model: "" }), guarded({ model: " opus" }), guarded({ model: "--help" }), guarded({ model: "bad\nmodel" }),
       guarded({ model: "x".repeat(257) }), guarded({ model: "opus", effort: 1 }), guarded({ model: "opus", effort: "" }),
       guarded({ model: "opus", extra: true }), { model: "opus", createdAt: readAgent("api")!.createdAt },
-      { model: "opus", status: "working" }, { model: "opus", createdAt: readAgent("api")!.createdAt, status: "exited" }, [], null,
+      { model: "opus", status: "working" }, { model: "opus", createdAt: readAgent("api")!.createdAt, status: "exited" },
+      { model: "opus", createdAt: readAgent("api")!.createdAt, status: "dead" }, [], null,
     ]) expect((await changeModel("api", body)).status).toBe(400);
     expect((await changeModel("ap", guarded({ model: "opus" }))).status).toBe(404);
     expect(existsSync(join(home, "launch"))).toBe(false);

@@ -55,11 +55,11 @@ function validateChange(agent: AgentState, opts: RestartOpts, check: { refresh?:
 }
 
 // Caller holds the lifecycle and delivery locks.
-function restartLocked(agent: AgentState, opts: RestartOpts): RestartResult {
-  return auditOperation(agent.name, "restart", () => restartAudited(agent, opts));
+function restartLocked(agent: AgentState, opts: RestartOpts, expected?: RestartPrecondition): RestartResult {
+  return auditOperation(agent.name, "restart", () => restartAudited(agent, opts, expected));
 }
 
-function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
+function restartAudited(agent: AgentState, opts: RestartOpts, expected?: RestartPrecondition): RestartResult {
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
   const provider = agentProvider(agent);
   const executable = Bun.which(providerBinary(provider), { PATH: process.env.PATH });
@@ -105,13 +105,17 @@ function restartAudited(agent: AgentState, opts: RestartOpts): RestartResult {
     env: { ...agentEnv(agent.name, provider), ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
     command: scrubNestedSessionEnv(plan.command),
   };
+  const sessionAlive = hasSession(agent.tmuxSession);
+  if (expected && !sessionAlive) {
+    throw new Error(`agent "${agent.name}" stopped while the model change was starting — refresh and try again`);
+  }
   updateAgentStatus(agent, "starting", "restarting");
   writeAgent(agent);
   try {
-    if (hasSession(agent.tmuxSession)) {
+    if (sessionAlive) {
       try {restartSession(launch);}
       catch(error) {
-        if(provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+        if(expected || provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
         newSession(launch);
       }
     } else newSession(launch);
@@ -146,7 +150,7 @@ async function restartResolvedAgent(agent: AgentState, opts: RestartOpts, expect
     checkPrecondition(agent, expected);
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" is busy or being moved — retry restart`);
     try {
-      return restartLocked(agent, opts);
+      return restartLocked(agent, opts, expected);
     } finally {
       releaseDeliverLock(agent.name);
     }
