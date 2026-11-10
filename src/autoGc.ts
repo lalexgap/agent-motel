@@ -31,7 +31,7 @@ const NIGHT_WINDOW_MS = 3 * 60 * MINUTE_MS;
 const SKIP_RETRY_MS = 15 * MINUTE_MS;
 const CONTINUE_AFTER_MS = 60 * MINUTE_MS;
 const PAUSE_MS = 500;
-const GIT_TIMEOUT_MS = 60_000;
+const GIT_TIMEOUT_MS = 120_000;
 
 export type GcTrigger = "nightly" | "idle" | "manual";
 
@@ -285,8 +285,11 @@ export function runAutoGc(opts: AutoGcRunOptions): AutoGcResult {
 function niceCommand(): string[] {
   return [
     ...(Bun.which("nice") ? ["nice", "-n", "19"] : []),
-    // The idle IO class: the sweep only gets the disk when nothing else wants it.
-    ...(Bun.which("ionice") ? ["ionice", "-c", "3"] : []),
+    // Lowest best-effort IO priority, not the idle class: starved behind every
+    // other reader, one `git status` of a large checkout took minutes instead
+    // of seconds and timed out having made no progress. The pacing and the
+    // pressure back-off are what keep the sweep out of the way.
+    ...(Bun.which("ionice") ? ["ionice", "-c", "2", "-n", "7"] : []),
   ];
 }
 

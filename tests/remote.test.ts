@@ -97,7 +97,7 @@ describe("chooseOpener", () => {
 });
 
 describe("buildNotifyCommand", () => {
-  const base: Config = { defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, pretrustClaudeDirs: true, plans: true, prPollSeconds: 120 };
+  const base: Config = { defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, pretrustClaudeDirs: true, plans: true, prPollSeconds: 120 };
 
   test("notifyCommand wins on any platform", () => {
     const config = { ...base, notifyCommand: "curl -d \"$AM_MESSAGE\" ntfy.sh/x" };

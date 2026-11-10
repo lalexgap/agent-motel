@@ -210,12 +210,13 @@ A worktree that a registered agent owns is never removed, running or exited. An 
 | Worktree of a removed (`am rm`) or reaped agent | released after 7 days; `am restore` recreates it from its branch | `gcRemovedDays` |
 | Worktree no agent owns, and subagent worktrees under `.claude/worktrees/` | after 3 days without activity | `gcOrphanDays` |
 | Released worktree that is dirty or has unpushed commits | kept until unchanged for 30 days; then its changes are committed to `refs/am-gc/<name>-<time>` in the repository and it is removed (`0` keeps these forever; ignored files are not saved) | `gcStaleDays` |
+| Released worktree whose only leftovers are git-ignored files (env files, keys, `node_modules`) | after 7 days unchanged; those files are not saved (`0`: treated like any other change) | `gcIgnoredDays` |
 | Trash snapshots | purged after 30 days | `gcTrashDays` |
 | Handoff transcripts, cached shared files | after 30 days | `gcFileDays` |
 
 Conversations, plans and inbox files stay for as long as the agent is registered or in trash. A file named `.am-gc-keep` in a worktree keeps it (and the subagent worktrees inside it) whatever its state. A worktree with an active dev-pool lease is never touched.
 
-The scheduled run is throttled: it runs at idle CPU and IO priority, inspects one worktree at a time, stops after `gcAutoMaxMinutes` (15) and continues the next time, and waits while the host is busy (`gcAutoMaxLoad`, 1-minute load per CPU, default 1; `gcAutoMaxPressure`, Linux IO/memory pressure, default 20). Only one gc runs at a time, manual or scheduled. `am gc --auto pause` stops the schedule and `resume` restarts it; `gcAuto: false` turns it off; `am gc --auto run` starts a sweep now.
+The scheduled run is throttled: it runs at the lowest CPU and IO priority, inspects one worktree at a time, backs off while the host is busy, stops after `gcAutoMaxMinutes` (15) and continues the next time. Busy means the 1-minute load per CPU is above `gcAutoMaxLoad` (default 1) or Linux IO/memory pressure is above `gcAutoMaxPressure` (default 20). Only one gc runs at a time, manual or scheduled. `am gc --auto pause` stops the schedule and `resume` restarts it; `gcAuto: false` turns it off; `am gc --auto run` starts a sweep now.
 
 Every removal is logged to `~/.agent-manager/logs/gc.jsonl` with the worktree's branch and commit. `am gc --restore <name-or-path>` recreates a removed worktree from that log and puts salvaged changes back as uncommitted files.
 

@@ -62,6 +62,8 @@ export interface GcOptions {
   // Days without a change before a dirty or unpushed unowned worktree is
   // salvaged to a ref and removed. Unset or 0: never.
   staleDays?: number;
+  // The same, when everything left in it is git-ignored. Unset or 0: staleDays.
+  ignoredDays?: number;
   // Days before handoff transcripts and cached artifacts age out. Unset: never.
   fileDays?: number;
   gitTimeoutMs?: number;
@@ -89,6 +91,7 @@ export function gcPolicy(config: Config, overrides: { agentDays?: number; trashD
     removedDays: days(config.gcRemovedDays, 7),
     orphanDays: days(config.gcOrphanDays, 3),
     staleDays: days(config.gcStaleDays, 0),
+    ignoredDays: days(config.gcIgnoredDays, 0),
     fileDays: days(config.gcFileDays, 30),
     gitTimeoutMs: 20_000,
     budgetMs: 5 * 60_000,
@@ -463,7 +466,7 @@ function contains(root: string, path: string): boolean {
 // part the scheduled sweep rations.
 // One kept worktree's last inspection. It stands while the checkout shows no
 // new activity and `until` has not passed.
-interface Inspection { at: number; activity: number; kind: KeptKind; reason: string; until: number; staleDays: number }
+interface Inspection { at: number; activity: number; kind: KeptKind; reason: string; until: number; ages: string }
 
 export class WorktreeJudge {
   private records: OwnerRecord[] | undefined;
@@ -500,9 +503,14 @@ export class WorktreeJudge {
     }
   }
 
+  // The ages a remembered verdict was reached under; it lapses when they change.
+  private ages(): string {
+    return `${this.opts.staleDays ?? 0}/${this.opts.ignoredDays ?? 0}`;
+  }
+
   private remembered(path: string): KeptWorktree | null {
     const seen = this.inspections[path];
-    if (!seen || this.now >= seen.until || seen.activity !== lastActivity(path) || seen.staleDays !== (this.opts.staleDays ?? 0)) return null;
+    if (!seen || this.now >= seen.until || seen.activity !== lastActivity(path) || seen.ages !== this.ages()) return null;
     // A push or a merged pull request changes this verdict without touching
     // the checkout, and asking git about commits alone reads no working tree.
     if (seen.kind === "unpushed" && !worktreeCommitSafety(path, this.safetyOptions(path))) return null;
@@ -540,7 +548,7 @@ export class WorktreeJudge {
       if (!/failed|could not/.test(verdict.kept.reason)) {
         this.inspections[path] = {
           at: this.now, activity: lastActivity(path), kind: verdict.kept.kind, reason: verdict.kept.reason,
-          until: Math.min(this.now + RECHECK_MS, verdict.staleAt ?? Infinity), staleDays: this.opts.staleDays ?? 0,
+          until: Math.min(this.now + RECHECK_MS, verdict.staleAt ?? Infinity), ages: this.ages(),
         };
       }
       return { kept: verdict.kept };
@@ -554,17 +562,32 @@ export class WorktreeJudge {
   verdict(path: string, repoRoot: string): { kept: KeptWorktree; staleAt?: number } | { salvage?: string } {
     const finding = worktreeSafety(path, repoRoot, this.safetyOptions(path));
     if (!finding) return {};
-    const kind: KeptKind = finding.kind === "dirty" ? "dirty" : finding.kind === "other" ? "other" : "unpushed";
-    const staleDays = this.opts.staleDays ?? 0;
-    if (!(staleDays > 0) || finding.kind === "other") return { kept: { path, kind, reason: finding.reason } };
+    let kind: KeptKind = finding.kind === "dirty" ? "dirty" : finding.kind === "other" ? "other" : "unpushed";
+    let reason = finding.reason;
+    let limit = this.opts.staleDays ?? 0;
+    // Nothing but git-ignored leftovers (env files, keys, dependencies) is not
+    // work in progress — provided the commits under it are safe, which a dirty
+    // status alone does not say.
+    if (finding.kind === "dirty" && finding.files!.every((file) => file.code === "!!")) {
+      const commits = worktreeCommitSafety(path, this.safetyOptions(path));
+      if (commits?.kind === "other") return { kept: { path, kind: "other", reason: commits.reason } };
+      if (commits) {
+        kind = "unpushed";
+        reason = commits.reason;
+      } else {
+        reason = "only git-ignored files";
+        if ((this.opts.ignoredDays ?? 0) > 0) limit = this.opts.ignoredDays!;
+      }
+    }
+    if (!(limit > 0) || finding.kind === "other") return { kept: { path, kind, reason } };
     // Removing the directory would take the nested checkouts' files with it.
-    if (nestedWorktrees(path).length > 0) return { kept: { path, kind, reason: `${finding.reason}; contains subagent worktrees` } };
+    if (nestedWorktrees(path).length > 0) return { kept: { path, kind, reason: `${reason}; contains subagent worktrees` } };
     const changed = lastChange(path, finding);
     const idleDays = (this.now - changed) / DAY_MS;
-    if (idleDays <= staleDays) {
-      return { kept: { path, kind, reason: finding.reason }, ...(Number.isFinite(changed) ? { staleAt: changed + staleDays * DAY_MS } : {}) };
+    if (idleDays <= limit) {
+      return { kept: { path, kind, reason }, ...(Number.isFinite(changed) ? { staleAt: changed + limit * DAY_MS } : {}) };
     }
-    return { salvage: `${finding.reason}, untouched for ${Math.floor(idleDays)}d` };
+    return { salvage: `${reason}, untouched for ${Math.floor(idleDays)}d` };
   }
 
   private safetyOptions(path: string) {

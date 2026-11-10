@@ -363,6 +363,40 @@ describe("stale dirty worktrees", () => {
     expect(plan.keptWorktrees.find((w) => w.path === wt)!.reason).toContain("contains subagent worktrees");
   });
 
+  test("only git-ignored leftovers go after ignoredDays, without being saved — unless commits under them are unpushed", () => {
+    writeFileSync(join(repo, ".gitignore"), ".env.local\nnode_modules/\n");
+    git(repo, "add", ".gitignore");
+    git(repo, "commit", "-q", "-m", "ignore");
+    git(repo, "push", "-q", "origin", "main");
+    const policy = { ...POLICY, ignoredDays: 7 };
+    const leftovers = (name: string, days: number) => {
+      const wt = addWorktree(name);
+      writeFileSync(join(wt, ".env.local"), "SECRET=1\n");
+      mkdirSync(join(wt, "node_modules", "pkg"), { recursive: true });
+      idle(wt, days, ".env.local", "node_modules");
+      return wt;
+    };
+    const old = leftovers("env-old", 9);
+    const young = leftovers("env-young", 5);
+    const unpushed = leftovers("env-unpushed", 9);
+    commit(unpushed);
+    idle(unpushed, 9, ".env.local", "node_modules");
+    const mixed = leftovers("env-mixed", 9);
+    writeFileSync(join(mixed, "wip.txt"), "wip\n");
+    idle(mixed, 9, ".env.local", "node_modules", "wip.txt");
+
+    const plan = planGc(policy);
+    expect(plan.worktrees.map((w) => [w.path, w.salvage])).toEqual([[old, "only git-ignored files, untouched for 9d"]]);
+    const kept = new Map(plan.keptWorktrees.map((w) => [w.path, w.reason]));
+    expect(kept.get(young)).toBe("only git-ignored files");
+    expect(kept.get(unpushed)).toBe("unpushed commits");
+    expect(kept.get(mixed)).toBe("uncommitted or ignored files");
+    applyGc(plan, policy);
+    expect(existsSync(old)).toBe(false);
+    // Without the shorter age they wait as long as any other change.
+    expect(planGc(POLICY).worktrees).toEqual([]);
+  });
+
   test("an agent that still owns it keeps even a long-stale dirty worktree", () => {
     const wt = addWorktree("owned-dirty");
     writeFileSync(join(wt, "wip.txt"), "wip\n");
@@ -442,7 +476,7 @@ describe("inspection cost", () => {
 
 describe("gcPolicy", () => {
   test("config defaults; a garbage age never reads as collect-now", () => {
-    expect(gcPolicy(loadConfig())).toMatchObject({ agentDays: 7, trashDays: 30, mergedDays: 3, removedDays: 7, orphanDays: 3, staleDays: 30, fileDays: 30 });
+    expect(gcPolicy(loadConfig())).toMatchObject({ agentDays: 7, trashDays: 30, mergedDays: 3, removedDays: 7, orphanDays: 3, staleDays: 30, ignoredDays: 7, fileDays: 30 });
     const odd = gcPolicy({ ...loadConfig(), gcStaleDays: "soon" as never, gcOrphanDays: -1, gcRemovedDays: null as never }, { agentDays: 2 });
     expect(odd).toMatchObject({ agentDays: 2, staleDays: 0, orphanDays: 3, removedDays: 7 });
   });

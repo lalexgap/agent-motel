@@ -117,12 +117,16 @@ export interface Config {
   //   gcStaleDays    without a change, for an unowned worktree that is dirty or
   //                  unpushed: its changes are saved to refs/am-gc/ in the
   //                  repository, then it is removed. 0 keeps them forever.
+  //   gcIgnoredDays  the same, for one whose only leftovers are git-ignored
+  //                  files (env files, keys, node_modules), which are not
+  //                  saved. 0 treats those like any other change.
   //   gcFileDays     for handoff transcripts and cached shared files
   // A file named .am-gc-keep in a worktree keeps it regardless.
   gcMergedDays: number;
   gcRemovedDays: number;
   gcOrphanDays: number;
   gcStaleDays: number;
+  gcIgnoredDays: number;
   gcFileDays: number;
   // The daemon runs gc on its own: nightly at gcAutoHour (local time), or at
   // the next idle moment after a missed night. Its first run after an upgrade
@@ -176,6 +180,7 @@ const DEFAULTS: Config = {
   gcRemovedDays: 7,
   gcOrphanDays: 3,
   gcStaleDays: 30,
+  gcIgnoredDays: 7,
   gcFileDays: 30,
   gcAuto: true,
   gcAutoHour: 4,
