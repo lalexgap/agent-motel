@@ -28,11 +28,18 @@ export function readPressure(): Pressure {
   return { loadPerCpu: loadavg()[0]! / Math.max(1, cpus().length), io: psi("io"), memory: psi("memory") };
 }
 
+// A hand-edited config can hold anything: out-of-range values fall back to the default.
+export function configNumber(value: unknown, fallback: number, min: number, max = Infinity): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
 // Why the host is too busy for more disk work right now, or null.
 export function pressureReason(pressure: Pressure, limits: PressureLimits): string | null {
-  if (pressure.loadPerCpu > limits.gcAutoMaxLoad) return `load ${pressure.loadPerCpu.toFixed(2)} per CPU (limit ${limits.gcAutoMaxLoad})`;
-  if (pressure.io !== null && pressure.io > limits.gcAutoMaxPressure) return `IO pressure ${pressure.io.toFixed(0)}% (limit ${limits.gcAutoMaxPressure}%)`;
-  if (pressure.memory !== null && pressure.memory > limits.gcAutoMaxPressure) return `memory pressure ${pressure.memory.toFixed(0)}% (limit ${limits.gcAutoMaxPressure}%)`;
+  const maxLoad = configNumber(limits.gcAutoMaxLoad, 1, Number.MIN_VALUE);
+  const maxPressure = configNumber(limits.gcAutoMaxPressure, 20, Number.MIN_VALUE, 100);
+  if (pressure.loadPerCpu > maxLoad) return `load ${pressure.loadPerCpu.toFixed(2)} per CPU (limit ${maxLoad})`;
+  if (pressure.io !== null && pressure.io > maxPressure) return `IO pressure ${pressure.io.toFixed(0)}% (limit ${maxPressure}%)`;
+  if (pressure.memory !== null && pressure.memory > maxPressure) return `memory pressure ${pressure.memory.toFixed(0)}% (limit ${maxPressure}%)`;
   return null;
 }
 

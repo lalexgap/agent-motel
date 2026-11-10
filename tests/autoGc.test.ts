@@ -107,6 +107,21 @@ describe("autoGcDue", () => {
     expect(autoGcDue(at(4, 20), skipped, config, false)).toEqual({ trigger: "nightly" });
   });
 
+  test("a failed sweep is not retried until the next night's window", () => {
+    const failed = (date: Date): AutoGcState => ({ lastRun: run({ finishedAt: at(4, 5, -1).toISOString() }), lastFailure: { at: date.toISOString(), code: 1 } });
+    expect(autoGcDue(at(4, 2), failed(at(4, 1)), config, false)).toBeNull();
+    expect(autoGcDue(at(15, 0), failed(at(4, 1)), config, false)).toBeNull();
+    expect(autoGcDue(at(4, 1, 1), failed(at(4, 1)), config, false)).toEqual({ trigger: "nightly" });
+    // A failure before tonight's window does not hold tonight's sweep.
+    expect(autoGcDue(at(4, 1), failed(at(22, 0, -1)), config, false)).toEqual({ trigger: "nightly" });
+  });
+
+  test("a garbage quiet hour falls back to 04:00", () => {
+    const odd = { gcAuto: true, gcAutoHour: null as never };
+    expect(autoGcDue(at(4, 1), ranAt(at(4, 5, -1)), odd, false)).toEqual({ trigger: "nightly" });
+    expect(autoGcDue(at(0, 30), ranAt(at(4, 5, -1)), odd, true)).toBeNull();
+  });
+
   test("a sweep cut short continues when idle, an hour later at the earliest", () => {
     const cut = ranAt(at(4, 15), { uninspected: 12, stopped: "time budget" });
     expect(autoGcDue(at(4, 45), cut, config, false)).toBeNull();
@@ -123,6 +138,13 @@ describe("pressure", () => {
     expect(pressureReason({ ...CALM, loadPerCpu: 5.6 }, limits)).toContain("load 5.60");
     expect(pressureReason({ ...CALM, io: 90 }, limits)).toContain("IO pressure 90%");
     expect(pressureReason({ ...CALM, memory: 45 }, limits)).toContain("memory pressure 45%");
+  });
+
+  test("garbage limits fall back to the defaults instead of holding or freeing every sweep", () => {
+    const odd = { gcAutoMaxLoad: null as never, gcAutoMaxPressure: "high" as never };
+    expect(pressureReason(CALM, odd)).toBeNull();
+    expect(pressureReason({ ...CALM, loadPerCpu: 1.5 }, odd)).toContain("(limit 1)");
+    expect(pressureReason({ ...CALM, io: 50 }, { gcAutoMaxLoad: -1, gcAutoMaxPressure: 500 })).toContain("(limit 20%)");
   });
 });
 
@@ -257,6 +279,46 @@ describe("runAutoGc", () => {
     expect(result.summary.worktrees).toBe(1);
     expect(result.summary.stopped).toBe("time budget");
     expect(result.summary.uninspected).toBe(1);
+  });
+
+  test("a dry run cut short does not arm: its continuation is a dry run too, and arms once complete", () => {
+    const paths = [addWorktree("a"), addWorktree("b"), addWorktree("c")];
+    let checks = 0;
+    const pressure = () => (++checks > 2 ? { ...CALM, loadPerCpu: 9 } : CALM);
+    const cut = fakeClock((sleep) => runAutoGc({ trigger: "nightly", pressure, sleep }));
+    expect("summary" in cut && cut.summary.mode).toBe("dry-run");
+    expect("summary" in cut && cut.summary.uninspected).toBe(2);
+    expect(readAutoGcState().armedPolicy).toBeUndefined();
+
+    const rest = runAutoGc({ trigger: "idle", ...quiet });
+    if (!("summary" in rest)) throw new Error("skipped");
+    expect(rest.summary.mode).toBe("dry-run");
+    expect(rest.summary.worktrees).toBe(3);
+    expect(paths.every((p) => existsSync(p))).toBe(true);
+    expect(readAutoGcState().armedPolicy).toBe(GC_POLICY_VERSION);
+    expect("summary" in runAutoGc({ trigger: "nightly", ...quiet })).toBe(true);
+    expect(paths.filter((p) => existsSync(p))).toEqual([]);
+  });
+
+  test("a garbage time budget falls back to the default rather than never ending", () => {
+    updateAutoGcState((state) => { state.armedPolicy = GC_POLICY_VERSION; });
+    for (const name of ["a", "b", "c"]) addWorktree(name);
+    const config = { ...loadConfig(), gcAutoMaxMinutes: "soon" as never };
+    // Each pause "takes" ten minutes: the default 15-minute budget ends it after two.
+    const result = fakeClock((sleep) => runAutoGc({ trigger: "nightly", config, pressure: () => CALM, sleep: () => sleep(10 * 60_000) }));
+    if (!("summary" in result)) throw new Error("skipped");
+    expect(result.summary.worktrees).toBe(2);
+    expect(result.summary.stopped).toBe("time budget");
+  });
+
+  test("a successful run clears a recorded failure", () => {
+    updateAutoGcState((state) => { state.lastFailure = { at: new Date().toISOString(), code: 1 }; });
+    expect(gcSummaryLine()).toStartWith("last sweep failed");
+    expect(autoGcStatus().join("\n")).toContain("the sweep exited with 1");
+    expect(autoGcStatus().join("\n")).toContain("held back after the failure");
+    runAutoGc({ trigger: "manual", ...quiet });
+    expect(readAutoGcState().lastFailure).toBeUndefined();
+    expect(gcSummaryLine()).not.toContain("failed");
   });
 
   test("never overlaps another gc", () => {

@@ -17,7 +17,7 @@ import type { Config } from "./config";
 import { awaitQuiet, pressureReason, readPressure } from "./pressure";
 import {
   KEEP_MARKER, canonicalPath, readOwnerRecords, salvageWorktree, withWorktreeDeletionLock, worktreeCommitSafety, worktreeOwnerReason, worktreeSafety,
-  type Owner, type OwnerKind, type OwnerRecord, type SafetyFinding, type Salvage,
+  type Owner, type OwnerKind, type OwnerRecord, type SafetyFinding, type Salvage, type StatusPath,
 } from "./worktreeOwnership";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
@@ -439,6 +439,57 @@ function lastChange(path: string, finding: SafetyFinding): number {
   return budget <= 0 ? Infinity : newest;
 }
 
+const NESTED_WALK_LIMIT = 200_000;
+
+// Why removing the worktree would destroy another repository, or null. A clone
+// or linked worktree can only sit in untracked or ignored paths, which status
+// lists; a submodule is a gitlink, and its gitdir lives in the admin dir that
+// removal deletes. Unreadable or too large to search: assume one is there.
+function nestedRepository(path: string, files: StatusPath[], timeoutMs?: number): string | null {
+  const nested = "contains a nested git repository";
+  const unknown = "could not check for nested git repositories";
+  const admin = adminDir(path);
+  if (!admin) return unknown;
+  try {
+    if (readdirSync(join(admin, "modules")).length > 0) return `${nested} (submodule)`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return unknown;
+  }
+  const stage = git(path, ["ls-files", "--stage", "-z"], timeoutMs);
+  if (!stage.ok) return unknown;
+  for (const entry of stage.out.split("\0")) {
+    if (!entry.startsWith("160000 ")) continue;
+    const gitlink = join(path, entry.slice(entry.indexOf("\t") + 1));
+    try { if (readdirSync(gitlink).length > 0) return `${nested} (submodule)`; }
+    catch { /* an uninitialized submodule is an empty or missing dir */ }
+  }
+  let budget = NESTED_WALK_LIMIT;
+  let found = false;
+  const walk = (dir: string): boolean => {
+    let entries: import("node:fs").Dirent[];
+    try { entries = readdirSync(dir, { withFileTypes: true }); }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+    for (const entry of entries) {
+      if (budget-- <= 0) return false;
+      if (entry.name === ".git") { found = true; return true; }
+      // Package managers never leave a repository in their install trees,
+      // and walking them would cost more than the rest of the checkout.
+      if (entry.isDirectory() && entry.name !== "node_modules" && !walk(join(dir, entry.name))) return false;
+      if (found) return true;
+    }
+    return true;
+  };
+  for (const file of files) {
+    if (file.code !== "??" && file.code !== "!!") continue;
+    const target = join(path, file.path);
+    if (basename(target) === ".git") return nested;
+    if (!file.path.endsWith("/") || basename(target) === "node_modules") continue;
+    if (!walk(target)) return unknown;
+    if (found) return nested;
+  }
+  return null;
+}
+
 const prHeads = new Map<string, string | null>();
 
 function githubPrHead(url: string): string | null {
@@ -561,7 +612,10 @@ export class WorktreeJudge {
   // staleAt: when a kept worktree's changes will have sat untouched for staleDays.
   verdict(path: string, repoRoot: string): { kept: KeptWorktree; staleAt?: number } | { salvage?: string } {
     const finding = worktreeSafety(path, repoRoot, this.safetyOptions(path));
-    if (!finding) return {};
+    if (!finding) {
+      const nested = nestedRepository(path, [], this.opts.gitTimeoutMs);
+      return nested ? { kept: { path, kind: "other", reason: nested } } : {};
+    }
     let kind: KeptKind = finding.kind === "dirty" ? "dirty" : finding.kind === "other" ? "other" : "unpushed";
     let reason = finding.reason;
     let limit = this.opts.staleDays ?? 0;
@@ -582,6 +636,8 @@ export class WorktreeJudge {
     if (!(limit > 0) || finding.kind === "other") return { kept: { path, kind, reason } };
     // Removing the directory would take the nested checkouts' files with it.
     if (nestedWorktrees(path).length > 0) return { kept: { path, kind, reason: `${reason}; contains subagent worktrees` } };
+    const nested = nestedRepository(path, finding.files ?? [], this.opts.gitTimeoutMs);
+    if (nested) return { kept: { path, kind: "other", reason: `${reason}; ${nested}` } };
     const changed = lastChange(path, finding);
     const idleDays = (this.now - changed) / DAY_MS;
     if (idleDays <= limit) {
@@ -603,8 +659,8 @@ export class WorktreeJudge {
     catch { return false; }
     const root = canonicalPath(path);
     const name = basename(root);
-    for (const { owner, paths } of records) {
-      if (!paths.some((p) => contains(root, p)) && owner.name !== name && !owner.aliases?.includes(name)) continue;
+    for (const { owner, paths, workDirs } of records) {
+      if (![...paths, ...workDirs].some((p) => contains(root, p)) && owner.name !== name && !owner.aliases?.includes(name)) continue;
       for (const pr of owner.prMonitor?.pullRequests ?? []) {
         if (pr.state !== "MERGED" || !pr.url) continue;
         const prHead = (this.opts.prHead ?? githubPrHead)(pr.url);
@@ -853,7 +909,12 @@ export function applyGc(plan: GcPlan, opts: GcOptions = { agentDays: Infinity, t
 
   for (const o of plan.orphans) {
     if (o.owner && readAgent(o.owner)) continue; // owner (re)appeared since planning
-    rmSync(o.path, { recursive: true, force: true });
+    // One unremovable file must not end the sweep: it is retried next run.
+    try { rmSync(o.path, { recursive: true, force: true }); }
+    catch (error) {
+      lines.push(`warning: could not remove ${o.kind} ${o.path}: ${(error as Error).message}`);
+      continue;
+    }
     record({ action: "remove-file", path: o.path, reason: o.kind });
     lines.push(`removed ${o.kind === "handoff" || o.kind === "cache" ? "old" : "orphaned"} ${o.kind}: ${o.path}`);
   }

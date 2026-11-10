@@ -13,8 +13,9 @@ export interface Owner {
 export type OwnerKind = "agent" | "trash";
 export interface OwnershipSource { kind: OwnerKind; owner: Owner }
 // One agent or trash record with its claimed paths resolved once, so a scan
-// over hundreds of worktrees reads the registry a single time.
-export interface OwnerRecord { kind: OwnerKind; owner: Owner; paths: string[] }
+// over hundreds of worktrees reads the registry a single time. `paths` are
+// where it is registered; `workDirs` are managed worktrees it has worked in.
+export interface OwnerRecord { kind: OwnerKind; owner: Owner; paths: string[]; workDirs: string[] }
 export interface OwnerCheck {
   // Records read earlier (a scan's index); absent reads the registry now.
   records?: OwnerRecord[];
@@ -130,10 +131,10 @@ export function readOwnerRecords(): OwnerRecord[] {
       if (file.endsWith(".corrupt")) throw new Error("unreadable agent ownership record");
       if (!file.endsWith(".json")) continue;
       const owner = ownerPaths(JSON.parse(readFileSync(join(dir, file), "utf8")));
-      const paths = [owner.dir, owner.worktreePath, ...(owner.workDirs ?? [])]
+      const paths = [owner.dir, owner.worktreePath]
         .filter((p): p is string => typeof p === "string" && p.length > 0)
         .map((p) => canonicalPath(p));
-      records.push({ kind, owner, paths });
+      records.push({ kind, owner, paths, workDirs: (owner.workDirs ?? []).map((p) => canonicalPath(p)) });
     }
   }
   return records;
@@ -206,13 +207,26 @@ function poolLeaseReason(root: string): string | null {
 export function worktreeOwnerReason(path: string, removing?: Owner, check: OwnerCheck = {}): string | null {
   try {
     const root = canonicalPath(path);
+    // A subagent worktree belongs with the managed worktree it is nested in.
+    const nest = /^(.*)\/\.claude\/worktrees\/[^/]+$/.exec(root)?.[1];
+    const homes = [root, ...(nest ? [nest] : [])];
+    const registered = ({ owner, paths }: OwnerRecord) => homes.some((home) => {
+      const name = managedName(home);
+      return paths.some((p) => contains(home, p)) || (name !== null && (owner.name === name || !!owner.aliases?.includes(name)));
+    });
+    const records = check.records ?? readOwnerRecords();
+    // Working in another agent's worktree (a visit, a review) is no claim on it:
+    // workDirs only protect a worktree no record is registered in.
+    const unclaimed = !records.some(registered);
     const name = managedName(root);
-    for (const { kind, owner, paths } of check.records ?? readOwnerRecords()) {
+    for (const record of records) {
+      const { kind, owner, paths, workDirs } = record;
       // Only the exact live record being removed is exempt. A same-name
       // restorable agent is a separate owner, even when it shares the root.
       if (kind === "agent" && removing && owner.name === removing.name && owner.createdAt === removing.createdAt && owner.tmuxSession === removing.tmuxSession) continue;
       if (check.released?.(owner, kind)) continue;
-      if (paths.some((p) => contains(root, p)) || (name !== null && (owner.name === name || owner.aliases?.includes(name)))) {
+      if (paths.some((p) => contains(root, p)) || (name !== null && (owner.name === name || owner.aliases?.includes(name))) ||
+          (unclaimed && workDirs.some((p) => contains(root, p)))) {
         return `owned by ${kind === "trash" ? "restorable " : ""}agent "${owner.name}"`;
       }
     }

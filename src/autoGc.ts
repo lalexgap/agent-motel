@@ -8,7 +8,7 @@ import {
   type GcLogEntry, type KeptKind, type KeptWorktree,
 } from "./gc";
 import { gcLogFile, gcStateFile } from "./paths";
-import { awaitQuiet, pressureReason, readPressure, type Pressure } from "./pressure";
+import { awaitQuiet, configNumber, pressureReason, readPressure, type Pressure } from "./pressure";
 import { cliEntrypoint } from "./settings";
 import { listAgents } from "./state";
 
@@ -61,6 +61,8 @@ export interface AutoGcState {
   armedPolicy?: number;
   lastRun?: GcRunSummary;
   lastSkip?: { at: string; reason: string };
+  // A sweep that exited abnormally; no retry until the next night's window.
+  lastFailure?: { at: string; code: number | null };
 }
 
 export function readAutoGcState(): AutoGcState {
@@ -83,8 +85,11 @@ export function autoGcArmed(state: AutoGcState): boolean {
 }
 
 function quietHour(config: Pick<Config, "gcAutoHour">): number {
-  const hour = Math.floor(Number(config.gcAutoHour));
-  return Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 4;
+  return Math.floor(configNumber(config.gcAutoHour, 4, 0, 23));
+}
+
+function maxMinutes(config: Pick<Config, "gcAutoMaxMinutes">): number {
+  return configNumber(config.gcAutoMaxMinutes, 15, 1);
 }
 
 function windowStart(now: Date, config: Pick<Config, "gcAutoHour">): Date {
@@ -108,6 +113,8 @@ export function autoGcDue(
   const skippedAt = state.lastSkip ? Date.parse(state.lastSkip.at) : NaN;
   if (Number.isFinite(skippedAt) && nowMs - skippedAt < SKIP_RETRY_MS) return null;
   const opened = windowStart(now, config).getTime();
+  // A sweep that keeps failing would otherwise be relaunched every minute.
+  if (state.lastFailure && !(Date.parse(state.lastFailure.at) < opened)) return null;
   const last = state.lastRun ? Date.parse(state.lastRun.finishedAt) : NaN;
   if (Number.isFinite(last) && last >= opened) {
     return state.lastRun!.uninspected > 0 && !busy && nowMs - last > CONTINUE_AFTER_MS ? { trigger: "idle" } : null;
@@ -152,11 +159,16 @@ function ago(iso: string, now: number): string {
   return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
+function failedSinceLastRun(state: AutoGcState): boolean {
+  return !!state.lastFailure && !(Date.parse(state.lastFailure.at) < Date.parse(state.lastRun?.finishedAt ?? ""));
+}
+
 // One line for `am summary` and the hub, or null before the first run.
 export function gcSummaryLine(now: number = Date.now()): string | null {
   const state = readAutoGcState();
-  if (!state.lastRun) return state.paused ? "paused" : null;
-  return `${formatGcSummary(state.lastRun)} · ${ago(state.lastRun.finishedAt, now)}${state.paused ? " · paused" : ""}`;
+  const failed = failedSinceLastRun(state) ? ` · last sweep failed ${ago(state.lastFailure!.at, now)}` : "";
+  if (!state.lastRun) return state.paused ? `paused${failed}` : failed ? failed.slice(3) : null;
+  return `${formatGcSummary(state.lastRun)} · ${ago(state.lastRun.finishedAt, now)}${failed}${state.paused ? " · paused" : ""}`;
 }
 
 export interface AutoGcRunOptions {
@@ -236,7 +248,7 @@ export function runAutoGc(opts: AutoGcRunOptions): AutoGcResult {
     }
     const queue = judge.inspectionOrder(pending);
 
-    const deadline = started + Math.max(1, config.gcAutoMaxMinutes) * MINUTE_MS;
+    const deadline = started + maxMinutes(config) * MINUTE_MS;
     for (const [index, candidate] of queue.entries()) {
       // Pause first, so the readings below are from just before the git work.
       if (index > 0) sleep(PAUSE_MS);
@@ -273,8 +285,10 @@ export function runAutoGc(opts: AutoGcRunOptions): AutoGcResult {
     updateAutoGcState((state) => {
       state.lastRun = summary;
       delete state.lastSkip;
-      // Any completed run has shown what this policy collects.
-      state.armedPolicy = GC_POLICY_VERSION;
+      delete state.lastFailure;
+      // Only a dry run that reached every worktree has shown what this policy
+      // collects; one cut short is continued as a dry run.
+      if (!summary.stopped && summary.uninspected === 0) state.armedPolicy = GC_POLICY_VERSION;
     });
     return { summary };
   } finally {
@@ -322,8 +336,14 @@ export function startAutoGc(log: (message: string) => void): { stop(): void } {
       log(`gc: ${due.trigger} sweep started (pid ${child.pid})`);
       void child.exited.then((code) => {
         running = false;
+        if (code !== 0) {
+          try { updateAutoGcState((current) => { current.lastFailure = { at: new Date().toISOString(), code }; }); }
+          catch (error) { log(`gc: could not record the failure: ${error}`); }
+          log(`gc: sweep exited with ${code}; next attempt in tomorrow's window`);
+          return;
+        }
         const last = readAutoGcState().lastRun;
-        log(code === 0 && last ? `gc: ${formatGcSummary(last)}` : `gc: sweep exited with ${code}`);
+        if (last) log(`gc: ${formatGcSummary(last)}`);
       });
     } catch (error) {
       running = false;
@@ -344,7 +364,7 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
   const hour = `${String(quietHour(config)).padStart(2, "0")}:00`;
   if (!config.gcAuto) lines.push("auto gc: off (gcAuto is false in config.json)");
   else if (state.paused) lines.push(`auto gc: paused ${ago(state.paused.at, now.getTime())} — \`am gc --auto resume\` turns it back on`);
-  else lines.push(`auto gc: on — nightly at ${hour} or when the fleet is next idle, up to ${config.gcAutoMaxMinutes}m a run`);
+  else lines.push(`auto gc: on — nightly at ${hour} or when the fleet is next idle, up to ${maxMinutes(config)}m a run`);
   lines.push(autoGcArmed(state)
     ? "mode: apply"
     : "mode: dry run — the next sweep only reports; the ones after it apply");
@@ -362,6 +382,9 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
     lines.push("last run: never");
   }
   if (state.lastSkip) lines.push(`last skip: ${ago(state.lastSkip.at, now.getTime())} — ${state.lastSkip.reason}`);
+  if (failedSinceLastRun(state)) {
+    lines.push(`last failure: ${ago(state.lastFailure!.at, now.getTime())} — the sweep exited with ${state.lastFailure!.code}; see the daemon log`);
+  }
   if (config.gcAuto && !state.paused) {
     const pressure = pressureReason(readPressure(), config);
     const opened = windowStart(now, config);
@@ -369,7 +392,10 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
     const next = new Date(opened);
     next.setDate(next.getDate() + 1);
     const inWindow = now.getTime() - opened.getTime() < NIGHT_WINDOW_MS;
-    lines.push(ranTonight
+    const failedTonight = state.lastFailure && !(Date.parse(state.lastFailure.at) < opened.getTime());
+    lines.push(failedTonight
+      ? `next: ${clock(next)} (held back after the failure)`
+      : ranTonight
       ? `next: ${clock(next)}${state.lastRun!.uninspected > 0 ? ", or sooner to finish the last sweep once the fleet is idle" : ""}`
       : `next: ${inWindow ? "within minutes" : "as soon as no agent is working"}${pressure ? `, once the host is quieter (now: ${pressure})` : ""}`);
   }

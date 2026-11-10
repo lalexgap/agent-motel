@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { applyGc, gcPolicy, planGc, readGcLog, restoreWorktree, type GcOptions } from "../src/gc";
 import { loadConfig } from "../src/config";
+import { destroyAgent } from "../src/commands/rm";
+import { restoreCommand } from "../src/commands/restore";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { readTrashedState, trashState } from "../src/trash";
 import { KEEP_MARKER, managedWorktreeRoot, noteWorkDir } from "../src/worktreeOwnership";
@@ -133,6 +135,47 @@ describe("ownership of worktrees an agent is not registered in", () => {
     expect(noteWorkDir(agent("elsewhere"), "/tmp/somewhere")).toBe(false);
     expect(managedWorktreeRoot(join(home, "worktrees", "repo"))).toBeNull();
     expect(managedWorktreeRoot(join(wt, ".claude", "worktrees", "agent-1", "src"))).toBe(join(wt, ".claude", "worktrees", "agent-1"));
+  });
+
+  test("a visit to another agent's worktree claims nothing: rm --clean and gc still take it", () => {
+    const wt = addWorktree("visited");
+    idle(wt, 10);
+    const concierge = agent("concierge", { status: "idle" });
+    noteWorkDir(concierge, join(wt, "src"));
+    writeAgent(concierge);
+    const owner = agent("visited", { dir: wt, worktreePath: wt, worktreeBranch: "am/visited", repoRoot: repo });
+    writeAgent(owner);
+    expect(planGc(POLICY).ownedWorktrees).toBe(1);
+
+    const log = console.log;
+    console.log = () => {};
+    try { destroyAgent(readAgent("visited")!, { clean: true }); }
+    finally { console.log = log; }
+    expect(existsSync(wt)).toBe(false);
+
+    // gc, once the removed agent's snapshot has released it.
+    const later = addWorktree("visited-later");
+    idle(later, 10);
+    noteWorkDir(concierge, later);
+    writeAgent(concierge);
+    trash(agent("visited-later", { dir: later, worktreePath: later, repoRoot: repo }), 8);
+    expect(planGc(POLICY).worktrees.map((w) => w.path)).toEqual([later]);
+    // A subagent worktree nested in it is not the visitor's either.
+    const sub = addWorktree("visited-sub", join(later, ".claude", "worktrees", "agent-1"));
+    idle(sub, 10);
+    noteWorkDir(concierge, sub);
+    writeAgent(concierge);
+    expect(planGc(POLICY).worktrees.map((w) => w.path)).toContain(sub);
+  });
+
+  test("a home-dir agent still owns a worktree it works in that no record is registered in", () => {
+    const wt = addWorktree("made-by-concierge");
+    idle(wt, 10);
+    const concierge = agent("concierge", { status: "idle" });
+    noteWorkDir(concierge, wt);
+    writeAgent(concierge);
+    expect(planGc(POLICY).worktrees).toEqual([]);
+    expect(planGc(POLICY).ownedWorktrees).toBe(1);
   });
 
   test("a malformed workDirs keeps every worktree: ownership is unknown", () => {
@@ -317,6 +360,25 @@ describe("stale dirty worktrees", () => {
     expect(git(wt, "symbolic-ref", "--short", "HEAD")).toBe("am/abandoned");
   });
 
+  test("am restore of an agent whose worktree gc salvaged says how to put the changes back", async () => {
+    const wt = addWorktree("salvaged");
+    writeFileSync(join(wt, "wip.txt"), "wip\n");
+    idle(wt, 40, "wip.txt");
+    trash(agent("salvaged", { dir: wt, worktreePath: wt, worktreeBranch: "am/salvaged", repoRoot: repo }), 8);
+    applyGc(planGc(POLICY), POLICY);
+    expect(existsSync(wt)).toBe(false);
+    const ref = readGcLog().find((e) => e.action === "remove-worktree")!.salvageRef!;
+
+    const out: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => { out.push(args.join(" ")); };
+    try { await restoreCommand("salvaged", { resume: false }); }
+    finally { console.log = log; }
+    expect(out.join("\n")).toContain(`git -C ${wt} restore --source=${ref} --worktree -- .`);
+    git(wt, "restore", `--source=${ref}`, "--worktree", "--", ".");
+    expect(readFileSync(join(wt, "wip.txt"), "utf8")).toBe("wip\n");
+  });
+
   test("a recently edited file keeps the worktree, as does staleDays 0", () => {
     const wt = addWorktree("in-progress");
     writeFileSync(join(wt, "old.txt"), "old\n");
@@ -397,6 +459,53 @@ describe("stale dirty worktrees", () => {
     expect(planGc(POLICY).worktrees).toEqual([]);
   });
 
+  test("a nested repository in an ignored or untracked path keeps the worktree, at plan and at removal", () => {
+    writeFileSync(join(repo, ".gitignore"), "tmp/\nnode_modules/\n");
+    git(repo, "add", ".gitignore");
+    git(repo, "commit", "-q", "-m", "ignore");
+    git(repo, "push", "-q", "origin", "main");
+    const policy = { ...POLICY, ignoredDays: 7 };
+    const clone = addWorktree("with-clone");
+    mkdirSync(join(clone, "tmp"));
+    git(join(clone, "tmp"), "clone", "-q", origin, "other-repo");
+    idle(clone, 9, "tmp");
+    const linked = addWorktree("with-linked");
+    addWorktree("inner-linked", join(linked, "work", "inner"));
+    idle(linked, 40, "work");
+
+    const plan = planGc(policy);
+    expect(plan.worktrees).toEqual([]);
+    const kept = new Map(plan.keptWorktrees.map((w) => [w.path, w.reason]));
+    expect(kept.get(clone)).toBe("only git-ignored files; contains a nested git repository");
+    expect(kept.get(linked)).toBe("uncommitted or ignored files; contains a nested git repository");
+
+    // A repository that appears after planning is caught under the deletion lock.
+    const late = addWorktree("late-clone");
+    mkdirSync(join(late, "tmp"));
+    writeFileSync(join(late, "tmp", "x"), "x");
+    idle(late, 9, "tmp");
+    const latePlan = planGc(policy);
+    expect(latePlan.worktrees.map((w) => w.path)).toEqual([late]);
+    git(join(late, "tmp"), "clone", "-q", origin, "other-repo");
+    idle(late, 9, "tmp");
+    expect(applyGc(latePlan, policy).join("\n")).toContain("contains a nested git repository");
+    expect(existsSync(join(late, "tmp", "other-repo", ".git"))).toBe(true);
+  });
+
+  test("an initialized submodule keeps even a clean worktree", () => {
+    const lib = join(home, "lib");
+    Bun.spawnSync(["git", "init", "-q", "-b", "main", lib]);
+    git(lib, "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "lib");
+    const wt = addWorktree("with-submodule");
+    git(wt, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "lib");
+    git(wt, "commit", "-q", "-m", "add lib");
+    git(wt, "push", "-q", "origin", "am/with-submodule");
+    idle(wt, 10);
+    const plan = planGc(POLICY);
+    expect(plan.worktrees).toEqual([]);
+    expect(plan.keptWorktrees[0]!.reason).toBe("contains a nested git repository (submodule)");
+  });
+
   test("an agent that still owns it keeps even a long-stale dirty worktree", () => {
     const wt = addWorktree("owned-dirty");
     writeFileSync(join(wt, "wip.txt"), "wip\n");
@@ -430,6 +539,31 @@ describe("old files", () => {
     writeFileSync(oldHandoff, "x");
     touch(oldHandoff, 45);
     expect(planGc({ agentDays: 7, trashDays: 30 }).orphans).toEqual([]);
+  });
+});
+
+describe("applying", () => {
+  test("a file that cannot be removed is reported and the rest of the run goes on", () => {
+    const stuck = join(home, "inbox", "gone-a");
+    const fine = join(home, "inbox", "gone-b");
+    for (const dir of [stuck, fine]) {
+      mkdirSync(join(dir, "sub"), { recursive: true });
+      writeFileSync(join(dir, "sub", "f"), "x");
+      touch(dir, 2);
+    }
+    const wt = addWorktree("after-orphans");
+    idle(wt, 10);
+    const plan = planGc(POLICY);
+    expect(plan.orphans.map((o) => o.path).sort()).toEqual([stuck, fine]);
+    chmodSync(join(stuck, "sub"), 0o500);
+    try {
+      const lines = applyGc(plan, POLICY);
+      expect(lines.join("\n")).toContain(`warning: could not remove inbox ${stuck}`);
+      expect(existsSync(fine)).toBe(false);
+      expect(existsSync(wt)).toBe(false);
+    } finally {
+      chmodSync(join(stuck, "sub"), 0o700);
+    }
   });
 });
 
