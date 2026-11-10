@@ -194,6 +194,8 @@ describe("dev bridge messages", () => {
     expect(fixture.requests.slice(before)).toEqual([
       { method: "POST", path: "/api/agents/annex%3Akelp-forest/messages", body: { text: "line one\n  line two", mode: "now" } },
     ]);
+    const detail = (await bridge.handle("api.get", { connection: id, path: "/api/agents/annex%3Akelp-forest" })) as { body: { queue: unknown[] } };
+    expect(detail.body.queue).toEqual([]);
   });
 
   test("HTTP errors resolve with status and body", async () => {

@@ -97,8 +97,10 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
   const queueOf = (id: string) => queues.get(id) ?? [];
+  // Like am, only `queue` messages are listed; a `now` message goes straight to the pane.
+  const listedOf = (id: string) => queueOf(id).filter((item) => item.mode === "queue");
   const syncQueued = (row: AgentRow) => {
-    const count = queueOf(agentId(row)).length;
+    const count = listedOf(agentId(row)).length;
     if (count) row.queued = count;
     else delete row.queued;
   };
@@ -176,7 +178,7 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
     if (!row) return json({ error: `no agent "${key}"` }, 404);
     const message = messages.get(rawId);
     if (!message || message.agent !== agentId(row)) return json({ error: `no message "${rawId}" for agent "${key}"` }, 404);
-    if (message.state === "delivered") return json({ error: "message was already delivered", reason: "already_delivered", state: "delivered" }, 409);
+    if (message.state === "delivered" || message.mode === "now") return json({ error: "message was already delivered", reason: "already_delivered", state: "delivered" }, 409);
     if (message.state === "cancelled") return json({ error: "message was already cancelled", reason: "already_cancelled", state: "cancelled" }, 409);
     message.state = "cancelled";
     queues.set(message.agent, queueOf(message.agent).filter((item) => item !== message));
@@ -218,7 +220,7 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
         if (!row) return json({ error: `no agent "${key}"` }, 404);
         // Like am: an API-queued entry carries no msgId; its record id stays internal.
         if (!sub) {
-          return json(buildDetail(row, queueOf(key).map((item): QueueItem => ({
+          return json(buildDetail(row, listedOf(key).map((item): QueueItem => ({
             message: item.text, queuedAt: item.queuedAt, ...(item.peerMsgId ? { msgId: item.peerMsgId } : {}),
           }))));
         }

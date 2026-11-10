@@ -78,7 +78,8 @@ describe("pending messages", () => {
 });
 
 describe("bubbles", () => {
-  const pending = (id: string | undefined, text: string): PendingMessage => ({ ...(id ? { id } : {}), match: text, shown: text, at: T0, baseline: 0 });
+  const pending = (id: string | undefined, text: string, mode: "queue" | "now" = "queue"): PendingMessage =>
+    ({ ...(id ? { id } : {}), match: text, shown: text, at: T0, baseline: 0, mode });
 
   const view = (list: ReturnType<typeof bubbles>) => list.map(({ text, state, cancelId }) => ({ text, state, cancelId }));
 
@@ -121,6 +122,31 @@ describe("bubbles", () => {
       { text: "again", state: "sent", cancelId: undefined },
       { text: "again", state: "queued", cancelId: "01A" },
     ]);
+  });
+
+  test("text matches exactly: our \"fix\" does not claim an earlier \"fix the tests\"", () => {
+    const list = bubbles([pending("01A", "fix")], [{ message: "fix the tests" }, { message: "fix" }]);
+    expect(view(list)).toEqual([
+      { text: "fix the tests", state: "queued", cancelId: undefined },
+      { text: "fix", state: "queued", cancelId: "01A" },
+    ]);
+    expect(view(bubbles([pending("01A", "fix")], [{ message: "fix the tests" }]))).toEqual([
+      { text: "fix", state: "sent", cancelId: undefined },
+      { text: "fix the tests", state: "queued", cancelId: undefined },
+    ]);
+  });
+
+  test("a now send never claims a queue entry, even with the same text", () => {
+    expect(view(bubbles([pending("01A", "steer", "now")], [{ message: "steer" }]))).toEqual([
+      { text: "steer", state: "sent", cancelId: undefined },
+      { text: "steer", state: "queued", cancelId: undefined },
+    ]);
+    expect(view(bubbles([pending("01A", "steer", "now")], [{ msgId: "01A", message: "steer" }]))[0]).toEqual({ text: "steer", state: "sent", cancelId: undefined });
+  });
+
+  test("notePending records the mode", () => {
+    expect(notePending([], "x", "01A", 0, T0, "queue")[0]!.mode).toBe("queue");
+    expect(notePending([], "x", "01A", 0, T0)[0]!.mode).toBeUndefined();
   });
 
   test("withoutMessage drops the cancelled send and the queue item it claimed", () => {

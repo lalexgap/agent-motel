@@ -125,12 +125,17 @@ describe("fixture message routes", () => {
     expect((await call("DELETE", "/api/agents/keeper-log/messages/01NOSUCHMESSAGE")).status).toBe(404);
   });
 
-  test("now to an idle agent: queued briefly, delivered as a user turn, answered, idle again", async () => {
+  test("now to an idle agent: never listed in the queue, delivered as a user turn, answered, idle again", async () => {
     const response = await call("POST", "/api/agents/keeper-log/messages", { text: "  summarise the timeline  ", mode: "now" });
     const sent = await response.json();
     expect(sent).toMatchObject({ ok: true, mode: "now" });
     expect(sent.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect((await read("/api/agents/keeper-log")).queue).toEqual([{ message: "summarise the timeline", queuedAt: expect.any(String) }]);
+    // Like am, a now message goes straight to the pane: not listed, not counted, not cancellable.
+    expect((await read("/api/agents/keeper-log")).queue).toEqual([]);
+    expect((await read("/api/agents")).rows.find((row: { name: string }) => row.name === "keeper-log").queued).toBeUndefined();
+    const early = await call("DELETE", `/api/agents/keeper-log/messages/${sent.id}`);
+    expect(early.status).toBe(409);
+    expect(await early.json()).toMatchObject({ reason: "already_delivered", state: "delivered" });
     await until(async () => (await read("/api/agents/keeper-log/transcript")).entries.at(-1)?.text === "summarise the timeline");
     expect((await read("/api/agents/keeper-log")).status).toBe("working");
     expect((await read("/api/agents/keeper-log")).queue).toEqual([]);
@@ -157,6 +162,7 @@ describe("fixture message routes", () => {
 
   test("now to the always-busy agent is delivered and it stays working", async () => {
     await call("POST", "/api/agents/harbor-lights/messages", { text: "steer left", mode: "now" });
+    expect((await read("/api/agents/harbor-lights")).queue).toEqual([]);
     await until(async () => (await read("/api/agents/harbor-lights/transcript")).entries.at(-1)?.kind === "assistant");
     expect((await read("/api/agents/harbor-lights")).status).toBe("working");
   });

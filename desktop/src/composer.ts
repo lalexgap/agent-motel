@@ -17,6 +17,8 @@ export interface PendingMessage {
   at: number;
   // User turns in the transcript when it was sent; only later turns can match.
   baseline: number;
+  // Only `queue` sends wait in am's queue; a `now` send goes straight to the pane.
+  mode?: SendMode;
 }
 
 export const normalizeMessage = (text: string): string =>
@@ -25,8 +27,8 @@ export const normalizeMessage = (text: string): string =>
 export const userTexts = (entries: readonly TranscriptEntry[]): string[] =>
   entries.filter((entry) => entry.kind === "user").map((entry) => normalizeMessage((entry as { text: string }).text));
 
-export function notePending(list: readonly PendingMessage[], text: string, id: string | undefined, baseline: number, now: number): PendingMessage[] {
-  return [...list, { ...(id ? { id } : {}), match: normalizeMessage(text), shown: text, at: now, baseline }];
+export function notePending(list: readonly PendingMessage[], text: string, id: string | undefined, baseline: number, now: number, mode?: SendMode): PendingMessage[] {
+  return [...list, { ...(id ? { id } : {}), match: normalizeMessage(text), shown: text, at: now, baseline, ...(mode ? { mode } : {}) }];
 }
 
 // Drops pending messages that have shown up in the transcript or expired.
@@ -69,19 +71,18 @@ function hashKey(scope: string, id: string | undefined, text: string): string {
 const queueText = (item: QueueItem): string => item.text || item.message || "";
 
 // Which queue items are our own sends: queue index -> pending message. The
-// server lists an API-queued message without its record id, so match by msgId
-// if present, else by text against items without one, each item at most once.
+// server lists an API-queued message verbatim without its record id, so match
+// by msgId if present, else by exact text against items without one, each item
+// at most once. Only `queue` sends can be in the queue.
 // A queue item's own msgId (an inter-agent message) is not a record id.
 export function claimQueue(pending: readonly PendingMessage[], queue: readonly QueueItem[]): Map<number, PendingMessage> {
   const claimed = new Map<number, PendingMessage>();
   for (const message of pending) {
-    if (!message.id) continue;
+    if (!message.id || message.mode !== "queue") continue;
     let index = queue.findIndex((item, i) => !claimed.has(i) && item.msgId === message.id);
     if (index < 0) {
       index = queue.findIndex((item, i) => {
-        if (claimed.has(i) || item.msgId) return false;
-        const text = normalizeMessage(queueText(item));
-        return text === message.match || text.startsWith(message.match);
+        return !claimed.has(i) && !item.msgId && normalizeMessage(queueText(item)) === message.match;
       });
     }
     if (index >= 0) claimed.set(index, message);

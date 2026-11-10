@@ -833,7 +833,7 @@ async function submitMessage(alternate: boolean): Promise<void> {
     return;
   }
   const agent = agentComposer(key);
-  agent.pending = notePending(agent.pending, text.value, id, baseline, Date.now());
+  agent.pending = notePending(agent.pending, text.value, id, baseline, Date.now(), mode);
   if (state.selected === key && composer.shownKey === key) {
     const after = textAfterSend(input.value, raw);
     if (after.text !== input.value) {
