@@ -49,6 +49,9 @@ describe("shipped subagent roles", () => {
     const lines = reviewer.instructions.split("\n");
     expect(lines.filter((line) => /^\[(high|medium|low)\]/.test(line))).toHaveLength(1);
     expect(reviewer.instructions).toContain("starts `Verdict:`");
+    const shepherd = byName.get("shepherd")!;
+    expect(shepherd.instructions).toContain('AGENTMGR_AGENT');
+    expect(shepherd.instructions).toContain('--ready --dir <this exact review worktree>');
   });
 
   test("subagent prompts never point at am for delegation or reporting", () => {

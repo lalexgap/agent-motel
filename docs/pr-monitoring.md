@@ -1,6 +1,6 @@
 # PR lifecycle monitoring
 
-Agent Motel's daemon checks GitHub PRs every two minutes and queues a message to each owning agent when a PR merges, closes without merging, or reopens. Merge messages contain the repository, URL, merge SHA, and timestamp. Existing post-merge instructions decide what the agent does next; monitoring does not grant deployment or cleanup permission.
+Agent Motel's daemon checks GitHub PRs every two minutes and queues a message to each owning agent when a PR merges, closes without merging, reopens, or develops merge conflicts. Conflict alerts identify the GitHub head and are deduplicated until GitHub reports the conflict resolved or a different head conflicts. Unknown mergeability does not count as resolution. Existing post-merge instructions decide what the agent does next; monitoring does not grant merge, deployment, or cleanup permission.
 
 Register each PR as soon as it is opened, especially every layer of a stack:
 
@@ -10,6 +10,14 @@ am pr my-agent https://github.com/owner/repo/pull/124 https://github.com/owner/r
 am pr my-agent                 # inspect tracked state as JSON
 am pr gapserver:my-agent https://github.com/owner/repo/pull/126
 ```
+
+After a shepherd has finished with no unresolved medium or major findings, explicitly verify and announce readiness from the reviewed worktree:
+
+```sh
+am pr my-agent https://github.com/owner/repo/pull/123 --ready --dir /path/to/review-worktree
+```
+
+This command is fail-closed and read-only apart from Agent Motel's local notification marker. It requires the installed review-gate adapter to cover the exact local and GitHub head, required parent and security coverage, and a safe local base ref resolving to the repository branch's live Git ref. It reads the PR and live base branch twice, because a PR's `baseRefOid` can lag the branch tip, and requires an open, clean, mergeable PR with no requested changes and at least one successful CI status or check; a PR with no CI is not considered green. Pending, failed, skipped, neutral, unknown, malformed, or potentially truncated check results are withheld. It never fetches, restacks, writes GitHub state, or wakes the owner agent. A successful head is announced to the desktop/journal once; a later head needs a fresh shepherd verdict and invocation.
 
 The daemon also discovers PRs on live agents' current branches (except `main`/`master`) when the PR head belongs to the checkout's `origin` repository. Same-named branches from forks are excluded; use explicit registration when a fork PR is intentionally owned by the agent. Discovery retains previous associations when branches change. Explicit registration also covers layers created and switched away from between polls, shared checkouts, nonstandard remotes, and detached HEADs. PRs are keyed by repository and number; multiple owners each receive one event. The initial observation is quiet for open PRs and terminal events predating the agent's creation. A merge or closure since creation is reported even if first observed after the event.
 
@@ -31,4 +39,4 @@ Webhooks could reduce latency, but the current server has no GitHub webhook rece
 
 The [notifications API](https://docs.github.com/en/rest/activity/notifications) is tied to an authenticated user's subscribed/participating threads. It is not a complete lifecycle feed for an explicit set of agent-owned PRs. An operator-side `gh` wrapper can catch CLI merges but misses browser merges; a local Git hook does not observe GitHub's merge button.
 
-Review comments, failing/green checks, and merge conflicts are intentionally deferred. They need opt-in policies, head-SHA-aware deduplication, and coalescing so transient CI or repeated comments do not continually wake agents. Merge, close, and reopen are the initial low-noise lifecycle events.
+Review-comment notifications and general failing/green-check alerts remain deferred. Readiness uses an explicit finished-shepherd declaration instead of inferring completion from CI, while conflict alerts use head-aware episode deduplication so repeated polls do not continually wake agents.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { notifyPrEvent, trackPullRequests } from "./prMonitor";
+import { declarePullRequestReady } from "./prReadiness";
 import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
 import { parseArgs, selectedProvider, type ParsedArgs } from "./args";
@@ -118,6 +119,8 @@ usage:
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
   am pr <agent> [URL ...]     list or register PRs for lifecycle monitoring
+  am pr <agent> <URL> --ready [--dir review-worktree]
+                              announce verified readiness after shepherding
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
   am notifications [--json] [--limit n]
@@ -629,6 +632,13 @@ async function main(): Promise<void> {
       break;
     case "pr": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      if (args.flags.ready) {
+        const urls = args.positional.slice(1);
+        if (urls.length !== 1) throw new Error("am pr --ready requires exactly one PR URL");
+        console.log(await declarePullRequestReady(agent, urls[0]!, args.flags.dir as string | undefined));
+        break;
+      }
+      if (args.flags.dir) throw new Error("--dir is only valid with am pr --ready");
       await trackPullRequests(agent, args.positional.slice(1), undefined, notifyPrEvent);
       console.log(JSON.stringify(readAgent(agent.name)?.prMonitor ?? { pullRequests: [] }, null, 2));
       break;
