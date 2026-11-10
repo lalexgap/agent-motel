@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { restartAgent } from "../src/commands/restart";
+import { restartAgent, restartExactAgent } from "../src/commands/restart";
 import type { MessageProvenance } from "../src/comms";
 import { reviveAgent } from "../src/commands/resume";
 import { newCommand } from "../src/commands/new";
@@ -14,6 +14,7 @@ import { queueTrackedMessage, readMessage } from "../src/messages";
 import { SelectionError } from "../src/catalog";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 import { destroyAgent, stopAgent } from "../src/commands/rm";
+import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
 
 let home: string;
 let oldPath: string | undefined;
@@ -218,6 +219,100 @@ esac
     expect(await child.exited).toBe(0);
     expect(readAgent("api")?.status).toBe("starting");
   });
+
+  test("an exact checked agent cannot fall through to a later prefix match", async () => {
+    const exact = readAgent("api")!;
+    destroyAgent(exact, { clean: false });
+    writeAgent({ ...exact, name: "api-long", tmuxSession: "agentmgr-api-long", createdAt: "replacement-prefix", updatedAt: "replacement-prefix" });
+    await expect(restartExactAgent(exact)).rejects.toThrow(/changed while the command was starting/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api-long")!.status).toBe("working");
+  });
+
+  test("a guarded restart cannot relaunch a session that exits after its status check", async () => {
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+if [ "$1" = has-session ]; then
+  count=0
+  test -f "$AGENTMGR_HOME/has-session-count" && count=$(cat "$AGENTMGR_HOME/has-session-count")
+  count=$((count + 1))
+  printf '%s' "$count" > "$AGENTMGR_HOME/has-session-count"
+  test "$count" -lt 3
+  exit
+fi
+printf '%s\n' "$@" > "$AGENTMGR_HOME/launch"
+`);
+    const agent = readAgent("api")!;
+    await expect(restartExactAgent(agent, { model: "opus" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/stopped while the model change was starting/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({ status: "working" });
+  });
+
+  test("a guarded Antigravity restart may replace the session it intentionally stopped", async () => {
+    writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(home, "agy"), 0o755);
+    const native = Bun.spawn(["sleep", "30"]);
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+case "$1" in
+  has-session) test ! -f "$AGENTMGR_HOME/vanished" ;;
+  list-panes) echo "${native.pid}" ;;
+  respawn-pane) touch "$AGENTMGR_HOME/vanished"; exit 1 ;;
+  new-session) printf '%s\n' "$@" > "$AGENTMGR_HOME/launch" ;;
+  *) exit 0 ;;
+esac
+`);
+    try {
+      const agent = readAgent("api")!;
+      agent.provider = "antigravity";
+      writeAgent(agent);
+      const result = await restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" });
+      expect(result.model).toBe("gemini-4-argon-high");
+      expect(readFileSync(join(home, "launch"), "utf8")).toStartWith("new-session\n");
+      expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "starting", model: "gemini-4-argon-high" });
+      expect(await native.exited).not.toBe(0);
+    } finally {
+      native.kill();
+      await native.exited;
+    }
+  });
+
+  test("a guarded native Antigravity restart rejects a process that exited before teardown", async () => {
+    writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(home, "agy"), 0o755);
+    writeFileSync(join(home, "tmux"), `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  list-panes) echo 99999999 ;;
+  *) printf '%s\n' "$1" >> "$AGENTMGR_HOME/native-race-calls" ;;
+esac
+`);
+    const agent = readAgent("api")!;
+    agent.provider = "antigravity";
+    writeAgent(agent);
+    await expect(restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/exited before the guarded restart could stop its generation/);
+    const calls = existsSync(join(home, "native-race-calls")) ? readFileSync(join(home, "native-race-calls"), "utf8") : "";
+    expect(calls).not.toContain("respawn-pane");
+    expect(calls).not.toContain("new-session");
+    expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "working" });
+  });
+
+  test("a guarded Antigravity restart rejects a generation that naturally exited before teardown", async () => {
+    writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(home, "agy"), 0o755);
+    const agent = readAgent("api")!;
+    agent.provider = "antigravity";
+    agent.antigravityRunId = "1".repeat(32);
+    agent.antigravityRunPhase = "claimed";
+    agent.antigravityCleanupRunId = agent.antigravityRunId;
+    writeAgent(agent);
+    await expect(restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/exited before the guarded restart could stop its generation/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({
+      status: "working", antigravityRunId: "1".repeat(32), antigravityCleanupRunId: "1".repeat(32),
+    });
+  });
 });
 
 describe("restart with a model change", () => {
@@ -297,6 +392,16 @@ describe("POST /api/agents/:name/restart", () => {
       headers: { Authorization: `Bearer ${TOKEN}` },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+  const changeModel = (name: string, body: unknown) =>
+    fetch(`${server.url}/api/agents/${name}/model`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    });
+  const guarded = (body: Record<string, unknown> = {}) => {
+    const agent = readAgent("api")!;
+    return { createdAt: agent.createdAt, status: agent.status, ...body };
+  };
 
   test("restarts on the agent's current model and answers ok; 404 for an unknown agent", async () => {
     await restartAgent("api", { model: "sonnet", effort: "low" });
@@ -313,6 +418,67 @@ describe("POST /api/agents/:name/restart", () => {
       expect(res.status).toBe(400);
       expect(((await res.json()) as any).error).toContain(`${Object.keys(body)[0]} is not supported`);
     }
+    expect(existsSync(join(home, "launch"))).toBe(false);
+  });
+
+  test("changes configured model and effort through the dedicated endpoint", async () => {
+    const changed = await changeModel("api", guarded({ model: "opus", effort: "high" }));
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toEqual({ ok: true, model: "opus", effort: "high" });
+    expect(readAgent("api")).toMatchObject({ model: "opus", effort: "high", sessionId: "conversation-123" });
+    expect(readFileSync(join(home, "launch"), "utf8")).toContain("'--model' 'opus' '--effort' 'high' '--resume' 'conversation-123'");
+
+    const defaults = await changeModel("api", guarded({ model: null, effort: null }));
+    expect(defaults.status).toBe(200);
+    expect(await defaults.json()).toEqual({ ok: true, model: null, effort: null });
+    expect(readAgent("api")!.model).toBeUndefined();
+    expect(readAgent("api")!.effort).toBeUndefined();
+  });
+
+  test("model endpoint validates the exact agent and body before lifecycle side effects", async () => {
+    for (const body of [
+      {}, guarded({ model: 1 }), guarded({ model: "" }), guarded({ model: " opus" }), guarded({ model: "--help" }), guarded({ model: "bad\nmodel" }),
+      guarded({ model: "x".repeat(257) }), guarded({ model: "opus", effort: 1 }), guarded({ model: "opus", effort: "" }),
+      guarded({ model: "opus", extra: true }), { model: "opus", createdAt: readAgent("api")!.createdAt },
+      { model: "opus", status: "working" }, { model: "opus", createdAt: readAgent("api")!.createdAt, status: "exited" },
+      { model: "opus", createdAt: readAgent("api")!.createdAt, status: "dead" }, [], null,
+    ]) expect((await changeModel("api", body)).status).toBe(400);
+    expect((await changeModel("ap", guarded({ model: "opus" }))).status).toBe(404);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({ status: "working", sessionId: "conversation-123" });
+  });
+
+  test("catalog selection errors are 400 while lifecycle conflicts remain 409", async () => {
+    const catalog = JSON.stringify({ models: [{ slug: "gpt-known", supported_reasoning_levels: [{ effort: "low" }] }] });
+    writeFileSync(join(home, "codex"), `#!/bin/sh\nif [ "$1" = debug ]; then printf '%s' '${catalog}'; fi\nexit 0\n`);
+    writeAgent({ ...readAgent("api")!, provider: "codex" });
+    const invalid = await changeModel("api", guarded({ model: "gpt-unknown", effort: "low" }));
+    expect(invalid.status).toBe(400);
+    expect(((await invalid.json()) as any).error).toContain('unknown codex model "gpt-unknown"');
+    expect(acquireLifecycleLock("api")).toBe(true);
+    try {
+      const busy = await changeModel("api", guarded({ model: "gpt-known", effort: "low" }));
+      expect(busy.status).toBe(409);
+      expect(((await busy.json()) as any).error).toContain("being stopped, removed, renamed, or restarted");
+    } finally { releaseLifecycleLock("api"); }
+    expect(existsSync(join(home, "launch"))).toBe(false);
+  });
+
+  test("a stale dialog cannot restart a stopped or same-name replacement agent", async () => {
+    const original = readAgent("api")!;
+    const stale = { model: "opus", createdAt: original.createdAt, status: "working" };
+    stopAgent(original);
+    const stopped = await changeModel("api", stale);
+    expect(stopped.status).toBe(409);
+    expect(((await stopped.json()) as any).error).toContain("changed or stopped");
+    expect(existsSync(join(home, "launch"))).toBe(false);
+
+    destroyAgent(readAgent("api")!, { clean: false });
+    writeAgent({ ...original, status: "working", createdAt: "same-name-replacement", updatedAt: "same-name-replacement" });
+    const replaced = await changeModel("api", stale);
+    expect(replaced.status).toBe(409);
+    expect(((await replaced.json()) as any).error).toContain("changed or stopped");
+    expect(readAgent("api")).toMatchObject({ createdAt: "same-name-replacement", status: "working" });
     expect(existsSync(join(home, "launch"))).toBe(false);
   });
 
