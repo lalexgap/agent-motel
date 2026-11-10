@@ -133,6 +133,16 @@ export function planFile(name: string): string {
   return join(plansDir(), `${name}.md`);
 }
 
+// Persisted per-transcript usage ledger (see usageLedger.ts): keeps token and
+// cost history after agents and transcripts are gone.
+export function usageDir(): string {
+  return join(baseDir(), "usage");
+}
+
+export function usageLedgerFile(): string {
+  return join(usageDir(), "ledger.json");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }
