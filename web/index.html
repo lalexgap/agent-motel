@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#1e1e1e" />
     <title>Agent Motel · Front desk</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/vendor/xterm.css" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/vendor/xterm.js" defer></script>
@@ -60,10 +61,11 @@
           YOUR AGENTS <button id="side-new" aria-label="New agent">+</button>
         </div>
         <input id="sidebar-search" class="sidebar-search" type="search"
-          placeholder="Filter agents…" aria-label="Filter your agents" />
+          placeholder="Filter this list…" aria-label="Filter the sidebar agent list" />
         <label class="sidebar-filter">
           <input id="show-stopped-agents" type="checkbox" /> Show stopped
         </label>
+        <label class="sidebar-group-label">Group by <select id="sidebar-group"><option value="">Status</option><option value="repo">Repository</option><option value="host">Host</option></select></label>
         <div id="agent-nav"></div>
         <div class="sidebar-bottom">
           <span id="connection" role="status">Connecting…</span
@@ -77,6 +79,7 @@
             >Workspace <span class="muted">/</span>
             <b id="breadcrumb">Overview</b></span
           >
+          <button id="command-open" type="button">Commands · Ctrl K</button>
           <button id="mobile-logout" class="mobile-only">Sign out</button>
         </header>
         <div class="page">
@@ -176,7 +179,7 @@
                       id="search"
                       type="search"
                       aria-label="Filter agents"
-                      placeholder="Filter…  ⌘K"
+                      placeholder="Filter this overview…"
                     /><select id="sort" aria-label="Group or sort agents">
                       <option value="status">Group: Status</option>
                       <option value="repo">Sort: Repository</option>
@@ -192,7 +195,7 @@
                     >
                   </div>
                 </div>
-                <p class="fleet-guidance muted">Counts exclude the concierge. Available = CLI idle; Stopped = exited or dead.</p>
+                <p class="fleet-guidance muted">Counts exclude the concierge. Stopped includes exited and offline agents.</p>
                 <div id="agent-grid" class="agent-grid"></div>
               </section>
               <aside class="concierge-dock">
@@ -226,7 +229,7 @@
                     maxlength="100000"
                   ></textarea>
                   <div class="dock-footer">
-                    <span>⌘ Enter</span><button class="primary">Send ↗</button>
+                    <span class="composer-shortcut">Ctrl+Enter: send</span><button class="primary">Send ↗</button>
                   </div>
                 </form>
               </aside>
@@ -283,7 +286,9 @@
                   tabindex="0"
                   aria-label="Agent conversation"
                 ></div>
+                <button id="jump-latest" type="button" hidden>↓ Jump to latest</button>
                 <div id="chat-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
+                <p id="message-mode" class="composer-mode"></p>
                 <form id="message-form">
                   <div
                     id="message-attachments"
@@ -301,8 +306,8 @@
                   ></textarea>
                   <div class="composer-footer">
                     <span id="message-status" role="status"></span
-                    ><small>⌘ Enter to send</small
-                    ><button id="message-send" class="primary send-button" aria-label="Send message" title="Send (⌘ Enter)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
+                    ><small class="composer-shortcut">Ctrl+Enter to send</small
+                    ><button id="message-send" class="primary send-button" aria-label="Send message" title="Send (Ctrl+Enter)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button>
                   </div>
                 </form>
                 </div>
@@ -462,6 +467,12 @@
         <p id="create-host-note" class="muted">Directory on the selected host. Git repositories use isolated worktrees when enabled in host settings; otherwise they run in place. Non-Git directories run in place.</p>
         <p class="muted">Default base for a new branch: origin’s default branch, then origin/main or origin/master if available, otherwise repository HEAD. Fetch is attempted first; offline creation uses the saved ref. An existing branch is reused.</p>
       </form>
+    </dialog>
+    <dialog id="command-dialog" aria-labelledby="command-title">
+      <div class="command-heading"><h2 id="command-title">Commands & agents</h2><button id="command-close" aria-label="Close commands">✕</button></div>
+      <input id="command-query" type="search" placeholder="Find an agent or command…" aria-label="Find an agent or command" autocomplete="off" />
+      <div id="command-results"></div>
+      <small>↑ ↓ to navigate · Enter to open · Esc to close</small>
     </dialog>
   </body>
 </html>

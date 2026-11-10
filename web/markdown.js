@@ -9,11 +9,12 @@ window.agentMarkdown = {
   tableDivider: /^\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?$/,
   maxDepth: 8,
   maxRender: 100000,
-  render(node, text = "") {
+  render(node, text = "", renderKey = "") {
     text = String(text);
     node.replaceChildren();
     if (text.length > this.maxRender) window.agentLinks.append(this.element("p", node), text);
-    else this.blocks(node, text.replace(/\r\n?/g, "\n").split("\n"));
+    else this.blocks(node, text.replace(/\r\n?/g, "\n").split("\n"), 0,
+      renderKey ? { renderKey, codeIndex: 0 } : null);
     return node;
   },
   element(tag, parent) {
@@ -32,7 +33,51 @@ window.agentMarkdown = {
   cells(line) {
     return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim());
   },
-  blocks(parent, lines, depth = 0) {
+  codeBlock(parent, text, renderState) {
+    const block = this.element("div", parent);
+    block.className = "md-code";
+    if (renderState) block.dataset.wrapKey = `${renderState.renderKey}:code:${renderState.codeIndex++}`;
+    const controls = this.element("div", block);
+    controls.className = "md-code-controls";
+    const wrap = this.element("button", controls);
+    wrap.type = "button";
+    wrap.textContent = "Wrap";
+    wrap.setAttribute("aria-label", "Wrap code lines");
+    wrap.setAttribute("aria-pressed", "false");
+    const copy = this.element("button", controls);
+    copy.type = "button";
+    copy.textContent = "Copy";
+    copy.setAttribute("aria-label", "Copy code");
+    const status = this.element("span", controls);
+    status.className = "md-code-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    const pre = this.element("pre", block);
+    pre.tabIndex = 0;
+    pre.setAttribute("aria-label", "Code block");
+    window.agentLinks.render(this.element("code", pre), text);
+    let wrapped = false;
+    wrap.addEventListener("click", () => {
+      wrapped = !wrapped;
+      block.dataset.wrapped = String(wrapped);
+      pre.className = wrapped ? "md-code-wrapped" : "";
+      wrap.setAttribute("aria-pressed", String(wrapped));
+    });
+    copy.addEventListener("click", async () => {
+      if (copy.disabled) return;
+      copy.disabled = true;
+      status.textContent = "Copying…";
+      try {
+        await window.navigator.clipboard.writeText(text);
+        status.textContent = "Copied!";
+      } catch {
+        status.textContent = "Could not copy. Select the code and copy manually.";
+      } finally {
+        copy.disabled = false;
+      }
+    });
+  },
+  blocks(parent, lines, depth = 0, renderState = null) {
     if (depth > this.maxDepth) {
       window.agentLinks.append(this.element("p", parent), lines.join("\n").trim());
       return;
@@ -47,8 +92,7 @@ window.agentMarkdown = {
         index++;
         while (index < lines.length && !lines[index].trim().startsWith(fence[1])) body.push(lines[index++]);
         index++;
-        const pre = this.element("pre", parent);
-        window.agentLinks.render(this.element("code", pre), body.join("\n"));
+        this.codeBlock(parent, body.join("\n"), renderState);
         continue;
       }
       const heading = line.match(this.heading);
@@ -66,7 +110,7 @@ window.agentMarkdown = {
       if (this.quote.test(line)) {
         const body = [];
         while (index < lines.length && this.quote.test(lines[index])) body.push(lines[index++].replace(this.quote, ""));
-        this.blocks(this.element("blockquote", parent), body, depth + 1);
+        this.blocks(this.element("blockquote", parent), body, depth + 1, renderState);
         continue;
       }
       if (this.isTable(lines, index)) {
@@ -85,7 +129,7 @@ window.agentMarkdown = {
       }
       const item = line.match(this.item);
       if (item) {
-        index = this.list(parent, lines, index, item[1].length, depth);
+        index = this.list(parent, lines, index, item[1].length, depth, renderState);
         continue;
       }
       const paragraph = [];
@@ -94,7 +138,7 @@ window.agentMarkdown = {
       this.inline(this.element("p", parent), paragraph.join("\n"));
     }
   },
-  list(parent, lines, index, indent, depth) {
+  list(parent, lines, index, indent, depth, renderState) {
     const ordered = /\d/.test(lines[index].match(this.item)[2]);
     const list = this.element(ordered ? "ol" : "ul", parent);
     const start = Number.parseInt(lines[index].match(this.item)[2], 10);
@@ -126,7 +170,7 @@ window.agentMarkdown = {
         index++;
       }
       this.inline(li, match[3]);
-      if (nested.length) this.blocks(li, nested, depth + 1);
+      if (nested.length) this.blocks(li, nested, depth + 1, renderState);
     }
     return index;
   },
