@@ -1,4 +1,5 @@
 import { startPrMonitor } from "./prMonitor";
+import { startAutoGc } from "./autoGc";
 import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
 import { recordAudit, withAuditContext } from "./audit";
@@ -393,6 +394,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   }, RECONCILE_INTERVAL_MS);
 
   const prMonitor = startPrMonitor();
+  const autoGc = startAutoGc(log);
 
   const keepalive = setInterval(() => {
     const chunk = encoder.encode(": keepalive\n\n");
@@ -437,6 +439,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     stop() {
       stopped = true;
       prMonitor.stop();
+      autoGc.stop();
       clearInterval(reconciler);
       clearInterval(keepalive);
       codexApprovals.stop();

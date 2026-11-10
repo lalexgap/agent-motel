@@ -326,6 +326,50 @@ describe("locateTranscript stale provider metadata", () => {
 });
 
 
+describe("Claude recent conversation", () => {
+  test("rereads the latest messages after resuming a long recorded session", () => {
+    const root = mkdtempSync(join(tmpdir(), "am-transcript-resume-"));
+    try {
+      const file = join(root, "session.jsonl");
+      const message = (type: "user" | "assistant", text: string) => JSON.stringify({
+        type, sessionId: "session", cwd: root,
+        message: { role: type, content: [{ type: "text", text }] },
+      });
+      const history = [message("user", "Review the CRM")];
+      for (let index = 0; index < 30; index++) {
+        history.push(message("assistant", `Review update ${index}`));
+      }
+      history.push(JSON.stringify({ type: "assistant", sessionId: "session", message: {
+        role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }],
+      } }));
+      history.push(JSON.stringify({ type: "user", sessionId: "session", message: {
+        role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "x".repeat(150000) }],
+      } }));
+      writeFileSync(file, history.join("\n"));
+      const agent = { name: "crm-review", provider: "claude" as const, status: "idle" as const,
+        dir: root, tmuxSession: "test", createdAt: "now", updatedAt: "now",
+        sessionId: "session", transcriptPath: file };
+      expect(transcriptJson(agent).total).toBe(32);
+
+      history.push(message("user", "What is the report?"), message("assistant", "Here is the latest report."));
+      writeFileSync(file, history.join("\n") + '\n{"type":"assist');
+      const resumed = JSON.parse(JSON.stringify(agent));
+      const transcript = transcriptJson(resumed);
+      expect(locateTranscript(resumed)).toBe(file);
+      expect(transcript.sessionId).toBe("session");
+      expect(transcript.total).toBe(34);
+      expect(transcript.entries[0]).toEqual({ index: 0, kind: "user", text: "Review the CRM" });
+      expect(transcript.entries.slice(-2)).toEqual([
+        { index: 32, kind: "user", text: "What is the report?" },
+        { index: 33, kind: "assistant", text: "Here is the latest report." },
+      ]);
+      expect(resumed).toEqual(agent);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Codex parent transcript identity", () => {
   test("recovers full parent history when a child hook leaves another Codex path", () => {
     const root = mkdtempSync(join(tmpdir(), "am-transcript-identity-"));

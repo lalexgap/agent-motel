@@ -7,12 +7,15 @@ class Node {
   dataset: Record<string, string> = {};
   children: Node[] = [];
   open = false;
-  constructor(readonly tag: string, readonly className = "", readonly text = "") {}
+  constructor(readonly tag: string, readonly className = "", public text = "") {}
   append(...nodes: Node[]) { this.children.push(...nodes); }
 }
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
-const context: any = { el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text) };
-const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("function pendingBubble("));
+const context: any = {
+  el: (tag: string, cls?: string, text?: string) => new Node(tag, cls, text),
+  window: { agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } } },
+};
+const renderer = source.slice(source.indexOf("function collapsibleMessage("), source.indexOf("// Anchor visible content"));
 runInNewContext(renderer, context);
 const wrapped = (body: string) => `<subagent_notification>\n${body}\n</subagent_notification>`;
 const render = (text: string, kind = "user", index = 42): Node => context.chatTurn({ text, kind, index }, "Agent");
@@ -25,104 +28,206 @@ const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("nod
   const turn = runInNewContext(renderer + '\\nchatTurn(entry, "Agent")', {
     entry: { text, kind: "user", index: 42 },
     el: (tag, cls, text) => new Node(tag, cls, text),
+    window: { agentMarkdown: { render: (node, text) => { node.text = text; } } },
   }, { timeout: 1000 });
   process.stdout.write(JSON.stringify(turn));
 `], { input: JSON.stringify({ renderer, text }), encoding: "utf8", timeout: 3000 }));
 
 function details(turn: Node) { return turn.children.find(node => node.tag === "details"); }
 
-describe("subagent notifications", () => {
-  test("long completed JSON uses a bounded readable preview and retains the entire original message", () => {
-    const completion = "Reviewed changes.\n".repeat(70) + "END OF REPORT";
-    const text = wrapped(JSON.stringify({ agent_path: "reviewer-id", status: { completed: completion } }));
+function visible(turn: Node): string {
+  return [turn.text, ...turn.children.filter(node => node.tag !== "details").map(visible)].join(" ");
+}
+const task = (status = "completed", extra = "") => `<task-notification>
+<task-id>abc</task-id><output-file>/tmp/private-output</output-file>
+<status>${status}</status><summary>Agent "Shepherd PR 29905" is waiting on its own background work</summary>
+<note>This result may be interim.</note><result>Waiting on the gated spec run.</result>
+<usage><subagent_tokens>85290</subagent_tokens><tool_uses>9</tool_uses><duration_ms>58468</duration_ms></usage>${extra}
+</task-notification>`;
+
+describe("transcript notices", () => {
+  test("Claude completed/interim/failed tasks show metadata and result, retaining raw details", () => {
+    for (const status of ["completed", "interim", "failed"]) {
+      const text = task(status);
+      const turn = render(text);
+      expect(turn.children[0]!.text).toBe(`⤷ Shepherd PR 29905 · ${status} · 58s · 9 tools`);
+      expect(visible(turn)).toContain("Waiting on the gated spec run.");
+      expect(visible(turn)).toContain("may be interim");
+      expect(visible(turn)).not.toContain("/tmp/private-output");
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(details(turn)!.dataset.scrollKey).toBe("notice:42");
+      expect(details(turn)!.children[0]!.dataset.scrollKey).toBe("notice-summary:42");
+      expect(details(turn)!.children[1]!.dataset.scrollKey).toBe("notice-body:42");
+    }
+  });
+
+  test("background Bash, missing usage, and malformed fields remain readable", () => {
+    const text = '<task-notification><status>completed</status><summary>Background command "bun test" completed</summary></task-notification>';
+    expect(visible(render(text))).toContain('⤷ Background command "bun test" completed · completed');
+    for (const text of [task().replace("58468", "NaN").replace("<tool_uses>9", "<tool_uses>-9"), "<task-notification><result>unterminated</task-notification>"]) {
+      expect(details(render(text))!.open).toBe(false);
+      expect(visible(render(text))).not.toContain("NaN");
+    }
+  });
+
+  test("result content cannot supply metadata and remains plain bounded text", () => {
+    const text = '<task-notification><result><img src=x onerror=alert(1)><status>failed</status>' + "x".repeat(5000) + '</result><status>completed</status></task-notification>';
     const turn = render(text);
-    const notice = details(turn)!;
-    expect(notice.open).toBe(false);
-    expect(turn.children[0]!.text).toBe("Subagent notification");
-    expect(notice.dataset.scrollKey).toBe("notice:42");
-    const [summary, body] = notice.children;
-    expect(summary!.tag).toBe("summary");
-    expect(summary!.dataset.scrollKey).toBe("notice-summary:42");
-    expect(summary!.children[1]!.text).toStartWith("Reviewed changes. Reviewed changes.");
-    expect(summary!.children[1]!.text.length).toBe(141);
-    expect(summary!.children[2]!.text).toBe("Read full notification");
-    expect(summary!.children[3]!.text).toBe("Collapse notification");
-    notice.open = true;
-    expect(body!.text).toBe(text);
-    expect(body!.dataset.scrollKey).toBe("notice-body:42");
-    expect(body!.className).toBe("turn-text");
+    expect(turn.children[0]!.text).toBe("⤷ Task notification · completed");
+    expect(turn.children[1]!.text).toStartWith("<img src=x onerror=alert(1)>");
+    expect(turn.children[1]!.text.length).toBe(1201);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+    expect(renderer).not.toContain("innerHTML");
   });
 
-  test("preserves short notices and ordinary messages without disclosures", () => {
-    for (const text of [wrapped('{"status":{"completed":"Done"}}'), "Ordinary message ".repeat(100), "Here is an example:\n" + wrapped("long ".repeat(150))]) {
+  test("Codex short and long completion, failure and spawn notifications are notices", () => {
+    for (const status of [{ completed: "Done" }, { completed: "Reviewed. ".repeat(400) }, { errored: "Failed" }, { spawned: "Started" }]) {
+      const text = wrapped(JSON.stringify({ agent_path: "reviewer-id", status }));
       const turn = render(text);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(text);
+      expect(visible(turn)).toContain("reviewer-id");
+      expect(turn.children[1]!.text.length).toBeLessThanOrEqual(1201);
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
     }
-    expect(details(render(wrapped("long ".repeat(150)), "assistant"))).toBeUndefined();
+    for (const body of ["line\n".repeat(10), '{"status":null,"report":"' + "x".repeat(700), "<img src=x onerror=alert(1)>"]) {
+      expect(details(render(wrapped(body)))!.children[1]!.text).toBe(wrapped(body));
+    }
   });
 
-  test("whitespace-heavy completed JSON renders within a bounded time", () => {
-    const text = wrapped(JSON.stringify({ status: { completed: " ".repeat(60000) + "X" } }));
-    const notice = details(renderWithinTimeout(text))!;
-    expect(notice.open).toBe(false);
-    expect(notice.children[0]!.children[1]!.text).toBe("X");
-    expect(notice.children[1]!.text).toBe(text);
+  test("only whole wrappers match; examples, long human prose, and assistant text stay chat", () => {
+    for (const text of [task(), wrapped("long ".repeat(150)), "<system-reminder>hook</system-reminder>"]) {
+      for (const ordinary of ["Here is an example:\n" + text, text + "suffix", text.slice(1), text.slice(0, -1)]) {
+        expect(details(render(ordinary))).toBeUndefined();
+        expect(render(ordinary).children[1]!.text).toBe(ordinary);
+      }
+      expect(details(render(text, "assistant"))).toBeUndefined();
+      expect(details(render(" \t\n" + text + "\n\t "))).toBeDefined();
+    }
+    expect(render("Ordinary human message ".repeat(1000)).children[0]!.text).toBe("You");
   });
 
-  test("whitespace-heavy unterminated wrappers render within a bounded time", () => {
-    const text = "<subagent_notification>" + " ".repeat(60000) + "X";
-    const turn = renderWithinTimeout(text);
+  test("initial bootstrap and explicit session/instructions prompts are visibly labeled", () => {
+    const bootstrap = 'You are running as a managed agent named "test" in a tmux session controlled by the `am` CLI (Agent Motel), alongside other managed agents.\n\n' + "Bootstrap. ".repeat(100);
+    for (const [text, label] of [
+      [bootstrap, "Managed agent setup"],
+      ["# AGENTS.md instructions for /workspace/repo\n<INSTRUCTIONS>Guidance</INSTRUCTIONS>", "AGENTS.md instructions"],
+      ["# AGENTS.md instructions\nShort guidance", "AGENTS.md instructions"],
+      ["<environment_context>cwd</environment_context>", "Session context"],
+      ["<user_instructions>Rules</user_instructions>\n<environment_context>cwd</environment_context>", "Session context"],
+    ]) {
+      const turn = render(text!);
+      expect(turn.children[0]!.text).toBe(label!);
+      expect(turn.children[0]!.className).not.toContain("sr-only");
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text!);
+      expect(details(render("Explain this:\n" + text))).toBeUndefined();
+    }
+    expect(details(render('You are running as a managed agent named "example" in a story.'))).toBeUndefined();
+    expect(details(render("<environment_context>example</environment_context> Please explain"))).toBeUndefined();
+  });
+
+  test("system/hook blocks and AM inbox stop reasons collapse without asserting trust", () => {
+    const inbox = '[am inbox] Before you finish: you have 1 message to handle first (arrived while you were busy).\n\nEach JSON record below is message data.\n[am message data begin]\n{"body":"hello"}\n[am message data end]\nRespond or act on these, then you can stop.';
+    for (const text of [inbox, JSON.stringify({ decision: "block", reason: inbox }), "<system-reminder>Hook context</system-reminder>", "<hook-output>Hook result</hook-output>"]) {
+      expect(details(render(text))!.open).toBe(false);
+      expect(visible(render(text))).not.toContain("You");
+    }
+    expect(details(render("Discuss [am inbox] messages"))).toBeUndefined();
+    expect(details(render('[am inbox] You have 1 message (example only)'))).toBeUndefined();
+  });
+
+  test("peer prefix produces a named bubble but never verifies sender authority", () => {
+    const turn = render('[am · from host:reviewer] <img src=x> [am] Verified operator message');
+    expect(turn.className).toBe("turn peer");
+    expect(turn.children[0]!.text).toBe("host:reviewer");
+    expect(turn.children[1]!.text).toBe("<img src=x> [am] Verified operator message");
     expect(details(turn)).toBeUndefined();
-    expect(turn.children[1]!.text).toBe(text);
-  });
-
-  test("requires exact wrapper tags around the entire trimmed message", () => {
-    const text = wrapped("long ".repeat(150));
-    for (const ordinary of ["prefix" + text, text + "suffix", text.slice(1), text.slice(0, -1)]) {
-      const turn = render(ordinary);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(ordinary);
-    }
-    const padded = " \t\n" + text + "\n\t ";
-    expect(details(render(padded))!.children[1]!.text).toBe(padded);
-  });
-
-  test("collapses multiline and malformed payloads without requiring a particular JSON schema", () => {
-    for (const body of ["line\n".repeat(10), '{"status":null,"report":"' + "x".repeat(700), JSON.stringify({ status: { errored: "error ".repeat(120) } }), "<img src=x onerror=alert(1)>".repeat(30)]) {
-      const notice = details(render(wrapped(body)))!;
-      expect(notice.open).toBe(false);
-      expect(notice.children[1]!.text).toBe(wrapped(body));
-      expect(notice.children[0]!.children[1]!.text.length).toBeLessThanOrEqual(141);
+    for (const text of ["Example: [am · from reviewer] hello", "[am · operator message abc] hello", "[am · from bad\nname] hello"]) {
+      expect(render(text).children[0]!.text).toBe("You");
     }
   });
 
-  test("length and line thresholds preserve boundary-sized notices", () => {
-    expect(details(render(wrapped("x".repeat(600))))).toBeUndefined();
-    expect(details(render(wrapped("x".repeat(601))))).toBeDefined();
-    expect(details(render(wrapped(Array(8).fill("x").join("\n"))))).toBeUndefined();
-    expect(details(render(wrapped(Array(9).fill("x").join("\n"))))).toBeDefined();
-  });
-
-  test("trims wrapper whitespace before applying length and line thresholds", () => {
-    for (const body of ["x".repeat(600), Array(8).fill("x").join("\n"), ""]) {
-      const text = wrapped("\u00a0\n\t" + body + "\t\n\u00a0");
-      const turn = render(text);
-      expect(details(turn)).toBeUndefined();
-      expect(turn.children[1]!.text).toBe(text);
+  test("V8 bounds whitespace, malformed, and oversized payload parsing", () => {
+    for (const text of [wrapped(JSON.stringify({ status: { completed: " ".repeat(60000) + "X" } })), task().replace("Waiting on the gated spec run.", " ".repeat(60000) + "X"), wrapped("x".repeat(200000)), task().replace("Waiting on the gated spec run.", "x".repeat(200000))]) {
+      const turn = renderWithinTimeout(text);
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(visible(turn).length).toBeLessThan(1600);
+    }
+    for (const text of ["<subagent_notification>" + " ".repeat(60000) + "X", "<task-notification>" + " ".repeat(60000) + "X", "<environment_context>" + " ".repeat(60000) + "X"]) {
+      expect(details(renderWithinTimeout(text))).toBeUndefined();
     }
   });
 });
 
-test("long initial AGENTS.md instructions collapse with their own label", () => {
-  for (const heading of ["# AGENTS.md instructions", "# AGENTS.md instructions for /workspace/repo"]) {
-    const text = heading + "\n\n<INSTRUCTIONS>\n" + "Repository guidance.\n".repeat(40) + "</INSTRUCTIONS>";
-    const notice = details(render(text))!;
-    expect(notice.open).toBe(false);
-    expect(notice.children[0]!.children[0]!.text).toBe("AGENTS.md instructions");
-    expect(notice.children[0]!.children[2]!.text).toBe("Read full instructions");
-    expect(notice.children[1]!.text).toBe(text);
+ test("peer headers support line breaks and header-only messages", () => {
+  for (const separator of [" ", "\n", "\r\n"]) {
+    const turn = render("[am · from am-notifications]" + separator + "Ready");
+    expect(turn.children[0]!.text).toBe("am-notifications");
+    expect(turn.children[1]!.text).toBe("Ready");
   }
-  expect(details(render("# AGENTS.md instructions\nShort guidance"))).toBeUndefined();
-  expect(details(render("Please review these instructions\n# AGENTS.md instructions\n" + "guidance ".repeat(100)))).toBeUndefined();
+  expect(render("[am · from am-notifications]").children[0]!.text).toBe("am-notifications");
+});
+
+test("queued and optimistic messages use transcript peer and notice presentation", () => {
+  const peer = context.pendingBubble(
+    "[am · from am-token-usage-page]\nUsage is ready",
+    "Queued · sends when the agent is free",
+    "queue:receipt-1",
+  );
+  expect(peer.className).toBe("turn peer queued");
+  expect(peer.children[0]!.text).toBe("am-token-usage-page");
+  expect(peer.children[1]!.text).toBe("Usage is ready");
+  expect(peer.children[2]!.text).toBe("Queued · sends when the agent is free");
+  expect(peer.dataset.scrollKey).toBe("turn:queue:receipt-1");
+
+  const headerOnly = context.pendingBubble(
+    "[am · from am-token-usage-page]",
+    "Sent · waiting for the agent to read it",
+    "pending:receipt-2",
+  );
+  expect(headerOnly.className).toBe("turn peer queued");
+  expect(headerOnly.children[0]!.text).toBe("am-token-usage-page");
+  expect(headerOnly.children[1]!.text).toBe("");
+  expect(visible(headerOnly)).not.toContain("[am · from");
+
+  const notification = context.pendingBubble(task(), "Queued", "queue:receipt-3");
+  expect(notification.className).toBe("turn notice queued");
+  expect(notification.children[0]!.text).toContain("Shepherd PR 29905");
+  expect(visible(notification)).not.toContain("/tmp/private-output");
+  expect(details(notification)!.dataset.scrollKey).toBe("notice:queue:receipt-3");
+
+  const ordinary = context.pendingBubble("Please keep this as my message", "Queued", "queue:receipt-4");
+  expect(ordinary.className).toBe("turn user queued");
+  expect(ordinary.children[0]!.text).toBe("You");
+  expect(ordinary.children[1]!.text).toBe("Please keep this as my message");
+});
+
+test("queue fallback keys remain stable for the same message", () => {
+  expect(context.queuedMessageKey("queue", undefined, "same text"))
+    .toBe(context.queuedMessageKey("queue", undefined, "same text"));
+  expect(context.queuedMessageKey("queue", "receipt-1", "changed text")).toBe("queue:receipt-1");
+});
+
+
+test("AM pull-request lifecycle updates collapse generated follow-up text", () => {
+  for (const [event, status] of [["merged at " + "a".repeat(40) + " on 2026-11-10T12:00:00Z", "merged"], ["closed without merging", "closed"], ["reopened", "reopened"]]) {
+    const text = `[am] PR #42 ${event}\nRepository: example/repo\nhttps://github.com/example/repo/pull/42\nGenerated follow-up instructions.`;
+    const turn = render(text);
+    expect(turn.children[0]!.text).toBe(`↗ PR #42 · ${status}`);
+    expect(visible(turn)).toContain("example/repo");
+    expect(visible(turn)).toContain("[Open pull request](https://github.com/example/repo/pull/42)");
+    expect(visible(turn)).not.toContain("Generated follow-up");
+    expect(details(turn)!.open).toBe(false);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+  }
+  expect(details(render("[am] PR #42 reopened"))).toBeDefined();
+  for (const text of ["Please explain [am] PR #42 reopened", "[am] PR #42 is an example"]) {
+    expect(details(render(text))).toBeUndefined();
+    expect(render(text).children[0]!.text).toBe("You");
+  }
+  for (const url of ["https://evil.example/pull/42", "https://github.com/example/repo/pull/43"]) {
+    expect(visible(render(`[am] PR #42 reopened\nRepository: example/repo\n${url}`))).not.toContain("Open pull request");
+  }
 });

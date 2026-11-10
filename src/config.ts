@@ -105,6 +105,41 @@ export interface Config {
   // are purged. Per-run override: --agent-days / --trash-days.
   gcAgentDays: number;
   gcTrashDays: number;
+  // Worktree retention, for `am gc` and the scheduled sweep alike. A worktree
+  // a registered agent owns is never collected; these say when the others go.
+  //   gcMergedDays   after every pull request an exited agent tracks has
+  //                  merged: the agent is reaped (to trash) and its worktree
+  //                  released
+  //   gcRemovedDays  after `am rm` (or a reap): how long the worktree is held
+  //                  for `am restore`, which recreates it from its branch later
+  //   gcOrphanDays   without activity, for a worktree no agent owns and for
+  //                  subagent worktrees nested in an agent's worktree
+  //   gcStaleDays    without a change, for an unowned worktree that is dirty or
+  //                  unpushed: its changes are saved to refs/am-gc/ in the
+  //                  repository, then it is removed. 0 keeps them forever.
+  //   gcIgnoredDays  the same, for one whose only leftovers are git-ignored
+  //                  files (env files, keys, node_modules), which are not
+  //                  saved. 0 treats those like any other change.
+  //   gcFileDays     for handoff transcripts and cached shared files
+  // A file named .am-gc-keep in a worktree keeps it regardless.
+  gcMergedDays: number;
+  gcRemovedDays: number;
+  gcOrphanDays: number;
+  gcStaleDays: number;
+  gcIgnoredDays: number;
+  gcFileDays: number;
+  // The daemon runs gc on its own: nightly at gcAutoHour (local time), or at
+  // the next idle moment after a missed night. Its first run after an upgrade
+  // only reports; later runs apply. The sweep runs at idle CPU/IO priority,
+  // one worktree at a time, for at most gcAutoMaxMinutes, and waits while the
+  // 1-minute load per CPU is above gcAutoMaxLoad or IO/memory pressure
+  // (PSI some avg10, Linux) above gcAutoMaxPressure. `am gc --auto pause`
+  // stops it without editing this file.
+  gcAuto: boolean;
+  gcAutoHour: number;
+  gcAutoMaxMinutes: number;
+  gcAutoMaxLoad: number;
+  gcAutoMaxPressure: number;
   // How long a Claude permission prompt waits for an `am serve` client to
   // answer it before the pane's own prompt is the only way left. 0 turns the
   // relay off. Codex approvals have no deadline: they stay answerable from
@@ -145,6 +180,17 @@ const DEFAULTS: Config = {
   showUsage: true,
   gcAgentDays: 7,
   gcTrashDays: 30,
+  gcMergedDays: 3,
+  gcRemovedDays: 7,
+  gcOrphanDays: 3,
+  gcStaleDays: 30,
+  gcIgnoredDays: 7,
+  gcFileDays: 30,
+  gcAuto: true,
+  gcAutoHour: 4,
+  gcAutoMaxMinutes: 15,
+  gcAutoMaxLoad: 1,
+  gcAutoMaxPressure: 20,
   permissionWaitSeconds: 120,
   pretrustClaudeDirs: true,
   plans: true,

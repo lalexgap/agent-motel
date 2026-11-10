@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { notifyPrEvent, trackPullRequests } from "./prMonitor";
+import { declarePullRequestReady } from "./prReadiness";
 import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
 import { parseArgs, selectedProvider, type ParsedArgs } from "./args";
@@ -24,7 +25,8 @@ import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand 
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent, stopIfIdle } from "./commands/rm";
 import { restoreCommand } from "./commands/restore";
-import { gcCommand } from "./commands/gc";
+import { gcAutoCommand, gcCommand, gcRestoreCommand } from "./commands/gc";
+import { runAutoGc } from "./autoGc";
 import { waitCommand } from "./commands/wait";
 import { peekCommand } from "./commands/peek";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
@@ -125,6 +127,8 @@ usage:
                               list agents with status, role, and queue depth;
                               --role unassigned selects agents without a role
   am pr <agent> [URL ...]     list or register PRs for lifecycle monitoring
+  am pr <agent> <URL> --ready [--dir review-worktree]
+                              announce verified readiness after shepherding
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
   am notifications [--json] [--limit n]
@@ -246,13 +250,24 @@ usage:
                               conversation); no name lists what's recoverable
                               (--no-resume just re-registers it)
   am gc [--apply]             collect garbage: reap agents whose session is
-                              gone and untouched >7d (to trash, restorable),
+                              gone and untouched >7d, or >3d after their
+                              pull requests merged (to trash, restorable),
                               purge trash >30d, remove orphaned queue/inbox/
-                              snapshot files and clean worktrees unreferenced
-                              by any live or restorable agent (dirty ones are
-                              kept and reported; committed work survives on
-                              its branch). Dry-run by default; --agent-days /
-                              --trash-days override the config retention
+                              snapshot files and old handoffs, and worktrees
+                              (subagent ones included) that no registered
+                              agent owns and no removed agent still holds:
+                              clean pushed ones outright, dirty or unpushed
+                              ones only once unchanged >30d, their changes
+                              saved to refs/am-gc/ first. A .am-gc-keep file
+                              keeps a worktree. Dry-run by default;
+                              --agent-days / --trash-days override the config
+                              retention (the other ages are gc* in config.json)
+  am gc --auto [status|run|pause|resume]
+                              the daemon's nightly sweep of the same policy,
+                              throttled and skipped while the host is busy;
+                              its first run only reports. run starts one now
+                              (--dry-run reports only, --force ignores load)
+  am gc --restore <worktree>  recreate a worktree gc removed, from the gc log
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
@@ -643,6 +658,13 @@ async function main(): Promise<void> {
       break;
     case "pr": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      if (args.flags.ready) {
+        const urls = args.positional.slice(1);
+        if (urls.length !== 1) throw new Error("am pr --ready requires exactly one PR URL");
+        console.log(await declarePullRequestReady(agent, urls[0]!, args.flags.dir as string | undefined));
+        break;
+      }
+      if (args.flags.dir) throw new Error("--dir is only valid with am pr --ready");
       await trackPullRequests(agent, args.positional.slice(1), undefined, notifyPrEvent);
       console.log(JSON.stringify(readAgent(agent.name)?.prMonitor ?? { pullRequests: [] }, null, 2));
       break;
@@ -880,12 +902,25 @@ async function main(): Promise<void> {
       await restoreCommand(args.positional[0], { resume: args.flags["no-resume"] ? false : undefined });
       break;
     case "gc":
-      gcCommand({
-        apply: !!args.flags.apply,
-        agentDays: numberFlag(args, "agent-days"),
-        trashDays: numberFlag(args, "trash-days"),
-      });
+      if (args.flags.auto) {
+        gcAutoCommand(args.positional[0], { dryRun: !!args.flags["dry-run"], force: !!args.flags.force });
+      } else if (args.flags.restore) {
+        gcRestoreCommand(requirePositional(args, 0, "worktree path or name"));
+      } else {
+        gcCommand({
+          apply: !!args.flags.apply,
+          agentDays: numberFlag(args, "agent-days"),
+          trashDays: numberFlag(args, "trash-days"),
+        });
+      }
       break;
+    case "__gc-auto": {
+      // The daemon's scheduled sweep, started at idle priority (autoGc.ts).
+      const trigger = args.positional[0] === "nightly" ? "nightly" : "idle";
+      const result = runAutoGc({ trigger });
+      if ("skipped" in result) console.error(`[${new Date().toISOString()}] gc: sweep skipped — ${result.skipped}`);
+      break;
+    }
     case "hook":
       await hookCommand(requirePositional(args, 0, "hook event"));
       break;

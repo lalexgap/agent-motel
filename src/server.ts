@@ -17,6 +17,7 @@ import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAge
 import { cachedFleetRows } from "./fleet";
 import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
+import { gcSummaryLine } from "./autoGc";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand, abortTurn } from "./commands/send";
@@ -650,7 +651,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/summary — the same prioritized fleet report as `am summary`.
   if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
-    return json(buildFleetSummary(cachedFleetRows()));
+    return json(buildFleetSummary(cachedFleetRows(), new Date(), gcSummaryLine()));
   }
 
   // GET /api/usage[?provider=claude|codex][&agent=name][&refresh=1][&quota=0]
@@ -1006,7 +1007,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

@@ -4,19 +4,39 @@ import { runInNewContext } from "node:vm";
 
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 
-function composer(provider?: string, dock = false, fail = false) {
+function composer(provider?: string, dock = false, fail = false, focusDuringSend = false, delayDelivery = false) {
   const target = "gapserver:training";
   const elements = new Map<string, any>();
+  const document: any = {
+    body: { id: "body" },
+    activeElement: null,
+    querySelector: () => null,
+  };
   const element = (id: string): any => {
-    if (!elements.has(id)) elements.set(id, {
-      value: id === "message" || id === "dock-message" ? "Keep this prompt" : "",
-      disabled: false, textContent: "", querySelector: () => element("dock-button"),
-    });
+    if (!elements.has(id)) {
+      let disabled = false;
+      const node: any = {
+        value: id === "message" || id === "dock-message" ? "Keep this prompt" : "",
+        textContent: "", querySelector: () => element("dock-button"),
+        addEventListener(event: string, handler: () => void) { node[`on${event}`] = handler; },
+        focus() { document.activeElement = node; },
+      };
+      Object.defineProperty(node, "disabled", {
+        get: () => disabled,
+        set: (value) => {
+          disabled = value;
+          if (value && document.activeElement === node) document.activeElement = document.body;
+        },
+      });
+      elements.set(id, node);
+    }
     return elements.get(id);
   };
   const calls: { path: string; body: any }[] = [];
   const pending: any[] = [];
   const notices: string[] = [];
+  let releaseDelivery = () => {};
+  const deliveryGate = delayDelivery ? new Promise<void>(resolve => { releaseDelivery = resolve; }) : null;
   const state = {
     selected: target, authenticated: true, sessionEpoch: 1, rows: provider ? [{ name: "training", host: "gapserver", provider }] : [],
     sending: new Map(), draftRevisions: new Map(), drafts: new Map([[target, "Keep this prompt"]]),
@@ -27,9 +47,12 @@ function composer(provider?: string, dock = false, fail = false) {
     $, state, key: (row: any) => row.host ? `${row.host}:${row.name}` : row.name,
     agentAttachments: () => [], uploadsPending: () => false,
     renderAttachments: () => { element("message-send").disabled = state.sending.has(target); },
-    refreshDetail: async () => {}, refreshDock: async () => {},
+    document,
+    refreshDetail: async () => { if (focusDuringSend) document.activeElement = element("other-input"); },
+    refreshDock: async () => { if (focusDuringSend) document.activeElement = element("other-input"); },
     notice: (text: string) => notices.push(text), notePending: (...args: any[]) => pending.push(args),
     api: async (path: string, body: any) => {
+      if (deliveryGate) await deliveryGate;
       if (path === "/api/concierge") return { key: target };
       calls.push({ path, body });
       if (fail) throw new Error("delivery refused");
@@ -37,14 +60,29 @@ function composer(provider?: string, dock = false, fail = false) {
     },
   };
   function $(id: string) { return element(id); }
+  const focusHelpers = source.slice(source.indexOf("const pointerSubmitButtons"), source.indexOf("const messageSubmitButton"));
+  runInNewContext(focusHelpers, context);
   const helperStart = source.indexOf("function messageSendMode(");
-  if (helperStart >= 0) runInNewContext(source.slice(helperStart, source.indexOf('$("message").oninput', helperStart)), context);
-  const start = source.indexOf(dock ? '$("dock-form").onsubmit' : '$("message-form").onsubmit');
+  if (helperStart >= 0) runInNewContext(source.slice(helperStart, source.indexOf("const pointerSubmitButtons", helperStart)), context);
+  const start = source.indexOf(dock ? "const dockSubmitButton" : "const messageSubmitButton");
   const end = source.indexOf(dock ? '$("dock-message").oninput' : "const IMAGE_TYPES", start);
   runInNewContext(source.slice(start, end), context);
+  const form = element(dock ? "dock-form" : "message-form");
+  const button = element(dock ? "dock-button" : "message-send");
+  const input = element(dock ? "dock-message" : "message");
   return {
-    state, calls, pending, notices, element,
-    submit: () => element(dock ? "dock-form" : "message-form").onsubmit({ preventDefault() {} }),
+    state, calls, pending, notices, element, document, releaseDelivery,
+    submit: () => form.onsubmit({ preventDefault() {} }),
+    pointerSubmit: () => {
+      input.focus();
+      document.activeElement = button;
+      button.onclick({ detail: 1 });
+      return form.onsubmit({ preventDefault() {}, submitter: button });
+    },
+    keyboardSubmit: () => {
+      input.focus();
+      return form.onsubmit({ preventDefault() {} });
+    },
   };
 }
 
@@ -91,6 +129,32 @@ for (const dock of [false, true]) describe(dock ? "concierge composer" : "agent 
     expect(c.pending).toHaveLength(0);
     expect(c.state.sending.size).toBe(0);
     expect(c.element(dock ? "dock-button" : "message-send").disabled).toBe(false);
+  });
+
+  test("pointer send restores the composer after the disabled button drops focus", async () => {
+    const c = composer("codex", dock);
+    await c.pointerSubmit();
+    expect(c.document.activeElement).toBe(c.element(dock ? "dock-message" : "message"));
+  });
+
+  test("pointer send restores focus before delivery finishes", async () => {
+    const c = composer("codex", dock, false, false, true);
+    const delivery = c.pointerSubmit();
+    expect(c.document.activeElement).toBe(c.element(dock ? "dock-message" : "message"));
+    c.releaseDelivery();
+    await delivery;
+  });
+
+  test("keyboard send retains composer focus", async () => {
+    const c = composer("codex", dock);
+    await c.keyboardSubmit();
+    expect(c.document.activeElement).toBe(c.element(dock ? "dock-message" : "message"));
+  });
+
+  test("send completion does not steal focus from another input", async () => {
+    const c = composer("codex", dock, false, true);
+    await c.pointerSubmit();
+    expect(c.document.activeElement).toBe(c.element("other-input"));
   });
 
   if (dock) test("message acceptance preserves the provider identity", async () => {

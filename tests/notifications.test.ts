@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   JOURNAL_START,
+  notificationPrUrl,
   notificationsAfter,
   planRelayDisplay,
   readNotifications,
@@ -33,6 +34,35 @@ function entry(id: string, at: string, agent = "a"): NotificationEntry {
   return { id, at, host: "gapserver", agent, kind: "attention", title: `am: ${agent}`, message: `msg ${id}` };
 }
 
+const PR_URL = "https://github.com/owner/repo/pull/123";
+
+describe("notificationPrUrl", () => {
+  test("accepts only canonical GitHub pull request URLs", () => {
+    expect(notificationPrUrl(PR_URL)).toBe(PR_URL);
+    expect(notificationPrUrl("https://github.com/.github/repo/pull/123")).toBe("https://github.com/.github/repo/pull/123");
+    expect(notificationPrUrl("https://github.com/acme-inc/repo.name/pull/123")).toBe("https://github.com/acme-inc/repo.name/pull/123");
+    for (const value of [
+      undefined,
+      123,
+      "http://github.com/owner/repo/pull/123",
+      "javascript:alert(1)",
+      "file:///tmp/secret",
+      "https://user:pass@github.com/owner/repo/pull/123",
+      "https://github.com.evil.test/owner/repo/pull/123",
+      "https://github.com:443/owner/repo/pull/123",
+      "https://github.com/owner/repo/pull/123/",
+      "https://github.com/owner/repo/pull/123?diff=split",
+      "https://github.com/owner/repo/pull/123#discussion",
+      "https://github.com/owner/repo/pull/0",
+      "https://github.com/owner/repo/pull/01",
+      "https://github.com/owner/repo/pull/9007199254740992",
+      "https://github.com/owner/../pull/123",
+      "https://github.com/../repo/pull/123",
+      "https://github.com/owner/repo/pull/123\nhttps://evil.test",
+    ]) expect(notificationPrUrl(value)).toBeUndefined();
+  });
+});
+
 describe("journal", () => {
   test("notify() records an entry with host, agent and kind", () => {
     notify("am: alpha", "approval requested — Bash", { agent: "alpha", kind: "attention" });
@@ -42,8 +72,14 @@ describe("journal", () => {
   });
 
   test("PR notifications retain owner and kind in the journal", () => {
-    notifyPrEvent("alpha", "PR merged");
-    expect(readNotifications().at(-1)).toMatchObject({ host: "laptop", agent: "alpha", kind: "pr", message: "PR merged" });
+    notifyPrEvent("alpha", "PR merged", PR_URL);
+    expect(readNotifications().at(-1)).toMatchObject({ host: "laptop", agent: "alpha", kind: "pr", message: "PR merged", url: PR_URL });
+  });
+
+  test("records validated PR URLs and omits invalid metadata", () => {
+    recordNotification({ host: "h", kind: "pr", title: "valid", message: "valid", url: PR_URL });
+    recordNotification({ host: "h", kind: "pr", title: "invalid", message: "invalid", url: "javascript:alert(1)" });
+    expect(readNotifications().map((e) => e.url)).toEqual([PR_URL, undefined]);
   });
 
   test("trims to the newest entries once the file grows large", () => {
@@ -89,8 +125,9 @@ describe("planRelayDisplay", () => {
   const now = Date.parse("2026-01-01T01:00:00Z");
 
   test("shows recent entries individually, labelled with the host", () => {
-    const shown = planRelayDisplay("gapserver", [entry("1", "2026-01-01T00:59:30Z", "alpha")], now);
-    expect(shown).toEqual([{ title: "am: alpha (gapserver)", message: "msg 1" }]);
+    const recent = { ...entry("1", "2026-01-01T00:59:30Z", "alpha"), url: PR_URL };
+    const shown = planRelayDisplay("gapserver", [recent], now);
+    expect(shown).toEqual([{ title: "am: alpha (gapserver)", message: "msg 1", url: PR_URL }]);
   });
 
   test("collapses stale entries into one summary", () => {
@@ -103,6 +140,7 @@ describe("planRelayDisplay", () => {
       { title: "am (gapserver)", message: "2 earlier notifications: alpha, beta" },
       { title: "am: gamma (gapserver)", message: "msg 3" },
     ]);
+    expect(shown[0]!.url).toBeUndefined();
   });
 
   test("caps a burst of recent entries", () => {
@@ -123,7 +161,7 @@ describe("relayOnce", () => {
         calls.push(args);
         return { exitCode, stdout, stderr: "" };
       },
-      show: (title, message) => shown.push(`${title}|${message}`),
+      show: (title, message, url) => shown.push(`${title}|${message}|${url ?? ""}`),
       cursor: (host) => cursors[host],
       saveCursor: (host, cursor) => { cursors[host] = cursor; },
       now: () => Date.parse("2026-01-01T01:00:00Z"),
@@ -150,16 +188,26 @@ describe("relayOnce", () => {
     d.saveCursor("gapserver", "9");
     expect(await relayOnce("gapserver", d, 1)).toBe(true);
     expect(calls[0]).toEqual(["__notifications", "--after", "9", "--wait", "1"]);
-    expect(shown).toEqual(["am: alpha (gapserver)|msg 10"]);
+    expect(shown).toEqual(["am: alpha (gapserver)|msg 10|"]);
     expect(cursors.gapserver).toBe("10");
   });
 
   test("relays validated PR notifications", async () => {
-    const pr = { ...entry("10", "2026-01-01T00:59:50Z", "alpha"), kind: "pr" as const };
+    const pr = { ...entry("10", "2026-01-01T00:59:50Z", "alpha"), kind: "pr" as const, url: PR_URL };
     const { d, shown } = deps(JSON.stringify({ entries: [pr], cursor: "10" }));
     d.saveCursor("gapserver", "9");
     expect(await relayOnce("gapserver", d, 1)).toBe(true);
-    expect(shown).toEqual(["am: alpha (gapserver)|msg 10"]);
+    expect(shown).toEqual([`am: alpha (gapserver)|msg 10|${PR_URL}`]);
+  });
+
+  test("shows remote entries without a click action when URL metadata is missing or invalid", async () => {
+    for (const url of [undefined, "javascript:alert(1)", "https://github.com/owner/repo/pull/1?x=1"]) {
+      const remote = { ...entry("10", "2026-01-01T00:59:50Z", "alpha"), kind: "pr" as const, ...(url ? { url } : {}) };
+      const { d, shown } = deps(JSON.stringify({ entries: [remote], cursor: "10" }));
+      d.saveCursor("gapserver", "9");
+      expect(await relayOnce("gapserver", d, 1)).toBe(true);
+      expect(shown).toEqual(["am: alpha (gapserver)|msg 10|"]);
+    }
   });
 
   test("drops relay entries with unknown notification kinds", async () => {

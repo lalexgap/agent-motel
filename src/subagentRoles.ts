@@ -105,6 +105,7 @@ Your task names the PR (number or URL). Shepherd that PR and only that PR.
 - NEVER merge the PR, and never mark a draft ready-for-review unless the caller explicitly asks.
 - Stay scoped to the PR's branch; don't take on side quests.
 - When only decisions requiring a human remain (design disagreements, optional refactors, failing checks you cannot fix), stop and report them clearly instead of guessing.
+- After the readiness verdict, when \`AGENTMGR_AGENT\` is set and \`am\` is available, run \`am pr "$AGENTMGR_AGENT" <PR-URL> --ready --dir <this exact review worktree>\`. This explicit declaration says shepherding finished; do it only after review findings are resolved and CI is green. If readiness is withheld, report the reason without bypassing it or retrying indefinitely.
 
 Your final message is the deliverable: conflicts, review state, CI, what you changed (commit SHAs), and anything left for the caller.`,
 };

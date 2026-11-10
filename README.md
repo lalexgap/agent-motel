@@ -199,9 +199,34 @@ am rename api api-v2               # rename live or stopped; old name stays an a
 am rm api                          # remove an agent; state remains restorable
 am restore api                     # restore a removed agent
 am gc                              # preview cleanup (--apply to run it)
+am gc --auto status                # the scheduled cleanup: last run, next run
+am gc --restore my-worktree        # recreate a worktree gc removed
 ```
 
 Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or choosing **Restart** in the command palette. Restart interrupts its current turn and loads the installed provider binary; update Claude/Codex first to pick up a newer version. The conversation, working directory, and queued messages are preserved.
+
+### Cleanup
+
+The daemon runs the cleanup on its own, nightly at 04:00 (or at the next moment no agent is working, after a missed night). It applies the same policy as `am gc --apply`. Its first run after an upgrade only reports; check `am gc --auto status` to see what it would take. `am summary` ends with the last run ("gc: freed 12 worktrees (9.1 GB); kept 3 dirty").
+
+A worktree that a registered agent owns is never removed, running or exited. An agent owns its `dir` and worktree, the worktree named after it, and any managed worktree its session has worked in that no other agent (or restorable agent still holding it) is registered in. The others go as follows (the ages are `gc*` keys in `~/.agent-manager/config.json`):
+
+| What | When | Key |
+| --- | --- | --- |
+| Exited agent, untouched | reaped to trash after 7 days | `gcAgentDays` |
+| Exited agent whose tracked pull requests all merged | reaped to trash 3 days after the merge, and its worktree released | `gcMergedDays` |
+| Worktree of a removed (`am rm`) or reaped agent | released after 7 days; `am restore` recreates it from its branch | `gcRemovedDays` |
+| Worktree no agent owns, and subagent worktrees under `.claude/worktrees/` | after 3 days without activity | `gcOrphanDays` |
+| Released worktree that is dirty or has unpushed commits | kept until unchanged for 30 days; then its changes, and its small ignored files, are committed to `refs/am-gc/<name>-<time>-<id>` in the repository and it is removed (`0` keeps these forever) | `gcStaleDays` |
+| Released worktree whose only leftovers are git-ignored files (env files, keys, `node_modules`) | after 7 days unchanged; ignored files of up to 1 MiB each (50 MiB in all) are saved to a ref as above, while `node_modules`, directories of more than 5,000 entries and larger files are not, and the log lists what was left out (`0`: treated like any other change) | `gcIgnoredDays` |
+| Trash snapshots | purged after 30 days | `gcTrashDays` |
+| Handoff transcripts, cached shared files | after 30 days | `gcFileDays` |
+
+Conversations, plans and inbox files stay for as long as the agent is registered or in trash. A file named `.am-gc-keep` in a worktree keeps it (and the subagent worktrees inside it) whatever its state. A worktree with an active dev-pool lease is never touched.
+
+The scheduled run is throttled: it runs at the lowest CPU and IO priority, inspects one worktree at a time, backs off while the host is busy, stops after `gcAutoMaxMinutes` (15) and continues the next time. Busy means the 1-minute load per CPU is above `gcAutoMaxLoad` (default 1) or Linux IO/memory pressure is above `gcAutoMaxPressure` (default 20). Only one gc runs at a time, manual or scheduled. `am gc --auto pause` stops the schedule and `resume` restarts it; `gcAuto: false` turns it off; `am gc --auto run` starts a sweep now.
+
+Every removal is logged to `~/.agent-manager/logs/gc.jsonl` with the worktree's branch and commit. `am gc --restore <name-or-path>` recreates a removed worktree from that log and puts salvaged changes and ignored files back as uncommitted files. A worktree holding a nested repository or submodule is never removed.
 
 ### Plan file
 

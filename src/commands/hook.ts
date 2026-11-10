@@ -64,6 +64,7 @@ import {
 import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
 import { holdModelSwitch, triggerModelSwitch } from "./switchModel";
+import { noteWorkDir } from "../worktreeOwnership";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -759,6 +760,8 @@ export async function hookCommand(event: string): Promise<void> {
     if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
     // Codex includes the rollout file path; saves `am transcript` a search.
     if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
+    // A session that left its registered dir for a worktree owns that too.
+    if (typeof payload.cwd === "string") noteWorkDir(agent, payload.cwd);
   }
   // Settings load once at launch, so only a session started by an am that
   // passes crossSessionInbound=accept may receive inbox-socket deliveries.

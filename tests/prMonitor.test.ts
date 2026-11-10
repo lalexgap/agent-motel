@@ -35,6 +35,53 @@ function pr(state: TrackedPullRequest["state"] = "OPEN", number = 1, day = 2): T
 function api(value: TrackedPullRequest, headRepository = value.repository) {
   return { ...value, headRepository: { nameWithOwner: headRepository }, mergeCommit: value.mergeCommit ? { oid: value.mergeCommit } : null };
 }
+const headA = "1".repeat(40), headB = "2".repeat(40);
+function conflicted(headSha = headA, mergeable: TrackedPullRequest["mergeable"] = "CONFLICTING", day = 2): TrackedPullRequest {
+  return { ...pr("OPEN", 1, day), headSha, mergeable };
+}
+
+test("conflicts alert once per known episode or head and survive unknown observations", () => {
+  const owner = agent();
+  const delivered: unknown[][] = [];
+  recordPrObservations(owner, [conflicted()]);
+  flushPrEvents(owner, (...args) => delivered.push(args));
+  expect(queueDepth(owner.name)).toBe(1);
+  expect(queuePop(owner.name)).toContain(headA);
+  expect(delivered).toEqual([[owner.name, expect.stringContaining("merge conflicts"), pr().url, "PR #1 has merge conflicts"]]);
+
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "CONFLICTING", 3)]);
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "UNKNOWN", 4)]);
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "CONFLICTING", 5)]);
+  flushPrEvents(readAgent(owner.name)!);
+  expect(queueDepth(owner.name)).toBe(0);
+
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "MERGEABLE", 6)]);
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "CONFLICTING", 7)]);
+  flushPrEvents(readAgent(owner.name)!);
+  expect(queuePop(owner.name)).toContain(headA);
+
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headB, "CONFLICTING", 8)]);
+  flushPrEvents(readAgent(owner.name)!);
+  expect(queuePop(owner.name)).toContain(headB);
+});
+
+test("conflict evidence fails quiet when non-open or missing a valid head", () => {
+  const owner = agent();
+  recordPrObservations(owner, [{ ...pr("CLOSED"), closedAt: "2025-12-01T00:00:00Z", mergeable: "CONFLICTING", headSha: headA }]);
+  recordPrObservations(readAgent(owner.name)!, [{ ...pr("OPEN", 2), mergeable: "CONFLICTING" }]);
+  flushPrEvents(readAgent(owner.name)!);
+  expect(queueDepth(owner.name)).toBe(0);
+});
+
+test("pending conflict recovery retains dedup state, URL, and desktop title", () => {
+  const owner = agent();
+  recordPrObservations(owner, [conflicted()]);
+  const saved = readAgent(owner.name)!;
+  expect(saved.prMonitor!.pending![0]).toMatchObject({ url: pr().url, title: "PR #1 has merge conflicts" });
+  recordPrObservations(saved, [conflicted(headA, "UNKNOWN", 3)]);
+  recordPrObservations(readAgent(owner.name)!, [conflicted(headA, "CONFLICTING", 4)]);
+  expect(readAgent(owner.name)!.prMonitor!.pending).toHaveLength(1);
+});
 
 test("open baseline is quiet, merge queues once, even after consumption/restart", () => {
   const owner = agent();
@@ -90,6 +137,23 @@ test("a crash between enqueue and receipt reuses the queued entry", () => {
   flushPrEvents(owner);
   expect(queueDepth(owner.name)).toBe(1);
   expect(readAgent(owner.name)?.prMonitor?.pending).toEqual([]);
+});
+
+test("durable pending recovery propagates the PR URL and accepts legacy missing metadata", () => {
+  const owner = agent();
+  recordPrObservations(owner, [pr("MERGED")]);
+  expect(readAgent(owner.name)!.prMonitor!.pending![0]!.url).toBe(pr().url);
+  const delivered: unknown[][] = [];
+  flushPrEvents(readAgent(owner.name)!, (...args) => delivered.push(args));
+  expect(delivered).toEqual([[owner.name, expect.stringContaining("merged at"), pr().url]]);
+
+  const legacyOwner = agent("legacy");
+  recordPrObservations(legacyOwner, [pr("CLOSED")]);
+  const legacy = readAgent(legacyOwner.name)!;
+  delete legacy.prMonitor!.pending![0]!.url;
+  writeAgent(legacy);
+  flushPrEvents(readAgent(legacyOwner.name)!, (...args) => delivered.push(args));
+  expect(delivered.at(-1)).toEqual([legacyOwner.name, expect.stringContaining("closed without merging"), undefined]);
 });
 
 test("a crash after receipt and consumer drain does not recreate a notification", () => {
@@ -238,7 +302,10 @@ test("branch discovery excludes same-named branches from forks", async () => {
 test("explicit registration validates URLs and API identity", async () => {
   const owner = agent("owner", "exited");
   expect(() => parsePrUrl("https://evil.test/owner/repo/pull/1")).toThrow();
+  expect(() => parsePrUrl(`${pr().url}/`)).toThrow();
   expect(() => parsePullRequest("owner/repo", api({ ...pr("MERGED"), mergeCommit: undefined }))).toThrow();
+  expect(() => parsePullRequest("owner/repo", { ...api(pr()), headRefOid: "bad" })).toThrow(/head/);
+  expect(() => parsePullRequest("owner/repo", { ...api(pr()), mergeable: "BROKEN" })).toThrow(/mergeability/);
   await expect(trackPullRequests(owner, [pr().url], async () => JSON.stringify(api(pr("OPEN", 2))))).rejects.toThrow("different PR");
   await trackPullRequests(owner, [pr().url, pr("OPEN", 2).url], async (_cwd, _exe, args) => JSON.stringify(api(pr("OPEN", Number(args[2])))));
   expect(readAgent(owner.name)?.prMonitor?.pullRequests).toHaveLength(2);
@@ -379,5 +446,6 @@ test("CLI entrypoint parses with the shebang first", () => {
   });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("Agent Motel (am)");
+  expect(result.stdout.toString()).toContain("--ready [--dir review-worktree]");
   expect(result.stderr.toString()).toBe("");
 });

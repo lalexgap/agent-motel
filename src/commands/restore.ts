@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { agentProvider, readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
 import { restorePlan } from "../plan";
+import { findRemovedWorktree, salvageSummary } from "../gc";
 import { reviveAgent } from "./resume";
 
 // `am restore <name>` brings back an agent removed with `am rm`: re-register its
@@ -39,8 +40,16 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
     if (!existsSync(state.dir) && state.worktreePath && state.worktreeBranch && state.repoRoot && existsSync(state.repoRoot)) {
       mkdirSync(dirname(state.worktreePath), { recursive: true });
       const res = Bun.spawnSync(["git", "-C", state.repoRoot, "worktree", "add", state.worktreePath, state.worktreeBranch]);
-      if (res.exitCode === 0) console.log(`recreated worktree ${state.worktreePath} from ${state.worktreeBranch}`);
-      else console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
+      if (res.exitCode === 0) {
+        console.log(`recreated worktree ${state.worktreePath} from ${state.worktreeBranch}`);
+        // gc saves uncommitted changes to a ref before removing a stale worktree.
+        const removal = findRemovedWorktree(state.worktreePath);
+        const { saved, dropped } = removal ? salvageSummary(removal) : { saved: null, dropped: null };
+        if (saved) console.log(`  gc saved ${saved} as ${removal!.salvageRef}; put them back with:\n    git -C ${state.worktreePath} restore --source=${removal!.salvageRef} --worktree -- .`);
+        if (dropped) console.log(`  note: ${dropped}`);
+      } else {
+        console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
+      }
     }
 
     restorePlan(name);

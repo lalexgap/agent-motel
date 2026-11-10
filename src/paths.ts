@@ -152,6 +152,28 @@ export function daemonLogFile(): string {
 // the detached one-shot deliverers that fall back when it's down).
 export const DAEMON_LOG_MAX_BYTES = 5_000_000;
 
+// One gc at a time, manual or scheduled: both take this lock.
+export function gcLockFile(): string {
+  return join(baseDir(), "locks", "gc.lock");
+}
+
+// What gc did and what a dry run would have done, one JSON object per line.
+// A removed worktree's entry keeps its branch and commit, for `am gc --restore`.
+export function gcLogFile(): string {
+  return join(logsDir(), "gc.jsonl");
+}
+
+// Scheduled gc: pause flag, whether its first (dry) run has happened, last run.
+export function gcStateFile(): string {
+  return join(baseDir(), "gc", "state.json");
+}
+
+// What gc last found in each unowned worktree it had to keep, so the next run
+// does not pay for a `git status` that cannot have changed.
+export function gcInspectedFile(): string {
+  return join(baseDir(), "gc", "inspected.json");
+}
+
 export function daemonSocket(): string {
   return join(baseDir(), "daemon.sock");
 }
