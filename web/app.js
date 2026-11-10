@@ -1506,6 +1506,7 @@ $("message-form").onsubmit = async (event) => {
   const revision = state.draftRevisions.get(name) || 0;
   const request = Symbol();
   state.sending.set(name, request);
+  restoreComposerFocus(restoreFocus, $("message"), messageSubmitButton, true);
   messageSubmitButton.disabled = true;
   try {
     const sent = await api(
@@ -1527,12 +1528,6 @@ $("message-form").onsubmit = async (event) => {
   } finally {
     if (state.sending.get(name) === request) state.sending.delete(name);
     if (state.selected === name) renderAttachments();
-    restoreComposerFocus(
-      restoreFocus,
-      $("message"),
-      messageSubmitButton,
-      state.authenticated && epoch === state.sessionEpoch && state.selected === name,
-    );
   }
 };
 
@@ -2098,10 +2093,10 @@ $("dock-form").onsubmit = async (event) => {
   const epoch = state.sessionEpoch;
   const revision = state.dockRevision;
   state.dockBusy = true;
+  restoreComposerFocus(restoreFocus, $("dock-message"), dockSubmitButton, true);
   dockSubmitButton.disabled = true;
-  let target = state.conciergeKey;
   try {
-    target = (await api("/api/concierge", {})).key;
+    const target = (await api("/api/concierge", {})).key;
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     state.conciergeKey = target;
     const sent = await api(
@@ -2118,12 +2113,6 @@ $("dock-form").onsubmit = async (event) => {
   } finally {
     state.dockBusy = false;
     dockSubmitButton.disabled = false;
-    restoreComposerFocus(
-      restoreFocus,
-      $("dock-message"),
-      dockSubmitButton,
-      state.authenticated && epoch === state.sessionEpoch && state.conciergeKey === target,
-    );
   }
 };
 $("dock-message").oninput = () => {

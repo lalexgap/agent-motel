@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 
-function composer(provider?: string, dock = false, fail = false, focusDuringSend = false) {
+function composer(provider?: string, dock = false, fail = false, focusDuringSend = false, delayDelivery = false) {
   const target = "gapserver:training";
   const elements = new Map<string, any>();
   const document: any = {
@@ -35,6 +35,8 @@ function composer(provider?: string, dock = false, fail = false, focusDuringSend
   const calls: { path: string; body: any }[] = [];
   const pending: any[] = [];
   const notices: string[] = [];
+  let releaseDelivery = () => {};
+  const deliveryGate = delayDelivery ? new Promise<void>(resolve => { releaseDelivery = resolve; }) : null;
   const state = {
     selected: target, authenticated: true, sessionEpoch: 1, rows: provider ? [{ name: "training", host: "gapserver", provider }] : [],
     sending: new Map(), draftRevisions: new Map(), drafts: new Map([[target, "Keep this prompt"]]),
@@ -50,6 +52,7 @@ function composer(provider?: string, dock = false, fail = false, focusDuringSend
     refreshDock: async () => { if (focusDuringSend) document.activeElement = element("other-input"); },
     notice: (text: string) => notices.push(text), notePending: (...args: any[]) => pending.push(args),
     api: async (path: string, body: any) => {
+      if (deliveryGate) await deliveryGate;
       if (path === "/api/concierge") return { key: target };
       calls.push({ path, body });
       if (fail) throw new Error("delivery refused");
@@ -68,7 +71,7 @@ function composer(provider?: string, dock = false, fail = false, focusDuringSend
   const button = element(dock ? "dock-button" : "message-send");
   const input = element(dock ? "dock-message" : "message");
   return {
-    state, calls, pending, notices, element, document,
+    state, calls, pending, notices, element, document, releaseDelivery,
     submit: () => form.onsubmit({ preventDefault() {} }),
     pointerSubmit: () => {
       input.focus();
@@ -132,6 +135,14 @@ for (const dock of [false, true]) describe(dock ? "concierge composer" : "agent 
     const c = composer("codex", dock);
     await c.pointerSubmit();
     expect(c.document.activeElement).toBe(c.element(dock ? "dock-message" : "message"));
+  });
+
+  test("pointer send restores focus before delivery finishes", async () => {
+    const c = composer("codex", dock, false, false, true);
+    const delivery = c.pointerSubmit();
+    expect(c.document.activeElement).toBe(c.element(dock ? "dock-message" : "message"));
+    c.releaseDelivery();
+    await delivery;
   });
 
   test("keyboard send retains composer focus", async () => {
