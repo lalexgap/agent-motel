@@ -1,6 +1,16 @@
 // The dev server's stand-in for the native bridge: same methods, same
 // validation, connections held in memory. Tokens never leave this module.
-import { externalUrlAllowed, normalizeServerUrl, validateApiPath } from "./src/policy";
+import {
+  checkAgent,
+  checkMessageId,
+  checkMessageText,
+  checkMode,
+  externalUrlAllowed,
+  messagesPath,
+  normalizeServerUrl,
+  validateApiPath,
+  type Checked,
+} from "./src/policy";
 import type { BridgeEventName, BridgeEvents, Connection, StreamState } from "./src/types";
 
 interface StoredConnection {
@@ -12,6 +22,8 @@ interface StoredConnection {
 type Listener = (name: BridgeEventName, payload: unknown) => void;
 
 const REQUEST_TIMEOUT_MS = 15_000;
+// A `now` send to an agent on a remote host goes over ssh.
+export const MUTATION_TIMEOUT_MS = 60_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 // SSEParser.maxLineBytes, applied to each line and to an event's accumulated data (in UTF-16 units here).
@@ -42,6 +54,11 @@ const text = (value: unknown, field: string): string => {
 };
 const optionalText = (value: unknown, field: string): string | undefined =>
   value === undefined || value === null ? undefined : text(value, field);
+
+function checked<T>(result: Checked<T>): T {
+  if (!result.ok) throw new Error(result.error);
+  return result.value;
+}
 
 function validateToken(token: string): void {
   if (!token) throw new Error("Enter the access token");
@@ -109,6 +126,17 @@ export class DevBridge {
       }
       case "api.get":
         return this.apiGet(text(params.connection, "connection"), params.path);
+      case "messages.send": {
+        const conn = this.connection(text(params.connection, "connection"));
+        const agent = checked(checkAgent(params.agent));
+        const body = { text: checked(checkMessageText(params.text)), mode: checked(checkMode(params.mode)) };
+        return this.mutate(conn, "POST", messagesPath(agent), JSON.stringify(body));
+      }
+      case "messages.cancel": {
+        const conn = this.connection(text(params.connection, "connection"));
+        const agent = checked(checkAgent(params.agent));
+        return this.mutate(conn, "DELETE", messagesPath(agent, checked(checkMessageId(params.id))));
+      }
       case "events.start": {
         const conn = this.connection(text(params.connection, "connection"));
         const current = this.streams.has(conn.id) ? this.states.get(conn.id) : undefined;
@@ -198,6 +226,22 @@ export class DevBridge {
       headers: { authorization: `Bearer ${conn.token}`, accept: "application/json" },
       redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return { status: response.status, body: await readJson(response) };
+  }
+
+  // Never retried: after a network failure the server may or may not have acted.
+  private async mutate(conn: StoredConnection, method: "POST" | "DELETE", path: string, body?: string): Promise<{ status: number; body: unknown }> {
+    const response = await this.fetchImpl(conn.url + path, {
+      method,
+      headers: {
+        authorization: `Bearer ${conn.token}`,
+        accept: "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(MUTATION_TIMEOUT_MS),
     });
     return { status: response.status, body: await readJson(response) };
   }

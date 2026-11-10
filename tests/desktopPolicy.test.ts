@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { externalUrlAllowed, normalizeServerUrl, plainHttpAllowed, validateApiPath } from "../desktop/src/policy";
+import {
+  checkAgent,
+  checkMessageId,
+  checkMessageText,
+  checkMode,
+  externalUrlAllowed,
+  MESSAGE_CONTROL,
+  messagesPath,
+  normalizeServerUrl,
+  plainHttpAllowed,
+  validateApiPath,
+} from "../desktop/src/policy";
 
 describe("connection URL policy", () => {
   const ok = (input: string, url: string) => expect(normalizeServerUrl(input)).toEqual({ ok: true, url });
@@ -97,5 +108,73 @@ describe("open.external", () => {
     expect(externalUrlAllowed("file:///etc/passwd")).toBe(false);
     expect(externalUrlAllowed("javascript:alert(1)")).toBe(false);
     expect(externalUrlAllowed(7)).toBe(false);
+  });
+});
+
+// The same vectors as the Swift MessagePolicy tests (milestone 2 contract).
+describe("message policy", () => {
+  test("agent: name or host:name", () => {
+    for (const agent of ["harbor-lights", "annex:kelp-forest", "a_b-1", "host.example:agent"]) expect(checkAgent(agent)).toEqual({ ok: true, value: agent });
+    for (const agent of ["", "a/b", "a:b:c", "../x", "a b", ":x", "x:", "host:../x", "a%2Fb", "-host:x", "a".repeat(65), "é"])
+      expect(checkAgent(agent)).toEqual({ ok: false, error: `invalid agent: ${agent}` });
+    expect(checkAgent("a".repeat(64)).ok).toBe(true);
+    expect(checkAgent(".host:x").ok).toBe(false);
+    expect(checkAgent(`${"h".repeat(255)}:x`).ok).toBe(true);
+    expect(checkAgent(`${"h".repeat(256)}:x`).ok).toBe(false);
+    expect(checkAgent(7)).toEqual({ ok: false, error: "invalid agent: 7" });
+    expect(checkAgent(null)).toEqual({ ok: false, error: "invalid agent: null" });
+    expect(checkAgent(undefined)).toEqual({ ok: false, error: "invalid agent: null" });
+  });
+
+  test("mode: exactly queue or now", () => {
+    expect(checkMode("queue")).toEqual({ ok: true, value: "queue" });
+    expect(checkMode("now")).toEqual({ ok: true, value: "now" });
+    for (const mode of ["interrupt", "Now", "", "queue ", 1, null, undefined, ["now"]])
+      expect(checkMode(mode)).toEqual({ ok: false, error: "mode must be queue or now" });
+  });
+
+  test("text: trimmed, non-empty, at most 100,000 UTF-8 bytes", () => {
+    expect(checkMessageText("")).toEqual({ ok: false, error: "Message is empty" });
+    expect(checkMessageText("   \n ")).toEqual({ ok: false, error: "Message is empty" });
+    for (const text of [undefined, null, 5, { text: "x" }]) expect(checkMessageText(text).ok).toBe(false);
+    expect(checkMessageText("a".repeat(100_001))).toEqual({ ok: false, error: "Message is too long (limit 100,000 bytes)" });
+    expect(checkMessageText("a".repeat(100_000))).toEqual({ ok: true, value: "a".repeat(100_000) });
+    // Trimmed before counting.
+    expect(checkMessageText(`  ${"a".repeat(100_000)}\n`).ok).toBe(true);
+    // 3 bytes each: 33,333 fit (99,999 bytes), 33,334 do not.
+    expect(checkMessageText("€".repeat(33_333)).ok).toBe(true);
+    expect(checkMessageText("€".repeat(33_334))).toEqual({ ok: false, error: "Message is too long (limit 100,000 bytes)" });
+    expect(checkMessageText("😀".repeat(25_000)).ok).toBe(true);
+    expect(checkMessageText("😀".repeat(25_001)).ok).toBe(false);
+  });
+
+  // Same vectors as macos/Tests/main.swift.
+  const CONTROL_CHARACTERS = ["\u0000", "\u0001", "\u0003", "\u0004", "\u0008", "\u000b", "\u000c", "\u000e", "\u001a", "\u001b", "\u001f", "\u007f", "\u0080", "\u0085", "\u009b", "\u009f"];
+  test("text: C0 controls other than tab and line breaks, DEL and C1 are rejected", () => {
+    for (const control of CONTROL_CHARACTERS) {
+      for (const text of [control, `a${control}b`, `  hi${control}`, `${control}[A`]) {
+        expect(checkMessageText(text)).toEqual({ ok: false, error: MESSAGE_CONTROL });
+      }
+    }
+    for (const [text, expected] of [["a\tb", "a\tb"], ["a\r\nb", "a\r\nb"], ["line\n\tindented", "line\n\tindented"], ["\u00a0x\u00a0y", "x\u00a0y"], ["\u2028x", "x"]]) {
+      expect(checkMessageText(text)).toEqual({ ok: true, value: expected });
+    }
+  });
+
+  test("text: ends trimmed, inside untouched", () => {
+    expect(checkMessageText("  first\n\n  second  \n")).toEqual({ ok: true, value: "first\n\n  second" });
+  });
+
+  test("message id", () => {
+    expect(checkMessageId("01JABCDEFGHJKMNPQRSTVWXYZ0")).toEqual({ ok: true, value: "01JABCDEFGHJKMNPQRSTVWXYZ0" });
+    expect(checkMessageId("a".repeat(128)).ok).toBe(true);
+    for (const id of ["", "a/b", "..", "a b", "a".repeat(129), 3, null]) expect(checkMessageId(id).ok).toBe(false);
+  });
+
+  test("paths are built from validated parts", () => {
+    expect(messagesPath("harbor-lights")).toBe("/api/agents/harbor-lights/messages");
+    expect(messagesPath("annex:kelp-forest")).toBe("/api/agents/annex%3Akelp-forest/messages");
+    expect(messagesPath("annex:kelp-forest", "01JABCDEFGHJKMNPQRSTVWXYZ0")).toBe("/api/agents/annex%3Akelp-forest/messages/01JABCDEFGHJKMNPQRSTVWXYZ0");
+    expect(validateApiPath(messagesPath("host.example:agent", "x_y-1"))).toBeNull();
   });
 });

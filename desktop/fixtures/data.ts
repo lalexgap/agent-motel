@@ -1,6 +1,6 @@
 // Synthetic fleet for the fixture am server. Every name, path and line of
 // transcript here is invented; nothing comes from a real fleet.
-import type { AgentDetail, AgentRow, TranscriptEntry } from "../src/types";
+import type { AgentDetail, AgentRow, QueueItem, TranscriptEntry } from "../src/types";
 
 export const FIXTURE_LOCAL_HOST = "motel";
 export const FIXTURE_REMOTE_HOSTS = [
@@ -52,7 +52,7 @@ const SEEDS: Seed[] = [
   },
   {
     name: "keeper-log", status: "idle", provider: "claude", model: "claude-sonnet-4-5", repo: "lighthouse", repoName: "lighthouse",
-    task: "Summarise yesterday's incident notes into the runbook", queued: 2, changed: 12, updated: 12, created: 200,
+    task: "Summarise yesterday's incident notes into the runbook", changed: 12, updated: 12, created: 200,
   },
   {
     name: "old-lens", status: "exited", provider: "claude", repo: "lighthouse", repoName: "lighthouse",
@@ -76,7 +76,11 @@ const SEEDS: Seed[] = [
   },
   {
     name: "tide-pilot", status: "working", provider: "claude", model: "claude-opus-4-5", effort: "medium", repo: "tideTables", repoName: "tide-tables",
-    task: "Return Retry-After on 503s from the tide-tables API", changed: 9, updated: 0.4, created: 70,
+    task: "Return Retry-After on 503s from the tide-tables API", queued: 2, changed: 9, updated: 0.4, created: 70,
+  },
+  {
+    name: "night-watch", status: "idle", provider: "antigravity", model: "gemini-3-pro", repo: "tideTables", repoName: "tide-tables",
+    task: "Sketch the tide chart print layout", changed: 30, updated: 30, created: 120,
   },
   {
     name: "ebb-report", status: "idle", provider: "codex", model: "gpt-5.2-codex", repo: "tideTables", repoName: "tide-tables",
@@ -125,11 +129,17 @@ export function buildRows(now: number): AgentRow[] {
   });
 }
 
-export function buildDetail(row: AgentRow): AgentDetail {
-  const queue = Array.from({ length: row.queued ?? 0 }, (_, index) => ({
-    msgId: `fixture-${row.name}-${index + 1}`,
-    text: index === 0 ? "When you're done, link the runbook section in the incident channel." : "Also note which alerts fired twice.",
+// Messages already waiting when the fixture starts, for agents seeded with
+// `queued`. The first is from another agent (msgId with no record behind it).
+export function seedQueue(row: AgentRow, id: () => string, now = Date.now()): QueueItem[] {
+  return Array.from({ length: row.queued ?? 0 }, (_, index) => ({
+    message: index === 0 ? "When you're done, link the PR in the release notes channel." : "Also note which endpoints still return 503 without the header.",
+    queuedAt: new Date(now - (row.queued! - index) * 60_000).toISOString(),
+    ...(index === 0 ? { msgId: id() } : {}),
   }));
+}
+
+export function buildDetail(row: AgentRow, queue: QueueItem[] = []): AgentDetail {
   return {
     ...row,
     queue,

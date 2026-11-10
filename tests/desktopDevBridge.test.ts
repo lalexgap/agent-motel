@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEV_CSP, startDevServer } from "../desktop/dev";
-import { bridgeRequestAllowed, DevBridge } from "../desktop/devBridge";
+import { bridgeRequestAllowed, DevBridge, MUTATION_TIMEOUT_MS } from "../desktop/devBridge";
 import { FIXTURE_TOKEN, startFixtureServer, type FixtureServer } from "../desktop/fixtures/server";
 
 const headers = (entries: Record<string, string>) => new Headers(entries);
@@ -152,6 +152,94 @@ describe("dev bridge methods", () => {
   test("open.external validates the URL", async () => {
     expect(await bridge.handle("open.external", { url: "https://example.com/x" })).toEqual({});
     await expect(bridge.handle("open.external", { url: "file:///etc/passwd" })).rejects.toThrow();
+  });
+});
+
+describe("dev bridge messages", () => {
+  let fixture: FixtureServer;
+  let bridge: DevBridge;
+  let id: string;
+  beforeAll(async () => {
+    fixture = startFixtureServer({ port: 0, flipMs: 60_000, deliverMs: 50, replyMs: 50 });
+    bridge = new DevBridge({ version: "t", build: "t" });
+    id = ((await bridge.handle("connections.save", { name: "F", url: fixture.url, token: FIXTURE_TOKEN })) as { id: string }).id;
+  });
+  afterAll(() => {
+    bridge.stopAll();
+    fixture.stop();
+  });
+  const send = (params: Record<string, unknown>) => bridge.handle("messages.send", { connection: id, agent: "keeper-log", text: "hi", mode: "queue", ...params });
+
+  test("validation rejects before anything is sent", async () => {
+    const before = fixture.requests.length;
+    await expect(send({ agent: "a/b" })).rejects.toThrow("invalid agent: a/b");
+    await expect(send({ agent: "a:b:c" })).rejects.toThrow("invalid agent: a:b:c");
+    await expect(send({ text: "  \n " })).rejects.toThrow("Message is empty");
+    await expect(send({ text: "a".repeat(100_001) })).rejects.toThrow("Message is too long (limit 100,000 bytes)");
+    await expect(send({ text: 42 })).rejects.toThrow();
+    for (const text of ["stop\u001b", "\u0003", "x\u007f", "x\u009b"]) await expect(send({ text })).rejects.toThrow("Message contains a control character");
+    for (const mode of ["interrupt", "Now", "", "queue ", 1]) await expect(send({ mode })).rejects.toThrow("mode must be queue or now");
+    await expect(send({ connection: "missing" })).rejects.toThrow("unknown connection: missing");
+    await expect(bridge.handle("messages.cancel", { connection: id, agent: "keeper-log", id: "a/b" })).rejects.toThrow();
+    await expect(bridge.handle("messages.cancel", { connection: id, agent: "../x", id: "01A" })).rejects.toThrow("invalid agent: ../x");
+    expect(fixture.requests.length).toBe(before);
+  });
+
+  test("send posts exactly {text, mode}, trimmed, to the fixed path", async () => {
+    const before = fixture.requests.length;
+    const result = (await send({ agent: "annex:kelp-forest", text: "  line one\n  line two \n", mode: "now" })) as { status: number; body: { ok: boolean; mode: string; id: string } };
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ ok: true, mode: "now" });
+    expect(result.body.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(fixture.requests.slice(before)).toEqual([
+      { method: "POST", path: "/api/agents/annex%3Akelp-forest/messages", body: { text: "line one\n  line two", mode: "now" } },
+    ]);
+    const detail = (await bridge.handle("api.get", { connection: id, path: "/api/agents/annex%3Akelp-forest" })) as { body: { queue: unknown[] } };
+    expect(detail.body.queue).toEqual([]);
+  });
+
+  test("HTTP errors resolve with status and body", async () => {
+    expect(await send({ agent: "nobody" })).toMatchObject({ status: 404 });
+    expect(await send({ agent: "old-lens" })).toMatchObject({ status: 409, body: { reason: "no_session" } });
+  });
+
+  test("cancel sends DELETE without a body", async () => {
+    const queued = (await send({ agent: "harbor-lights", text: "later", mode: "queue" })) as { body: { id: string } };
+    const detail = (await bridge.handle("api.get", { connection: id, path: "/api/agents/harbor-lights" })) as { body: { queue: { msgId?: string; message?: string }[] } };
+    expect(detail.body.queue.filter((item) => item.message === "later")).toEqual([{ message: "later", queuedAt: expect.any(String) }]);
+    const before = fixture.requests.length;
+    expect(await bridge.handle("messages.cancel", { connection: id, agent: "harbor-lights", id: queued.body.id }))
+      .toEqual({ status: 200, body: { ok: true, state: "cancelled" } });
+    expect(fixture.requests.slice(before)).toEqual([{ method: "DELETE", path: `/api/agents/harbor-lights/messages/${queued.body.id}`, body: null }]);
+  });
+
+  test("bearer added by the bridge, redirects returned not followed, failures not retried", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const stub = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/messages")) return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/" } });
+      throw new TypeError("network down");
+    }) as unknown as typeof fetch;
+    const other = new DevBridge({ version: "t", build: "t" }, stub);
+    const conn = other.addConnection("Stub", "https://am.example.com", "secret-token");
+    expect(await other.handle("messages.send", { connection: conn.id, agent: "harbor-lights", text: "x", mode: "queue" })).toEqual({ status: 302, body: null });
+    await expect(other.handle("messages.cancel", { connection: conn.id, agent: "harbor-lights", id: "01A" })).rejects.toThrow("network down");
+    expect(calls).toHaveLength(2);
+    const [post, del] = calls;
+    expect(post!.url).toBe("https://am.example.com/api/agents/harbor-lights/messages");
+    expect(post!.init).toMatchObject({ method: "POST", redirect: "manual", body: JSON.stringify({ text: "x", mode: "queue" }) });
+    expect(new Headers(post!.init.headers).get("authorization")).toBe("Bearer secret-token");
+    expect(new Headers(post!.init.headers).get("content-type")).toBe("application/json");
+    expect(del!.url).toBe("https://am.example.com/api/agents/harbor-lights/messages/01A");
+    expect(del!.init).toMatchObject({ method: "DELETE", redirect: "manual" });
+    expect(del!.init.body).toBeUndefined();
+    expect(post!.init.signal).toBeInstanceOf(AbortSignal);
+    expect(MUTATION_TIMEOUT_MS).toBe(60_000);
+  });
+
+  test("there is no generic mutation method", async () => {
+    for (const method of ["api.post", "api.delete", "api.request", "messages.interrupt"])
+      await expect(bridge.handle(method, { connection: id, path: "/api/agents/keeper-log/messages" })).rejects.toThrow(`unknown method: ${method}`);
   });
 });
 

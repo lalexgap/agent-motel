@@ -41,3 +41,25 @@ export function savePrefs(prefs: UiPrefs): void {
     // Preferences are a convenience; losing them is fine.
   }
 }
+
+function read(key: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+function write(key: string, value: string): void {
+  try {
+    globalThis.localStorage?.setItem(key, value);
+  } catch {
+    // Full or unavailable storage only costs the convenience.
+  }
+}
+
+const DRAFTS_KEY = "am.desktop.drafts.v1";
+const SEND_MODE_KEY = "am.desktop.sendMode.v1";
+export const loadDraftsRaw = (): string | null => read(DRAFTS_KEY);
+export const saveDraftsRaw = (raw: string): void => write(DRAFTS_KEY, raw);
+export const loadSendModeRaw = (): string | null => read(SEND_MODE_KEY);
+export const saveSendModeRaw = (mode: string): void => write(SEND_MODE_KEY, mode);
