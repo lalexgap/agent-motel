@@ -207,7 +207,7 @@ Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or
 
 ### Cleanup
 
-The daemon runs the cleanup on its own, nightly at 04:00 (or at the next moment no agent is working, after a missed night). It applies the same policy as `am gc --apply`. Its first run after an upgrade only reports; check `am gc --auto status` to see what it would take. `am summary` ends with the last run ("gc: freed 12 worktrees (9.1 GB); kept 3 dirty").
+The daemon runs the cleanup on its own, nightly at 04:00 (or at the next moment no agent is working, after a missed night). It applies the same policy as `am gc --apply`. After an upgrade it only reports, over as many runs as it takes to look at every worktree once, and starts removing after that; check `am gc --auto status` to see what it would take. `am summary` ends with the last run ("gc: freed 12 worktrees (9.1 GB); kept 3 dirty").
 
 A worktree that a registered agent owns is never removed, running or exited. An agent owns its `dir` and worktree, the worktree named after it, and any managed worktree its session has worked in that no other agent (or restorable agent still holding it) is registered in. The others go as follows (the ages are `gc*` keys in `~/.agent-manager/config.json`):
 
