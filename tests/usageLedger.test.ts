@@ -526,6 +526,20 @@ describe("messages copied between transcripts", () => {
     expect(entryFor(join(dir, "sess-3.jsonl")).days).toEqual({});
   });
 
+  test("a sidecar replaced by another process is reloaded from the start", () => {
+    const dir = projectDir();
+    writeTranscript(join(dir, "sess-1.jsonl"), original);
+    refreshAll();
+    const owner = entryFor(join(dir, "sess-1.jsonl")).fid;
+    const hash = (id: string) => createHash("sha1").update(id).digest("hex").slice(0, 12);
+    // Another process rewrote the file (prune or rebuild); m3 sits within the bytes this one already loaded.
+    const filler = Array.from({ length: 8 }, (_, i) => `${hash(`x${i}`)} ${owner}\n`).join("");
+    writeFileSync(usageMessageIdsFile(), `# generation 0123456789abcdef\n${hash("m3")} ${owner}\n${filler}`);
+    writeTranscript(join(dir, "sess-2.jsonl"), [assistant("m3", "2026-11-10T09:00:00.000Z", { input: 300, output: 30 })]);
+    refreshAll();
+    expect(entryFor(join(dir, "sess-2.jsonl")).days).toEqual({});
+  });
+
   test("prunes ids of long-idle files once the index is over its bound", () => {
     const dir = projectDir();
     const old = join(dir, "old.jsonl");
@@ -534,7 +548,7 @@ describe("messages copied between transcripts", () => {
     utimesSync(old, ninetyDaysAgo, ninetyDaysAgo);
     writeTranscript(join(dir, "new.jsonl"), original);
     refreshAll();
-    expect(readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n")).toHaveLength(3);
+    expect(readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n")).toHaveLength(4);
 
     const { maxIds } = usageLedgerTesting.limits;
     usageLedgerTesting.limits.maxIds = 2;
@@ -545,7 +559,7 @@ describe("messages copied between transcripts", () => {
       usageLedgerTesting.limits.maxIds = maxIds;
     }
     const fids = (path: string) => entryFor(path).fid;
-    const lines = readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n");
+    const lines = readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n").filter((l) => !l.startsWith("#"));
     expect(lines).toHaveLength(3);
     expect(lines.some((l) => l.endsWith(` ${fids(old)}`))).toBe(false);
 

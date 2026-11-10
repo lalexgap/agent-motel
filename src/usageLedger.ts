@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -234,6 +234,8 @@ function resetEntry(entry: LedgerFileEntry): void {
 // counted each id first ("<sha1 prefix> <fid>" per line), so copies are skipped.
 interface MessageIndex {
   path: string;
+  // Header written whenever the file is created or rewritten; a change means another process replaced it.
+  generation: string;
   // Bytes of the file reflected in `ids`; always just after a "\n".
   loaded: number;
   partialTail: boolean;
@@ -255,11 +257,29 @@ function messageHash(id: string): string {
   return createHash("sha1").update(id).digest("hex").slice(0, 12);
 }
 
+function newMessageIndexHeader(): string {
+  return `# generation ${randomBytes(8).toString("hex")}\n`;
+}
+
+function readMessageIndexGeneration(path: string, size: number): string {
+  if (size <= 0) return "";
+  const fd = openSync(path, "r");
+  try {
+    const head = readBytes(fd, 0, Math.min(size, 64)).toString("utf8");
+    return /^# generation ([0-9a-f]+)\n/.exec(head)?.[1] ?? "";
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function loadMessageIndex(): MessageIndex {
   const path = usageMessageIdsFile();
   const size = fileStat(path)?.size ?? -1;
+  const generation = readMessageIndexGeneration(path, size);
   let index = messageIndexCache?.path === path ? messageIndexCache : null;
-  if (!index || size < index.loaded) index = { path, loaded: 0, partialTail: false, ids: new Map(), maxFid: -1 };
+  if (!index || size < index.loaded || index.generation !== generation) {
+    index = { path, generation, loaded: 0, partialTail: false, ids: new Map(), maxFid: -1 };
+  }
   if (size > index.loaded) {
     const fd = openSync(path, "r");
     let buf: Buffer;
@@ -317,15 +337,19 @@ function saveMessageIndex(claims: MessageClaims): void {
       if (entry.fid !== undefined && (entry.mtimeMs < 0 || entry.mtimeMs >= cutoff)) keep.add(entry.fid);
     }
     for (const [hash, fid] of index.ids) if (!keep.has(fid)) index.ids.delete(hash);
-    const text = [...index.ids].map(([hash, fid]) => `${hash} ${fid}\n`).join("");
+    const header = newMessageIndexHeader();
+    const text = header + [...index.ids].map(([hash, fid]) => `${hash} ${fid}\n`).join("");
     const tmp = `${index.path}.${process.pid}.tmp`;
     writeFileSync(tmp, text);
     renameSync(tmp, index.path);
     index.loaded = Buffer.byteLength(text);
+    index.generation = header.slice("# generation ".length, -1);
   } else if (queued.length > 0) {
     // A torn last line from a crashed writer stays a junk line rather than swallowing ours.
-    appendFileSync(index.path, (index.partialTail ? "\n" : "") + queued.join(""));
+    const header = index.loaded === 0 && !index.partialTail && (fileStat(index.path)?.size ?? 0) === 0 ? newMessageIndexHeader() : "";
+    appendFileSync(index.path, header + (index.partialTail ? "\n" : "") + queued.join(""));
     index.loaded = fileStat(index.path)?.size ?? 0;
+    if (header) index.generation = header.slice("# generation ".length, -1);
   }
   index.partialTail = false;
   queued.length = 0;
