@@ -127,15 +127,25 @@ test("new reviewed head can notify and ordinary polls preserve the old marker", 
   expect(notices).toHaveLength(1);
 });
 
-test("clears an older conflict episode before readiness and alerts on a same-head re-conflict", async () => {
+test.each([false, true])("clears resolved conflicts and alerts on re-conflict (already notified: %s)", async (alreadyNotified) => {
   const agent = owner();
-  recordPrObservations(agent, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt: "2026-01-01T00:00:00Z" }]);
-  await expect(declarePullRequestReady(readAgent(agent.name)!, url, home, {
-    run: runner([github(head, { updatedAt: "2026-01-02T00:00:00Z" }), github(head, { updatedAt: "2026-01-02T00:00:00Z" })]).run,
-    reviewScript: script, notify: () => {},
-  })).resolves.toContain("Notified");
-  expect(readAgent(agent.name)!.prMonitor!.pullRequests[0]!.conflictActive).toBe(false);
+  const notices: unknown[][] = [];
+  const notify = (...args: unknown[]) => { notices.push(args); };
+  if (alreadyNotified) {
+    await declarePullRequestReady(agent, url, home, {
+      run: runner().run, reviewScript: script, notify, now: () => "2026-01-02T00:00:00Z",
+    });
+  }
   recordPrObservations(readAgent(agent.name)!, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt: "2026-01-03T00:00:00Z" }]);
+  await expect(declarePullRequestReady(readAgent(agent.name)!, url, home, {
+    run: runner([github(head, { updatedAt: "2026-01-04T00:00:00Z" }), github(head, { updatedAt: "2026-01-04T00:00:00Z" })]).run,
+    reviewScript: script, notify, now: () => "2026-01-04T00:00:00Z",
+  })).resolves.toContain(alreadyNotified ? "already notified" : "Notified");
+  expect(notices).toHaveLength(1);
+  expect(readAgent(agent.name)!.prMonitor!.pullRequests[0]).toMatchObject({
+    conflictActive: false, readyNotifiedAt: alreadyNotified ? "2026-01-02T00:00:00Z" : "2026-01-04T00:00:00Z",
+  });
+  recordPrObservations(readAgent(agent.name)!, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt: "2026-01-05T00:00:00Z" }]);
   expect(readAgent(agent.name)!.prMonitor!.pending).toHaveLength(2);
 });
 

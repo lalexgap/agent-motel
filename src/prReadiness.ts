@@ -120,11 +120,10 @@ function markReady(agent: AgentState, pr: ReadyPullRequest, at: string): "notifi
     if (sameHeadConflict && existingIsNewer) {
       throw new Error("readiness withheld: local conflict evidence is as new as the verified GitHub snapshot");
     }
-    if (existing?.readyNotifiedHead === pr.headSha) {
-      result = "already-notified";
-      return;
-    }
-    const next = { ...existing, ...pr, ...(sameHeadConflict ? { conflictActive: false } : {}), readyNotifiedHead: pr.headSha, readyNotifiedAt: at };
+    const alreadyNotified = existing?.readyNotifiedHead === pr.headSha;
+    if (alreadyNotified) result = "already-notified";
+    const next = { ...existing, ...pr, conflictActive: false, readyNotifiedHead: pr.headSha,
+      readyNotifiedAt: alreadyNotified ? existing?.readyNotifiedAt : at };
     current.prMonitor = {
       ...monitor,
       pullRequests: [...monitor.pullRequests.filter(item => item.url !== pr.url), next],
