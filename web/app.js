@@ -1107,6 +1107,22 @@ function collapsibleMessage(entry) {
     if (url && lines[2] === url) info.link = url;
     return info;
   }
+  if (wrapped("send_user_message_question_reply")) {
+    const info = notice("Question answered", "", "question reply");
+    if (text.length > 131072) return info;
+    try {
+      const tag = "send_user_message_question_reply";
+      const replies = JSON.parse(text.slice(tag.length + 2, -tag.length - 3));
+      if (Array.isArray(replies) && replies.length && replies.every(reply =>
+        reply && typeof reply.question === "string" && typeof reply.answer === "string")) {
+        info.label = replies.length === 1 ? "Question answered" : `${replies.length} questions answered`;
+        info.result = replies.slice(0, 3).map(reply =>
+          `Q: ${bounded(reply.question, 240)}\nA: ${bounded(reply.answer, 1200)}`).join("\n\n");
+        if (replies.length > 3) info.preview = `${replies.length - 3} more in details`;
+      }
+    } catch {}
+    return info;
+  }
   if (wrapped("task-notification")) {
     const info = notice("⤷ Task notification", "", "notification");
     if (text.length > 131072) return info;
