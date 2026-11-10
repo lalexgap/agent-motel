@@ -65,7 +65,6 @@ export interface LedgerContext {
   compactions: number;
 }
 
-// counts: [calls, input, cacheWrite5m, cacheWrite1h, cacheRead, output, thinking]
 export interface LedgerFileEntry {
   provider: Provider;
   // null = a Claude session not tied to any am agent.

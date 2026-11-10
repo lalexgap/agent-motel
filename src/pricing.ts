@@ -51,7 +51,6 @@ export function contextWindowFor(model: string | undefined): number | undefined 
   return priceFor(model)?.contextWindow;
 }
 
-// Whether a call's prompt size moves it to the model's long-context tier.
 export function isLongPrompt(model: string | undefined, promptTokens: number): boolean {
   return LONG_PROMPT_MODELS.has(normalizeModelId(model)) && promptTokens > LONG_PROMPT_TOKENS;
 }
