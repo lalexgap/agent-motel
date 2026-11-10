@@ -262,9 +262,6 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
       else if (cheap) keep(cheap);
       else pending.push(candidate);
     }
-    // While unarmed, removable worktrees an earlier dry run reported are
-    // carried over rather than inspected again, so coverage accumulates
-    // until one run finds nothing left to look at.
     const arming = mode === "dry-run" && !autoGcArmed(before);
     const earlier = arming && before.preview?.policy === GC_POLICY_VERSION ? before.preview.worktrees : {};
     const previews: Record<string, Preview> = {};
