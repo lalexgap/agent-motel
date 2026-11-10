@@ -30,6 +30,8 @@ The app opens on the connection form. Enter a name, the server URL (for example 
 
 ## Signing
 
-Builds use local ad-hoc signing by default. An ad-hoc signature changes with every build, so macOS may ask again for Keychain access to a saved token after you rebuild. Run `bash macos/setup-signing.sh` once to avoid that: it creates a self-signed identity, "Agent Motel Local Signing", in its own keychain (`~/Library/Keychains/agent-motel-signing.keychain-db`), and `build.sh` signs with it whenever that keychain exists. The identity only marks a build as made on this Mac. Its keychain password is in the script, so anything running as you can sign with it, and Gatekeeper does not trust it.
+Builds use local ad-hoc signing by default. An ad-hoc signature changes with every build, so macOS may ask again for Keychain access to a saved token after you rebuild. Run `bash macos/setup-signing.sh` once to avoid that: it creates a self-signed identity, "Agent Motel Local Signing", in its own keychain (`~/Library/Keychains/agent-motel-signing.keychain-db`), and `build.sh` signs with it whenever that keychain exists. Gatekeeper does not trust it.
+
+The trade-off: the identity's keychain password is in this repository, so any process running as you can sign its own binary with this identity, and that binary passes the Keychain check for saved tokens without a prompt. Setting it up removes the Keychain prompt that otherwise guards your tokens. If that matters, skip `setup-signing.sh` and accept the prompt after every rebuild.
 
 For distribution to other Macs, set `SIGNING_IDENTITY` to your Developer ID Application certificate and notarize the zip with Apple's `notarytool`, then staple the app and repackage it. This repository does not include signing credentials or claim notarized distribution. No automatic updater is included.

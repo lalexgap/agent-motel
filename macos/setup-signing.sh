@@ -10,7 +10,8 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 name="Agent Motel Local Signing"
 keychain="$HOME/Library/Keychains/agent-motel-signing.keychain-db"
-# Not a secret: the keychain only holds a key that marks a build as made on this Mac.
+# Public on purpose, so anything running as you can sign with this identity and
+# read saved tokens without a Keychain prompt. See "Signing" in macos/README.md.
 password="agent-motel-local-signing"
 if security find-certificate -c "$name" "$keychain" >/dev/null 2>&1; then
   echo "Signing identity already exists: $keychain"
