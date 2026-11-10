@@ -988,8 +988,6 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       }
     }
 
-    // POST /api/agents/:name/model — restart on a configured model while
-    // preserving the conversation and queued messages.
     if (parts.length === 3 && parts[2] === "model" && method === "POST") {
       const body = await modelSelectionBody(req);
       if (body instanceof Response) return body;
