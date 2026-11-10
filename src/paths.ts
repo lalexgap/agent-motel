@@ -141,6 +141,10 @@ export function usageLedgerFile(): string {
   return join(usageDir(), "ledger.json");
 }
 
+export function usageMessageIdsFile(): string {
+  return join(usageDir(), "message-ids.log");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }

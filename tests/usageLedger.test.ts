@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../src/args";
 import { usageCommand } from "../src/commands/usage";
 import { tryAcquireFileLock } from "../src/filelock";
-import { agentsDir, usageLedgerFile } from "../src/paths";
+import { agentsDir, usageLedgerFile, usageMessageIdsFile } from "../src/paths";
 import { startApiServer } from "../src/server";
 import { writeAgent, type AgentState } from "../src/state";
 import {
@@ -13,6 +14,7 @@ import {
   refreshUsageLedger,
   repoForAgent,
   startUsageLedgerJob,
+  usageLedgerTesting,
   usageSummary,
   type LedgerFileEntry,
 } from "../src/usageLedger";
@@ -41,6 +43,7 @@ afterEach(() => {
   if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = prevCodexHome;
   delete process.env.AGENTMGR_HOME;
+  usageLedgerTesting.resetMessageIndexCache();
 });
 
 interface UsageSpec {
@@ -404,6 +407,189 @@ describe("usage ledger ingestion", () => {
     expect(repoForAgent({ dir: "/h/.agent-manager/worktrees/producthunt/fix-ads/web" })).toBe("producthunt");
     expect(repoForAgent({ dir: "/h/code/thing/" })).toBe("thing");
     expect(repoForAgent({ dir: home })).toBe("~");
+  });
+});
+
+describe("messages copied between transcripts", () => {
+  const original = [
+    assistant("m1", "2026-11-10T08:00:00.000Z", { input: 100, output: 10 }),
+    assistant("m2", "2026-11-10T08:01:00.000Z", { input: 200, output: 20 }),
+  ];
+  const copy = [...original, assistant("m3", "2026-11-10T09:00:00.000Z", { input: 300, output: 30 })];
+
+  function todayTotals(): number[] {
+    const totals = [0, 0, 0, 0, 0, 0, 0];
+    for (const entry of Object.values(readUsageLedger().files)) {
+      for (const [day, buckets] of Object.entries(entry.days)) {
+        if (day !== "2026-11-10") continue;
+        for (const counts of Object.values(buckets)) counts.forEach((n, i) => (totals[i]! += n));
+      }
+    }
+    return totals;
+  }
+
+  const expected = [3, 600, 0, 0, 0, 60, 0];
+
+  test("a resumed session counts copied ids once, in one refresh or across refreshes", () => {
+    const dir = projectDir();
+    writeTranscript(join(dir, "sess-1.jsonl"), original);
+    writeTranscript(join(dir, "sess-2.jsonl"), copy);
+    refreshAll();
+    expect(todayTotals()).toEqual(expected);
+
+    rmSync(home, { recursive: true, force: true });
+    const later = projectDir();
+    writeTranscript(join(later, "sess-1.jsonl"), original);
+    refreshAll();
+    writeTranscript(join(later, "sess-2.jsonl"), copy);
+    refreshAll();
+    expect(todayTotals()).toEqual(expected);
+    const copyEntry = entryFor(join(later, "sess-2.jsonl"));
+    expect(copyEntry.days["2026-11-10"]).toEqual({ "claude-opus-5-5": [1, 300, 0, 0, 0, 30, 0] });
+    expect(copyEntry.tail.map((t) => t.id)).toEqual(["m3"]);
+    expect(copyEntry.firstAt).toBe("2026-11-10T09:00:00.000Z");
+  });
+
+  test("processing order does not change totals", () => {
+    const dir = projectDir();
+    const first = join(dir, "sess-1.jsonl");
+    const second = join(dir, "sess-2.jsonl");
+    writeTranscript(second, copy);
+    refreshAll();
+    writeTranscript(first, original);
+    refreshAll();
+    expect(todayTotals()).toEqual(expected);
+    expect(entryFor(first).days).toEqual({});
+  });
+
+  test("a forked subagent counts ids copied from its parent and a sibling once", () => {
+    const dir = projectDir();
+    const main = join(dir, "sess-1.jsonl");
+    writeTranscript(main, original);
+    const subDir = join(dir, "sess-1", "subagents");
+    mkdirSync(subDir, { recursive: true });
+    const siblingLine = assistant("s1", "2026-11-10T08:30:00.000Z", { input: 1000, output: 100 }, { sidechain: true });
+    writeTranscript(join(subDir, "agent-a.jsonl"), [siblingLine]);
+    claudeAgent("alpha", main);
+    refreshAll();
+    writeTranscript(join(subDir, "agent-b.jsonl"), [
+      ...original,
+      siblingLine,
+      assistant("s2", "2026-11-10T09:30:00.000Z", { input: 5, output: 5 }, { sidechain: true }),
+    ]);
+    refreshAll();
+    expect(todayTotals()).toEqual([4, 1305, 0, 0, 0, 135, 0]);
+    expect(entryFor(join(subDir, "agent-b.jsonl")).days["2026-11-10"]).toEqual({ "claude-opus-5-5": [1, 5, 0, 0, 0, 5, 0] });
+  });
+
+  test("a rewritten file re-counts its own ids", () => {
+    const file = join(projectDir(), "sess-1.jsonl");
+    writeTranscript(file, original);
+    refreshAll();
+    writeTranscript(file, [original[1]!]);
+    refreshAll();
+    expect(entryFor(file).days).toEqual({ "2026-11-10": { "claude-opus-5-5": [1, 200, 0, 0, 0, 20, 0] } });
+  });
+
+  test("a lost or torn sidecar neither double counts nor crashes", () => {
+    const dir = projectDir();
+    writeTranscript(join(dir, "sess-1.jsonl"), original);
+    refreshAll();
+    rmSync(usageMessageIdsFile());
+    refreshAll();
+    expect(todayTotals()).toEqual([2, 300, 0, 0, 0, 30, 0]);
+
+    appendFileSync(usageMessageIdsFile(), "abc");
+    usageLedgerTesting.resetMessageIndexCache();
+    writeTranscript(join(dir, "sess-2.jsonl"), [assistant("m9", "2026-11-10T10:00:00.000Z", { input: 1, output: 1 })]);
+    refreshAll();
+    expect(todayTotals()).toEqual([3, 301, 0, 0, 0, 31, 0]);
+    expect(readFileSync(usageMessageIdsFile(), "utf8")).toMatch(/^abc\n[0-9a-f]{12} \d+\n$/);
+  });
+
+  test("another process's appended ids are seen on the next refresh", () => {
+    const dir = projectDir();
+    writeTranscript(join(dir, "sess-1.jsonl"), original);
+    refreshAll();
+    const owner = entryFor(join(dir, "sess-1.jsonl")).fid;
+    // Another process counted m3, then m4, after this one loaded the index.
+    const hash = (id: string) => createHash("sha1").update(id).digest("hex").slice(0, 12);
+    appendFileSync(usageMessageIdsFile(), `${hash("m3")} ${owner}\n`);
+    writeTranscript(join(dir, "sess-2.jsonl"), copy);
+    refreshAll();
+    expect(todayTotals()).toEqual([2, 300, 0, 0, 0, 30, 0]);
+
+    usageLedgerTesting.resetMessageIndexCache();
+    appendFileSync(usageMessageIdsFile(), `${hash("m4")} ${owner}\n`);
+    writeTranscript(join(dir, "sess-3.jsonl"), [assistant("m4", "2026-11-10T11:00:00.000Z", { input: 9, output: 9 })]);
+    refreshAll();
+    expect(entryFor(join(dir, "sess-3.jsonl")).days).toEqual({});
+  });
+
+  test("prunes ids of long-idle files once the index is over its bound", () => {
+    const dir = projectDir();
+    const old = join(dir, "old.jsonl");
+    writeTranscript(old, [assistant("o1", "2026-11-10T07:00:00.000Z", { input: 1, output: 1 })]);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60_000);
+    utimesSync(old, ninetyDaysAgo, ninetyDaysAgo);
+    writeTranscript(join(dir, "new.jsonl"), original);
+    refreshAll();
+    expect(readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n")).toHaveLength(3);
+
+    const { maxIds } = usageLedgerTesting.limits;
+    usageLedgerTesting.limits.maxIds = 2;
+    try {
+      writeTranscript(join(dir, "fresh.jsonl"), [assistant("f1", "2026-11-10T10:00:00.000Z", { input: 1, output: 1 })]);
+      refreshAll();
+    } finally {
+      usageLedgerTesting.limits.maxIds = maxIds;
+    }
+    const fids = (path: string) => entryFor(path).fid;
+    const lines = readFileSync(usageMessageIdsFile(), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines.some((l) => l.endsWith(` ${fids(old)}`))).toBe(false);
+
+    // The cache was reset with the rewrite: a copy of the new file's ids still counts once.
+    writeTranscript(join(dir, "copy.jsonl"), original);
+    refreshAll();
+    expect(entryFor(join(dir, "copy.jsonl")).days).toEqual({});
+  });
+
+  test("a lost ledger write does not turn a new file's own ids into copies", () => {
+    const dir = projectDir();
+    writeTranscript(join(dir, "sess-1.jsonl"), original);
+    refreshAll();
+    const before = readFileSync(usageLedgerFile(), "utf8");
+    const second = join(dir, "sess-2.jsonl");
+    writeTranscript(second, [assistant("m3", "2026-11-10T09:00:00.000Z", { input: 300, output: 30 })]);
+    refreshAll();
+    writeFileSync(usageLedgerFile(), before);
+    usageLedgerTesting.resetMessageIndexCache();
+    refreshAll();
+    expect(entryFor(second).days["2026-11-10"]).toEqual({ "claude-opus-5-5": [1, 300, 0, 0, 0, 30, 0] });
+    writeTranscript(join(dir, "sess-3.jsonl"), copy);
+    refreshAll();
+    expect(todayTotals()).toEqual(expected);
+  });
+
+  test("a ledger written before the index existed loads and keeps working", () => {
+    const dir = projectDir();
+    const first = join(dir, "sess-1.jsonl");
+    writeTranscript(first, original);
+    refreshAll();
+    const legacy = readUsageLedger();
+    delete legacy.nextFid;
+    for (const entry of Object.values(legacy.files)) delete entry.fid;
+    writeFileSync(usageLedgerFile(), JSON.stringify(legacy));
+    rmSync(usageMessageIdsFile());
+    usageLedgerTesting.resetMessageIndexCache();
+
+    appendFileSync(first, `${assistant("m5", "2026-11-10T10:00:00.000Z", { input: 7, output: 7 })}\n`);
+    writeTranscript(join(dir, "sess-2.jsonl"), [...original, assistant("m5", "2026-11-10T10:00:00.000Z", { input: 7, output: 7 })]);
+    refreshAll();
+    // Ids counted before the upgrade are unknown, so only m5 is recognised as a copy.
+    expect(todayTotals()).toEqual([5, 607, 0, 0, 0, 67, 0]);
+    expect(readUsageLedger().nextFid).toBeGreaterThan(0);
   });
 });
 

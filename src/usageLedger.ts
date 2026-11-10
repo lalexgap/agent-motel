@@ -1,4 +1,18 @@
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { codexHome } from "./codexHooks";
@@ -6,7 +20,7 @@ import { displayStatus } from "./commands/ls";
 import { localHostIdentity } from "./config";
 import { tryAcquireFileLock } from "./filelock";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
-import { claudeProjectsDir, usageDir, usageLedgerFile } from "./paths";
+import { claudeProjectsDir, usageDir, usageLedgerFile, usageMessageIdsFile } from "./paths";
 import {
   bucketKey,
   contextWindowFor,
@@ -81,12 +95,16 @@ export interface LedgerFileEntry {
   lastAt?: string;
   // Antigravity main files: subagent transcripts announced in the conversation.
   subagentFiles?: Array<{ id: string; path: string; type?: string }>;
+  // Claude files: this entry's id in message-ids.log.
+  fid?: number;
 }
 
 export interface UsageLedger {
   version: 1;
   refreshedAt?: string;
   pendingFiles: number;
+  // Absent on a fresh ledger, which invalidates any existing message-ids.log.
+  nextFid?: number;
   files: Record<string, LedgerFileEntry>;
 }
 
@@ -97,6 +115,8 @@ const CHUNK_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BUDGET_MS = 1000;
 const CODEX_INDEX_TTL_MS = 5 * 60_000;
 const CODEX_INDEX_MISS_REBUILD_MS = 10_000;
+const MESSAGE_INDEX_MAX_IDS = 400_000;
+const MESSAGE_INDEX_KEEP_MS = 60 * 24 * 60 * 60_000;
 
 export function emptyLedger(): UsageLedger {
   return { version: 1, pendingFiles: 0, files: {} };
@@ -209,6 +229,108 @@ function resetEntry(entry: LedgerFileEntry): void {
   delete entry.subagentFiles;
 }
 
+// Resumed and forked Claude sessions copy earlier assistant lines, message id and
+// usage included, into a new file. message-ids.log records which ledger entry
+// counted each id first ("<sha1 prefix> <fid>" per line), so copies are skipped.
+interface MessageIndex {
+  path: string;
+  // Bytes of the file reflected in `ids`; always just after a "\n".
+  loaded: number;
+  partialTail: boolean;
+  ids: Map<string, number>;
+  maxFid: number;
+}
+
+const messageIndexLimits = { maxIds: MESSAGE_INDEX_MAX_IDS, keepMs: MESSAGE_INDEX_KEEP_MS };
+let messageIndexCache: MessageIndex | null = null;
+
+export const usageLedgerTesting = {
+  limits: messageIndexLimits,
+  resetMessageIndexCache(): void {
+    messageIndexCache = null;
+  },
+};
+
+function messageHash(id: string): string {
+  return createHash("sha1").update(id).digest("hex").slice(0, 12);
+}
+
+function loadMessageIndex(): MessageIndex {
+  const path = usageMessageIdsFile();
+  const size = fileStat(path)?.size ?? -1;
+  let index = messageIndexCache?.path === path ? messageIndexCache : null;
+  if (!index || size < index.loaded) index = { path, loaded: 0, partialTail: false, ids: new Map(), maxFid: -1 };
+  if (size > index.loaded) {
+    const fd = openSync(path, "r");
+    let buf: Buffer;
+    try {
+      buf = readBytes(fd, index.loaded, size - index.loaded);
+    } finally {
+      closeSync(fd);
+    }
+    const end = buf.lastIndexOf(10);
+    if (end >= 0) {
+      for (const line of buf.subarray(0, end).toString("utf8").split("\n")) {
+        const match = /^([0-9a-f]{12}) (\d+)$/.exec(line);
+        if (!match) continue;
+        const fid = Number(match[2]);
+        index.ids.set(match[1]!, fid);
+        index.maxFid = Math.max(index.maxFid, fid);
+      }
+      index.loaded += end + 1;
+    }
+  }
+  index.partialTail = size > index.loaded;
+  messageIndexCache = index;
+  return index;
+}
+
+interface MessageClaims {
+  index: MessageIndex;
+  ledger: UsageLedger;
+  // Fids held by ledger entries; others were assigned in a run whose ledger write was lost.
+  fids: Set<number>;
+  queued: string[];
+}
+
+// False when another entry already counted this message.
+function claimMessage(claims: MessageClaims, entry: LedgerFileEntry, messageId: string): boolean {
+  const hash = messageHash(messageId);
+  const owner = claims.index.ids.get(hash);
+  if (owner !== undefined && claims.fids.has(owner)) return owner === entry.fid;
+  if (entry.fid === undefined) {
+    entry.fid = claims.ledger.nextFid ?? 0;
+    claims.ledger.nextFid = entry.fid + 1;
+    claims.fids.add(entry.fid);
+  }
+  claims.index.ids.set(hash, entry.fid);
+  claims.queued.push(`${hash} ${entry.fid}\n`);
+  return true;
+}
+
+function saveMessageIndex(claims: MessageClaims): void {
+  const { index, ledger, queued } = claims;
+  if (index.ids.size > messageIndexLimits.maxIds) {
+    const cutoff = Date.now() - messageIndexLimits.keepMs;
+    const keep = new Set<number>();
+    for (const entry of Object.values(ledger.files)) {
+      if (entry.fid !== undefined && (entry.mtimeMs < 0 || entry.mtimeMs >= cutoff)) keep.add(entry.fid);
+    }
+    for (const [hash, fid] of index.ids) if (!keep.has(fid)) index.ids.delete(hash);
+    const text = [...index.ids].map(([hash, fid]) => `${hash} ${fid}\n`).join("");
+    const tmp = `${index.path}.${process.pid}.tmp`;
+    writeFileSync(tmp, text);
+    renameSync(tmp, index.path);
+    index.loaded = Buffer.byteLength(text);
+  } else if (queued.length > 0) {
+    // A torn last line from a crashed writer stays a junk line rather than swallowing ours.
+    appendFileSync(index.path, (index.partialTail ? "\n" : "") + queued.join(""));
+    index.loaded = fileStat(index.path)?.size ?? 0;
+  }
+  index.partialTail = false;
+  queued.length = 0;
+}
+
 interface FileTask {
   path: string;
   provider: Provider;
@@ -241,7 +363,7 @@ function readBytes(fd: number, position: number, length: number): Buffer {
 
 // Claude transcripts are append-only: consume complete lines from `offset`.
 // Returns false when the deadline cut the file short.
-function processClaudeFile(entry: LedgerFileEntry, task: FileTask, deadline: number): boolean {
+function processClaudeFile(entry: LedgerFileEntry, task: FileTask, deadline: number, claims: MessageClaims): boolean {
   const fd = openSync(task.path, "r");
   try {
     if (task.size < entry.offset) resetEntry(entry);
@@ -261,7 +383,10 @@ function processClaudeFile(entry: LedgerFileEntry, task: FileTask, deadline: num
       if (newline < 0) break;
       const text = buf.subarray(0, newline + 1).toString("utf8");
       const parsed = parseClaudeSteps(text, { ownFile: !task.isMain });
-      for (const step of parsed.steps) applyStep(entry, step, fallbackDay, task.isMain);
+      for (const step of parsed.steps) {
+        if (step.messageId && !claimMessage(claims, entry, step.messageId)) continue;
+        applyStep(entry, step, fallbackDay, task.isMain);
+      }
       if (task.isMain && parsed.compactions.length > 0) {
         const ctx = (entry.context ??= { tokens: 0, peak: 0, compactions: 0 });
         ctx.compactions += parsed.compactions.length;
@@ -448,6 +573,14 @@ export function refreshUsageLedger(opts: { budgetMs?: number; now?: Date } = {})
   if (!release) return { changed: false, pendingFiles: readUsageLedger().pendingFiles, skipped: true };
   try {
     const ledger = readUsageLedger();
+    if (ledger.nextFid === undefined) {
+      rmSync(usageMessageIdsFile(), { force: true });
+      messageIndexCache = null;
+    }
+    const index = loadMessageIndex();
+    ledger.nextFid = Math.max(ledger.nextFid ?? 0, index.maxFid + 1);
+    const fids = new Set(Object.values(ledger.files).flatMap((e) => (e.fid === undefined ? [] : [e.fid])));
+    const claims: MessageClaims = { index, ledger, fids, queued: [] };
     let changed = false;
 
     const tasks: FileTask[] = [];
@@ -521,7 +654,7 @@ export function refreshUsageLedger(opts: { budgetMs?: number; now?: Date } = {})
       changed = true;
       try {
         let complete = true;
-        if (task.provider === "claude") complete = processClaudeFile(entry, task, deadline);
+        if (task.provider === "claude") complete = processClaudeFile(entry, task, deadline, claims);
         else processWholeFile(entry, task);
         if (complete) {
           entry.size = task.size;
@@ -541,10 +674,16 @@ export function refreshUsageLedger(opts: { budgetMs?: number; now?: Date } = {})
       if (entry.tail.length > 0 && entry.size >= 0 && entry.offset >= entry.size && entry.mtimeMs < idleBefore) entry.tail = [];
     }
 
+    // Ids first: if the ledger write is lost, the file is re-read and its ids still map to its own fid.
+    saveMessageIndex(claims);
     ledger.pendingFiles = pendingFiles;
     ledger.refreshedAt = (opts.now ?? new Date()).toISOString();
     writeJsonAtomic(usageLedgerFile(), ledger, { pretty: false });
     return { changed, pendingFiles };
+  } catch (error) {
+    // The in-memory index may now be ahead of disk; reload it next time.
+    messageIndexCache = null;
+    throw error;
   } finally {
     release();
   }
