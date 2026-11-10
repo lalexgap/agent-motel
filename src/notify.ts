@@ -4,6 +4,7 @@ import { tmux } from "./tmux";
 import { notificationPrUrl, recordNotification, type NotificationKind } from "./notifications";
 
 function terminalNotifierValue(value: string): string {
+  if (value.startsWith("-")) return ` ${value}`;
   return /^[\[({"]/.test(value) ? `\\${value}` : value;
 }
 
@@ -32,7 +33,7 @@ export function buildNotifyCommand(
   if (config.notifyCommand) return ["sh", "-c", config.notifyCommand];
   if (env.platform === "darwin") {
     const target = notificationPrUrl(url);
-    if (target && env.has("terminal-notifier")) return ["terminal-notifier", "-title", title, "-message", terminalNotifierValue(message), "-open", target];
+    if (target && env.has("terminal-notifier")) return ["terminal-notifier", "-title", terminalNotifierValue(title), "-message", terminalNotifierValue(message), "-open", target];
     const esc = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     return ["osascript", "-e", `display notification "${esc(message)}" with title "${esc(title)}"`];
   }

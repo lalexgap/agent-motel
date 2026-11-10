@@ -80,6 +80,13 @@ describe("clickable PR notifications", () => {
     expect(d.calls[0]!.cmd[4]).toBe("\\[am] PR #123 merged");
   });
 
+  test("escapes property-list prefixes and option-like titles", async () => {
+    const d = delivery();
+    await deliverNotification("[remote] (-host)", "-open", prUrl, notifyConfig, d.deps);
+    expect(d.calls[0]!.cmd[2]).toBe("\\[remote] (-host)");
+    expect(d.calls[0]!.cmd[4]).toBe(" -open");
+  });
+
   test("permission denial keeps the notification via iTerm and explains the failure", async () => {
     const d = delivery({ run: async () => 3 });
     await deliverNotification("PR merged", "body", prUrl, notifyConfig, d.deps);
