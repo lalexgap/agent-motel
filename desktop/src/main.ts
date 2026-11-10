@@ -29,7 +29,11 @@ import {
   agentPath,
   BUSY,
   buildTree,
+  conciergeTarget,
   countStatuses,
+  fleetRows,
+  isConciergeKey,
+  isPinnedConcierge,
   moveCursor,
   parseAgentKey,
   repoLabel,
@@ -88,6 +92,7 @@ interface ConnState {
   remoteHosts: string[];
   rows: AgentRow[];
   unreachable: string[];
+  conciergeKey: string | null;
   loaded: boolean;
   stream: StreamState | null;
   everOpen: boolean;
@@ -194,7 +199,7 @@ async function apiGet<T>(id: string, path: string): Promise<T> {
 
 function newConnState(conn: Connection): ConnState {
   return {
-    conn, local: "", remoteHosts: [], rows: [], unreachable: [], loaded: false, stream: null, everOpen: false,
+    conn, local: "", remoteHosts: [], rows: [], unreachable: [], conciergeKey: null, loaded: false, stream: null, everOpen: false,
     streamError: null, error: null, tokenRejected: false, agentsSeq: 0, agentsApplied: 0, agentsFetchedAt: 0, debounce: null,
   };
 }
@@ -210,6 +215,20 @@ async function loadHosts(id: string): Promise<void> {
   } catch (error) {
     noteError(id, error);
   }
+}
+
+// Which agent is the concierge. A failure (an older server without the route)
+// is not an error worth showing: the role fallback in fleet.ts covers it.
+async function loadConcierge(id: string): Promise<void> {
+  let key: string | null = null;
+  try {
+    const body = await apiGet<{ key?: unknown }>(id, "/api/concierge");
+    if (typeof body?.key === "string" && body.key) key = body.key;
+  } catch {}
+  const conn = state.conns.get(id);
+  if (!conn || conn.conciergeKey === key) return;
+  conn.conciergeKey = key;
+  renderFleet();
 }
 
 async function loadAgents(id: string): Promise<void> {
@@ -279,12 +298,14 @@ async function startConnection(conn: Connection): Promise<void> {
     noteError(conn.id, error);
   }
   void loadHosts(conn.id);
+  void loadConcierge(conn.id);
   void loadAgents(conn.id);
 }
 
 async function reloadAll(): Promise<void> {
   for (const id of state.conns.keys()) {
     void loadHosts(id);
+    void loadConcierge(id);
     void loadAgents(id);
   }
   if (state.selected) void loadDetail();
@@ -305,11 +326,13 @@ function fleets(): ConnectionFleet[] {
     rows: conn.rows,
     remoteHosts: conn.remoteHosts,
     unreachable: conn.unreachable,
+    conciergeKey: conn.conciergeKey,
   }));
 }
 function allRows(): AgentRow[] {
-  return [...state.conns.values()].flatMap((conn) => conn.rows);
+  return fleets().flatMap(fleetRows);
 }
+const isConcierge = (key: string): boolean => isConciergeKey(fleets(), key);
 function findRow(key: string): AgentRow | null {
   const parsed = parseAgentKey(key);
   const conn = parsed && state.conns.get(parsed.connection);
@@ -359,6 +382,38 @@ function agentNode(item: AgentItem): HTMLElement {
   return node;
 }
 
+function conciergeNode(item: AgentItem): HTMLElement {
+  const { row } = item;
+  const stopped = STOPPED.has(row.status);
+  const node = h("div", `am-row am-agent am-concierge${stopped ? " stopped" : ""}${row.status === "needs-attention" ? " attention" : ""}`);
+  node.setAttribute("role", "treeitem");
+  node.setAttribute("aria-level", "1");
+  node.setAttribute("aria-selected", String(item.key === state.selected));
+  node.tabIndex = -1;
+  node.dataset.itemId = item.id;
+  node.dataset.agentKey = item.key;
+  node.dataset.concierge = "";
+  const text = h("div", "am-agent-text");
+  const line = h("div", "am-agent-line");
+  const label = h("span", "am-agent-name am-concierge-name");
+  label.append(h("span", "am-concierge-mark", "✳"), document.createTextNode("Concierge"));
+  if (item.connectionName) label.append(h("span", "am-concierge-conn", item.connectionName));
+  const time = h("span", "am-agent-time", relativeTime(row.statusChangedAt));
+  time.dataset.since = row.statusChangedAt || "";
+  time.title = `${statusLabel(row.status)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
+  line.append(label, time);
+  const meta = h("div", "am-agent-meta");
+  meta.append(h("span", "", row.provider));
+  if (stopped) meta.append(h("span", "am-status-text s-stopped", `stopped · ${statusShort(row.status)}`));
+  else if (row.status !== "idle") meta.append(h("span", `am-status-text s-${row.status}`, statusShort(row.status)));
+  if ((row.queued ?? 0) > 0) meta.append(h("span", "am-queued", `${row.queued} queued`));
+  text.append(line, meta);
+  node.append(dot(row.status), text);
+  const where = item.connectionName ? ` on ${item.connectionName}` : "";
+  node.title = `Concierge${where} · ${statusLabel(row.status)}${row.statusReason ? ` — ${row.statusReason}` : ""} · press c to open`;
+  return node;
+}
+
 function renderTree(): void {
   const tree = $("am-tree");
   const hadFocus = tree.contains(document.activeElement);
@@ -372,12 +427,20 @@ function renderTree(): void {
   if (!state.cursor && state.selected) state.cursor = items.find((item) => item.kind === "agent" && item.key === state.selected)?.id ?? null;
   if (!state.cursor) state.cursor = items[0]?.id ?? null;
   const nodes: HTMLElement[] = [];
+  let pinned: HTMLElement | null = null;
   for (const item of items) {
-    const node = item.kind === "group" ? groupNode(item) : agentNode(item);
+    const node = item.kind === "group" ? groupNode(item) : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item);
     if (item.id === state.cursor) node.tabIndex = 0;
-    nodes.push(node);
+    if (isPinnedConcierge(item)) {
+      if (!pinned) {
+        pinned = h("div", "am-pinned");
+        pinned.setAttribute("role", "none");
+        nodes.push(pinned);
+      }
+      pinned.append(node);
+    } else nodes.push(node);
   }
-  if (!items.length) {
+  if (!items.some((item) => !isPinnedConcierge(item))) {
     const loading = [...state.conns.values()].some((conn) => !conn.loaded);
     const message = state.filter ? `No agents match “${state.filter}”.`
       : loading ? loadProblem() ?? "Loading agents…"
@@ -549,7 +612,9 @@ function renderHeader(): void {
   const source = agentSource(key);
   const conn = parsed ? state.conns.get(parsed.connection) : undefined;
   const name = source.name ?? parsed?.id.split(":").pop() ?? key;
-  $("am-agent-name").textContent = name;
+  const concierge = isConcierge(key);
+  $("am-agent-name").textContent = concierge ? "Concierge" : name;
+  $("am-agent-name").classList.toggle("am-concierge-title", concierge);
   $("am-agent-name").title = parsed?.id ?? name;
   const status = source.status ?? "";
   $("am-agent-status").replaceChildren(...(status ? [badge(status)] : []));
@@ -766,7 +831,8 @@ function renderComposer(): void {
   send.disabled = !!blocked || sending || !known;
   const label = sending ? "Sending…" : choice.mode === "now" ? "Send now" : "Queue";
   if (send.textContent !== label) send.textContent = label;
-  input.placeholder = blocked ? "" : choice.mode === "now" ? "Message the agent" : "Message the agent when it is free";
+  input.placeholder = blocked ? "" : isConcierge(key) ? "Ask the concierge"
+    : choice.mode === "now" ? "Message the agent" : "Message the agent when it is free";
   const keysBox = $("am-composer-keys");
   const keysFor = `${choice.mode}/${choice.choosable}`;
   if (keysBox.dataset.for === keysFor) return;
@@ -1236,6 +1302,16 @@ function activateItem(item: TreeItem): void {
   else selectAgent(item.key);
 }
 
+function openConcierge(): void {
+  const key = conciergeTarget(fleets(), state.selected);
+  if (!key) return;
+  const item = state.tree.items.find((candidate) => isPinnedConcierge(candidate) && candidate.key === key);
+  if (item) state.cursor = item.id;
+  selectAgent(key);
+  focusCursor();
+  if (!composerInput().disabled) composerInput().focus();
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
   const view = document.body.dataset.view;
@@ -1259,7 +1335,8 @@ function onKeydown(event: KeyboardEvent): void {
       focusCursor();
     } else if (event.key === "ArrowDown" || event.key === "Enter") {
       event.preventDefault();
-      const first = state.tree.items.find((item) => item.kind === "agent");
+      // The pinned concierge always shows; Enter means the first match below it.
+      const first = state.tree.items.find((item) => item.kind === "agent" && !item.concierge);
       if (event.key === "Enter" && first?.kind === "agent") selectAgent(first.key);
       setCursor(first?.id ?? state.cursor);
     }
@@ -1274,6 +1351,12 @@ function onKeydown(event: KeyboardEvent): void {
   if (event.key === "Escape") {
     event.preventDefault();
     focusCursor();
+    return;
+  }
+  if (event.key === "c") {
+    // Before focus moves to the message box, or the c would be typed into it.
+    event.preventDefault();
+    openConcierge();
     return;
   }
   const tree = $("am-tree");
@@ -1314,7 +1397,7 @@ function onKeydown(event: KeyboardEvent): void {
       if (!current) return;
       event.preventDefault();
       if (current.kind === "group" && !current.collapsed) toggleGroup(current.id, true);
-      else if (current.parent) setCursor(current.parent);
+      else if (current.parent && items.some((item) => item.id === current.parent)) setCursor(current.parent);
       break;
     case "ArrowRight":
       if (!current) return;

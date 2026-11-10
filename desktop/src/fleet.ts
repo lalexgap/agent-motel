@@ -69,6 +69,42 @@ export interface ConnectionFleet {
   rows: AgentRow[];
   remoteHosts: string[];
   unreachable: string[];
+  // The id GET /api/concierge named (`concierge` or `host:concierge`), or null when unknown.
+  conciergeKey?: string | null;
+}
+
+const roleName = (row: AgentRow): string => (typeof row.role === "string" ? row.role : row.role?.name ?? "");
+
+// The concierge's agent id on a connection: the row the server named, else
+// (older server, failed request, stale key) the row whose role says so.
+export function conciergeId(fleet: Pick<ConnectionFleet, "rows" | "conciergeKey">): string | null {
+  if (fleet.conciergeKey && fleet.rows.some((row) => agentId(row) === fleet.conciergeKey)) return fleet.conciergeKey;
+  const byRole = fleet.rows.find((row) => roleName(row) === "concierge");
+  return byRole ? agentId(byRole) : null;
+}
+export function conciergeRow(fleet: Pick<ConnectionFleet, "rows" | "conciergeKey">): AgentRow | null {
+  const id = conciergeId(fleet);
+  return id === null ? null : fleet.rows.find((row) => agentId(row) === id) ?? null;
+}
+// Every agent but the concierge: what the lists and counts are about.
+export function fleetRows(fleet: Pick<ConnectionFleet, "rows" | "conciergeKey">): AgentRow[] {
+  const id = conciergeId(fleet);
+  return id === null ? fleet.rows : fleet.rows.filter((row) => agentId(row) !== id);
+}
+export function isConciergeKey(fleets: readonly ConnectionFleet[], key: string): boolean {
+  const parsed = parseAgentKey(key);
+  const fleet = parsed && fleets.find((candidate) => candidate.id === parsed.connection);
+  return !!fleet && conciergeId(fleet) === parsed.id;
+}
+// What `c` opens: the concierge of the open agent's connection, else the first one there is.
+export function conciergeTarget(fleets: readonly ConnectionFleet[], openKey: string | null): string | null {
+  const connection = openKey ? parseAgentKey(openKey)?.connection : undefined;
+  const ordered = [...fleets.filter((fleet) => fleet.id === connection), ...fleets.filter((fleet) => fleet.id !== connection)];
+  for (const fleet of ordered) {
+    const row = conciergeRow(fleet);
+    if (row) return agentKey(fleet.id, row);
+  }
+  return null;
 }
 
 export interface TreeOptions {
@@ -97,6 +133,9 @@ export interface AgentItem {
   depth: number;
   parent: string;
   hostLabel: string;
+  // The pinned concierge entry, labelled with `connectionName` when there are several connections.
+  concierge?: boolean;
+  connectionName?: string;
 }
 export type TreeItem = GroupItem | AgentItem;
 
@@ -108,10 +147,13 @@ export interface TreeModel {
 }
 
 export const ATTENTION_GROUP = "attention";
+export const CONCIERGE_SECTION = "concierge";
+export const isPinnedConcierge = (item: TreeItem): item is AgentItem => item.kind === "agent" && !!item.concierge;
 
-// The flat, visible tree: groups plus the agents of expanded groups, in render
-// order. The same agent may appear twice (pinned "Needs attention" and its
-// repository); item ids differ, agent keys do not.
+// The flat, visible tree: the pinned concierge entries, then groups plus the
+// agents of expanded groups, in render order. The same agent may appear twice
+// (pinned "Needs attention" and its repository); item ids differ, agent keys
+// do not. The concierge appears only in its own entry and in no count.
 export function buildTree(fleets: ConnectionFleet[], options: TreeOptions): TreeModel {
   const items: TreeItem[] = [];
   const filtering = options.filter.trim() !== "";
@@ -119,8 +161,19 @@ export function buildTree(fleets: ConnectionFleet[], options: TreeOptions): Tree
   const isCollapsed = (id: string) => !filtering && options.collapsed.has(id);
   const multi = fleets.length > 1;
   let hiddenStopped = 0, total = 0;
+  // Pinned regardless of the filter and of "Show stopped".
+  for (const fleet of fleets) {
+    const row = conciergeRow(fleet);
+    if (!row) continue;
+    const key = agentKey(fleet.id, row);
+    items.push({
+      kind: "agent", id: `${CONCIERGE_SECTION}>${key}`, key, connection: fleet.id, row, depth: 0, parent: CONCIERGE_SECTION,
+      hostLabel: row.host || fleet.local, concierge: true, ...(multi ? { connectionName: fleet.name } : {}),
+    });
+  }
   const visible: { fleet: ConnectionFleet; row: AgentRow }[] = [];
-  for (const fleet of fleets) for (const row of fleet.rows) {
+  const regular = new Map(fleets.map((fleet) => [fleet, fleetRows(fleet)]));
+  for (const fleet of fleets) for (const row of regular.get(fleet)!) {
     total++;
     if (STOPPED.has(row.status) && !options.showStopped) { hiddenStopped++; continue; }
     if (!matchesFilter(row, options.filter, fleet.local)) continue;
@@ -159,7 +212,7 @@ export function buildTree(fleets: ConnectionFleet[], options: TreeOptions): Tree
     }
     const hosts: string[] = [""];
     const remotes = new Set<string>(fleet.remoteHosts);
-    for (const row of fleet.rows) if (row.host) remotes.add(row.host);
+    for (const row of regular.get(fleet)!) if (row.host) remotes.add(row.host);
     hosts.push(...[...remotes].sort((a, b) => a.localeCompare(b)));
     for (const host of hosts) {
       const hostRows = rows.filter((row) => (row.host || "") === host);
