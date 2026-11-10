@@ -1,6 +1,9 @@
 // Dev server: serves desktop/dist with the app's CSP and implements the bridge
 // over HTTP so the frontend runs in a plain browser.
 //   bun desktop/dev.ts [--port 5199] [--fixture] [--fixture-url http://127.0.0.1:8791] [--watch]
+// /__bridge has no secret: its Host/Origin checks stop browsers, not other local
+// processes, which can drive it and use any saved token. Run it on a single-user
+// machine with fixture or throwaway tokens, never a production token on a shared host.
 import { watch } from "node:fs";
 import { join, normalize, resolve, sep } from "node:path";
 import { build, desktopDir, distDir } from "./build";
@@ -10,7 +13,7 @@ import pkg from "../package.json";
 
 // Same policy as the app, except connect-src: the dev bridge lives on this origin.
 export const DEV_CSP =
-  "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'";
+  "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",

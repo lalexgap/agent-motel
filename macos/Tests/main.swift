@@ -116,6 +116,14 @@ for byte in snowman { splitEvents += try! split.feed(Data([byte])) }
 check(splitEvents == [SSEEvent(event: "message", data: "☃", id: nil)], "UTF-8 split across chunks")
 var huge = SSEParser()
 check((try? huge.feed(Data(repeating: 0x61, count: SSEParser.maxLineBytes + 1))) == nil, "oversized line")
+let mebiLine = Data(("data: " + String(repeating: "a", count: 1 << 20) + "\n").utf8)
+var bounded = SSEParser()
+for _ in 0..<7 { check((try? bounded.feed(mebiLine))?.isEmpty == true, "data under the cap") }
+check((try? bounded.feed(Data("\n".utf8)))?.first?.data.utf8.count == 7 * (1 << 20) + 6, "7 MiB event dispatched")
+var growing = SSEParser()
+var cutOff = false
+for _ in 0..<9 where !cutOff { cutOff = (try? growing.feed(mebiLine)) == nil }
+check(cutOff, "event data that never ends is capped")
 print("PASS SSE parser")
 
 let root = FileManager.default.temporaryDirectory.appendingPathComponent("am-resource-test-\(getpid())", isDirectory: true)

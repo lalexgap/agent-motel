@@ -177,11 +177,18 @@ async function loadAgents(id: string): Promise<void> {
     // A late response must not overwrite a newer one (or a removed connection).
     if (current !== conn || seq <= conn.agentsApplied) return;
     conn.agentsApplied = seq;
+    const selected = state.selected && parseAgentKey(state.selected)?.connection === id ? state.selected : null;
+    const before = selected ? findRow(selected) : null;
     conn.rows = Array.isArray(data?.rows) ? data.rows.filter((row) => row && typeof row.name === "string") : [];
     conn.unreachable = Array.isArray(data?.unreachable) ? data.unreachable : [];
     conn.loaded = true;
     conn.error = null;
     renderFleet();
+    // Without the stream, the fleet poll is the only sign the open agent moved on
+    // (e.g. went idle after its final message, which the busy-only detail poll would miss).
+    const after = selected ? findRow(selected) : null;
+    if (conn.stream !== "open" && before && after && selected === state.selected &&
+        (before.status !== after.status || before.updatedAt !== after.updatedAt)) void loadDetail();
   } catch (error) {
     noteError(id, error);
   }
@@ -652,11 +659,19 @@ function fillForm(): void {
   const conn = state.editing ? state.conns.get(state.editing)?.conn : null;
   ($("connection-name") as HTMLInputElement).value = conn?.name ?? "";
   ($("connection-url") as HTMLInputElement).value = conn?.url ?? "";
-  const token = $("connection-token") as HTMLInputElement;
-  token.value = "";
-  token.placeholder = conn ? (conn.hasToken ? "Leave empty to keep the saved token" : "Paste the access token") : "Paste the access token";
+  ($("connection-token") as HTMLInputElement).value = "";
+  updateTokenHint();
   $("am-conn-form-title").textContent = conn ? `Edit ${conn.name}` : state.conns.size ? "New connection" : "Server details";
   setResult("");
+}
+
+function updateTokenHint(): void {
+  const conn = state.editing ? state.conns.get(state.editing)?.conn : null;
+  const url = normalizeServerUrl(($("connection-url") as HTMLInputElement).value);
+  const sameUrl = !!conn && url.ok && url.url === conn.url;
+  ($("connection-token") as HTMLInputElement).placeholder = conn?.hasToken
+    ? sameUrl ? "Leave empty to keep the saved token" : "Paste the token again for the new server URL"
+    : "Paste the access token";
 }
 
 function renderSetup(): void {
@@ -742,8 +757,8 @@ async function saveConnection(): Promise<void> {
   const form = readForm();
   if (!form) return;
   const editing = state.editing ? state.conns.get(state.editing) : null;
-  if (!editing && !form.token) {
-    setResult("Paste the access token. Run am token on the server to print it.", "error");
+  if (!form.token && (!editing || editing.conn.url !== form.url)) {
+    setResult(editing ? "Enter the token again when changing the server URL." : "Paste the access token. Run am token on the server to print it.", "error");
     $("connection-token").focus();
     return;
   }
@@ -974,6 +989,7 @@ function wire(): void {
     $("am-conn-add").focus();
   });
   $("am-conn-test").addEventListener("click", () => void testConnection());
+  $("connection-url").addEventListener("input", updateTokenHint);
   $("am-conn-form").addEventListener("submit", (event) => {
     event.preventDefault();
     void saveConnection();

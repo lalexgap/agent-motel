@@ -139,7 +139,7 @@ final class EventStream: NSObject {
         do {
             for event in try parser.feed(data) { onEvent(self, event) }
         } catch {
-            pendingError = "The event stream sent an oversized line"
+            pendingError = "The event stream sent an oversized event"
             task.cancel()
         }
     }

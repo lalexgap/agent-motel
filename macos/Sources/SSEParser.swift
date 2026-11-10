@@ -30,7 +30,7 @@ struct SSEParser {
             }
             if byte == 0x0A || byte == 0x0D {
                 afterCR = byte == 0x0D
-                if let event = processLine() { events.append(event) }
+                if let event = try processLine() { events.append(event) }
                 line.removeAll(keepingCapacity: true)
             } else {
                 guard line.count < Self.maxLineBytes else { throw LineTooLong() }
@@ -40,7 +40,7 @@ struct SSEParser {
         return events
     }
 
-    private mutating func processLine() -> SSEEvent? {
+    private mutating func processLine() throws -> SSEEvent? {
         var bytes = line[...]
         if atStart {
             atStart = false
@@ -62,6 +62,13 @@ struct SSEParser {
         switch field {
         case "event": eventType = String(value)
         case "data":
+            // Bounds memory for an event whose data lines never end with a blank line.
+            guard dataBuffer.utf8.count + value.utf8.count < Self.maxLineBytes else {
+                eventType = ""
+                dataBuffer = ""
+                hasData = false
+                throw LineTooLong()
+            }
             dataBuffer += value
             dataBuffer += "\n"
             hasData = true

@@ -14,6 +14,9 @@ type Listener = (name: BridgeEventName, payload: unknown) => void;
 const REQUEST_TIMEOUT_MS = 15_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+// SSEParser.maxLineBytes, applied to each line and to an event's accumulated data (in UTF-16 units here).
+const MAX_EVENT_SIZE = 8 << 20;
+const OVERSIZED_EVENT = "The event stream sent an oversized event";
 
 // Only pages served by this dev server may drive the bridge. Host pins the
 // name the browser used (defeats DNS rebinding); Origin, or Sec-Fetch-Site
@@ -37,6 +40,14 @@ const text = (value: unknown, field: string): string => {
   if (typeof value !== "string") throw new Error(`${field} must be a string`);
   return value;
 };
+const optionalText = (value: unknown, field: string): string | undefined =>
+  value === undefined || value === null ? undefined : text(value, field);
+
+function validateToken(token: string): void {
+  if (!token) throw new Error("Enter the access token");
+  if (token.length > 4096) throw new Error("The access token is too long");
+  if (![...token].every((char) => char > " " && char < "\x7f")) throw new Error("The access token must be printable ASCII without spaces");
+}
 
 async function readJson(response: Response): Promise<unknown> {
   const body = await response.text().catch(() => "");
@@ -90,7 +101,7 @@ export class DevBridge {
       case "connections.save":
         return this.save(params);
       case "connections.remove": {
-        const id = text(params.id, "id");
+        const id = this.connection(text(params.id, "id")).id;
         this.stopStream(id);
         this.connections.delete(id);
         this.states.delete(id);
@@ -98,9 +109,13 @@ export class DevBridge {
       }
       case "api.get":
         return this.apiGet(text(params.connection, "connection"), params.path);
-      case "events.start":
-        this.startStream(this.connection(text(params.connection, "connection")));
+      case "events.start": {
+        const conn = this.connection(text(params.connection, "connection"));
+        const current = this.streams.has(conn.id) ? this.states.get(conn.id) : undefined;
+        if (current) this.emit("events.state", current);
+        else this.startStream(conn);
         return {};
+      }
       case "events.stop":
         this.stopStream(text(params.connection, "connection"));
         return {};
@@ -124,31 +139,40 @@ export class DevBridge {
   }
 
   private async test(rawUrl: string, token: string): Promise<{ ok: boolean; status: number; error?: string }> {
-    const url = normalizeServerUrl(rawUrl);
-    if (!url.ok) throw new Error(url.error);
-    if (!token.trim()) throw new Error("token is required");
     try {
+      const url = normalizeServerUrl(rawUrl);
+      if (!url.ok) throw new Error(url.error);
+      validateToken(token);
       const response = await this.fetchImpl(`${url.url}/api/health`, {
-        headers: { authorization: `Bearer ${token.trim()}` },
+        headers: { authorization: `Bearer ${token}` },
         redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      const body = (await readJson(response)) as { error?: unknown } | null;
-      if (response.status === 200) return { ok: true, status: 200 };
-      return { ok: false, status: response.status, ...(typeof body?.error === "string" ? { error: body.error } : {}) };
+      const body = (await readJson(response)) as { ok?: unknown } | null;
+      const status = response.status;
+      if (status >= 200 && status < 300) {
+        return body?.ok === true ? { ok: true, status } : { ok: false, status, error: "This server did not answer like Agent Motel" };
+      }
+      if (status === 401 || status === 403) return { ok: false, status, error: "The server rejected the token" };
+      if (status >= 300 && status < 400) return { ok: false, status, error: "The server redirected; use the address it redirects to" };
+      return { ok: false, status, error: `The server returned HTTP ${status}` };
     } catch (error) {
       return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
   private save(params: Record<string, unknown>): Connection {
+    const id = optionalText(params.id, "id");
     const name = text(params.name, "name").trim();
-    if (!name || name.length > 100) throw new Error("Name must be 1–100 characters");
+    if (!name || [...name].length > 200) throw new Error("The name must be 1 to 200 characters");
     const url = normalizeServerUrl(text(params.url, "url"));
     if (!url.ok) throw new Error(url.error);
-    const token = params.token === undefined || params.token === null ? "" : text(params.token, "token").trim();
-    if (params.id !== undefined) {
-      const existing = this.connection(text(params.id, "id"));
+    const token = optionalText(params.token, "token") ?? "";
+    if (token) validateToken(token);
+    if (id !== undefined) {
+      const existing = this.connection(id);
+      // Keeping a token while changing the server would send it to a different origin.
+      if (existing.url !== url.url && !token) throw new Error("Enter the token again when changing the server URL");
       const changed = existing.url !== url.url || token !== "";
       existing.name = name;
       existing.url = url.url;
@@ -159,7 +183,7 @@ export class DevBridge {
       }
       return publicView(existing);
     }
-    if (!token) throw new Error("A new connection needs an access token");
+    if (!token) throw new Error("Enter the access token");
     const conn = { id: crypto.randomUUID(), name, url: url.url, token };
     this.connections.set(conn.id, conn);
     return publicView(conn);
@@ -228,29 +252,40 @@ export class DevBridge {
   private async readEvents(connection: string, body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "", event = "", data: string[] = [];
-    while (!signal.aborted) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      buffer += decoder.decode(value, { stream: true });
-      let newline: number;
-      while ((newline = buffer.search(/\r?\n/)) >= 0) {
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + (buffer[newline] === "\r" ? 2 : 1));
-        if (line === "") {
-          if (data.length || event) {
-            const raw = data.join("\n");
-            let parsed: unknown = raw;
-            try {
-              parsed = JSON.parse(raw);
-            } catch {}
-            this.emit("events.message", { connection, event: event || "message", data: parsed });
+    let buffer = "", event = "", data: string[] = [], dataSize = 0;
+    try {
+      while (!signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.search(/\r?\n/)) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + (buffer[newline] === "\r" ? 2 : 1));
+          if (line === "") {
+            if (data.length || event) {
+              const raw = data.join("\n");
+              let parsed: unknown = raw;
+              try {
+                parsed = JSON.parse(raw);
+              } catch {}
+              this.emit("events.message", { connection, event: event || "message", data: parsed });
+            }
+            event = "";
+            data = [];
+            dataSize = 0;
+          } else if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) {
+            const value = line.slice(5).replace(/^ /, "");
+            dataSize += value.length + 1;
+            if (dataSize > MAX_EVENT_SIZE) throw new Error(OVERSIZED_EVENT);
+            data.push(value);
           }
-          event = "";
-          data = [];
-        } else if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        }
+        if (buffer.length >= MAX_EVENT_SIZE) throw new Error(OVERSIZED_EVENT);
       }
+    } finally {
+      reader.cancel().catch(() => {});
     }
   }
 }
