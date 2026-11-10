@@ -32,6 +32,48 @@ window.agentMarkdown = {
   cells(line) {
     return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim());
   },
+  codeBlock(parent, text) {
+    const block = this.element("div", parent);
+    block.className = "md-code";
+    const controls = this.element("div", block);
+    controls.className = "md-code-controls";
+    const wrap = this.element("button", controls);
+    wrap.type = "button";
+    wrap.textContent = "Wrap";
+    wrap.setAttribute("aria-label", "Wrap code lines");
+    wrap.setAttribute("aria-pressed", "false");
+    const copy = this.element("button", controls);
+    copy.type = "button";
+    copy.textContent = "Copy";
+    copy.setAttribute("aria-label", "Copy code");
+    const status = this.element("span", controls);
+    status.className = "md-code-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    const pre = this.element("pre", block);
+    pre.tabIndex = 0;
+    pre.setAttribute("aria-label", "Code block");
+    window.agentLinks.render(this.element("code", pre), text);
+    let wrapped = false;
+    wrap.addEventListener("click", () => {
+      wrapped = !wrapped;
+      pre.className = wrapped ? "md-code-wrapped" : "";
+      wrap.setAttribute("aria-pressed", String(wrapped));
+    });
+    copy.addEventListener("click", async () => {
+      if (copy.disabled) return;
+      copy.disabled = true;
+      status.textContent = "Copying…";
+      try {
+        await window.navigator.clipboard.writeText(text);
+        status.textContent = "Copied!";
+      } catch {
+        status.textContent = "Could not copy. Select the code and copy manually.";
+      } finally {
+        copy.disabled = false;
+      }
+    });
+  },
   blocks(parent, lines, depth = 0) {
     if (depth > this.maxDepth) {
       window.agentLinks.append(this.element("p", parent), lines.join("\n").trim());
@@ -47,8 +89,7 @@ window.agentMarkdown = {
         index++;
         while (index < lines.length && !lines[index].trim().startsWith(fence[1])) body.push(lines[index++]);
         index++;
-        const pre = this.element("pre", parent);
-        window.agentLinks.render(this.element("code", pre), body.join("\n"));
+        this.codeBlock(parent, body.join("\n"));
         continue;
       }
       const heading = line.match(this.heading);
