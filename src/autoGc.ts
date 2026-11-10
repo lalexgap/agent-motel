@@ -60,10 +60,25 @@ export interface AutoGcState {
   // The policy version whose dry run has happened; runs apply only once it
   // matches GC_POLICY_VERSION.
   armedPolicy?: number;
+  // What the dry runs before arming have already reported as removable, so
+  // the next one continues instead of starting over: on a host with hundreds
+  // of worktrees no single run reaches them all inside its budget.
+  // Keyed by the age settings too: changing them changes what is removable.
+  preview?: { policy: number; ages?: string; worktrees: Record<string, Preview> };
   lastRun?: GcRunSummary;
   lastSkip?: { at: string; reason: string };
   // A sweep that exited abnormally; no retry until the next night's window.
   lastFailure?: { at: string; code: number | null };
+}
+
+interface Preview { at: number; repoRoot: string; bytes?: number; reason?: string }
+
+// A preview older than this is inspected again before it counts.
+const PREVIEW_MS = 7 * 24 * 60 * MINUTE_MS;
+
+function previewed(state: AutoGcState): Record<string, Preview> {
+  const worktrees = state.preview?.worktrees;
+  return worktrees && typeof worktrees === "object" && !Array.isArray(worktrees) ? worktrees : {};
 }
 
 export function readAutoGcState(): AutoGcState {
@@ -253,7 +268,33 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
       else if (cheap) keep(cheap);
       else pending.push(candidate);
     }
-    const queue = judge.inspectionOrder(pending);
+    const arming = mode === "dry-run" && !autoGcArmed(before);
+    const ages = `${policy.staleDays ?? 0}/${policy.ignoredDays ?? 0}`;
+    const earlier = arming && before.preview?.policy === GC_POLICY_VERSION && before.preview.ages === ages
+      ? previewed(before)
+      : {};
+    const previews: Record<string, Preview> = {};
+    const preview = (path: string, seen: Preview) => {
+      previews[path] = seen;
+      note({
+        action: "remove-worktree", path, repoRoot: seen.repoRoot,
+        ...(seen.reason ? { reason: seen.reason } : {}), ...(seen.bytes !== undefined ? { bytes: seen.bytes } : {}),
+      });
+      summary.worktrees++;
+      summary.bytes += seen.bytes ?? 0;
+    };
+    const unseen = pending.filter((candidate) => {
+      const seen = earlier[candidate.path];
+      const age = typeof seen?.at === "number" ? started - seen.at : NaN;
+      if (!(age >= 0 && age <= PREVIEW_MS) || typeof seen!.repoRoot !== "string") return true;
+      preview(candidate.path, {
+        at: seen!.at, repoRoot: seen!.repoRoot,
+        ...(typeof seen!.reason === "string" ? { reason: seen!.reason } : {}),
+        ...(typeof seen!.bytes === "number" ? { bytes: seen!.bytes } : {}),
+      });
+      return false;
+    });
+    const queue = judge.inspectionOrder(unseen);
 
     const deadline = started + maxMinutes(config) * MINUTE_MS;
     for (const [index, candidate] of queue.entries()) {
@@ -270,12 +311,10 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
         keep(result.kept);
       } else if (mode === "dry-run") {
         const bytes = diskBytes(candidate.path);
-        note({
-          action: "remove-worktree", path: candidate.path, repoRoot: result.remove.repoRoot,
+        preview(candidate.path, {
+          at: started, repoRoot: result.remove.repoRoot,
           ...(result.remove.salvage ? { reason: result.remove.salvage } : {}), ...(bytes !== undefined ? { bytes } : {}),
         });
-        summary.worktrees++;
-        summary.bytes += bytes ?? 0;
       } else {
         const removal = removeWorktree(result.remove, policy, context);
         if (removal.removed) {
@@ -293,9 +332,11 @@ function sweep(opts: AutoGcRunOptions): AutoGcResult {
       state.lastRun = summary;
       delete state.lastSkip;
       delete state.lastFailure;
-      // Only a dry run that reached every worktree has shown what this policy
-      // collects; one cut short is continued as a dry run.
+      // Only dry runs that between them reached every worktree have shown
+      // what this policy collects; one cut short is continued by the next.
       if (!summary.stopped && summary.uninspected === 0) state.armedPolicy = GC_POLICY_VERSION;
+      if (autoGcArmed(state)) delete state.preview;
+      else if (arming) state.preview = { policy: GC_POLICY_VERSION, ages, worktrees: previews };
     });
     return { summary };
   } finally {
@@ -375,7 +416,7 @@ export function autoGcStatus(config: Config = loadConfig(), now: Date = new Date
   else lines.push(`auto gc: on — nightly at ${hour} or when the fleet is next idle, up to ${maxMinutes(config)}m a run`);
   lines.push(autoGcArmed(state)
     ? "mode: apply"
-    : "mode: dry run — the next sweep only reports; the ones after it apply");
+    : `mode: dry run — sweeps only report until they have looked at every worktree${state.preview ? ` (${Object.keys(previewed(state)).length} found removable so far)` : ""}; then they apply`);
   if (state.lastRun) {
     const run = state.lastRun;
     const seconds = Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000);

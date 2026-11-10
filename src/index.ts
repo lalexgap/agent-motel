@@ -261,7 +261,8 @@ usage:
   am gc --auto [status|run|pause|resume]
                               the daemon's nightly sweep of the same policy,
                               throttled and skipped while the host is busy;
-                              its first run only reports. run starts one now
+                              it only reports until it has looked at every
+                              worktree once. run starts one now
                               (--dry-run reports only, --force ignores load)
   am gc --restore <worktree>  recreate a worktree gc removed, from the gc log
   am watch                    live status table (via the daemon)
