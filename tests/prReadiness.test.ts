@@ -127,6 +127,31 @@ test("new reviewed head can notify and ordinary polls preserve the old marker", 
   expect(notices).toHaveLength(1);
 });
 
+test("clears an older conflict episode before readiness and alerts on a same-head re-conflict", async () => {
+  const agent = owner();
+  recordPrObservations(agent, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt: "2026-01-01T00:00:00Z" }]);
+  await expect(declarePullRequestReady(readAgent(agent.name)!, url, home, {
+    run: runner([github(head, { updatedAt: "2026-01-02T00:00:00Z" }), github(head, { updatedAt: "2026-01-02T00:00:00Z" })]).run,
+    reviewScript: script, notify: () => {},
+  })).resolves.toContain("Notified");
+  expect(readAgent(agent.name)!.prMonitor!.pullRequests[0]!.conflictActive).toBe(false);
+  recordPrObservations(readAgent(agent.name)!, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt: "2026-01-03T00:00:00Z" }]);
+  expect(readAgent(agent.name)!.prMonitor!.pending).toHaveLength(2);
+});
+
+test("withholds readiness when same-head conflict evidence is equally or more recent", async () => {
+  for (const updatedAt of ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"]) {
+    const agent = owner();
+    recordPrObservations(agent, [{ repository: "owner/repo", number: 7, url, state: "OPEN", headSha: head, mergeable: "CONFLICTING", updatedAt }]);
+    await expect(declarePullRequestReady(readAgent(agent.name)!, url, home, {
+      run: runner([github(head, { updatedAt: "2026-01-02T00:00:00Z" }), github(head, { updatedAt: "2026-01-02T00:00:00Z" })]).run,
+      reviewScript: script, notify: () => { throw new Error("must not notify"); },
+    })).rejects.toThrow(/local conflict evidence/);
+    expect(readAgent(agent.name)!.prMonitor!.pullRequests[0]!.readyNotifiedHead).toBeUndefined();
+    rmSync(process.env.AGENTMGR_HOME!, { recursive: true, force: true });
+  }
+});
+
 test("accepts drift-covered review context when the safe base ref resolves to GitHub's live base", async () => {
   const frozenBase = "d".repeat(40);
   const state = review(head, { layer: { context: { head_sha: head, base_ref: "refs/remotes/origin/main", base_sha: frozenBase }, main: { blockers: [] }, security: { blockers: [] } } });
