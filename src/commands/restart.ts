@@ -76,7 +76,10 @@ function restartAudited(agent: AgentState, opts: RestartOpts, expected?: Restart
   // stop + relaunch; a daemon that misses it during the stop is skipped
   // for the relaunch.
   const deadline = codexDeadline(CODEX_LAUNCH_BUDGET_MS);
-  stopAntigravity(agent);
+  const antigravityStopped = stopAntigravity(agent);
+  if (expected && provider === "antigravity" && !antigravityStopped) {
+    throw new Error(`agent "${agent.name}" exited before the guarded restart could stop its generation — refresh and try again`);
+  }
   stopCodexDaemonWork(agent, codexDeadline(CODEX_STOP_BUDGET_MS, deadline));
   const plan = buildResumeCommand(provider, agent, { ...opts, codexDaemon: codexResumeDaemon(agent, opts, deadline) });
   if (!plan.antigravityRunId) plan.command[0] = executable;
@@ -111,7 +114,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts, expected?: Restart
     if (expected || hasSession(agent.tmuxSession)) {
       try {restartSession(launch);}
       catch(error) {
-        if(provider!=="antigravity" || hasSession(agent.tmuxSession))throw error;
+        if(provider!=="antigravity" || hasSession(agent.tmuxSession) || (expected && !antigravityStopped))throw error;
         newSession(launch);
       }
     } else newSession(launch);

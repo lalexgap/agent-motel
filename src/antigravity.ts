@@ -555,12 +555,12 @@ export async function antigravityRequest(agent: AgentState, action: "deliver" | 
 // Synchronous lifecycle callers use a separate short-lived control process so
 // the runner's async socket loop can finish owned-group cleanup before tmux is
 // killed or its state is replaced. Only the runner knows its in-memory PGID.
-export function stopAntigravity(agent: AgentState): void {
-  if (agent.provider !== "antigravity") return;
+export function stopAntigravity(agent: AgentState): boolean {
+  if (agent.provider !== "antigravity") return false;
   let current = readAgent(agent.name);
   if (!current || current.provider!=="antigravity" || current.createdAt !== agent.createdAt || current.antigravityRunId !== agent.antigravityRunId) throw new Error("Antigravity incarnation changed; refresh state before stopping");
   if (!current.antigravityRunId) {
-    if (!hasSession(current.tmuxSession)) return;
+    if (!hasSession(current.tmuxSession)) return false;
     const panes = tmux("list-panes", "-t", `=${current.tmuxSession}:`, "-F", "#{pane_pid}");
     const pid = panes.exitCode === 0 ? Number.parseInt(panes.stdout.trim().split(/\s+/)[0] ?? "", 10) : NaN;
     if (Number.isInteger(pid) && pid > 1) {
@@ -579,7 +579,7 @@ export function stopAntigravity(agent: AgentState): void {
         while (Date.now() < killDeadline && alive()) Bun.sleepSync(10);
       }
     }
-    return;
+    return true;
   }
   if(current.antigravityRunPhase==="pending") {
     // This CAS races the runner's claim under the same state lock. Winning
@@ -589,16 +589,17 @@ export function stopAntigravity(agent: AgentState): void {
       state.antigravityRunPhase="cancelled";state.antigravityCleanupRunId=state.antigravityRunId;
       updateAgentStatus(state,"exited","Antigravity pending startup cancelled before runner claim; no provider workload launched");return true;
     });
-    if(cancelled)return;
+    if(cancelled)return true;
     current=readAgent(agent.name);
     if(!current || current.provider!=="antigravity" || current.createdAt!==agent.createdAt || current.antigravityRunId!==agent.antigravityRunId)throw new Error("Antigravity generation changed while stopping; refresh state");
   }
-  if (current.antigravityCleanupRunId === current.antigravityRunId) return;
+  if (current.antigravityCleanupRunId === current.antigravityRunId) return false;
   const result = Bun.spawnSync([process.execPath, fileURLToPath(import.meta.url), "stop", JSON.stringify({name:current.name,createdAt:current.createdAt,runId:current.antigravityRunId})], {
     env:{...process.env}, stdin:"ignore", stdout:"pipe", stderr:"pipe", timeout:7_000,
   });
   const after = readAgent(agent.name);
   if (result.exitCode !== 0 || !after || after.createdAt !== current.createdAt || after.antigravityRunId !== current.antigravityRunId || after.antigravityCleanupRunId !== current.antigravityRunId) throw new Error("Antigravity owned process-group cleanup unverified; stop refused. Keep state and inspect the runner before retrying");
+  return true;
 }
 
 if (import.meta.main) {

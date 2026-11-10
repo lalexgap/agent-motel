@@ -267,6 +267,23 @@ esac
     expect(readFileSync(join(home, "launch"), "utf8")).toStartWith("new-session\n");
     expect(readAgent("api")).toMatchObject({ provider: "antigravity", status: "starting", model: "gemini-4-argon-high" });
   });
+
+  test("a guarded Antigravity restart rejects a generation that naturally exited before teardown", async () => {
+    writeFileSync(join(home, "agy"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(home, "agy"), 0o755);
+    const agent = readAgent("api")!;
+    agent.provider = "antigravity";
+    agent.antigravityRunId = "1".repeat(32);
+    agent.antigravityRunPhase = "claimed";
+    agent.antigravityCleanupRunId = agent.antigravityRunId;
+    writeAgent(agent);
+    await expect(restartExactAgent(agent, { model: "gemini-4-argon-high" }, { createdAt: agent.createdAt, status: "working" }))
+      .rejects.toThrow(/exited before the guarded restart could stop its generation/);
+    expect(existsSync(join(home, "launch"))).toBe(false);
+    expect(readAgent("api")).toMatchObject({
+      status: "working", antigravityRunId: "1".repeat(32), antigravityCleanupRunId: "1".repeat(32),
+    });
+  });
 });
 
 describe("restart with a model change", () => {
