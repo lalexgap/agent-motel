@@ -152,6 +152,13 @@ export async function declarePullRequestReady(agent: AgentState, url: string, re
   const localBase = (await run(reviewDir, "git", ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim();
   if (!SHA.test(localBase) || localBase !== first.baseTip) throw new Error("readiness withheld: the local reviewed base does not match GitHub; fetch and reconcile review drift first");
 
+  const confirmedReview = parseObject(await run(reviewDir, reviewScript, ["stack", "state"]), "review-gate state");
+  const confirmedBaseRef = validateReviewState(confirmedReview, first.pr, localHead);
+  const confirmedBase = (await run(reviewDir, "git", ["rev-parse", "--verify", `${confirmedBaseRef}^{commit}`])).trim();
+  if (confirmedBaseRef !== baseRef || confirmedBase !== localBase) {
+    throw new Error("readiness withheld: the local base changed during review verification");
+  }
+
   const second = await readGithub();
   if (second.pr.headSha !== first.pr.headSha || second.pr.baseRefName !== first.pr.baseRefName || second.baseTip !== first.baseTip) {
     throw new Error("readiness withheld: the GitHub PR head or live base changed during verification");

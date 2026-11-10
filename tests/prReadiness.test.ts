@@ -192,6 +192,36 @@ test("withholds malformed review output and GitHub drift between reads", async (
   await expect(declarePullRequestReady(owner(), url, home, { run: runner(undefined, review(), head, base, [base, "e".repeat(40)]).run, reviewScript: script })).rejects.toThrow(/live base changed/);
 });
 
+test.each(["before coverage", "during coverage"])("withholds readiness when a concurrent fetch moves the base %s", async (timing) => {
+  const agent = owner();
+  const delegate = runner().run;
+  let coverageReads = 0, baseReads = 0;
+  const run: PrCommand = async (cwd, executable, args) => {
+    if (executable === script) {
+      coverageReads++;
+      if (timing === "before coverage") {
+        return JSON.stringify(review(head, {
+          XREVIEW_COVERS_HEAD: coverageReads === 1 ? "yes" : "no",
+          layer: { context: { head_sha: head, base_ref: "refs/heads/main", base_sha: "d".repeat(40) },
+            main: { blockers: [] }, security: { blockers: [] } },
+        }));
+      }
+    }
+    if (executable === "git" && args.includes("--verify")) {
+      baseReads++;
+      if (timing === "during coverage" && baseReads === 2) return "e".repeat(40);
+    }
+    return delegate(cwd, executable, args);
+  };
+  const notices: unknown[][] = [];
+  await expect(declarePullRequestReady(agent, url, home, {
+    run, reviewScript: script, notify: (...args) => notices.push(args),
+  })).rejects.toThrow(/readiness withheld/);
+  expect(coverageReads).toBe(2);
+  expect(notices).toHaveLength(0);
+  expect(readAgent(agent.name)?.prMonitor).toBeUndefined();
+});
+
 test("lifecycle ownership and stale owner identity prevent marker writes", async () => {
   const agent = owner();
   expect(acquireLifecycleLock(agent.name)).toBe(true);
