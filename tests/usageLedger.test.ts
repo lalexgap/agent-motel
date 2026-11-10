@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../src/args";
@@ -185,6 +185,20 @@ describe("usage ledger ingestion", () => {
     const entry = entryFor(file);
     expect(entry.days["2026-11-10"]).toEqual({ "claude-opus-5-5": [1, 100, 0, 0, 0, 400, 0] });
     expect(entry.tail.map((t) => t.id)).toEqual(["msg_1"]);
+  });
+
+  test("drops the repeat-id tail once a fully read file has been idle for an hour", () => {
+    const file = join(projectDir(), "sess-1.jsonl");
+    writeTranscript(file, [assistant("msg_1", "2026-11-10T08:00:00.000Z", { input: 100, output: 400 })]);
+    claudeAgent("idle-tail", file);
+    refreshAll();
+    expect(entryFor(file).tail).toHaveLength(1);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+    utimesSync(file, twoHoursAgo, twoHoursAgo);
+    refreshAll();
+    const entry = entryFor(file);
+    expect(entry.tail).toEqual([]);
+    expect(entry.days["2026-11-10"]).toEqual({ "claude-opus-5-5": [1, 100, 0, 0, 0, 400, 0] });
   });
 
   test("splits cache writes by TTL and buckets fast calls separately", () => {

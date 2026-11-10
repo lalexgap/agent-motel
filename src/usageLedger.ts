@@ -92,6 +92,8 @@ export interface UsageLedger {
 }
 
 const TAIL_MAX = 64;
+// A message's repeat lines arrive within seconds, so a file idle this long needs no tail.
+const TAIL_IDLE_MS = 60 * 60_000;
 const CHUNK_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BUDGET_MS = 1000;
 const CODEX_INDEX_TTL_MS = 5 * 60_000;
@@ -533,6 +535,11 @@ export function refreshUsageLedger(opts: { budgetMs?: number; now?: Date } = {})
         entry.size = task.size;
         entry.mtimeMs = task.mtimeMs;
       }
+    }
+
+    const idleBefore = Date.now() - TAIL_IDLE_MS;
+    for (const entry of Object.values(ledger.files)) {
+      if (entry.tail.length > 0 && entry.size >= 0 && entry.offset >= entry.size && entry.mtimeMs < idleBefore) entry.tail = [];
     }
 
     ledger.pendingFiles = pendingFiles;
