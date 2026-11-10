@@ -49,6 +49,15 @@ describe("fixture am server", () => {
     expect(agents.rows.some((row: { host?: string; repoRoot?: string }) => !row.host && !row.repoRoot)).toBe(true);
   });
 
+  test("the concierge route names a row that has the concierge role", async () => {
+    const { key } = await body("/api/concierge");
+    expect(key).toBe("concierge");
+    const agents = await body("/api/agents");
+    expect(agents.rows.find((row: { name: string }) => row.name === key)).toMatchObject({ role: "concierge", provider: "claude", status: "idle", dir: "/home/keeper" });
+    const transcript = await body("/api/agents/concierge/transcript");
+    expect(transcript.entries.some((entry: { kind: string }) => entry.kind === "assistant")).toBe(true);
+  });
+
   test("detail and transcript, including a remote host:name key", async () => {
     const detail = await body("/api/agents/harbor-lights");
     expect(detail).toMatchObject({ name: "harbor-lights", status: "working", provider: "claude", queue: [], pane: "", pendingPermissions: 0 });

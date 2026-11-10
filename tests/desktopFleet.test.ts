@@ -6,6 +6,12 @@ import {
   ATTENTION_GROUP,
   buildTree,
   compareRows,
+  conciergeId,
+  conciergeTarget,
+  countStatuses,
+  fleetRows,
+  isConciergeKey,
+  isPinnedConcierge,
   matchesFilter,
   moveCursor,
   NO_REPO,
@@ -162,6 +168,89 @@ describe("buildTree", () => {
     expect(moveCursor(tree.items, ids.at(-1)!, 1)).toBe(ids.at(-1)!);
     expect(moveCursor(tree.items, ids[0]!, -1)).toBe(ids[0]!);
     expect(moveCursor([], null, 1)).toBeNull();
+  });
+});
+
+describe("concierge", () => {
+  const keeper = (overrides: Partial<AgentRow> = {}) =>
+    row("concierge", { role: "concierge", repoRoot: undefined, dir: "/home/u", ...overrides });
+  const rows = [row("harbor", { status: "working" }), row("errand", { repoRoot: undefined, dir: "/home/u" }), keeper()];
+
+  test("identified by the server's key, else by role, else not at all", () => {
+    expect(conciergeId({ rows, conciergeKey: "concierge" })).toBe("concierge");
+    // The request failed, or named a row that is not in the list: fall back to the role.
+    expect(conciergeId({ rows, conciergeKey: null })).toBe("concierge");
+    expect(conciergeId({ rows, conciergeKey: "annex:concierge" })).toBe("concierge");
+    expect(conciergeId({ rows: [row("x", { role: { name: "concierge" } })] })).toBe("x");
+    expect(conciergeId({ rows: [row("a"), row("concierge")] })).toBeNull();
+    // The key wins over a role, and covers a concierge on a remote host.
+    const remote = [row("helper", { role: "concierge" }), row("concierge", { host: "annex" })];
+    expect(conciergeId({ rows: remote, conciergeKey: "annex:concierge" })).toBe("annex:concierge");
+  });
+
+  test("pinned first, outside every group and count, whatever the filter or stopped setting", () => {
+    const tree = buildTree([fleet([...rows, row("fog", { status: "needs-attention" })], { conciergeKey: "concierge" })], opts());
+    expect(labels(tree.items)).toEqual([
+      "concierge", "[Needs attention]", "fog", "[motel]", "[lighthouse]", "fog", "harbor", `[${NO_REPO}]`, "errand",
+    ]);
+    expect(tree.items[0]).toMatchObject({ kind: "agent", concierge: true, key: "c1/concierge", depth: 0 });
+    expect(tree.items.find((item) => item.kind === "group" && item.label === NO_REPO)).toMatchObject({ count: 1 });
+    expect(tree.items.find((item) => item.kind === "group" && item.label === "motel")).toMatchObject({ count: 3 });
+    expect(tree.total).toBe(3);
+    expect(tree.shown).toBe(3);
+
+    const filtered = buildTree([fleet(rows)], opts({ filter: "nothing-matches" }));
+    expect(labels(filtered.items)).toEqual(["concierge"]);
+    expect(filtered.shown).toBe(0);
+
+    const stopped = buildTree([fleet([row("old", { status: "exited" }), keeper({ status: "dead" })])], opts());
+    expect(labels(stopped.items)).toEqual(["concierge"]);
+    expect(stopped.hiddenStopped).toBe(1);
+    expect(stopped.total).toBe(1);
+
+    const waiting = buildTree([fleet([keeper({ status: "needs-attention" })])], opts());
+    expect(labels(waiting.items)).toEqual(["concierge"]);
+  });
+
+  test("no concierge row, nothing pinned", () => {
+    expect(buildTree([fleet([row("a")])], opts()).items.some(isPinnedConcierge)).toBe(false);
+  });
+
+  test("counts exclude it", () => {
+    expect(fleetRows(fleet(rows)).map((r) => r.name)).toEqual(["harbor", "errand"]);
+    expect(countStatuses(fleetRows(fleet(rows)))).toMatchObject({ working: 1, idle: 1 });
+  });
+
+  test("a remote concierge does not conjure an empty host group", () => {
+    const tree = buildTree([fleet([row("a"), row("concierge", { host: "annex" })], { conciergeKey: "annex:concierge" })], opts());
+    expect(labels(tree.items)).toEqual(["concierge", "[motel]", "[lighthouse]", "a"]);
+    expect(tree.items[0]).toMatchObject({ key: "c1/annex:concierge", hostLabel: "annex" });
+    expect(isConciergeKey([fleet([row("concierge", { host: "annex" })], { conciergeKey: "annex:concierge" })], "c1/annex:concierge")).toBe(true);
+    expect(isConciergeKey([fleet(rows)], "c1/harbor")).toBe(false);
+    expect(isConciergeKey([fleet(rows)], "nope/concierge")).toBe(false);
+  });
+
+  test("one entry per connection, labelled with its name; c picks the open agent's connection", () => {
+    const home = fleet(rows);
+    const work = fleet([row("b"), keeper()], { id: "c2", name: "Work", local: "desk" });
+    const tree = buildTree([home, work], opts());
+    expect(labels(tree.items).slice(0, 3)).toEqual(["concierge", "concierge", "[Home]"]);
+    expect(tree.items.slice(0, 2)).toMatchObject([{ key: "c1/concierge", connectionName: "Home" }, { key: "c2/concierge", connectionName: "Work" }]);
+    expect(buildTree([home], opts()).items[0]).not.toHaveProperty("connectionName");
+    expect(conciergeTarget([home, work], null)).toBe("c1/concierge");
+    expect(conciergeTarget([home, work], "c2/b")).toBe("c2/concierge");
+    expect(conciergeTarget([fleet([row("a")]), work], "c1/a")).toBe("c2/concierge");
+    expect(conciergeTarget([fleet([row("a")])], null)).toBeNull();
+  });
+
+  test("the keyboard cursor starts on the pinned entry and walks into the list", () => {
+    const tree = buildTree([fleet(rows)], opts());
+    const ids = tree.items.map((item) => item.id);
+    expect(moveCursor(tree.items, null, 1)).toBe("concierge>c1/concierge");
+    expect(moveCursor(tree.items, ids[0]!, 1)).toBe(ids[1]!);
+    expect(tree.items[1]).toMatchObject({ kind: "group", label: "motel" });
+    expect(moveCursor(tree.items, ids[1]!, -1)).toBe(ids[0]!);
+    expect(moveCursor(tree.items, ids[0]!, -1)).toBe(ids[0]!);
   });
 });
 

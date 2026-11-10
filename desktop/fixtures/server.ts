@@ -209,6 +209,7 @@ export function startFixtureServer(options: { port?: number; flipMs?: number; de
       if (parts[0] !== "api") return json({ error: "not found" }, 404);
       const [, resource, rawKey, sub] = parts;
       if (parts.length === 2 && resource === "health") return json({ ok: true, name: "am" });
+      if (parts.length === 2 && resource === "concierge") return json({ key: "concierge" });
       if (parts.length === 2 && resource === "hosts") return json({ local: FIXTURE_LOCAL_HOST, hosts: FIXTURE_REMOTE_HOSTS });
       if (parts.length === 2 && resource === "agents") {
         return json({ rows, unreachable: FIXTURE_REMOTE_HOSTS.filter((host) => !host.reachable).map((host) => host.name) });

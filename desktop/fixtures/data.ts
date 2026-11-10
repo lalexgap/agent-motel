@@ -33,6 +33,7 @@ interface Seed {
   updated: number;
   created: number;
   spawnedBy?: string;
+  role?: string;
 }
 
 const SEEDS: Seed[] = [
@@ -95,6 +96,10 @@ const SEEDS: Seed[] = [
     task: "Bump the beacon firmware SDK", statusReason: "Asked a question: keep SDK 3.x compatibility or drop it?", changed: 15, updated: 15, created: 80,
   },
   {
+    name: "concierge", role: "concierge", status: "idle", provider: "claude", model: "claude-sonnet-4-5", dir: HOME,
+    changed: 18, updated: 18, created: 4000,
+  },
+  {
     name: "errand-runner", status: "idle", provider: "claude", model: "claude-haiku-4-5", dir: HOME,
     task: "Tidy the dotfiles and update the shell aliases", changed: 64, updated: 64, created: 900,
   },
@@ -124,6 +129,7 @@ export function buildRows(now: number): AgentRow[] {
     if (seed.statusReason) row.statusReason = seed.statusReason;
     if (seed.queued) row.queued = seed.queued;
     if (seed.spawnedBy) row.spawnedBy = seed.spawnedBy;
+    if (seed.role) row.role = seed.role;
     if (seed.status === "working" || seed.status === "waiting") row.workingSince = row.statusChangedAt;
     return row;
   });
@@ -263,6 +269,25 @@ function kelpForest(): TranscriptEntry[] {
   ];
 }
 
+function concierge(): TranscriptEntry[] {
+  counter = 0;
+  return [
+    user("What's blocked right now?"),
+    tool("Bash", { command: "am ls --json", description: "List the fleet" }, "15 agents · 4 working · 1 waiting · 2 need attention · 2 stopped"),
+    assistant([
+      "Two agents are waiting on you:",
+      "",
+      "- **fog-signal** (lighthouse) wants approval to run `bun run db:migrate` against the local database.",
+      "- **sandbar** on annex asks whether to keep SDK 3.x compatibility while bumping the beacon firmware SDK.",
+      "",
+      "Everything else is moving. tide-pilot has two messages queued behind its current turn.",
+    ].join("\n")),
+    user("Tell sandbar to drop 3.x."),
+    tool("Bash", { command: "am send annex:sandbar \"Drop SDK 3.x compatibility; nothing ships on it any more.\"" }, "queued for annex:sandbar"),
+    assistant("Sent. sandbar will pick it up on its next turn; I'll mention it here if it asks anything else."),
+  ];
+}
+
 function generic(row: AgentRow): TranscriptEntry[] {
   counter = 0;
   const entries: TranscriptEntry[] = [user(row.task || "Take a look around the repository.")];
@@ -279,5 +304,6 @@ function generic(row: AgentRow): TranscriptEntry[] {
 export function buildTranscript(row: AgentRow): TranscriptEntry[] {
   if (row.name === "harbor-lights" && !row.host) return harborLights();
   if (row.name === "kelp-forest" && row.host === "annex") return kelpForest();
+  if (row.name === "concierge" && !row.host) return concierge();
   return generic(row);
 }
