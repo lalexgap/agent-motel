@@ -1465,6 +1465,25 @@ function messageSendMode(name) {
   const provider = detail?.provider || row?.provider;
   return provider === "claude" || provider === "codex" ? "now" : "queue";
 }
+const pointerSubmitButtons = new WeakSet();
+function trackPointerSubmit(button) {
+  button.addEventListener("pointerdown", () => pointerSubmitButtons.add(button));
+  button.addEventListener("pointerup", () => setTimeout(() => pointerSubmitButtons.delete(button)));
+  button.addEventListener("pointercancel", () => pointerSubmitButtons.delete(button));
+}
+function takePointerSubmit(event, button) {
+  const tracked = event.submitter === button && pointerSubmitButtons.has(button);
+  pointerSubmitButtons.delete(button);
+  return tracked;
+}
+function restoreComposerFocus(restore, composer, button, current) {
+  if (!restore || !current || document.querySelector("dialog[open]")) return;
+  const active = document.activeElement;
+  if (active === composer) return;
+  if (active === document.body || active === button) composer.focus({ preventScroll: true });
+}
+const messageSubmitButton = $("message-send");
+trackPointerSubmit(messageSubmitButton);
 $("message").oninput = () => {
   if (state.selected)
     state.draftRevisions.set(
@@ -1476,6 +1495,7 @@ $("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const name = state.selected;
   if (!name || state.sending.has(name) || uploadsPending(name) || !state.authenticated) return;
+  const restoreFocus = takePointerSubmit(event, messageSubmitButton);
   const images = agentAttachments(name).filter((item) => item.status === "ready");
   const text = [$("message").value.trim(), ...images.map((item) => `[image: ${item.path}]`)]
     .filter(Boolean)
@@ -1485,7 +1505,7 @@ $("message-form").onsubmit = async (event) => {
   const revision = state.draftRevisions.get(name) || 0;
   const request = Symbol();
   state.sending.set(name, request);
-  $("message-send").disabled = true;
+  messageSubmitButton.disabled = true;
   try {
     const sent = await api(
       "/api/agents/" + encodeURIComponent(name) + "/messages",
@@ -1506,6 +1526,12 @@ $("message-form").onsubmit = async (event) => {
   } finally {
     if (state.sending.get(name) === request) state.sending.delete(name);
     if (state.selected === name) renderAttachments();
+    restoreComposerFocus(
+      restoreFocus,
+      $("message"),
+      messageSubmitButton,
+      state.authenticated && epoch === state.sessionEpoch && state.selected === name,
+    );
   }
 };
 
@@ -2060,18 +2086,21 @@ async function refreshDock() {
     view.append(el("p", "", "Send a task or ask about your fleet."));
   restoreScroll();
 }
+const dockSubmitButton = $("dock-form").querySelector("button");
+trackPointerSubmit(dockSubmitButton);
 $("dock-form").onsubmit = async (event) => {
   event.preventDefault();
   if (state.dockBusy || !state.authenticated) return;
+  const restoreFocus = takePointerSubmit(event, dockSubmitButton);
   const text = $("dock-message").value.trim();
   if (!text) return;
   const epoch = state.sessionEpoch;
   const revision = state.dockRevision;
   state.dockBusy = true;
-  const button = $("dock-form").querySelector("button");
-  button.disabled = true;
+  dockSubmitButton.disabled = true;
+  let target = state.conciergeKey;
   try {
-    const target = (await api("/api/concierge", {})).key;
+    target = (await api("/api/concierge", {})).key;
     if (!state.authenticated || epoch !== state.sessionEpoch) return;
     state.conciergeKey = target;
     const sent = await api(
@@ -2087,7 +2116,13 @@ $("dock-form").onsubmit = async (event) => {
     $("dock-status").textContent = error.message;
   } finally {
     state.dockBusy = false;
-    button.disabled = false;
+    dockSubmitButton.disabled = false;
+    restoreComposerFocus(
+      restoreFocus,
+      $("dock-message"),
+      dockSubmitButton,
+      state.authenticated && epoch === state.sessionEpoch && state.conciergeKey === target,
+    );
   }
 };
 $("dock-message").oninput = () => {
