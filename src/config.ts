@@ -145,6 +145,10 @@ export interface Config {
   // relay off. Codex approvals have no deadline: they stay answerable from
   // either side until one answers.
   permissionWaitSeconds: number;
+  // The same wait for a subagent's prompt. Claude shows a subagent's dialog
+  // only once the relay stops waiting, so this is also how late it reaches
+  // the pane. Never longer than permissionWaitSeconds; 0 shows it at once.
+  subagentPermissionWaitSeconds: number;
   // Mark a new Claude agent's folder as trusted in ~/.claude.json, so it
   // doesn't stall at "Is this a project you created or one you trust?". Only
   // folders with no recorded answer are written, never ~ or above, and only
@@ -201,6 +205,7 @@ const DEFAULTS: Config = {
   gcAutoMaxLoad: 1,
   gcAutoMaxPressure: 20,
   permissionWaitSeconds: 120,
+  subagentPermissionWaitSeconds: 15,
   pretrustClaudeDirs: true,
   plans: true,
   decisions: true,
@@ -233,4 +238,10 @@ export function shouldNotifyIdle(opts: {
   if (opts.attached) return false; // you're already looking at it
   if (opts.queueDepth > 0) return false; // a queued message is about to deliver
   return opts.workedSeconds >= opts.config.idleNotifyMinSeconds;
+}
+
+// How long the relay holds a subagent's permission request, in seconds.
+export function subagentPermissionWait(config: Pick<Config, "permissionWaitSeconds" | "subagentPermissionWaitSeconds">): number {
+  const wait = Math.min(config.permissionWaitSeconds, config.subagentPermissionWaitSeconds);
+  return wait > 0 ? wait : 0;
 }

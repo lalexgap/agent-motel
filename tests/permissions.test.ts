@@ -361,6 +361,25 @@ describe("the PermissionRequest hook", () => {
     expect(readPermission(next.id)).toMatchObject({ state: "stale", resolution: "the turn ended" });
   }, 30_000);
 
+  test("a subagent's request waits subagentPermissionWaitSeconds, the main agent's the full wait", async () => {
+    writeFileSync(join(home, "config.json"), JSON.stringify({ notifyCommand: "true", permissionWaitSeconds: 60, subagentPermissionWaitSeconds: 1 }));
+    const window = (r: PermissionRecord) => Date.parse(r.expiresAt!) - Date.parse(r.createdAt);
+    const sub = startHook("permission-request", { agent_id: "sub-1", tool_use_id: "toolu_s" });
+    const held = await pending();
+    expect(held.claude?.agentId).toBe("sub-1");
+    expect(window(held)).toBeLessThanOrEqual(1_100);
+    // Claude shows the subagent's dialog once this hook is gone.
+    expect(await sub.exited).toBe(0);
+    expect(readPermission(held.id)).toMatchObject({ state: "expired" });
+
+    const main = startHook();
+    const full = (await pending());
+    expect(full.claude?.agentId).toBeUndefined();
+    expect(window(full)).toBeGreaterThan(50_000);
+    main.kill();
+    await main.exited;
+  }, 20_000);
+
   test("permissionWaitSeconds: 0 records nothing and returns at once", async () => {
     writeFileSync(join(home, "config.json"), JSON.stringify({ notifyCommand: "true", permissionWaitSeconds: 0 }));
     const proc = startHook();
