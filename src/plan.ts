@@ -98,9 +98,9 @@ export function planHead(
 // Agent-written text am injects (the plan, the decisions store) must never read as an am or operator note.
 export function defangAmText(text: string): string {
   return text
-    .replace(/\[am · operator message ?[^\]]*\]/g, "")
-    .replaceAll("[am] Verified operator message", "")
-    .replace(/\[am([ ·][^\]\n]*)?\]/g, "(am$1)");
+    .replace(/\[\s*am\s*·\s*operator\s+message\b[^\]]*\]/giu, "")
+    .replace(/\[\s*am\s*\]\s*verified\s+operator\s+message/giu, "")
+    .replace(/\[(\s*am\b[^\]\n]*)\]/giu, "($1)");
 }
 
 export function planContext(name: string, path: string, head: string, nonce = randomBytes(8).toString("hex")): string {

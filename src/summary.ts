@@ -3,6 +3,7 @@ import { fleetKey, type Fleet, type FleetRow } from "./fleet";
 import { formatTrackedPullRequest } from "./prMonitorDisplay";
 import { buildPrReport, prReasonLine, type PrRow } from "./prReport";
 import { loadConfig } from "./config";
+import { flattenStoreText } from "./decisions";
 
 export const STALE_STARTING_SECONDS = 120;
 // An open decision this old gets its age shown beside it.
@@ -66,7 +67,7 @@ function shortTask(task: string | undefined, max = 80): string | undefined {
 }
 
 function oneLine(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = flattenStoreText(text);
   return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
 }
 

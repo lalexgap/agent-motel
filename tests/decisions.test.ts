@@ -11,6 +11,7 @@ import {
   decisionsLabel,
   openDecisions,
   readDecisionStore,
+  readDecisionStoreTexts,
   type Decision,
 } from "../src/decisions";
 import { agentRows, formatRows, type AgentRow } from "../src/commands/ls";
@@ -124,6 +125,15 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       expect(readDecisionStore("api")).toBeNull();
     });
 
+    test("only regular files are read: a FIFO named like a store is skipped", () => {
+      mkdirSync(decisionsHome(), { recursive: true });
+      Bun.spawnSync(["mkfifo", join(decisionsHome(), "pipe.json")]);
+      writeStore("api", [decision("d-1")]);
+      const texts = readDecisionStoreTexts();
+      expect([...texts.keys()]).toEqual(["api"]);
+      expect(readDecisionStore("pipe")).toBeNull();
+    });
+
     test("open decisions come blocking first, then oldest; malformed and closed ones are left out", () => {
       writeStore("api", [
         decision("d-1", { asked_at: "2026-11-09T00:00:00Z" }),
@@ -217,6 +227,14 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       expect(text.some((l) => l.includes("gone") && l.includes("exited — waiting on 1 decision"))).toBe(true);
     });
 
+    test("terminal controls in a question never reach the summary text", () => {
+      const rows = [row("evil", "idle", { openDecisions: 1, blockingDecisions: 0, firstDecision: "ok\x1b]52;c;cGF5bG9hZA==\x07\x1b[2J\x9b31mdone?" })];
+      const summary = buildFleetSummary({ rows, unreachable: [] }, NOW, null, { decisions: true });
+      const text = formatFleetSummary(summary).join("\n");
+      expect(text).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+      expect(summary.attention[0]!.reason).toBe("waiting on 1 decision from you: ok ]52;c;cGF5bG9hZA== [2J 31mdone?");
+    });
+
     test("no decisions: no headline, and decisions: false ignores them", () => {
       const rows = [row("a", "idle", { openDecisions: 1, blockingDecisions: 0 })];
       const off = buildFleetSummary({ rows, unreachable: [] }, NOW, null, { decisions: false });
@@ -239,6 +257,17 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       expect(store).toMatchObject({ agent: "alpha", plan: planFile("alpha"), host: "box" });
       expect(store.decisions.map((d: Decision) => d.id)).toEqual(["d-1"]);
       expect(readFileSync(join(decisionsHome(), ".omega.nudge"), "utf8")).toBe("remind");
+    });
+
+    test("a name the CLI slugs onto another agent's store never moves it", async () => {
+      writeAgent(agent("foo"));
+      writeAgent(agent("foo-"));
+      writeStore("foo", [decision("d-1")]);
+      destroyAgent(readAgent("foo-")!, { clean: false });
+      expect(openDecisions("foo").map((d) => d.id)).toEqual(["d-1"]);
+      writeAgent(agent("bar-"));
+      await renameAgent("bar-", "baz");
+      expect(openDecisions("foo").map((d) => d.id)).toEqual(["d-1"]);
     });
 
     test("rename refuses to clobber another store", async () => {

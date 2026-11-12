@@ -37,6 +37,11 @@ function prUrl(value: unknown): string | undefined {
   return match ? notificationPrUrl(match[1]) : undefined;
 }
 
+// Store text reaches terminals: whitespace and C0/C1 controls (ESC, CSI, BEL) become one space.
+export function flattenStoreText(text: string): string {
+  return text.replace(/[\s\x00-\x1f\x7f-\x9f]+/g, " ").trim();
+}
+
 export function parseOpenDecisions(text: string): OpenDecision[] {
   let store: any;
   try { store = JSON.parse(text); } catch { return []; }
@@ -48,7 +53,7 @@ export function parseOpenDecisions(text: string): OpenDecision[] {
     const link = prUrl(item.link);
     open.push({
       id: item.id.slice(0, 40),
-      question: item.question.replace(/[\s\x00-\x1f\x7f]+/g, " ").trim().slice(0, 300),
+      question: flattenStoreText(item.question).slice(0, 300),
       blocking: item.blocking === true,
       ...(typeof item.asked_at === "string" && Number.isFinite(Date.parse(item.asked_at)) ? { askedAt: item.asked_at } : {}),
       ...(typeof item.link === "string" && /^https:\/\//.test(item.link) ? { link: item.link.slice(0, 500) } : {}),
@@ -107,6 +112,17 @@ export function decisionStoreFile(name: string): string {
   return join(decisionsHome(), `${slug(name)}.json`);
 }
 
+// A name the CLI slugs to another agent's file (`foo-` → `foo.json`) does not own that store.
+function ownsStore(name: string): boolean {
+  return slug(name) === name;
+}
+
+// Only a regular file within the cap: a FIFO or a huge stray file must not stall `am ls`.
+function readStoreFile(path: string): string | undefined {
+  const stat = statSync(path);
+  return stat.isFile() && stat.size <= MAX_BYTES ? readFileSync(path, "utf8") : undefined;
+}
+
 const STATUSES = new Set<string>(["open", "decided", "withdrawn"]);
 
 function validDecision(item: unknown): item is Decision {
@@ -133,8 +149,7 @@ export function parseDecisionStore(text: string): DecisionStore | null {
 // The raw file, or undefined when it is missing, unreadable or oversized.
 export function readDecisionStoreText(name: string): string | undefined {
   try {
-    const path = decisionStoreFile(name);
-    return statSync(path).size > MAX_BYTES ? undefined : readFileSync(path, "utf8");
+    return readStoreFile(decisionStoreFile(name));
   } catch {
     return undefined;
   }
@@ -163,7 +178,7 @@ export function summarizeDecisions(decisions: Decision[]): DecisionSummary {
     open: open.length,
     blocking: open.filter((d) => d.blocking).length,
     ...(asked[0] ? { oldestAskedAt: asked[0] } : {}),
-    ...(open[0] ? { first: open[0].question } : {}),
+    ...(open[0] ? { first: flattenStoreText(open[0].question) } : {}),
   };
 }
 
@@ -184,8 +199,8 @@ export function readDecisionStoreTexts(): Map<string, string> {
   for (const file of files) {
     if (file.startsWith(".") || !file.endsWith(".json")) continue;
     try {
-      const text = readFileSync(join(decisionsHome(), file), "utf8");
-      if (text.length <= MAX_BYTES) out.set(file.slice(0, -".json".length), text);
+      const text = readStoreFile(join(decisionsHome(), file));
+      if (text !== undefined) out.set(file.slice(0, -".json".length), text);
     } catch {
       // unreadable: no decisions
     }
@@ -232,7 +247,7 @@ export function decisionStoreExists(name: string): boolean {
 export function renameDecisionStore(oldName: string, newName: string): void {
   const from = decisionStoreFile(oldName);
   const to = decisionStoreFile(newName);
-  if (from === to || !existsSync(from) || existsSync(to)) return;
+  if (!ownsStore(oldName) || !ownsStore(newName) || from === to || !existsSync(from) || existsSync(to)) return;
   renameSync(from, to);
   for (const kind of ["turn", "nudge"]) {
     try {
@@ -252,7 +267,7 @@ function trashedStoreFile(name: string): string {
 // the decisions page and come back with `am restore`.
 export function trashDecisionStore(name: string): void {
   const from = decisionStoreFile(name);
-  if (!existsSync(from)) return;
+  if (!ownsStore(name) || !existsSync(from)) return;
   try {
     mkdirSync(trashDir(), { recursive: true });
     renameSync(from, trashedStoreFile(name));
@@ -263,7 +278,7 @@ export function trashDecisionStore(name: string): void {
 }
 
 export function restoreDecisionStore(name: string): void {
-  if (!existsSync(trashedStoreFile(name)) || existsSync(decisionStoreFile(name))) return;
+  if (!ownsStore(name) || !existsSync(trashedStoreFile(name)) || existsSync(decisionStoreFile(name))) return;
   try {
     mkdirSync(decisionsHome(), { recursive: true });
     renameSync(trashedStoreFile(name), decisionStoreFile(name));
@@ -279,7 +294,7 @@ export function removeTrashedDecisionStore(name: string): void {
 // Moved agents carry their store in the move payload; an existing local store
 // wins. Returns whether this call created the file.
 export function importDecisionStore(name: string, content: string | undefined, fields: Partial<DecisionStore>): boolean {
-  if (content === undefined || !parseDecisionStore(content) || existsSync(decisionStoreFile(name))) return false;
+  if (content === undefined || !ownsStore(name) || !parseDecisionStore(content) || existsSync(decisionStoreFile(name))) return false;
   mkdirSync(decisionsHome(), { recursive: true });
   writeFileSync(decisionStoreFile(name), content, { flag: "wx" });
   rewriteStore(decisionStoreFile(name), () => ({ agent: name, ...fields }));
