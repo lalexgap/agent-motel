@@ -10,10 +10,11 @@ import { changed, state } from "./state";
 import type { BridgeMethod, BridgeMethods } from "./types";
 
 // One action per agent at a time: a second activation while one is in flight does nothing.
-const pending = new Set<string>();
+const pending = new Map<string, string>();
 export const isPending = (key: string): boolean => pending.has(key);
-export function setPending(key: string, on: boolean): void {
-  if (on) pending.add(key);
+export const pendingAction = (key: string): string | undefined => pending.get(key);
+export function setPending(key: string, on: boolean, action = ""): void {
+  if (on) pending.set(key, action);
   else pending.delete(key);
   changed("agent");
 }
@@ -26,23 +27,30 @@ function settle(key: string, released: boolean): void {
   for (const resolve of waiters.get(key) ?? []) resolve(released);
   waiters.delete(key);
 }
+function giveUp(): void {
+  for (const key of [...held]) settle(key, false);
+  held.clear();
+}
 export function trackActivationKeys(): void {
-  window.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") held.add(event.key); }, true);
+  // macOS sends no keyup for a key released while ⌘ is down (⌘Enter sends a message).
+  window.addEventListener("keydown", (event) => {
+    if ((event.key === "Enter" || event.key === " ") && !event.metaKey) held.add(event.key);
+  }, true);
   window.addEventListener("keyup", (event) => {
+    if (event.key === "Meta") return giveUp();
     if (!held.delete(event.key)) return;
     settle(event.key, true);
   }, true);
   // The release can't be seen any more: give up rather than risk the sheet.
-  window.addEventListener("blur", () => {
-    for (const key of [...held]) settle(key, false);
-    held.clear();
-  });
+  window.addEventListener("blur", giveUp);
 }
-// False when the key's release was lost (the window lost focus): send nothing.
-export function activationReleased(method: BridgeMethod): Promise<boolean> {
+// False when the key's release was lost: nothing is sent.
+export async function activationReleased(method: BridgeMethod): Promise<boolean> {
   const key = keyToRelease(method, held);
-  if (!key) return Promise.resolve(true);
-  return new Promise((resolve) => waiters.set(key, [...(waiters.get(key) ?? []), resolve]));
+  if (!key) return true;
+  const released = await new Promise<boolean>((resolve) => waiters.set(key, [...(waiters.get(key) ?? []), resolve]));
+  if (!released) flashStatus("Nothing was sent: the key's release was not seen. Try again.", 8000, "error");
+  return released;
 }
 
 export async function callOutcome<M extends BridgeMethod>(method: M, params: BridgeMethods[M]["params"]): Promise<ActionOutcome> {

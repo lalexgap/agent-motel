@@ -11,6 +11,7 @@ import {
   failures,
   isPending,
   noteFailure,
+  pendingAction,
   reportFailure,
   setPending,
   trackActivationKeys,
@@ -32,7 +33,7 @@ export async function runLifecycle(key: string, action: LifecycleAction, subject
     return;
   }
   const method = LIFECYCLE[action];
-  setPending(key, true);
+  setPending(key, true, action);
   clearFailure(key);
   try {
     if (!(await activationReleased(method))) return;
@@ -190,7 +191,7 @@ function renderAgentExtras(): void {
   const resume = $<HTMLButtonElement>("am-composer-resume");
   resume.hidden = !actionAvailable(headerSubject(key), "resume");
   resume.disabled = isPending(key);
-  const label = resume.disabled ? "Resuming…" : "Resume";
+  const label = pendingAction(key) === "resume" ? "Resuming…" : "Resume";
   if (resume.textContent !== label) resume.textContent = label;
 }
 
