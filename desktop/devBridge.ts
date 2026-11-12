@@ -283,7 +283,7 @@ export class DevBridge {
     const ticket = crypto.randomUUID();
     this.tickets.set(ticket, { connection: conn.id, url: conn.url, request, expires: now + CONFIRM_TICKET_TTL_MS });
     const spec = request.confirm!;
-    return { ticket, title: spec.title, body: spec.body(status), button: spec.button, defaultIsCancel: spec.defaultIsCancel, server: conn.name };
+    return { ticket, title: spec.title, body: spec.body(status), button: spec.button, defaultIsCancel: spec.defaultIsCancel, server: conn.name, url: conn.url };
   }
 
   // The exact-name detail lookup, before the confirmation and again before sending.

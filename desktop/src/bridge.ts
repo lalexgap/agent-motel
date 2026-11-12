@@ -74,7 +74,7 @@ async function devConfirmed(method: string, params: unknown): Promise<unknown> {
     const confirmation = pending?.confirm;
     if (!confirmation || typeof confirmation.ticket !== "string") throw new Error("Dev bridge did not return a confirmation");
     ticket = confirmation.ticket;
-    accepted = window.confirm(confirmMessage(confirmation.title, confirmation.body, confirmation.server));
+    accepted = window.confirm(confirmMessage(confirmation.title, confirmation.body, confirmation.server, confirmation.url));
   } finally {
     if (confirmOwner === owner) confirmOwner = null;
   }

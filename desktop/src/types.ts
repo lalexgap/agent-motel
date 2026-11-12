@@ -151,6 +151,7 @@ export interface DevConfirmation {
   button: string;
   defaultIsCancel: boolean;
   server: string;
+  url: string;
 }
 
 export type StreamState = "connecting" | "open" | "closed";

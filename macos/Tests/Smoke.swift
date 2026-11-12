@@ -60,6 +60,10 @@ final class SmokeRunner {
         self.bridgeOnly = bridgeOnly
     }
 
+    /// host:port of the fixture server, as the sheet's server line shows it (smoke.sh only allows
+    /// `http://<loopback>:<port>`, which the connection store keeps unchanged).
+    var serverHost: String { server.components(separatedBy: "://").last ?? server }
+
     var web: WKWebView { delegate.webView }
 
     func run() async -> Bool {
@@ -281,7 +285,7 @@ final class SmokeRunner {
                    + "window key \(delegate.window.isKeyWindow), frontmost \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"))")
         let shown = views(sheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
         try expect(shown.contains(title), "\(method): sheet title, saw \(shown)")
-        try expect(shown.contains { $0.contains("Status: \(expectedStatus).") && $0.hasSuffix("\nServer: Smoke 2") },
+        try expect(shown.contains { $0.contains("Status: \(expectedStatus).") && $0.hasSuffix("\nServer: Smoke 2 (\(serverHost))") },
                    "\(method): sheet body should show Status: \(expectedStatus). and the server, saw \(shown)")
         let confirm = try button(confirmTitle, in: sheet)
         let cancel = try button("Cancel", in: sheet)

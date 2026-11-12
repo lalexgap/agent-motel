@@ -164,9 +164,11 @@ struct ActionPlan {
         let button: String
         let destructive: Bool
 
-        /// `server` is the page-settable connection name, so it is cleaned like the status.
-        func text(status: String, server: String) -> ConfirmationText {
-            ConfirmationText(title: title, message: "\(lead) Status: \(status).\nServer: \(ActionPolicy.displayText(server))",
+        /// `server` is the page-settable connection name, so it is cleaned like the status; `url` is the
+        /// stored connection URL, which the page cannot change without re-entering the token.
+        func text(status: String, server: String, url: String) -> ConfirmationText {
+            ConfirmationText(title: title,
+                             message: "\(lead) Status: \(status).\nServer: \(ActionPolicy.displayText(server)) (\(ActionPolicy.host(fromURL: url)))",
                              button: button, destructive: destructive)
         }
     }
@@ -454,15 +456,23 @@ enum ActionPolicy {
         return displayText(raw)
     }
 
-    /// Bidirectional marks, embeddings, overrides and isolates, which could reorder the sheet's text.
-    private static let bidiControls: Set<UInt32> = [0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069]
+    /// Controls, format characters (bidi controls, zero-width and tag characters) and line/paragraph
+    /// separators: invisible, or able to break or reorder the sheet's text.
+    private static let invisibleCategories: Set<Unicode.GeneralCategory> = [.control, .format, .lineSeparator, .paragraphSeparator]
 
-    /// Text from outside the app shown in the sheet: control characters, line breaks and bidi
-    /// controls dropped, trimmed, at most 64 characters, "unknown" when nothing is left.
+    /// Text from outside the app shown in the sheet (the status, the connection name, the server
+    /// host): invisible characters dropped, space separators trimmed, at most 64 Unicode scalars,
+    /// "unknown" when nothing is left. displayText in desktop/src/policy.ts does the same.
     static func displayText(_ raw: String) -> String {
-        let kept = raw.unicodeScalars.filter { !MessagePolicy.hasControl(String($0), allowLineBreaks: false) && !bidiControls.contains($0.value) }
-        let clean = String(String.UnicodeScalarView(kept)).trimmingCharacters(in: trimmed)
-        return clean.isEmpty ? "unknown" : String(clean.prefix(64))
+        var scalars = Array(raw.unicodeScalars.filter { !invisibleCategories.contains($0.properties.generalCategory) })
+        while scalars.first?.properties.generalCategory == .spaceSeparator { scalars.removeFirst() }
+        while scalars.last?.properties.generalCategory == .spaceSeparator { scalars.removeLast() }
+        return scalars.isEmpty ? "unknown" : String(String.UnicodeScalarView(scalars.prefix(64)))
+    }
+
+    /// The host[:port] of a stored, normalised `scheme://host[:port]` connection URL, made safe to show.
+    static func host(fromURL url: String) -> String {
+        displayText(url.range(of: "://").map { String(url[$0.upperBound...]) } ?? url)
     }
 
     /// An optional param: absent and `null` both mean "not given".

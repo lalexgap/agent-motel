@@ -9,6 +9,7 @@ import {
   CONFIRM_METHODS,
   confirmMessage,
   displayText,
+  serverHost,
   externalUrlAllowed,
   MESSAGE_CONTROL,
   messagesPath,
@@ -569,7 +570,8 @@ describe("action policy: confirmation text", () => {
     }
   });
   test("window.confirm text joins title, body and server line with blank lines", () => {
-    expect(confirmMessage("Stop harbor-lights?", "Body. Status: idle.", "Fixture motel")).toBe("Stop harbor-lights?\n\nBody. Status: idle.\n\nServer: Fixture motel");
+    expect(confirmMessage("Stop harbor-lights?", "Body. Status: idle.", "Fixture motel", "https://fixture.example"))
+      .toBe("Stop harbor-lights?\n\nBody. Status: idle.\n\nServer: Fixture motel (fixture.example)");
   });
   test("the server line is cleaned like the status", () => {
     const SERVER: [name: string, shown: string][] = [
@@ -580,9 +582,33 @@ describe("action policy: confirmation text", () => {
       ["a\u202ab\u202bc\u202cd\u202de\u2066f\u2067g\u2068h\u2069i\u200ej\u200fk", "abcdefghijk"],
       ["\u200f \u2069", "unknown"],
       ["m".repeat(80), "m".repeat(64)],
+      // Line/paragraph separators and invisible format characters (category Cc, Cf, Zl, Zp) are dropped.
+      ["Fix\u2028ture\u2029", "Fixture"],
+      ["Fix\u200bture", "Fixture"],
+      ["\ufeffFixture\ufeff", "Fixture"],
+      ["Fix\u061cture", "Fixture"],
+      ["Fixture\u{e0041}\u{e007f}", "Fixture"],
+      ["a\u00adb\u2060c\u180ed\u200de\u2064f", "abcdef"],
+      ["\t\u3000 Fixture\u00a0\u2028", "Fixture"],
+      // The cap counts code points, so one base character cannot carry hundreds of combining marks.
+      ["e" + "\u0301".repeat(300), "e" + "\u0301".repeat(63)],
     ];
-    for (const [name, shown] of SERVER) expect(confirmMessage("T", "B", name)).toBe(`T\n\nB\n\nServer: ${shown}`);
+    for (const [name, shown] of SERVER) expect(confirmMessage("T", "B", name, "https://fixture.example")).toBe(`T\n\nB\n\nServer: ${shown} (fixture.example)`);
     for (const [name, shown] of SERVER) expect(displayText(name)).toBe(shown);
+    expect(Array.from(displayText("e" + "\u0301".repeat(300))).length).toBe(64);
+  });
+  test("the server line also shows the host from the stored connection URL, which the page cannot rename", () => {
+    const HOSTS: [url: string, shown: string][] = [
+      ["https://am.example.com", "am.example.com"],
+      ["http://127.0.0.1:8791", "127.0.0.1:8791"],
+      ["http://[::1]:8791", "[::1]:8791"],
+      ["https://fix\u200bture.example", "fixture.example"],
+      ["", "unknown"],
+    ];
+    for (const [url, shown] of HOSTS) {
+      expect(serverHost(url)).toBe(shown);
+      expect(confirmMessage("T", "B", "Fixture (local test)", url)).toBe(`T\n\nB\n\nServer: Fixture (local test) (${shown})`);
+    }
   });
 });
 
@@ -626,7 +652,7 @@ describe("action policy: pre-check status", () => {
     [{ status: "\u202eidle\u202c\u200e" }, "idle"],
     [{ status: "s".repeat(80) }, "s".repeat(64)],
     [{ status: "é".repeat(70) }, "é".repeat(64)],
-    [{ status: "e\u0301".repeat(70) }, "e\u0301".repeat(64)],
+    [{ status: "e\u0301".repeat(70) }, "e\u0301".repeat(32)],
     [{ status: "" }, "unknown"],
     [{ status: " \u001b " }, "unknown"],
     [{ status: 3 }, "unknown"],
@@ -672,6 +698,6 @@ describe("action policy: Swift test vectors", () => {
     expect(build("agents.stop", { agent: ["harbor-lights"] })).toEqual({ ok: false, error: "invalid agent: [object]" });
     expect(build("agents.rename", { name: 1.5 })).toEqual({ ok: false, error: "invalid name: 1.5" });
     expect(precheckStatus({ status: "id\u202ele\u2066\u200f" })).toBe("idle");
-    expect(confirmMessage("T", "B", "Fixture\u202e\nStatus: idle")).toBe("T\n\nB\n\nServer: FixtureStatus: idle");
+    expect(confirmMessage("T", "B", "Fixture\u202e\nStatus: idle", "https://fixture.example")).toBe("T\n\nB\n\nServer: FixtureStatus: idle (fixture.example)");
   });
 });

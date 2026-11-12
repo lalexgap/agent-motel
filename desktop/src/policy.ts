@@ -183,18 +183,24 @@ export const AGENT_GONE = "This agent no longer exists";
 export const precheckFailed = (status: number): string => `Couldn't check the agent (HTTP ${status})`;
 export const CONFIRM_OPEN = "another confirmation is open";
 
-// Bidi marks, embeddings, overrides and isolates could reorder the alert's text.
-const BIDI_RE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+// Controls, format characters (bidi controls, zero-width and tag characters)
+// and line/paragraph separators: invisible, or able to break or reorder the alert's text.
+const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const EDGE_SPACE_RE = /^\p{Zs}+|\p{Zs}+$/gu;
 
 // Text from outside the app shown in the alert (the pre-check status, the
-// connection name): control characters, line breaks and bidi controls dropped,
-// trimmed, at most 64 characters (grapheme clusters, as Swift counts them),
-// "unknown" when nothing is left. ActionPolicy.displayText does the same.
+// connection name, the server host): invisible characters dropped, space
+// separators trimmed, at most 64 code points, "unknown" when nothing is left.
+// ActionPolicy.displayText does the same.
 export function displayText(raw: string): string {
-  const clean = [...raw].filter((char) => !CONTROL_RE.test(char) && !LINE_BREAK_RE.test(char) && !BIDI_RE.test(char)).join("").trim();
-  if (!clean) return "unknown";
-  const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)].map((part) => part.segment);
-  return graphemes.slice(0, 64).join("");
+  const clean = raw.replace(INVISIBLE_RE, "").replace(EDGE_SPACE_RE, "");
+  return clean ? Array.from(clean).slice(0, 64).join("") : "unknown";
+}
+
+// The host[:port] of a stored, normalised `scheme://host[:port]` connection URL.
+export function serverHost(url: string): string {
+  const start = url.indexOf("://");
+  return displayText(start < 0 ? url : url.slice(start + 3));
 }
 
 // The status from the pre-check's detail body, made safe to show in the alert.
@@ -287,7 +293,10 @@ function confirm(title: string, text: string, button: string, defaultIsCancel = 
 
 // The text the browser dev mode shows in window.confirm; the native alert shows
 // the same three parts.
-export const confirmMessage = (title: string, body: string, server: string): string => `${title}\n\n${body}\n\nServer: ${displayText(server)}`;
+// `server` is the page-settable connection name; `url` is the stored connection URL, which the page
+// cannot change without re-entering the token.
+export const confirmMessage = (title: string, body: string, server: string, url: string): string =>
+  `${title}\n\n${body}\n\nServer: ${displayText(server)} (${serverHost(url)})`;
 
 function lifecycle(agent: string, action: string, timeoutMs: number, confirmSpec?: ConfirmSpec): ActionRequest {
   return {

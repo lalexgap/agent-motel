@@ -431,7 +431,7 @@ describe("dev bridge actions", () => {
       const timeouts = recordTimeouts();
       try {
         const pending = (await bridge.handle(method, { connection: id, ...params })) as { confirm: { ticket: string } };
-        expect(pending as unknown).toEqual({ confirm: { ticket: expect.any(String), title, body, button: expect.any(String), defaultIsCancel, server: "Stub motel" } });
+        expect(pending as unknown).toEqual({ confirm: { ticket: expect.any(String), title, body, button: expect.any(String), defaultIsCancel, server: "Stub motel", url: stub.url } });
         const key = expected.path.split("/")[3];
         const lookup = { method: "GET", path: `/api/agents/${key}`, authorization: "Bearer stub-token", contentType: null, body: null, bytes: null };
         // Nothing but the exact-name detail GET until the ticket is redeemed.
@@ -662,7 +662,7 @@ describe("page bridge in browser dev mode", () => {
     prompts = [];
     const before = stub.requests.length;
     expect(await call("agents.stop", { connection, agent: "harbor-lights" })).toEqual({ status: 200, body: { ok: true, echo: "POST" } });
-    expect(prompts).toEqual(["Stop harbor-lights?\n\nThis interrupts its current work and ends its session. It can be resumed later. Status: working.\n\nServer: Stub motel"]);
+    expect(prompts).toEqual([`Stop harbor-lights?\n\nThis interrupts its current work and ends its session. It can be resumed later. Status: working.\n\nServer: Stub motel (${stub.url.slice("http://".length)})`]);
     expect(stub.requests.slice(before).map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/agents/harbor-lights", "GET /api/agents/harbor-lights", "POST /api/agents/harbor-lights/stop"]);
   });
 

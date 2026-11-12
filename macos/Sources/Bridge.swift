@@ -214,7 +214,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         do {
             let detail = try await api.get(confirm.precheck, token: token)
             try ActionPolicy.checkPrecheck(detail.status)
-            accepted = try await confirmation.ask(confirm.text(status: ActionPolicy.status(fromDetail: detail.body), server: connection.name))
+            accepted = try await confirmation.ask(confirm.text(status: ActionPolicy.status(fromDetail: detail.body), server: connection.name, url: connection.url))
         } catch {
             confirmation.release()
             throw error

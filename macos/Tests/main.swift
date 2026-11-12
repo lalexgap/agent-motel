@@ -438,8 +438,8 @@ let confirmations: [(String, [String: Any], String, String, String, Bool)] = [
      "This restarts the agent and interrupts its current turn. The conversation and queued messages are kept.", "Change model", false),
 ]
 for (method, params, title, lead, button, destructive) in confirmations {
-    let text = (try? plan(method, params))?.confirm?.text(status: "idle", server: "Fixture")
-    check(text == ConfirmationText(title: title, message: "\(lead) Status: idle.\nServer: Fixture", button: button, destructive: destructive),
+    let text = (try? plan(method, params))?.confirm?.text(status: "idle", server: "Fixture", url: "https://fixture.example")
+    check(text == ConfirmationText(title: title, message: "\(lead) Status: idle.\nServer: Fixture (fixture.example)", button: button, destructive: destructive),
           "\(method) confirmation \(String(describing: text))")
 }
 check(ActionPolicy.status(fromDetail: Data(#"{"status":"working","name":"x"}"#.utf8)) == "working", "detail status")
@@ -458,11 +458,36 @@ let servers: [(String, String)] = [
     ("a\u{202a}b\u{202b}c\u{202c}d\u{202d}e\u{2066}f\u{2067}g\u{2068}h\u{2069}i\u{200e}j\u{200f}k", "abcdefghijk"),
     ("\u{200f} \u{2069}", "unknown"),
     (String(repeating: "m", count: 80), String(repeating: "m", count: 64)),
+    // Line/paragraph separators and invisible format characters (category Cc, Cf, Zl, Zp) are dropped.
+    ("Fix\u{2028}ture\u{2029}", "Fixture"),
+    ("Fix\u{200B}ture", "Fixture"),
+    ("\u{FEFF}Fixture\u{FEFF}", "Fixture"),
+    ("Fix\u{061C}ture", "Fixture"),
+    ("Fixture\u{E0041}\u{E007F}", "Fixture"),
+    ("a\u{00AD}b\u{2060}c\u{180E}d\u{200D}e\u{2064}f", "abcdef"),
+    ("\t\u{3000} Fixture\u{00A0}\u{2028}", "Fixture"),
+    // The cap counts Unicode scalars, so one base character cannot carry hundreds of combining marks.
+    ("e" + String(repeating: "\u{0301}", count: 300), "e" + String(repeating: "\u{0301}", count: 63)),
 ]
 let stopConfirm = try! plan("agents.stop", ["agent": "tide-pilot"]).confirm!
 for (name, shown) in servers {
     check(ActionPolicy.displayText(name) == shown, "server \(name.debugDescription)")
-    check(stopConfirm.text(status: "idle", server: name).message.hasSuffix(" Status: idle.\nServer: \(shown)"), "server line \(name.debugDescription)")
+    check(stopConfirm.text(status: "idle", server: name, url: "https://fixture.example").message
+          .hasSuffix(" Status: idle.\nServer: \(shown) (fixture.example)"), "server line \(name.debugDescription)")
+}
+check(ActionPolicy.displayText("e" + String(repeating: "\u{0301}", count: 300)).unicodeScalars.count == 64, "combining marks capped")
+// The server line also shows the host from the stored connection URL, which the page cannot rename.
+let hosts: [(String, String)] = [
+    ("https://am.example.com", "am.example.com"),
+    ("http://127.0.0.1:8791", "127.0.0.1:8791"),
+    ("http://[::1]:8791", "[::1]:8791"),
+    ("https://fix\u{200B}ture.example", "fixture.example"),
+    ("", "unknown"),
+]
+for (url, shown) in hosts {
+    check(ActionPolicy.host(fromURL: url) == shown, "host \(url.debugDescription)")
+    check(stopConfirm.text(status: "idle", server: "Fixture (local test)", url: url).message
+          .hasSuffix("\nServer: Fixture (local test) (\(shown))"), "host line \(url.debugDescription)")
 }
 // The exact-name lookup's verdict, before the sheet and again before sending.
 check(rejection { try ActionPolicy.checkPrecheck(200); return 0 } == nil, "lookup 200")
