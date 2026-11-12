@@ -34,6 +34,8 @@ interface Seed {
   created: number;
   spawnedBy?: string;
   role?: string;
+  prMonitor?: AgentRow["prMonitor"];
+  subagents?: AgentRow["subagents"];
 }
 
 const SEEDS: Seed[] = [
@@ -41,6 +43,8 @@ const SEEDS: Seed[] = [
     name: "harbor-lights", status: "working", provider: "claude", model: "claude-opus-4-5", effort: "high", repo: "lighthouse", repoName: "lighthouse",
     task: "Add a retry budget to the beacon sync worker\n\nIt retries forever when the tide-tables API is down, which floods the logs and pins a CPU. Cap the retries, back off with jitter, honour Retry-After, and surface the state on /status. Keep the public SyncWorker API unchanged.",
     changed: 2.3, updated: 0.1, created: 48,
+    prMonitor: { pullRequests: [{ number: 128, state: "OPEN" }] },
+    subagents: { running: [{ id: "sub-beacon-audit", type: "Explore", description: "Map every caller of SyncWorker" }] },
   },
   {
     name: "fog-signal", status: "needs-attention", provider: "codex", model: "gpt-5.2-codex", effort: "medium", repo: "lighthouse", repoName: "lighthouse",
@@ -66,6 +70,7 @@ const SEEDS: Seed[] = [
   {
     name: "crease-check", status: "idle", provider: "claude", model: "claude-opus-4-5", repo: "paperCrane", repoName: "paper-crane",
     task: "Review the PDF export PR for accessibility issues", changed: 26, updated: 26, created: 140,
+    prMonitor: { pullRequests: [{ number: 97, state: "MERGED" }] },
   },
   {
     name: "origami-docs", status: "starting", provider: "claude", repo: "paperCrane", repoName: "paper-crane",
@@ -130,6 +135,8 @@ export function buildRows(now: number): AgentRow[] {
     if (seed.queued) row.queued = seed.queued;
     if (seed.spawnedBy) row.spawnedBy = seed.spawnedBy;
     if (seed.role) row.role = seed.role;
+    if (seed.prMonitor) row.prMonitor = seed.prMonitor;
+    if (seed.subagents) row.subagents = seed.subagents;
     if (seed.status === "working" || seed.status === "waiting") row.workingSince = row.statusChangedAt;
     return row;
   });

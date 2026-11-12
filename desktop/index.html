@@ -24,25 +24,44 @@
               <span id="am-fleet-summary"></span>
               <button id="am-show-stopped" type="button" class="am-chip" aria-pressed="false">Show stopped</button>
             </div>
+            <div class="am-sidebar-order">
+              <label class="am-order-field">Group<select id="am-sidebar-group" aria-label="Group agents by"></select></label>
+              <span class="am-order-field">
+                <label class="am-order-field">Sort<select id="am-sidebar-sort" aria-label="Sort agents by"></select></label>
+                <button id="am-sidebar-direction" type="button" class="am-direction" aria-label="Reverse sort direction" title="Reverse sort direction" aria-pressed="false">↑</button>
+              </span>
+            </div>
           </div>
           <div id="am-tree" role="tree" aria-label="Agents"></div>
         </div>
         <div id="am-divider" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
         <div id="am-main">
-          <section id="am-empty" aria-label="Fleet overview">
-            <div class="am-empty-card">
-              <div class="am-brand-mark am-empty-mark">am<span>✳</span></div>
-              <h1 id="am-empty-title">No agent open</h1>
-              <p id="am-empty-sub">Pick an agent in the sidebar to read its conversation and message it.</p>
-              <ul id="am-empty-counts"></ul>
-              <dl class="am-keys">
-                <dt><kbd>↑</kbd><kbd>↓</kbd> or <kbd>j</kbd><kbd>k</kbd></dt><dd>Move through agents</dd>
-                <dt><kbd>Enter</kbd></dt><dd>Open the agent and write to it</dd>
-                <dt><kbd>c</kbd></dt><dd>Ask the concierge</dd>
-                <dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Collapse or expand a group</dd>
-                <dt><kbd>/</kbd></dt><dd>Filter agents</dd>
-                <dt><kbd>Esc</kbd></dt><dd>Back to the list (also from the message box)</dd>
-              </dl>
+          <section id="am-overview" aria-labelledby="am-overview-title">
+            <div class="am-overview-inner">
+              <header class="am-overview-head">
+                <h1 id="am-overview-title">Fleet monitor</h1>
+                <p id="am-overview-sub"></p>
+              </header>
+              <div id="am-overview-concierge"></div>
+              <div class="view-bar">
+                <div id="am-overview-filters" class="segmented" role="group" aria-label="Show agents"></div>
+                <div class="list-controls">
+                  <input id="am-overview-search" type="search" placeholder="Filter this overview…" aria-label="Filter the overview" autocomplete="off" spellcheck="false" /><select
+                    id="am-overview-sort" aria-label="Group or sort agents"></select><button
+                    id="am-overview-direction" type="button" aria-label="Reverse sort direction" title="Reverse sort direction" aria-pressed="false">↑</button>
+                </div>
+              </div>
+              <p class="fleet-guidance muted">Counts exclude the concierge. Stopped includes exited and offline agents.</p>
+              <div id="am-agent-grid" class="agent-grid" role="group" aria-label="Agents"></div>
+              <footer class="am-overview-keys" aria-label="Keyboard shortcuts">
+                <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+                <span><kbd>Enter</kbd> open</span>
+                <span><kbd>o</kbd> overview</span>
+                <span><kbd>c</kbd> concierge</span>
+                <span><kbd>/</kbd> filter the sidebar</span>
+                <span><kbd>←</kbd><kbd>→</kbd> collapse or expand a group</span>
+                <span><kbd>Esc</kbd> back to the list</span>
+              </footer>
             </div>
           </section>
           <section id="am-chat" aria-label="Conversation" hidden>

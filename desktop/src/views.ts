@@ -29,6 +29,7 @@ export function registerMainView(view: MainView): void {
 export function showMainView(id: string): void {
   for (const view of views) view.element.hidden = view.id !== id;
   active = id;
+  $("am-main").dataset.mainView = id;
   views.find((view) => view.id === id)?.onShow?.();
 }
 
