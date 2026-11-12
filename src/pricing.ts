@@ -55,14 +55,16 @@ export function isLongPrompt(model: string | undefined, promptTokens: number): b
   return LONG_PROMPT_MODELS.has(normalizeModelId(model)) && promptTokens > LONG_PROMPT_TOKENS;
 }
 
-// Ledger bucket key: normalized model id plus `|fast` / `|long` tier markers.
-export function bucketKey(model: string | undefined, opts: { fast?: boolean; long?: boolean } = {}): string {
-  return `${normalizeModelId(model)}${opts.fast ? "|fast" : ""}${opts.long ? "|long" : ""}`;
+// Ledger bucket key: normalized model id plus `|fast` / `|long` tier markers
+// and `|e=<effort>` when the transcript recorded the call's reasoning effort.
+export function bucketKey(model: string | undefined, opts: { fast?: boolean; long?: boolean; effort?: string } = {}): string {
+  return `${normalizeModelId(model)}${opts.fast ? "|fast" : ""}${opts.long ? "|long" : ""}${opts.effort ? `|e=${opts.effort}` : ""}`;
 }
 
-export function parseBucketKey(key: string): { model: string; fast: boolean; long: boolean } {
+export function parseBucketKey(key: string): { model: string; fast: boolean; long: boolean; effort?: string } {
   const [model, ...flags] = key.split("|");
-  return { model: model || "unknown", fast: flags.includes("fast"), long: flags.includes("long") };
+  const effort = flags.find((flag) => flag.startsWith("e="))?.slice(2);
+  return { model: model || "unknown", fast: flags.includes("fast"), long: flags.includes("long"), ...(effort ? { effort } : {}) };
 }
 
 // counts: [calls, input, cacheWrite5m, cacheWrite1h, cacheRead, output, thinking]

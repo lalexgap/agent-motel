@@ -39,7 +39,7 @@ import {
 } from "./pricing";
 import { roleForAgent } from "./roles";
 import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "./state";
-import { readSubagents } from "./subagents";
+import { readSubagents, UNKNOWN_TYPE } from "./subagents";
 import {
   antigravityBrainTranscriptPath,
   buildCodexRolloutIndex,
@@ -167,7 +167,7 @@ function stepCounts(step: StepEvent): UsageCounts {
 function stepKey(step: StepEvent): string {
   const prompt =
     step.inputTokens + step.cacheReadTokens + (step.cacheCreation5mTokens ?? step.cacheCreationTokens) + (step.cacheCreation1hTokens ?? 0);
-  return bucketKey(step.model, { fast: step.fast === true, long: isLongPrompt(step.model, prompt) });
+  return bucketKey(step.model, { fast: step.fast === true, long: isLongPrompt(step.model, prompt), effort: step.effort });
 }
 
 function bucketAdd(entry: LedgerFileEntry, day: string, key: string, counts: UsageCounts, sign: number): void {
@@ -792,10 +792,17 @@ export interface UsageSummary {
   classes: Record<CostClass, { costUSD: number; tokens: number }>;
   byModel: Array<{ model: string; priced: boolean; costUSD: number; activeTokens: number }>;
   byRepo: Array<{ repo: string; costUSD: number; activeTokens: number; agents: number }>;
+  // type is "main" for an agent's own session, else the subagent type; runs counts transcripts.
+  byType: Array<{ type: string; kind: "main" | "subagent"; costUSD: number; activeTokens: number; runs: number; agents: number }>;
+  // Calls indexed before effort was recorded, or from providers that do not log it, are "unrecorded".
+  byEffort: Array<{ effort: string; costUSD: number; activeTokens: number; calls: number }>;
   agents: UsageSummaryAgent[];
   unattributed: { dailyCostUSD: number[]; dailyActiveTokens: number[]; range: UsageAmount };
   filters: { repos: string[]; providers: Provider[] };
 }
+
+export const MAIN_TYPE = "main";
+export const UNRECORDED_EFFORT = "unrecorded";
 
 export type SummaryRange = 1 | 7 | 30;
 export const SUMMARY_RANGES: readonly SummaryRange[] = [1, 7, 30];
@@ -882,6 +889,8 @@ export function usageSummary(opts: {
   };
   const byModel = new Map<string, { model: string; priced: boolean; costUSD: number; activeTokens: number }>();
   const byRepo = new Map<string, { repo: string; costUSD: number; activeTokens: number; agents: Set<string> }>();
+  const byType = new Map<string, { type: string; kind: "main" | "subagent"; costUSD: number; activeTokens: number; runs: Set<string>; agents: Set<string> }>();
+  const byEffort = new Map<string, { effort: string; costUSD: number; activeTokens: number; calls: number }>();
   const agents = new Map<string, AgentAccumulator>();
   const unattributed = {
     daily: new Array<number>(days.length).fill(0),
@@ -968,7 +977,12 @@ export function usageSummary(opts: {
           classes.output.costUSD += breakdown.output;
         }
 
-        const model = parseBucketKey(key).model;
+        const { model, effort = UNRECORDED_EFFORT } = parseBucketKey(key);
+        const effortRow = byEffort.get(effort) ?? { effort, costUSD: 0, activeTokens: 0, calls: 0 };
+        effortRow.costUSD += cost ?? 0;
+        effortRow.activeTokens += active;
+        effortRow.calls += counts[COUNT_CALLS] ?? 0;
+        byEffort.set(effort, effortRow);
         const modelRow = byModel.get(model) ?? { model, priced: priceFor(model) !== undefined, costUSD: 0, activeTokens: 0 };
         modelRow.costUSD += cost ?? 0;
         modelRow.activeTokens += active;
@@ -989,6 +1003,14 @@ export function usageSummary(opts: {
             acc.priced = true;
             acc.writeCost += breakdown.cacheWrite5m + breakdown.cacheWrite1h;
           }
+          const type = owner!.kind === "main" ? MAIN_TYPE : owner!.subagentType?.trim() || UNKNOWN_TYPE;
+          const typeKey = `${owner!.kind}\u0000${type}`;
+          const typeRow = byType.get(typeKey) ?? { type, kind: owner!.kind, costUSD: 0, activeTokens: 0, runs: new Set<string>(), agents: new Set<string>() };
+          typeRow.costUSD += cost ?? 0;
+          typeRow.activeTokens += active;
+          if ((counts[COUNT_CALLS] ?? 0) > 0) typeRow.runs.add(path);
+          typeRow.agents.add(`${acc.name}\u0000${acc.createdAt ?? ""}`);
+          byType.set(typeKey, typeRow);
           if (acc.repo) {
             const repoRow = byRepo.get(acc.repo) ?? { repo: acc.repo, costUSD: 0, activeTokens: 0, agents: new Set<string>() };
             repoRow.costUSD += cost ?? 0;
@@ -1073,6 +1095,14 @@ export function usageSummary(opts: {
     byRepo: [...byRepo.values()]
       .map((r) => ({ repo: r.repo, costUSD: round4(r.costUSD), activeTokens: r.activeTokens, agents: r.agents.size }))
       .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens),
+    byType: [...byType.values()]
+      .filter((t) => t.activeTokens > 0 || t.costUSD > 0)
+      .map((t) => ({ type: t.type, kind: t.kind, costUSD: round4(t.costUSD), activeTokens: t.activeTokens, runs: t.runs.size, agents: t.agents.size }))
+      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.type.localeCompare(b.type) || a.kind.localeCompare(b.kind)),
+    byEffort: [...byEffort.values()]
+      .filter((e) => e.activeTokens > 0 || e.costUSD > 0)
+      .map((e) => ({ ...e, costUSD: round4(e.costUSD) }))
+      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.effort.localeCompare(b.effort)),
     agents: agentRows,
     unattributed: {
       dailyCostUSD: unattributed.daily.map(round4),

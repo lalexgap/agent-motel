@@ -539,8 +539,13 @@ export interface StepEvent {
   outputTokens: number;
   thinkingTokens: number;
   fast?: boolean;
+  effort?: string;
   tools: Array<{ category: string; workflow?: string; summary: string }>;
   workflow: string;
+}
+
+export function effortLevel(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z]{2,12}$/.test(value) ? value : undefined;
 }
 
 export function stepHasTokens(s: StepEvent): boolean {
@@ -857,6 +862,8 @@ export function parseClaudeSteps(
 
     if (typeof entry.timestamp === "string") step.timestamp = entry.timestamp;
     if (typeof msg.model === "string") step.model = msg.model;
+    const effort = effortLevel(entry.effort);
+    if (effort) step.effort = effort;
 
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
@@ -924,6 +931,7 @@ export function parseCodexSteps(
     detectWorkflowFromText(context.subagentLabel) ??
     "general";
   let currentModel: string | undefined;
+  let currentEffort: string | undefined;
   let nickname: string | undefined;
   let metaRole: string | undefined;
   let firstPrompt: string | undefined;
@@ -963,6 +971,7 @@ export function parseCodexSteps(
 
     if (entry.type === "turn_context" && typeof payload.model === "string") {
       currentModel = payload.model;
+      currentEffort = effortLevel(payload.effort);
       continue;
     }
 
@@ -1030,6 +1039,7 @@ export function parseCodexSteps(
       steps.push({
         timestamp: typeof entry.timestamp === "string" ? entry.timestamp : undefined,
         model: currentModel,
+        ...(currentEffort ? { effort: currentEffort } : {}),
         inputTokens,
         cacheCreationTokens,
         cacheCreation5mTokens: cacheCreationTokens,

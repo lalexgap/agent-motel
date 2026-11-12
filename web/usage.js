@@ -388,6 +388,12 @@ window.usageDashboard = (() => {
           h("section", { class: "usage-card", "aria-labelledby": "usage-models-heading" },
             header(h("h2", { id: "usage-models-heading" }, "By model"), rangeNote()),
             h("div", { id: "usage-models" })),
+          h("section", { class: "usage-card", "aria-labelledby": "usage-types-heading" },
+            header(h("h2", { id: "usage-types-heading" }, "By agent type"), rangeNote()),
+            h("div", { id: "usage-types" })),
+          h("section", { class: "usage-card", "aria-labelledby": "usage-efforts-heading" },
+            header(h("h2", { id: "usage-efforts-heading" }, "By effort"), rangeNote()),
+            h("div", { id: "usage-efforts" })),
           h("section", { class: "usage-card", "aria-labelledby": "usage-repos-heading" },
             header(h("h2", { id: "usage-repos-heading" }, "By repo"), rangeNote()),
             h("div", { id: "usage-repos" })))),
@@ -593,6 +599,8 @@ window.usageDashboard = (() => {
     renderKpis(root, summary, unit, view.range);
     renderClasses(root, summary, unit);
     renderModels(root, summary, unit);
+    renderTypes(root, summary, unit);
+    renderEfforts(root, summary, unit);
     renderRepos(root, summary, unit);
     renderChart(root, view);
     renderTopAgents(root, view, actions);
@@ -780,6 +788,65 @@ window.usageDashboard = (() => {
       list.append(name, usageMeter(max > 0 ? (value / max) * 100 : 0), valueCell);
     }
     wrap.append(list);
+  }
+
+  function typeLabel(row) {
+    return row.kind === "main" ? "Main agent" : String(row.type || "subagent");
+  }
+
+  const TYPE_ROWS = 8;
+  function typeRows(byType, unit) {
+    const valueOf = (t) => (unit === "tokens" ? t.activeTokens : t.costUSD) || 0;
+    const rows = [...(byType || [])].sort((a, b) => valueOf(b) - valueOf(a))
+      .map((t) => ({ label: typeLabel(t), value: valueOf(t), runs: t.runs || 0, agents: t.agents || 0 }));
+    if (rows.length <= TYPE_ROWS) return rows;
+    const tail = rows.slice(TYPE_ROWS - 1);
+    const sum = (key) => tail.reduce((total, row) => total + row[key], 0);
+    return [...rows.slice(0, TYPE_ROWS - 1), { label: `${tail.length} other types`, value: sum("value"), runs: sum("runs"), names: tail.map((row) => row.label) }];
+  }
+
+  function effortRows(byEffort, unit) {
+    const valueOf = (e) => (unit === "tokens" ? e.activeTokens : e.costUSD) || 0;
+    return [...(byEffort || [])].sort((a, b) => valueOf(b) - valueOf(a))
+      .map((e) => ({ label: e.effort === "unrecorded" ? "not recorded" : String(e.effort), value: valueOf(e), calls: e.calls || 0 }));
+  }
+
+  // A summary without the field (an older server) hides the card rather than calling it empty.
+  function renderShares(root, id, present, rows, unit, titleOf) {
+    const wrap = find(root, id);
+    if (!wrap) return;
+    wrap.replaceChildren();
+    wrap.closest(".usage-card").hidden = !present;
+    if (!rows.length) {
+      wrap.append(usageEmpty());
+      return;
+    }
+    const max = Math.max(0, ...rows.map((row) => row.value));
+    const total = rows.reduce((sum, row) => sum + row.value, 0);
+    const list = el("div", "usage-kv usage-kv-repos");
+    for (const row of rows) {
+      const valueCell = el("span", "usage-num");
+      valueCell.append(
+        el("span", "", formatValue(row.value, unit)),
+        el("span", "usage-subtle", ` · ${total > 0 ? percent(row.value / total) : "0%"}`),
+      );
+      const name = el("span", "usage-kv-name", row.label);
+      name.title = titleOf(row);
+      list.append(name, usageMeter(max > 0 ? (row.value / max) * 100 : 0), valueCell);
+    }
+    wrap.append(list);
+  }
+
+  const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+  function renderTypes(root, summary, unit) {
+    renderShares(root, "usage-types", summary.byType !== undefined, typeRows(summary.byType, unit), unit,
+      (row) => row.names ? row.names.join(", ") : `${plural(row.runs, "session")} across ${plural(row.agents, "agent")}`);
+  }
+
+  function renderEfforts(root, summary, unit) {
+    renderShares(root, "usage-efforts", summary.byEffort !== undefined, effortRows(summary.byEffort, unit), unit,
+      (row) => plural(row.calls, "call"));
   }
 
   function renderRepos(root, summary, unit) {
@@ -1323,6 +1390,8 @@ window.usageDashboard = (() => {
     topAgents,
     severity,
     shortModel,
+    typeRows,
+    effortRows,
     formatResetCountdown,
     buildPage,
     bindControls,
