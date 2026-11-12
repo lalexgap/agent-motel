@@ -79,6 +79,11 @@ window.agentPrs = (() => {
     return { rows: shown, hidden: (rows || []).length - shown.length };
   }
 
+  // Everything the list's DOM depends on; relative times only move by the minute.
+  function listSignature(rows, hidden, view, now) {
+    return JSON.stringify([rows, hidden, !!view.showAllFinished, [...(view.expanded || [])].sort(), Math.floor(now / 60000)]);
+  }
+
   function nudgeText(pr) {
     const reason = String(pr.reason || "").trim();
     return `PR #${pr.number} (${pr.url}) is ${pr.state}: ${reason}${/[.?!]$/.test(reason) ? "" : "."} What is its status, and what do you need to move it forward?`;
@@ -126,7 +131,7 @@ window.agentPrs = (() => {
     return parts.join(" ");
   }
 
-  // data:    { report, loading, error, includeOlder, now? }
+  // data:    { report, loading, error, includeOlder, notice?, now? }  (notice: a host message for the status line)
   // actions: openAgent(key), openUrl(url), nudge(key, text), refresh(), setIncludeOlder(bool)
   const views = new WeakMap();
   const find = (root, id) => root.querySelector("#" + id);
@@ -205,7 +210,7 @@ window.agentPrs = (() => {
     populateRepos(find(root, "prs-repo"), repoOptions(report?.prs), view.repo);
 
     const status = find(root, "prs-status");
-    status.textContent = loading && !report ? "Loading…" : "";
+    status.textContent = loading && !report ? "Loading…" : String(view.data?.notice || "");
     if (error && report) status.textContent = `Couldn't refresh (${error}). Showing data from ${relativeTime(report.generatedAt, now) || "earlier"} ago.`;
     status.classList.toggle("prs-error", !!error);
 
@@ -215,6 +220,8 @@ window.agentPrs = (() => {
     notice.hidden = !notice.textContent;
 
     const list = find(root, "prs-list");
+    const rendered = view.signature;
+    view.signature = null;
     if (!report) {
       list.replaceChildren(el("p", "empty", error ? `Couldn't load pull requests: ${error}` : "Loading pull requests…"));
       return;
@@ -237,6 +244,12 @@ window.agentPrs = (() => {
       list.replaceChildren(empty);
       return;
     }
+    // The host re-renders on every poll: an unchanged list keeps its DOM (and with it focus,
+    // hover and scroll); a changed one hands focus back to the same control.
+    const signature = listSignature(rows, hidden, view, now);
+    view.signature = signature;
+    if (rendered === signature && list.querySelector("table")) return;
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
     const table = el("table", "usage-table prs-table");
     const head = el("tr");
     for (const [label, cls] of [["Pull request", "prs-col-pr"], ["Status", "prs-col-status"], ["Agent", "prs-col-agent"],
@@ -247,7 +260,7 @@ window.agentPrs = (() => {
     const chains = stackChains(rows);
     rows.forEach((pr, i) => {
       tbody.append(prRow(root, view, pr, chains[i], now));
-      if (pr.decision && view.expanded.has(pr.key)) tbody.append(decisionRow(pr, view.actions));
+      if (pr.decision && view.expanded.has(pr.key)) tbody.append(decisionRow(pr, currentActions(view)));
     });
     if (hidden || (view.showAllFinished && visibleRows(matching, { state: view.state }).hidden)) {
       const tr = el("tr", "prs-more-row");
@@ -256,6 +269,7 @@ window.agentPrs = (() => {
       const more = el("button", "", hidden ? `Show ${hidden} more merged or closed` : "Show fewer merged or closed");
       more.type = "button";
       more.setAttribute("aria-expanded", String(view.showAllFinished));
+      more.dataset.focusKey = "more";
       more.onclick = () => { view.showAllFinished = !view.showAllFinished; renderList(root); };
       td.append(more);
       tr.append(td);
@@ -263,6 +277,7 @@ window.agentPrs = (() => {
     }
     table.append(thead, tbody);
     list.replaceChildren(table);
+    if (focused) [...list.querySelectorAll("[data-focus-key]")].find((node) => node.dataset.focusKey === focused)?.focus();
   }
 
   // A plain click goes through actions.openUrl; modified clicks keep the browser's own handling.
@@ -279,8 +294,15 @@ window.agentPrs = (() => {
     return link;
   }
 
+  // Rows can outlive the render that built them, so they call whatever actions are current.
+  const currentActions = (view) => ({
+    openUrl: (url) => view.actions?.openUrl?.(url),
+    openAgent: (key) => view.actions?.openAgent?.(key),
+    nudge: (key, text) => view.actions?.nudge?.(key, text),
+  });
+
   function prRow(root, view, pr, chain, now) {
-    const actions = view.actions;
+    const actions = currentActions(view);
     const tr = el("tr", "prs-row");
     tr.classList.toggle("prs-chain-up", chain.up);
     tr.classList.toggle("prs-chain-down", chain.down);
@@ -291,8 +313,11 @@ window.agentPrs = (() => {
     prCell.append(el("div", "prs-repo", pr.repository));
     const titleLine = el("div", "prs-title");
     const label = `#${pr.number} ${pr.title || ""}`.trim();
-    if (url) titleLine.append(externalLink(label, url, actions));
-    else titleLine.append(el("span", "", label));
+    if (url) {
+      const link = externalLink(label, url, actions);
+      link.dataset.focusKey = `${pr.key}|title`;
+      titleLine.append(link);
+    } else titleLine.append(el("span", "", label));
     prCell.append(titleLine);
 
     const statusCell = el("td", "prs-col-status");
@@ -308,6 +333,7 @@ window.agentPrs = (() => {
     agentButton.type = "button";
     agentButton.title = `Go to ${agentLabel(pr)}`;
     agentButton.onclick = () => actions.openAgent?.(pr.agent);
+    agentButton.dataset.focusKey = `${pr.key}|agent`;
     agentCell.append(agentButton);
     const agentMeta = [pr.host, pr.agentStatus].filter(Boolean).join(" · ");
     if (agentMeta) agentCell.append(el("div", "prs-agent-meta", agentMeta));
@@ -322,6 +348,8 @@ window.agentPrs = (() => {
       stack.title = stackTitle(pr);
       stack.setAttribute("aria-label", stackTitle(pr));
       stackCell.append(stack);
+      // The sort can separate a stack's layers, so the row names its parent itself.
+      if (pr.stack.parent) stackCell.append(el("div", "prs-notes", `on #${pr.stack.parent}`));
     }
 
     const actionCell = el("td", "prs-col-actions actions-col");
@@ -330,6 +358,7 @@ window.agentPrs = (() => {
       const node = el("button", "", text);
       node.type = "button";
       node.setAttribute("aria-label", aria);
+      node.dataset.focusKey = `${pr.key}|${text}`;
       node.onclick = onclick;
       buttons.append(node);
       return node;
@@ -364,6 +393,7 @@ window.agentPrs = (() => {
       if (link) {
         const discussion = externalLink(`Open the discussion on ${new URL(link).host}`, link, actions);
         discussion.title = link;
+        discussion.dataset.focusKey = `${pr.key}|discussion`;
         td.append(discussion);
       } else td.append(el("p", "prs-notes", pr.decision.link));
     }
@@ -382,6 +412,7 @@ window.agentPrs = (() => {
     repoOptions,
     filterPrs,
     visibleRows,
+    listSignature,
     nudgeText,
     agentLabel,
     stackLabel,
