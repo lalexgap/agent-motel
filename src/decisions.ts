@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { notificationPrUrl } from "./notifications";
-import { planFile, trashDir } from "./paths";
+import { trashDir } from "./paths";
 
 // Read-only view of the decisions skill's per-agent store (agent-skills
 // `decision` CLI). That store is the source of truth; am never writes its
@@ -227,13 +227,13 @@ export function decisionStoreExists(name: string): boolean {
   return existsSync(decisionStoreFile(name));
 }
 
-// The store's plan path follows the plan only when it pointed at am's plan file.
+// The file is moved, never rewritten: the CLI may be writing it under its own lock,
+// and it re-derives `agent` and `plan` from the file name on every load and save.
 export function renameDecisionStore(oldName: string, newName: string): void {
   const from = decisionStoreFile(oldName);
   const to = decisionStoreFile(newName);
   if (from === to || !existsSync(from) || existsSync(to)) return;
   renameSync(from, to);
-  rewriteStore(to, (raw) => ({ agent: newName, ...(raw.plan === planFile(oldName) ? { plan: planFile(newName) } : {}) }));
   for (const kind of ["turn", "nudge"]) {
     try {
       if (existsSync(markerFile(oldName, kind))) renameSync(markerFile(oldName, kind), markerFile(newName, kind));

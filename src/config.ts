@@ -156,7 +156,8 @@ export interface Config {
   plans: boolean;
   // Read each agent's `decision` store (the decisions skill): `am ls` and
   // `am summary` show open decisions, and the prompt/stop hooks run
-  // `decision hook` when the CLI is installed. false turns all of it off.
+  // `decision hook` when the CLI is installed. false turns all of it off; a
+  // remote host's PR status follows that host's own config.
   decisions: boolean;
   // What the stop hook does when a turn ends on a question nothing registered:
   // "block" makes the agent register it before stopping, "nudge" reminds it on

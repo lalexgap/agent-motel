@@ -172,11 +172,15 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       expect(lines[2]).not.toContain("decision");
     });
 
-    test("decisions: false hides them", () => {
+    test("decisions: false hides them, PR status included", () => {
       writeFileSync(join(amHome, "config.json"), JSON.stringify({ decisions: false }));
-      writeAgent(agent("api"));
+      const pr = { repository: "o/r", number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN" as const, updatedAt: new Date().toISOString() };
+      writeAgent(agent("api", { prMonitor: { pullRequests: [pr] } as AgentState["prMonitor"] }));
       writeStore("api", [decision("d-1")]);
-      expect(agentRows()[0]).toMatchObject({ openDecisions: 0, blockingDecisions: 0 });
+      const row = agentRows()[0]!;
+      expect(row).toMatchObject({ openDecisions: 0, blockingDecisions: 0 });
+      expect(row.prStatus?.[0]?.state).not.toBe("needs-decision");
+      expect(row.prStatus?.[0]?.decision).toBeUndefined();
     });
   });
 
@@ -223,7 +227,7 @@ describe("the whole store (ls, summary, lifecycle)", () => {
   });
 
   describe("lifecycle", () => {
-    test("rename carries the store and rewrites its agent and plan fields", async () => {
+    test("rename moves the store and its markers without rewriting the CLI's file", async () => {
       writeAgent(agent("alpha"));
       ensurePlan("alpha", "task");
       writeStore("alpha", [decision("d-1")], { plan: planFile("alpha") });
@@ -232,7 +236,7 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       await renameAgent("alpha", "omega");
       expect(existsSync(decisionStoreFile("alpha"))).toBe(false);
       const store = JSON.parse(readFileSync(decisionStoreFile("omega"), "utf8"));
-      expect(store).toMatchObject({ agent: "omega", plan: planFile("omega"), host: "box" });
+      expect(store).toMatchObject({ agent: "alpha", plan: planFile("alpha"), host: "box" });
       expect(store.decisions.map((d: Decision) => d.id)).toEqual(["d-1"]);
       expect(readFileSync(join(decisionsHome(), ".omega.nudge"), "utf8")).toBe("remind");
     });
