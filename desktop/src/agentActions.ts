@@ -52,8 +52,6 @@ export async function runLifecycle(key: string, action: LifecycleAction, subject
   }
 }
 
-// ---- Context menu ----
-
 function registerMenu(): void {
   const add = (id: string, label: string, group: AgentMenuGroup, action: string, run: (key: string) => void, danger = false) =>
     registerAgentMenuItem({
@@ -71,8 +69,6 @@ function registerMenu(): void {
   }
   add("delete", "Remove…", "danger", "delete", (key) => void runLifecycle(key, "delete", () => findRow(key)), true);
 }
-
-// ---- Chat header ----
 
 // The open agent's detail (it has capabilities), with the fresher status of it and the fleet row.
 function headerSubject(key: string): ActionSubject | null {
@@ -182,8 +178,6 @@ function renderBar(key: string): HTMLElement | null {
   more.hidden = empty;
   return [...buttons.values()].some((button) => !button.hidden) ? bar : null;
 }
-
-// ---- Failure line and the stopped agent's Resume ----
 
 function renderAgentExtras(): void {
   const key = state.selected;

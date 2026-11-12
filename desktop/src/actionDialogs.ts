@@ -175,8 +175,6 @@ async function landOn(connection: string, next: string | null, selectedBefore: s
   return follow;
 }
 
-// ---- Rename ----
-
 let renameBox: Shell | null = null;
 let renameInput: HTMLInputElement;
 let renameKey: string | null = null;
@@ -227,8 +225,6 @@ async function submitRename(): Promise<void> {
     if (box.busy) setBusy(box, false);
   }
 }
-
-// ---- Move to host ----
 
 let moveBox: Shell | null = null;
 let moveHost: HTMLSelectElement;
@@ -314,8 +310,6 @@ async function submitMove(): Promise<void> {
   }
 }
 
-// ---- Handover ----
-
 let handoverBox: Shell | null = null;
 let handoverProvider: HTMLSelectElement;
 let handoverName: HTMLInputElement;
@@ -384,8 +378,6 @@ async function submitHandover(): Promise<void> {
     if (box.busy) setBusy(box, false);
   }
 }
-
-// ---- Change model ----
 
 interface ModelContext {
   key: string;
