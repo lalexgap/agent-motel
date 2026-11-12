@@ -79,9 +79,10 @@ window.agentPrs = (() => {
     return { rows: shown, hidden: (rows || []).length - shown.length };
   }
 
-  // Everything the list's DOM depends on; relative times only move by the minute.
+  // Everything the list's DOM depends on, with relative times as they would be shown.
   function listSignature(rows, hidden, view, now) {
-    return JSON.stringify([rows, hidden, !!view.showAllFinished, [...(view.expanded || [])].sort(), Math.floor(now / 60000)]);
+    const ages = rows.map((pr) => [relativeTime(pr.since, now), relativeTime(pr.lastActivity, now)]);
+    return JSON.stringify([rows, hidden, view.state || "", !!view.showAllFinished, [...(view.expanded || [])].sort(), ages]);
   }
 
   function nudgeText(pr) {
