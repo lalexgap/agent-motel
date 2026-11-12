@@ -52,6 +52,24 @@ function renderStatusbar(): void {
   $("am-sb-version").textContent = state.info ? `v${state.info.version}${state.info.build && state.info.build !== state.info.version ? ` (${state.info.build})` : ""}` : "";
 }
 
+// A short confirmation ("Copied …") shown at the right of the status bar.
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
+export function flashStatus(text: string, ms = 2000): void {
+  const node = document.getElementById("am-sb-flash") ?? h("span", "am-sb-item am-sb-flash");
+  if (!node.id) {
+    node.id = "am-sb-flash";
+    node.setAttribute("role", "status");
+    $("am-sb-right").prepend(node);
+  }
+  node.textContent = text;
+  node.hidden = false;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    node.hidden = true;
+    node.textContent = "";
+  }, ms);
+}
+
 export function initStatusbar(): void {
   subscribe("fleet", renderStatusbar);
   subscribe("status", renderStatusbar);

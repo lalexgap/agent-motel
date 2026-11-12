@@ -1,7 +1,8 @@
 // The sidebar: the agent tree with its pinned concierge, filter, show-stopped
 // toggle, keyboard navigation and the resizable divider.
 import { selectAgent } from "./chat";
-import { $, composerInput, dot, h } from "./dom";
+import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
+import { $, composerInput, copyText, dot, h } from "./dom";
 import {
   buildTree,
   conciergeTarget,
@@ -18,6 +19,7 @@ import {
 import { relativeTime } from "./format";
 import { registerShortcut } from "./keyboard";
 import { fleets, loadProblem, persist, state, subscribe } from "./state";
+import { flashStatus } from "./statusbar";
 
 const SIDEBAR_MIN = 200;
 
@@ -202,6 +204,38 @@ export function tickTimes(now: number): void {
   }
 }
 
+// The agent menu for a row: the cursor moves to it (the agent does not open)
+// and Esc, Tab or an item hands focus back to it.
+function openRowMenu(node: HTMLElement, point?: { x: number; y: number }): void {
+  const { itemId, agentKey: key } = node.dataset;
+  if (!itemId || !key) return;
+  state.cursor = itemId;
+  focusCursor(false);
+  const rect = node.getBoundingClientRect();
+  openAgentMenu({
+    key, itemId,
+    x: point?.x ?? rect.left + 24,
+    y: point?.y ?? rect.bottom,
+    focusFirst: !point,
+    onClose: (restoreFocus) => { if (restoreFocus) focusCursor(false); },
+  });
+}
+
+function registerAgentMenu(): void {
+  registerAgentMenuItem({
+    id: "open", label: "Open", group: "open", run: (key) => {
+      selectAgent(key);
+      if (!composerInput().disabled) composerInput().focus();
+    },
+  });
+  registerAgentMenuItem({
+    id: "copy-name", label: "Copy name", group: "copy", run: (key) => {
+      const text = copyNameText(key);
+      void copyText(text).then((ok) => flashStatus(ok ? `Copied “${text}”` : "Could not copy the name"));
+    },
+  });
+}
+
 const cursorItem = (): TreeItem | undefined => state.tree.items.find((item) => item.id === state.cursor);
 
 function registerShortcuts(): void {
@@ -247,6 +281,14 @@ function registerShortcuts(): void {
       activateItem(current);
       // Enter opens the agent to write to it; Space only opens it.
       if (event.key === "Enter" && current.kind === "agent" && !composerInput().disabled) composerInput().focus();
+    },
+  });
+  registerShortcut({
+    keys: ["ContextMenu", "F10"],
+    when: (event) => onItem(event) && cursorItem()!.kind === "agent" && (event.key === "ContextMenu" || event.shiftKey),
+    run: () => {
+      const node = document.querySelector<HTMLElement>(`#am-tree [data-item-id="${CSS.escape(state.cursor ?? "")}"]`);
+      if (node) openRowMenu(node);
     },
   });
   registerShortcut({
@@ -300,6 +342,7 @@ function wireDivider(): void {
 export function initSidebar(): void {
   subscribe("fleet", renderTree);
   registerShortcuts();
+  registerAgentMenu();
   const tree = $("am-tree");
   tree.addEventListener("click", (event) => {
     const node = (event.target as HTMLElement).closest<HTMLElement>("[data-item-id]");
@@ -308,6 +351,12 @@ export function initSidebar(): void {
     state.cursor = item.id;
     activateItem(item);
     focusCursor(false);
+  });
+  tree.addEventListener("contextmenu", (event) => {
+    const node = (event.target as HTMLElement).closest<HTMLElement>("[data-agent-key]");
+    if (!node) return;
+    event.preventDefault();
+    openRowMenu(node, { x: event.clientX, y: event.clientY });
   });
   tree.addEventListener("focusin", (event) => {
     const node = (event.target as HTMLElement).closest<HTMLElement>("[data-item-id]");

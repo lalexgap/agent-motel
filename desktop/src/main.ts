@@ -4,6 +4,7 @@ import { call, isNative, on, startBridge } from "./bridge";
 import { initChat, selectAgent, tickWorking } from "./chat";
 import { initComposer } from "./composerView";
 import { initConnections, openSetup } from "./connections";
+import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
 import { initEmptyView } from "./emptyView";
 import { parseAgentKey } from "./fleet";
@@ -26,6 +27,8 @@ function wire(): void {
   initKeyboard();
   initComposer();
   initSidebar();
+  // After the sidebar, so a fleet re-render has replaced the rows before the menu checks its row.
+  initContextMenu();
   initStatusbar();
   initConnections();
   initEmptyView();
