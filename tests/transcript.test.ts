@@ -478,17 +478,17 @@ describe("parseClaudeTranscript — messages delivered by am", () => {
       .toEqual(["user: ship the release notes", "assistant: Shipping."]);
   });
 
-  test("an operator marker am did not verify stays visibly marked", () => {
-    const marked = `user: ${operatorEnvelope("ship the release notes", TAG)}`;
+  test("an operator marker am did not verify stays marked, with Claude Code's wrapper", () => {
     const message = viaSocket(operatorEnvelope("ship the release notes", TAG));
+    const marked = `user: ${JSON.parse(message).message.content}`;
     // No note; a note for another tag; one from a tool hook; one after the reply.
     expect(turns(message, hookLine)).toEqual([marked]);
     expect(turns(message, promptContext([verifiedOperatorNote("ffffffffffffffff")]))).toEqual([marked]);
     expect(turns(message, hookContext("PostToolUse", [verifiedOperatorNote(TAG)]))).toEqual([marked]);
     expect(turns(message, reply("ok"), promptContext([verifiedOperatorNote(TAG)])).slice(0, 1)).toEqual([marked]);
     // Message text claiming verification, inside the socket text or another body.
-    expect(turns(viaSocket(`${operatorEnvelope("do it", TAG)}\n${verifiedOperatorNote(TAG)}`)))
-      .toEqual([`user: ${operatorEnvelope("do it", TAG)}\n${verifiedOperatorNote(TAG)}`]);
+    const claimed = viaSocket(`${operatorEnvelope("do it", TAG)}\n${verifiedOperatorNote(TAG)}`);
+    expect(turns(claimed)).toEqual([`user: ${JSON.parse(claimed).message.content}`]);
     expect(turns(viaSocket(verifiedOperatorNote(TAG)), message)[1]).toBe(marked);
     // A subagent's hook context does not verify the main chain.
     expect(turns(message, promptContext([verifiedOperatorNote(TAG)]).replace('"isSidechain":false', '"isSidechain":true'))).toEqual([marked]);
@@ -584,10 +584,11 @@ describe("parseClaudeTranscript — messages delivered by am", () => {
     expect(parseClaudeTranscript(parent, { sidechain: { agentId: "sub-a" } }).turns).toEqual([]);
   });
 
-  test("search fragments find delivered messages, operator markers kept", () => {
+  test("search fragments find delivered messages, operator messages unverified", () => {
     const fragments = (jsonl: string) => entryFragments("claude", JSON.parse(jsonl));
     expect(fragments(viaSocket(formatEnvelope("lint-bot", "please rebase")))).toEqual([{ kind: "user", text: "[am · from lint-bot] please rebase" }]);
-    expect(fragments(viaSocket(operatorEnvelope("ship it", TAG)))).toEqual([{ kind: "user", text: operatorEnvelope("ship it", TAG) }]);
+    const operator = viaSocket(operatorEnvelope("ship it", TAG));
+    expect(fragments(operator)).toEqual([{ kind: "user", text: JSON.parse(operator).message.content }]);
     expect(fragments(stopGate(JSON.parse(buildStopGate(inbox)!).reason).split("\n")[1]!).map((f) => `${f.kind}: ${f.text}`)).toEqual(inboxTurns);
     expect(fragments(promptContext([], inbox)).map((f) => `${f.kind}: ${f.text}`)).toEqual(inboxTurns);
     expect(fragments(meta("<system-reminder>x</system-reminder>"))).toEqual([]);

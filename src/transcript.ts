@@ -107,12 +107,12 @@ function peerSocketText(entry: Record<string, any>): string | null {
 }
 
 // An operator message is shown as the operator's own words only when am's
-// hook vouched for its tag; otherwise the marker stays. Text without am's
-// framing keeps Claude Code's wrapper, since any local process can write it.
+// hook vouched for its tag. Anything else but am's peer framing keeps Claude
+// Code's wrapper, since any local process can write to the socket.
 function peerSocketTurn(entry: Record<string, any>, text: string, verifiedTags: () => Set<string>): string {
   const operator = OPERATOR_MARKER_RE.exec(text);
-  if (operator) return verifiedTags().has(operator[1]!) ? text.slice(operator[0].length) : text;
-  return PEER_ENVELOPE_RE.test(text) ? text : entry.message.content;
+  if (operator && verifiedTags().has(operator[1]!)) return text.slice(operator[0].length);
+  return !operator && PEER_ENVELOPE_RE.test(text) ? text : entry.message.content;
 }
 
 // One record per line, as messageData in comms.ts writes it. Provenance is
@@ -571,8 +571,8 @@ export function entryFragments(provider: Provider, entry: Record<string, any>): 
 
 function claudeEntryFragments(entry: Record<string, any>): Fragment[] {
   if (entry.isSidechain) return [];
-  // One line can't show am's verification of an operator message, so its
-  // marker stays in the snippet.
+  // One line can't show am's verification of an operator message, so it
+  // stays unverified in the snippet.
   const delivered = amDeliveredTexts(entry, () => new Set());
   if (delivered) return delivered.map((text) => ({ kind: "user", text }));
   if (entry.isMeta) return [];
