@@ -1,5 +1,5 @@
 import { readAgent, resolveAgent } from "../state";
-import { displayStatus, STATUS_ICONS, type DisplayStatus } from "./ls";
+import { agentPresence, STATUS_ICONS, type DisplayStatus } from "./ls";
 import { formatDuration } from "./hook";
 import { finalAssistantText, waitForTurn } from "./run";
 
@@ -17,10 +17,13 @@ const POLL_MS = 500;
 const STATUSES = Object.keys(STATUS_ICONS) as DisplayStatus[];
 
 // "waiting" is idle-with-a-scheduled-wake-up (a pane-scrape refinement) — a
-// caller asking for idle means "not busy", which waiting satisfies; without
-// this, `--status idle` could flap against the scrape and never match.
-export function statusMatches(actual: DisplayStatus, want: DisplayStatus): boolean {
-  return actual === want || (want === "idle" && actual === "waiting");
+// caller asking for idle means "at its prompt", which waiting satisfies;
+// without this, `--status idle` could flap against the scrape and never
+// match. The same goes for an agent shown as working because its subagents
+// still run: its stored status is idle, and it takes a message like one.
+export function statusMatches(actual: DisplayStatus, want: DisplayStatus, raw?: string): boolean {
+  if (actual === want) return true;
+  return want === "idle" && (actual === "waiting" || (raw === "idle" && actual !== "dead"));
 }
 
 export type StatusWaitOutcome = "reached" | "removed" | "timeout";
@@ -34,7 +37,8 @@ export async function waitForStatus(
   do {
     const agent = readAgent(name);
     if (!agent) return "removed";
-    if (statusMatches(displayStatus(agent), status)) return "reached";
+    const presence = agentPresence(agent);
+    if (statusMatches(presence.status, status, presence.rawStatus)) return "reached";
     await Bun.sleep(POLL_MS);
   } while (Date.now() - start < timeoutMs);
   return "timeout";

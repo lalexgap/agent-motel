@@ -5,7 +5,7 @@ import { queueClear, queueDepth } from "../queue";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { acquireProducerLock, releaseProducerLock } from "../mailbox";
 import { hasUnfinishedDelivery } from "../messages";
-import { displayStatus } from "./ls";
+import { agentPresence } from "./ls";
 import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
@@ -91,9 +91,14 @@ export async function runIfIdle<T>(
         if (acquireProducerLock(name)) {
           try {
             const current = readAgent(name) ?? agent;
-            const status = displayStatus(current);
+            // A stop kills the session's subagents with it, so an agent
+            // waiting on live ones is busy. A stalled one (its subagent ended
+            // or went silent) has nothing left running.
+            const presence = agentPresence(current);
+            const status = presence.stalled ? "idle" : presence.status;
             if (status === "working" || status === "starting" || status === "waiting" || status === "needs-attention") {
-              return { ok: false, error: `agent "${name}" is ${status}`, reason: "busy" };
+              const why = presence.busyWith?.subagents ? ` — ${presence.reason}` : "";
+              return { ok: false, error: `agent "${name}" is ${status}${why}`, reason: "busy" };
             }
             // Nothing can drain a dead or exited agent's queue, and the stop keeps it for resume.
             const queued = status === "dead" || status === "exited" ? 0 : queueDepth(name);

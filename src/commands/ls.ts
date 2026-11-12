@@ -7,7 +7,17 @@ import { planFile } from "../paths";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
-import { describeRunning, readSubagents, reconcileOpenSubagents, subagentSummary, type SubagentSummary } from "../subagents";
+import {
+  describeRunning,
+  lastReportedStop,
+  readSubagents,
+  reconcileOpenSubagents,
+  subagentLabel,
+  subagentLiveness,
+  summarize,
+  type SubagentRecord,
+  type SubagentSummary,
+} from "../subagents";
 import { derivePrStatuses, hasRecentPullRequests, type PrStatus } from "../prStatus";
 import { readOpenDecisions } from "../decisions";
 import { reconcileAntigravityAgent } from "../antigravity";
@@ -58,6 +68,20 @@ export interface WaitingInfo {
   waiting: boolean;
   // The matching indicator line, cleaned ("wake-up in 3m 12s"), for display.
   detail?: string;
+  // Background shells/tasks the indicator counts; 0 for a wake-up timer.
+  background?: number;
+}
+
+const BACKGROUND_COUNTS = [/\b(\d+) shells?\b/i, /\b(\d+) background tasks?\b/i, /\b(\d+) bash(?:es)? running/i];
+
+// How many background shells an indicator line reports. A wording that names
+// them without a number still means at least one. Pure.
+export function backgroundCount(line: string): number {
+  for (const re of BACKGROUND_COUNTS) {
+    const match = re.exec(line);
+    if (match) return Number(match[1]);
+  }
+  return /\bbackground task|\bbash(es)? running/i.test(line) ? 1 : 0;
 }
 
 export function paneWaitingInfo(rawLines: string[]): WaitingInfo {
@@ -75,7 +99,7 @@ export function paneWaitingInfo(rawLines: string[]): WaitingInfo {
   for (const line of region) {
     if (WAITING_PATTERNS.some((re) => re.test(line))) {
       const detail = line.replace(/^[^a-zA-Z0-9]+/, "").trim();
-      return { waiting: true, detail: clipDetail(detail) };
+      return { waiting: true, detail: clipDetail(detail), background: backgroundCount(line) };
     }
   }
   return { waiting: false };
@@ -187,7 +211,7 @@ export function waitingInfo(agent: AgentState): WaitingInfo {
     const bg = backgroundTasks(agent);
     if (bg?.lastLine) {
       const stale = bg.ageSeconds > 600 ? ` (${Math.floor(bg.ageSeconds / 60)}m ago)` : "";
-      info = { waiting: true, detail: clipDetail(`${bg.count} bg — ${bg.lastLine}${stale}`) };
+      info = { ...info, detail: clipDetail(`${bg.count} bg — ${bg.lastLine}${stale}`) };
     }
   }
   waitingCache.set(agent.tmuxSession, { info, at: Date.now() });
@@ -209,21 +233,162 @@ export function atClaudeTrustPrompt(agent: AgentState): boolean {
   return shown;
 }
 
+// What an agent idle at its prompt is still waiting on. Present only then: a
+// turn in progress is busy with itself.
+export interface BusyWith {
+  // Live in-session subagents (Claude's background agents).
+  subagents: number;
+  // Background shells/tasks the pane reports.
+  background: number;
+}
+
+// How an agent is shown. Delivery, the queue drain and `am send` act on the
+// stored (raw) status; only display reads this, where an idle agent with live
+// subagents is `working`.
+export interface Presence {
+  status: DisplayStatus;
+  rawStatus: AgentState["status"];
+  // Why, display-ready: "waiting on 2 subagents (Shepherd PR 74, reviewer)".
+  reason?: string;
+  busyWith?: BusyWith;
+  // Idle with a subagent that ended or went silent, and no turn since: shown
+  // as needs-attention, though nothing is running and nothing blocks a stop.
+  stalled?: boolean;
+  // The subagent rollup, read once here so rows don't reread the ledger.
+  subagents?: SubagentSummary;
+}
+
+// How long a parent gets to pick up a finished subagent before it is flagged.
+// The provider wakes it within a second, so minutes of nothing is a parent
+// that was never told (or a child that died without a word).
+export const STALLED_AFTER_MS = 10 * 60 * 1000;
+// Past this the flag is old news: the agent reads idle again.
+export const STALLED_FORGET_MS = 24 * 60 * 60 * 1000;
+const REASON_LABELS = 3;
+const REASON_LABEL_CHARS = 48;
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function age(ms: number): string {
+  const minutes = Math.max(1, Math.floor(ms / 60_000));
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function shortLabel(sub: { type: string; description?: string }): string {
+  const label = subagentLabel(sub);
+  return label.length > REASON_LABEL_CHARS ? label.slice(0, REASON_LABEL_CHARS - 1) + "…" : label;
+}
+
+// "waiting on 2 subagents (Shepherd PR 74, reviewer) and 1 shell". Pure.
+export function waitingOnReason(live: { type: string; description?: string }[], background = 0): string {
+  const labels: string[] = [];
+  for (const sub of live) {
+    const label = shortLabel(sub);
+    if (!labels.includes(label)) labels.push(label);
+  }
+  const named = labels.slice(0, REASON_LABELS).join(", ") + (labels.length > REASON_LABELS ? ` +${labels.length - REASON_LABELS}` : "");
+  const shells = background > 0 ? ` and ${plural(background, "shell")}` : "";
+  return `waiting on ${plural(live.length, "subagent")} (${named})${shells}`;
+}
+
+export interface BusyInput {
+  // Idle or waiting: what the agent would show without its subagents.
+  status: "idle" | "waiting";
+  background?: number;
+  // When it went idle. A subagent that ended after this ended on a parent
+  // that has not taken a turn since.
+  idleSince?: string;
+  live: SubagentRecord[];
+  quiet: SubagentRecord[];
+  quietSince?: number;
+  lastStop?: SubagentRecord | null;
+  now: number;
+}
+
+// The derivation itself, for an agent whose stored status is idle. Pure.
+export function busyPresence(input: BusyInput): Pick<Presence, "status" | "reason" | "busyWith" | "stalled"> {
+  const background = input.background ?? 0;
+  if (input.live.length > 0) {
+    return {
+      status: "working",
+      reason: waitingOnReason(input.live, background),
+      busyWith: { subagents: input.live.length, background },
+    };
+  }
+  const busyWith = background > 0 ? { subagents: 0, background } : undefined;
+  // Something else is still due to wake it (a shell, a timer): not stalled.
+  if (input.status !== "idle") return { status: input.status, busyWith };
+  const flagged = (since: number) => {
+    const waited = input.now - since;
+    return waited >= STALLED_AFTER_MS && waited < STALLED_FORGET_MS ? waited : null;
+  };
+  if (input.quiet.length > 0) {
+    // Silent for QUIET_AFTER_MS already, so there is no second grace period.
+    const silent = input.now - (input.quietSince ?? input.now);
+    if (silent >= STALLED_FORGET_MS) return { status: "idle" };
+    // What happened first, who last: the status column clips the tail.
+    const one = input.quiet.length === 1;
+    return {
+      status: "needs-attention",
+      stalled: true,
+      reason: one
+        ? `subagent silent for ${age(silent)}, agent still waiting on it (${shortLabel(input.quiet[0]!)})`
+        : `${input.quiet.length} subagents silent for ${age(silent)}, agent still waiting on them`,
+    };
+  }
+  const stop = input.lastStop;
+  const ended = stop?.endedAt ? Date.parse(stop.endedAt) : NaN;
+  const idleSince = input.idleSince ? Date.parse(input.idleSince) : NaN;
+  if (stop && Number.isFinite(ended) && Number.isFinite(idleSince) && ended > idleSince) {
+    const waited = flagged(ended);
+    if (waited !== null) {
+      return {
+        status: "needs-attention",
+        stalled: true,
+        reason: `subagent finished ${age(waited)} ago, agent never resumed (${shortLabel(stop)})`,
+      };
+    }
+  }
+  return { status: "idle" };
+}
+
 // State files can outlive their tmux session (machine reboot, manual kill).
-export function displayStatus(agent: AgentState): DisplayStatus {
+export function agentPresence(agent: AgentState, now = Date.now()): Presence {
   if (agentProvider(agent) === "antigravity" && !agent.antigravityRunId) {
     Object.assign(agent, reconcileAntigravityAgent(agent));
   }
-  if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) return "dead";
-  if (agent.status === "idle" && waitingInfo(agent).waiting) return "waiting";
-  if (atClaudeTrustPrompt(agent)) return "needs-attention";
-  return agent.status;
+  const rawStatus = agent.status;
+  if (rawStatus === "exited") return { status: "exited", rawStatus, reason: agent.statusReason };
+  if (!hasSession(agent.tmuxSession)) return { status: "dead", rawStatus, reason: agent.statusReason };
+  // Subagents live and die inside a session, so only a live one is asked.
+  let records: SubagentRecord[] = [];
+  if (agentProvider(agent) !== "antigravity") {
+    try {
+      reconcileOpenSubagents(agent);
+    } catch {
+      // the ledger as it stands
+    }
+    records = readSubagents(agent.name);
+  }
+  const subagents = describeRunning(agent, summarize(records)) ?? undefined;
+  if (atClaudeTrustPrompt(agent)) return { status: "needs-attention", rawStatus, reason: CLAUDE_TRUST_PROMPT_REASON, subagents };
+  if (rawStatus !== "idle") return { status: rawStatus, rawStatus, reason: agent.statusReason, subagents };
+  const waiting = waitingInfo(agent);
+  const derived = busyPresence({
+    status: waiting.waiting ? "waiting" : "idle",
+    background: waiting.background,
+    idleSince: agent.statusChangedAt,
+    ...subagentLiveness(agent, records, now),
+    lastStop: lastReportedStop(records),
+    now,
+  });
+  return { ...derived, rawStatus, reason: derived.reason ?? agent.statusReason, subagents };
 }
 
-// The reason to show beside a display status that differs from the stored one.
-export function displayStatusReason(agent: AgentState, status: DisplayStatus): string | undefined {
-  if (status === "needs-attention" && agent.status === "starting") return CLAUDE_TRUST_PROMPT_REASON;
-  return agent.statusReason;
+export function displayStatus(agent: AgentState): DisplayStatus {
+  return agentPresence(agent).status;
 }
 
 export function relativeTime(iso: string): string {
@@ -260,8 +425,15 @@ export interface AgentRow {
   // Previous exact names accepted for routing after a rename. Included in
   // fleet JSON so another host can forward old peer replies correctly.
   aliases?: string[];
+  // The stored status, where `status` is how the agent is shown: an agent
+  // idle at its prompt with live subagents is `working` here and `idle`
+  // there. Absent from a remote whose am predates it.
+  rawStatus?: AgentState["status"];
+  // What an idle-at-prompt agent is still waiting on. Absent when nothing.
+  busyWith?: BusyWith;
   // Extra context for the status column, display-ready: the waiting indicator
-  // ("wake-up in 3m") for waiting agents, the subagent rollup for working ones.
+  // ("wake-up in 3m") for waiting agents, what an idle agent is waiting on,
+  // the subagent rollup for a turn in progress.
   statusDetail?: string;
   // In-session subagents currently running under this agent (the Task tool /
   // codex subagents). Absent when none are.
@@ -353,27 +525,12 @@ export function cachedGitDiffSummary(dir: string): DiffSummary | null | undefine
   return cached ? cached.value : undefined;
 }
 
-// Subagents live and die inside a session, so a gone one can't have any —
-// its ledger may still hold an "open" record if the session was killed
-// mid-turn and no stop hook ever ran. Pure.
-// Lazy on purpose: the fleet can hold hundreds of exited agents and the hub
-// re-reads rows every second, so a gone agent never touches its ledger file.
-export function liveSubagents(
-  status: DisplayStatus,
-  read: () => SubagentSummary | null,
-): SubagentSummary | undefined {
-  if (status === "dead" || status === "exited") return undefined;
-  return read() ?? undefined;
-}
-
 export function agentRows(): AgentRow[] {
   return listAgents().map((a) => {
-    const status = displayStatus(a);
+    const presence = agentPresence(a);
+    const { status, subagents } = presence;
     const { roleInstructions: _roleInstructions, ...visible } = a;
-    const subagents = liveSubagents(status, () => {
-      reconcileOpenSubagents(a);
-      return describeRunning(a, subagentSummary(a.name));
-    });
+    const derived = !!presence.busyWith?.subagents || !!presence.stalled;
     const now = new Date();
     const prStatus = hasRecentPullRequests(a.prMonitor?.pullRequests, now) ? derivePrStatuses({
       prs: a.prMonitor!.pullRequests, alive: status !== "exited" && status !== "dead",
@@ -383,17 +540,22 @@ export function agentRows(): AgentRow[] {
       ...visible,
       ...(prStatus?.length ? { prStatus } : {}),
       status,
-      statusReason: displayStatusReason(a, status),
+      rawStatus: presence.rawStatus,
+      statusReason: presence.reason,
       provider: agentProvider(a),
       role: roleForAgent(a),
       queued: queueDepth(a.name),
       subagents,
+      ...(presence.busyWith ? { busyWith: presence.busyWith } : {}),
       // waitingInfo is cached, so this second call is free. A waiting agent's
-      // own indicator wins the status column; otherwise the subagent rollup
-      // fills it, so a fanned-out turn reads as more than plain "working".
+      // own indicator wins the status column, then what an idle agent is
+      // waiting on; otherwise the subagent rollup fills it, so a fanned-out
+      // turn reads as more than plain "working".
       statusDetail: status === "waiting"
         ? waitingInfo(a).detail
-        : subagents && clipDetail(subagents.detail),
+        : derived
+          ? clipDetail(presence.reason ?? "")
+          : subagents && clipDetail(subagents.detail),
     };
   });
 }
