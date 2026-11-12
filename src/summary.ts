@@ -1,6 +1,7 @@
 import type { DisplayStatus } from "./commands/ls";
 import { fleetKey, type Fleet, type FleetRow } from "./fleet";
 import { formatTrackedPullRequest } from "./prMonitorDisplay";
+import { buildPrReport, prReasonLine, type PrRow } from "./prReport";
 
 export const STALE_STARTING_SECONDS = 120;
 
@@ -32,6 +33,17 @@ export interface FleetSummary {
   exited: SummaryItem[];
   // This host's last scheduled gc, in a line (see autoGc.ts).
   gc?: string;
+  // PRs waiting on the operator, then the ones ready to merge (see `am prs`).
+  prs?: { needsMe: SummaryPr[]; mergeReady: SummaryPr[] };
+}
+
+export interface SummaryPr {
+  key: string;
+  url: string;
+  agent: string;
+  state: PrRow["state"];
+  // The reason with how long it has held: "needs decision: ship the flag? · 2h".
+  reason: string;
 }
 
 function ageSeconds(iso: string | undefined, nowMs: number): number {
@@ -124,6 +136,11 @@ export function buildFleetSummary(fleet: Fleet, now: Date = new Date(), gc?: str
   }
 
   if (gc) summary.gc = gc;
+  const brief = (pr: PrRow): SummaryPr => ({ key: pr.key, url: pr.url, agent: pr.agent, state: pr.state, reason: prReasonLine(pr, now) });
+  const prs = buildPrReport(fleet, now).prs;
+  const needsMe = prs.filter((pr) => pr.needsMe).map(brief);
+  const mergeReady = prs.filter((pr) => pr.state === "merge-ready" && !pr.needsMe).map(brief);
+  if (needsMe.length || mergeReady.length) summary.prs = { needsMe, mergeReady };
   sortItems(summary.attention);
   sortItems(summary.active);
   sortItems(summary.idle);
@@ -156,6 +173,11 @@ function section(title: string, items: SummaryItem[], nameWidth: number): string
   return lines;
 }
 
+function prSection(title: string, prs: SummaryPr[] | undefined): string[] {
+  if (!prs?.length) return [];
+  return ["", `${title} (${prs.length})`, ...prs.map((pr) => `  ${pr.key} — ${pr.reason} (${pr.agent})`)];
+}
+
 export function formatFleetSummary(summary: FleetSummary): string[] {
   if (summary.totalAgents === 0 && summary.unreachableHosts === 0) return ["No agents.", ...(summary.gc ? ["", `gc: ${summary.gc}`] : [])];
   // Historical agents can number in the hundreds. Keep the default report
@@ -175,6 +197,7 @@ export function formatFleetSummary(summary: FleetSummary): string[] {
   ] as const) {
     const rendered = section(title, items, nameWidth);
     if (rendered.length > 0) lines.push("", ...rendered);
+    if (title === "Needs attention") lines.push(...prSection("PRs needing you", summary.prs?.needsMe), ...prSection("PRs merge-ready", summary.prs?.mergeReady));
   }
   const hiddenExits = summary.exited.length - queuedExits.length;
   if (hiddenExits > 0) lines.push("", `Exited (${hiddenExits})`);
