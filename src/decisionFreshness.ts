@@ -116,8 +116,9 @@ export function runDecisionFreshness(options: RunDecisionFreshnessOptions = {}):
 
   let stores: Map<string, string> | null;
   let storesComplete = options.storesComplete ?? true;
+  const agents = options.agents ?? listAgents();
   if (options.stores === undefined) {
-    const result = readDecisionStoreTextsResult();
+    const result = readDecisionStoreTextsResult(agents.map((agent) => agent.name));
     if (result === null) return { status: "not-due" };
     stores = result.texts;
     storesComplete = result.complete;
@@ -125,7 +126,7 @@ export function runDecisionFreshness(options: RunDecisionFreshnessOptions = {}):
     stores = options.stores;
   }
   if (stores === null || !storesComplete) return { status: "not-due" };
-  const summary = scanDecisionFreshness(now, options.agents, stores);
+  const summary = scanDecisionFreshness(now, agents, stores);
   writeJsonAtomic(stateFile, { version: STATE_VERSION, lastRunDay: localDay(now), lastRunAt: now.toISOString() }, { durable: true });
   if (summary.attentionDecisions > 0) {
     const publish = options.notify ?? ((title: string, message: string) => notify(title, message, { kind: "attention" }));

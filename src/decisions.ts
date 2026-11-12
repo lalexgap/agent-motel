@@ -197,8 +197,9 @@ export function readDecisionStoreTextsIfAvailable(): Map<string, string> | null 
   return readDecisionStoreTextsResult()?.texts ?? null;
 }
 
-export function readDecisionStoreTextsResult(): { texts: Map<string, string>; complete: boolean } | null {
+export function readDecisionStoreTextsResult(relevantNames?: string[]): { texts: Map<string, string>; complete: boolean } | null {
   const out = new Map<string, string>();
+  const relevantSlugs = relevantNames === undefined ? null : new Set(relevantNames.map(slug));
   let complete = true;
   let files: string[];
   try {
@@ -212,7 +213,7 @@ export function readDecisionStoreTextsResult(): { texts: Map<string, string>; co
       const text = readStoreFile(join(decisionsHome(), file));
       if (text !== undefined) out.set(file.slice(0, -".json".length), text);
     } catch {
-      complete = false;
+      if (relevantSlugs === null || relevantSlugs.has(file.slice(0, -".json".length))) complete = false;
     }
   }
   return { texts: out, complete };
