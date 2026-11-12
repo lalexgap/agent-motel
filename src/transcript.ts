@@ -97,7 +97,6 @@ const INBOX_MAX_CHARS = 4 * 1024 * 1024;
 const INBOX_MAX_RECORDS = 1000;
 const PEER_NAME_RE = /^[^\]\r\n]{1,160}$/;
 
-// The text am sent through the peer socket, or null when the entry is not one.
 function peerSocketText(entry: Record<string, any>): string | null {
   const content = entry.message?.content;
   if (entry.type !== "user" || entry.origin?.kind !== "peer" || typeof content !== "string") return null;
@@ -193,7 +192,6 @@ function hookContextInboxTexts(entry: Record<string, any>): string[] {
   return out;
 }
 
-// The messages am delivered in this entry, or null when it delivered none.
 function amDeliveredTexts(entry: Record<string, any>, verifiedTags: () => Set<string>): string[] | null {
   if (entry.type === "user" && entry.isMeta) {
     const peer = peerSocketText(entry);
