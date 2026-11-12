@@ -57,6 +57,44 @@ function summary(agents: any[], unattributed: number[] = []) {
   };
 }
 
+describe("by agent type", () => {
+  const type = (name: string, costUSD: number, activeTokens: number, kind = "subagent") => ({ type: name, kind, costUSD, activeTokens, runs: 2, agents: 1 });
+
+  test("labels the main session and ranks by the chosen unit", () => {
+    const byType = [type("main", 5, 100, "main"), type("reviewer", 3, 900), type("engineer", 4, 50)];
+    expect(U.typeRows(byType, "usd").map((row: any) => [row.label, row.value])).toEqual([["Main agent", 5], ["engineer", 4], ["reviewer", 3]]);
+    expect(U.typeRows(byType, "tokens").map((row: any) => [row.label, row.value])).toEqual([["reviewer", 900], ["Main agent", 100], ["engineer", 50]]);
+    expect(U.typeRows(byType, "usd")[0]).toMatchObject({ runs: 2, agents: 1 });
+    expect(U.typeRows(undefined, "usd")).toEqual([]);
+    // A subagent that happens to be typed "main" is still a subagent.
+    expect(U.typeRows([type("main", 1, 1)], "usd")[0].label).toBe("main");
+  });
+
+  test("folds a long tail into one row", () => {
+    const many = Array.from({ length: 11 }, (_item, index) => type(`type-${index}`, 20 - index, 10));
+    const rows = U.typeRows(many, "usd");
+    expect(rows).toHaveLength(8);
+    expect(rows.slice(0, 7).map((row: any) => row.label)).toEqual(["type-0", "type-1", "type-2", "type-3", "type-4", "type-5", "type-6"]);
+    expect(rows[7]).toEqual({ label: "4 other types", value: 13 + 12 + 11 + 10, runs: 8, names: ["type-7", "type-8", "type-9", "type-10"] });
+    expect(U.typeRows(many.slice(0, 8), "usd")).toHaveLength(8);
+  });
+});
+
+describe("by effort", () => {
+  test("ranks effort levels by the chosen unit and names the calls with none recorded", () => {
+    const byEffort = [
+      { effort: "high", costUSD: 9, activeTokens: 100, calls: 4 },
+      { effort: "unrecorded", costUSD: 5, activeTokens: 900, calls: 7 },
+      { effort: "medium", costUSD: 1, activeTokens: 300, calls: 1 },
+    ];
+    expect(U.effortRows(byEffort, "usd")).toEqual([
+      { label: "high", value: 9, calls: 4 }, { label: "not recorded", value: 5, calls: 7 }, { label: "medium", value: 1, calls: 1 },
+    ]);
+    expect(U.effortRows(byEffort, "tokens").map((row: any) => row.label)).toEqual(["not recorded", "medium", "high"]);
+    expect(U.effortRows(undefined, "usd")).toEqual([]);
+  });
+});
+
 describe("formatting", () => {
   test("money drops cents from $100 up and keeps them below", () => {
     expect(U.money(1828.4)).toBe("$1,828");

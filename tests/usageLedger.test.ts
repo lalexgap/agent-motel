@@ -61,7 +61,7 @@ function assistant(
   id: string,
   timestamp: string,
   usage: UsageSpec,
-  opts: { model?: string; sidechain?: boolean } = {},
+  opts: { model?: string; sidechain?: boolean; effort?: unknown } = {},
 ): string {
   const write5m = usage.write5m ?? 0;
   const write1h = usage.write1h ?? 0;
@@ -69,6 +69,7 @@ function assistant(
     type: "assistant",
     timestamp,
     ...(opts.sidechain ? { isSidechain: true } : {}),
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     message: {
       id,
       model: opts.model ?? "claude-opus-5-5",
@@ -268,6 +269,72 @@ describe("usage ledger ingestion", () => {
     expect(alpha.subagentCostUSD).toBe(0.24);
     expect(alpha.mainCostUSD).toBe(0.6);
     expect(summary.unattributed.range.calls).toBe(0);
+  });
+
+  test("breaks spend down by who did the work: the main session or each subagent type", () => {
+    const session = (agent: string, id: string, subagents: [string, string | null][]) => {
+      const dir = projectDir();
+      const main = join(dir, `${id}.jsonl`);
+      writeTranscript(main, [assistant(`${id}_main`, "2026-11-10T08:00:00.000Z", { input: 100_000, output: 10_000 })]);
+      const subDir = join(dir, id, "subagents");
+      mkdirSync(subDir, { recursive: true });
+      for (const [sub, type] of subagents) {
+        writeTranscript(join(subDir, `agent-${sub}.jsonl`), [assistant(`${id}_${sub}`, "2026-11-10T08:01:00.000Z", { input: 40_000, output: 4_000 }, { sidechain: true })]);
+        if (type) writeFileSync(join(subDir, `agent-${sub}.meta.json`), JSON.stringify({ agentType: type }));
+      }
+      claudeAgent(agent, main, { repoRoot: join(home, "code", agent === "alpha" ? "one" : "two") });
+    };
+    session("alpha", "sess-a", [["r1", "reviewer"], ["r2", "reviewer"], ["e1", "engineer"], ["x1", null]]);
+    session("beta", "sess-b", [["r3", "reviewer"]]);
+    refreshAll();
+
+    const summary = usageSummary({ range: 7, now: NOW });
+    expect(summary.byType).toEqual([
+      { type: "main", kind: "main", costUSD: 1.2, activeTokens: 220_000, runs: 2, agents: 2 },
+      { type: "reviewer", kind: "subagent", costUSD: 0.72, activeTokens: 132_000, runs: 3, agents: 2 },
+      { type: "engineer", kind: "subagent", costUSD: 0.24, activeTokens: 44_000, runs: 1, agents: 1 },
+      { type: "general-purpose", kind: "subagent", costUSD: 0.24, activeTokens: 44_000, runs: 1, agents: 1 },
+    ]);
+    const total = summary.byType.reduce((sum, row) => sum + row.costUSD, 0);
+    expect(total).toBeCloseTo(summary.totals.last7.costUSD, 4);
+    expect(usageSummary({ range: 7, repo: "two", now: NOW }).byType.map((row) => [row.type, row.runs])).toEqual([["main", 1], ["reviewer", 1]]);
+    expect(usageSummary({ range: 7, now: new Date(NOW.getTime() + 40 * 86_400_000) }).byType).toEqual([]);
+  });
+
+  test("buckets each call by the reasoning effort its transcript records", () => {
+    const main = join(projectDir(), "sess-e.jsonl");
+    writeTranscript(main, [
+      assistant("e_1", "2026-11-10T08:00:00.000Z", { input: 100_000, output: 10_000 }, { effort: "high" }),
+      assistant("e_2", "2026-11-10T08:01:00.000Z", { input: 100_000, output: 10_000 }, { effort: "high" }),
+      assistant("e_3", "2026-11-10T08:02:00.000Z", { input: 50_000, output: 5_000 }, { effort: "medium" }),
+      assistant("e_4", "2026-11-10T08:03:00.000Z", { input: 50_000, output: 5_000 }),
+      assistant("e_5", "2026-11-10T08:04:00.000Z", { input: 50_000, output: 5_000 }, { effort: "High|e=max" }),
+      assistant("e_6", "2026-11-10T08:05:00.000Z", { input: 50_000, output: 5_000 }, { effort: { level: "high" } }),
+    ]);
+    claudeAgent("alpha", main, { repoRoot: join(home, "code", "one") });
+    const rolloutDir = join(home, ".codex", "sessions", "2026", "11", "10");
+    mkdirSync(rolloutDir, { recursive: true });
+    const sessionId = "019a0000-0000-7000-8000-00000000000e";
+    writeTranscript(join(rolloutDir, `rollout-2026-11-10T07-00-00-${sessionId}.jsonl`), [
+      JSON.stringify({ type: "turn_context", timestamp: "2026-11-10T07:00:00.000Z", payload: { model: "gpt-5.5-codex", effort: "xhigh" } }),
+      JSON.stringify({ type: "event_msg", timestamp: "2026-11-10T07:00:05.000Z", payload: { type: "token_count", info: {
+        total_token_usage: { total_tokens: 3000 }, last_token_usage: { input_tokens: 2500, cached_input_tokens: 500, output_tokens: 500 } } } }),
+    ]);
+    writeAgent({ name: "gamma", provider: "codex", status: "idle", dir: join(home, "code", "two"), tmuxSession: "am-test-gamma", sessionId,
+      createdAt: "2026-11-02T00:00:00.000Z", updatedAt: "2026-11-10T00:00:00.000Z" });
+    refreshAll();
+
+    expect(Object.keys(entryFor(main).days["2026-11-10"]!).sort()).toEqual(["claude-opus-5-5", "claude-opus-5-5|e=high", "claude-opus-5-5|e=medium"]);
+    const summary = usageSummary({ range: 7, now: NOW });
+    expect(summary.byEffort).toEqual([
+      { effort: "high", costUSD: 1.2, activeTokens: 220_000, calls: 2 },
+      { effort: "unrecorded", costUSD: 0.9, activeTokens: 165_000, calls: 3 },
+      { effort: "medium", costUSD: 0.3, activeTokens: 55_000, calls: 1 },
+      { effort: "xhigh", costUSD: 0, activeTokens: 2500, calls: 1 },
+    ]);
+    // Effort never changes what a call costs or which model it is filed under.
+    expect(summary.byModel.map((m) => [m.model, m.costUSD])).toEqual([["claude-opus-5-5", 2.4], ["gpt-5.5-codex", 0]]);
+    expect(summary.totals.last7.costUSD).toBeCloseTo(2.4, 4);
   });
 
   test("keeps a removed agent's usage, and a deleted transcript's", () => {
