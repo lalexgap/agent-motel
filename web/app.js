@@ -794,146 +794,6 @@ $("transcript").addEventListener("scroll", updateLatestButton);
 $("jump-latest").onclick = () => { $("transcript").scrollTop = $("transcript").scrollHeight; updateLatestButton(); };
 $("sidebar-group").onchange = renderFleet;
 
-function promptTerminalButton() {
-  const button = el("button", "text-button", "Open terminal");
-  button.onclick = () => { setDetailMode("terminal"); updateAgentView(); };
-  return button;
-}
-function panePromptBox(prompt, base) {
-  const box = el("section", "permission question");
-  box.setAttribute("aria-label", "Agent prompt");
-  box.append(el("h3", "", prompt.kind === "permission" ? "Permission requested" : "Question from agent"));
-  box.append(el("pre", "permission-call", prompt.kind === "permission" ? prompt.raw : prompt.title));
-  const actions = el("div", "question-options");
-  const error = el("p", "question-note");
-  error.setAttribute("role", "status");
-  const submit = async (optionId, text) => {
-    for (const control of box.querySelectorAll("button, input")) control.disabled = true;
-    try {
-      await api(base + "/prompt", { id: prompt.id, optionId, ...(text !== undefined ? { text } : {}) });
-      error.textContent = "Answer sent. Waiting for the agent…";
-      await refreshDetail();
-    } catch (e) {
-      error.textContent = e.message;
-      // A failed request may have written some keys. Inspect before retrying.
-      const terminal = box.querySelector(".text-button");
-      if (terminal) terminal.disabled = false;
-      scheduleRefresh();
-    }
-  };
-  for (const [index, option] of prompt.options.entries()) {
-    if (option.other) {
-      const form = el("form", "permission-actions prompt-other");
-      const input = el("input");
-      input.type = "text";
-      input.placeholder = "Other — type your answer";
-      input.setAttribute("aria-label", "Other answer");
-      input.maxLength = 2000;
-      input.required = true;
-      const button = el("button", "", "Send answer");
-      button.type = "submit";
-      form.append(input, button);
-      form.onsubmit = (event) => { event.preventDefault(); if (input.value.trim()) submit(option.id, input.value); };
-      actions.append(form);
-    } else {
-      const button = el("button", "question-option");
-      const number = el("span", "question-index", String(index + 1));
-      number.setAttribute("aria-hidden", "true");
-      button.append(number, el("span", "question-label", option.label));
-      if (option.description) button.append(el("span", "question-description", option.description));
-      button.onclick = () => submit(option.id);
-      actions.append(button);
-    }
-  }
-  box.append(actions, error, promptTerminalButton());
-  return box;
-}
-function renderPromptCards(pending, detail, permissions, base) {
-  const content = JSON.stringify([base, detail.panePrompt, permissions.requests, detail.status]);
-  if (pending.dataset.content === content) {
-    const rawPane = pending.querySelector(".prompt-raw-pane");
-    if (rawPane) rawPane.textContent = detail.pane || "No active terminal.";
-    return;
-  }
-  pending.dataset.content = content;
-  pending.replaceChildren();
-  if (detail.panePrompt) {
-    pending.append(panePromptBox(detail.panePrompt, base));
-  } else {
-    for (const request of permissions.requests) pending.append(permissionBox(request, base));
-    if (detail.status === "needs-attention" && !permissions.requests.length) {
-      const box = el("section", "permission");
-      box.append(el("h3", "", "Agent needs attention"), el("p", "question-note", "This prompt could not be recognized. Answer it in the web terminal."));
-      const raw = el("details");
-      raw.append(el("summary", "", "Show raw pane"), el("pre", "permission-call prompt-raw-pane", detail.pane || "No active terminal."));
-      box.append(raw, promptTerminalButton());
-      pending.append(box);
-    }
-  }
-}
-
-// AskUserQuestion arrives as a permission request; render its questions.
-function permissionBox(request, base) {
-  const asked = request.tool === "AskUserQuestion" && Array.isArray(request.input?.questions)
-    ? request.input.questions.filter((q) => typeof q?.question === "string")
-    : [];
-  const questions = asked.length ? asked : null;
-  const box = el("div", questions ? "permission question" : "permission");
-  const answer = (option) => async () => {
-    for (const other of box.querySelectorAll("button")) other.disabled = true;
-    try {
-      await api(base + "/permissions/" + encodeURIComponent(request.id), { optionId: option.id });
-      await refreshDetail();
-    } catch (e) {
-      notice(e.message);
-      for (const other of box.querySelectorAll("button")) other.disabled = false;
-    }
-  };
-  if (!questions) {
-    const title = el("h3", "", "Permission requested");
-    title.prepend(icon("shield"));
-    box.append(title);
-    const call = el("pre", "permission-call");
-    call.append(el("strong", "", request.tool), document.createTextNode(request.summary.startsWith(request.tool + ":") ? request.summary.slice(request.tool.length + 1) : ""));
-    box.append(call);
-    const actions = el("div", "permission-actions");
-    for (const option of request.options) {
-      const button = el("button", option.kind === "allow" ? "primary" : "", option.label);
-      button.onclick = answer(option);
-      actions.append(button);
-    }
-    box.append(actions);
-    return box;
-  }
-  const answers = new Map(request.options.filter((o) => o.id.startsWith("answer-")).map((o) => [o.label, o]));
-  for (const question of questions) {
-    if (question.header) box.append(el("span", "question-header", question.header));
-    box.append(window.agentMarkdown.render(el("div", "turn-text question-text"), question.question));
-    const list = el("div", "question-options");
-    for (const [index, choice] of (Array.isArray(question.options) ? question.options : []).filter((c) => typeof c?.label === "string").entries()) {
-      const option = answers.get(choice.label);
-      const item = el(option ? "button" : "div", "question-option");
-      const number = el("span", "question-index", String(index + 1));
-      number.setAttribute("aria-hidden", "true");
-      item.append(number, el("span", "question-label", choice.label));
-      if (choice.description) item.append(el("span", "question-description", choice.description));
-      if (option) item.onclick = answer(option);
-      list.append(item);
-    }
-    box.append(list);
-  }
-  const footer = el("div", "permission-actions");
-  footer.append(el("span", "question-note", answers.size ? "Or answer in the terminal." : "Answer in the terminal."));
-  for (const option of request.options.filter((o) => !o.id.startsWith("answer-"))) {
-    const button = el("button", "text-button", option.label);
-    button.onclick = answer(option);
-    footer.append(button);
-  }
-  footer.append(promptTerminalButton());
-  box.append(footer);
-  return box;
-}
-
 // A message sent mid-turn is held by the agent's TUI until it reads it, so keep
 // showing it until a user turn logged after the send matches it.
 const pendingSent = new Map(), lastUserTexts = new Map();
@@ -1111,7 +971,15 @@ async function refreshDetail() {
     queue.append(queueAsideItem(item, item.msgId ? cancelQueued(item) : null));
   }
   const pending = $("permissions");
-  renderPromptCards(pending, detail, permissions, base);
+  window.agentPrompts.renderPromptCards(pending, {
+    key: base, detail, permissions,
+    answerPrompt: (prompt, optionId, text) => api(base + "/prompt", { id: prompt.id, optionId, ...(text !== undefined ? { text } : {}) }),
+    answerPermission: (request, optionId) => api(base + "/permissions/" + encodeURIComponent(request.id), { optionId }),
+    refresh: refreshDetail,
+    retryLater: scheduleRefresh,
+    openTerminal: () => { setDetailMode("terminal"); updateAgentView(); },
+    onError: notice,
+  });
   showWorking("chat-working", detail.status, detail.statusChangedAt);
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;
