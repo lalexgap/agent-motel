@@ -915,12 +915,8 @@ function unescapeJson(fragment: string): string {
   }
 }
 
-// ── What an agent idle at its prompt is still waiting on ──
-//
-// A background subagent outlives the turn that spawned it, so its parent sits
-// at the prompt (stored status: idle) while it runs. Whether the ledger's open
-// records are really running decides what the parent is shown as — and an open
-// record alone is not proof: the hook that would close it can go missing.
+// An open ledger record alone is not proof a subagent runs: the hook that
+// would close it can go missing.
 
 // A running subagent writes its transcript every few seconds; its longest
 // silence is one tool call (capped at ten minutes) or a rate-limit backoff.

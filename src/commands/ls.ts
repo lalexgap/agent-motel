@@ -240,14 +240,9 @@ export interface BusyWith {
   background: number;
 }
 
-// How an agent is shown, against what its state file stores.
-//
-// The stored status stays raw: `idle` means "at its prompt", which is what
-// delivery, the queue drain, `am send`, model switches and delivery receipts
-// act on — a parent waiting on subagents takes a message exactly as an idle
-// one does. Everything that SHOWS a status (`am ls`, `am summary`, the hub,
-// the web and macOS apps, `am peek`) reads this instead, where an idle agent
-// with live subagents is `working`.
+// How an agent is shown. Delivery, the queue drain and `am send` act on the
+// stored (raw) status; only display reads this, where an idle agent with live
+// subagents is `working`.
 export interface Presence {
   status: DisplayStatus;
   rawStatus: AgentState["status"];
