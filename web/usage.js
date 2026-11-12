@@ -318,7 +318,6 @@ window.usageDashboard = (() => {
     return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
   }
 
-  // --- Rendering -------------------------------------------------------------
   // Shared by the browser UI and the desktop app. Renderers fill the skeleton that
   // buildPage creates (index.html carries the same markup) inside `root`, from data
   // passed in; they make no network calls. User actions go to the host through
@@ -516,7 +515,6 @@ window.usageDashboard = (() => {
     select.value = previous;
   }
 
-  // The breakdown's scope picker lists the fleet's local agents plus any in the report.
   function populateAgentSelect(root, fleetNames, reportAgents = []) {
     const select = find(root, "usage-agent");
     if (!select) return;
