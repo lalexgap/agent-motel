@@ -301,6 +301,12 @@ test("branch discovery excludes same-named branches from forks", async () => {
   expect(queueDepth(owner.name)).toBe(0);
 });
 
+test("a fork PR's head branch is not kept, so it never links into a stack", () => {
+  const value = { ...pr(), headRefName: "main", baseRefName: "main" };
+  expect(parsePullRequest("owner/repo", api(value)).headRefName).toBe("main");
+  expect(parsePullRequest("owner/repo", api(value, "fork/repo")).headRefName).toBeUndefined();
+});
+
 test("explicit registration validates URLs and API identity", async () => {
   const owner = agent("owner", "exited");
   expect(() => parsePrUrl("https://evil.test/owner/repo/pull/1")).toThrow();

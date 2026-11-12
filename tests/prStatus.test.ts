@@ -42,8 +42,10 @@ describe("PR status derivation", () => {
   test("a shepherd verdict given before the current head is ignored", () => {
     const stale = status([pr({ headSince: ago(10) })], { subagents: [shepherd({ endedAt: ago(60), message: "PR #7 is **merge-ready**." })] })[0]!;
     expect(stale.state).toBe("waiting");
-    const within = status([pr({ headSince: ago(10) })], { subagents: [shepherd({ endedAt: ago(12), message: "PR #7 is **merge-ready**." })] })[0]!;
-    expect(within.state).toBe("merge-ready");
+    const justBefore = status([pr({ headSince: ago(10) })], { subagents: [shepherd({ endedAt: ago(12), message: "PR #7 is **merge-ready**." })] })[0]!;
+    expect(justBefore.state).toBe("waiting");
+    const namesHead = status([pr({ headSince: ago(10) })], { subagents: [shepherd({ endedAt: ago(12), message: `PR #7 is merge-ready at ${HEAD.slice(0, 7)}.` })] })[0]!;
+    expect(namesHead.state).toBe("merge-ready");
   });
 
   test("shepherding covers a running shepherd and one between wake-ups, with the blocker it is working on", () => {

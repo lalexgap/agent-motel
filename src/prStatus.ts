@@ -55,8 +55,6 @@ export interface PrStatusInput {
 export const RECENT_MS = 72 * 3600_000;
 // A stopped shepherd with no verdict is between wake-ups, not finished.
 const SHEPHERD_WAIT_MS = 30 * 60_000;
-// The poller first sees a new head up to a sweep after the push that made it.
-const HEAD_SLACK_MS = 5 * 60_000;
 
 function prNumbers(text: string | undefined): number[] {
   return [...(text ?? "").matchAll(/(?:\bPR\s*#?|#)(\d{1,7})\b/gi)].map(match => Number(match[1]));
@@ -73,6 +71,8 @@ function concerns(sub: PrSubagent, number: number, sole: boolean): boolean {
   return said.length ? said.includes(number) : sole;
 }
 
+const plain = (text: string | undefined) => text?.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+
 export function shepherdVerdict(message: string | undefined): "ready" | "not-ready" | undefined {
   if (!message) return undefined;
   if (/\bnot (?:yet )?(?:merge[- ])?ready\b|\bisn['’]t (?:yet )?(?:merge[- ])?ready\b|\bno (?:readiness )?verdict\b|\bblocked\b/i.test(message)) return "not-ready";
@@ -86,11 +86,12 @@ function shepherdFor(pr: TrackedPullRequest, input: PrStatusInput, sole: boolean
   if (!latest.endedAt) return input.alive ? { state: "running", note: latest.description, at: latest.startedAt } : undefined;
   const verdict = shepherdVerdict(latest.message);
   const headSeen = Date.parse(pr.headSince ?? "");
-  const stale = Number.isFinite(headSeen) && Date.parse(latest.endedAt) < headSeen - HEAD_SLACK_MS;
-  if (verdict && !stale) return { state: verdict, note: latest.message, at: latest.endedAt };
+  const namesHead = !!pr.headSha && (latest.message ?? "").includes(pr.headSha.slice(0, 7));
+  const stale = Number.isFinite(headSeen) && Date.parse(latest.endedAt) < headSeen && !namesHead;
+  if (verdict && !stale) return { state: verdict, note: plain(latest.message), at: latest.endedAt };
   const helpers = mine.some(sub => !sub.endedAt && !isShepherd(sub));
   const fresh = input.now.getTime() - Date.parse(latest.endedAt) < SHEPHERD_WAIT_MS;
-  if (!verdict && input.alive && (helpers || fresh)) return { state: "waiting", note: latest.message ?? latest.description, at: latest.endedAt };
+  if (!verdict && input.alive && (helpers || fresh)) return { state: "waiting", note: plain(latest.message ?? latest.description), at: latest.endedAt };
   return undefined;
 }
 

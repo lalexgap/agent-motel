@@ -27,6 +27,10 @@ test("reads open decisions and the PRs they are about", () => {
   ]);
 });
 
+test("strips control characters from a question", () => {
+  expect(parseOpenDecisions(store([item({ question: "Ship\x1b[2J it?\x07" })]))[0]!.question).toBe("Ship [2J it?");
+});
+
 test("ignores a store it does not understand rather than guessing", () => {
   expect(parseOpenDecisions("{not json")).toEqual([]);
   expect(parseOpenDecisions(store([item()], 2))).toEqual([]);

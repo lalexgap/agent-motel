@@ -58,10 +58,10 @@ The same sweep that watches lifecycle now also stores each PR's title, draft fla
 
 How the inputs are read:
 
-- **Shepherd.** A subagent of type `shepherd`, or whose description mentions a shepherd, belongs to the PR number in its description (`Shepherd PR 123`); one that names no PR is attributed only when its agent has a single open PR. A shepherd that stopped without a verdict counts as `shepherding` for 30 minutes, or for as long as a reviewer for that PR is still running. Its last message is read for a verdict: “merge-ready” counts, unless the message also says not ready, blocked or no verdict. A verdict given more than five minutes before the sweep first saw the current head is ignored.
+- **Shepherd.** A subagent of type `shepherd`, or whose description mentions a shepherd, belongs to the PR number in its description (`Shepherd PR 123`); one that names no PR is attributed only when its agent has a single open PR. A shepherd that stopped without a verdict counts as `shepherding` for 30 minutes, or for as long as a reviewer for that PR is still running. Its last message is read for a verdict: “merge-ready” counts, unless the message also says not ready, blocked or no verdict. A verdict given before the sweep first saw the current head is ignored, unless its message names that head (a 7+ character SHA prefix).
 - **Readiness.** Derived from GitHub and the shepherd verdict, not from `am pr --ready` alone, because that command can withhold a mark it should give. The mark is shown as evidence: a merge-ready row without it says so, a mark for an older head is reported as stale, and a marked PR whose state has since changed says the two disagree.
 - **Decisions.** Read from `~/.local/state/agent-decisions/<agent>.json` (`DECISIONS_HOME` overrides), the decisions skill's store. Agent Motel never writes it. An open decision applies to the PRs in its `prs` list, else to a PR `link`; an untagged one applies only when its agent has a single open PR.
-- **Stacks.** A PR whose base branch is another tracked open PR's head branch in the same repository is its child; rows carry their position and the chain length.
+- **Stacks.** A PR whose base branch is another tracked open PR's head branch in the same repository is its child (fork PRs never link); rows carry their position and the chain length.
 
 ## Alternatives and future events
 

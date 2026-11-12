@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { notificationPrUrl } from "./notifications";
@@ -46,7 +46,7 @@ export function parseOpenDecisions(text: string): OpenDecision[] {
     const link = prUrl(item.link);
     open.push({
       id: item.id.slice(0, 40),
-      question: item.question.replace(/\s+/g, " ").trim().slice(0, 300),
+      question: item.question.replace(/[\s\x00-\x1f\x7f]+/g, " ").trim().slice(0, 300),
       blocking: item.blocking === true,
       ...(typeof item.asked_at === "string" && Number.isFinite(Date.parse(item.asked_at)) ? { askedAt: item.asked_at } : {}),
       ...(typeof item.link === "string" && /^https:\/\//.test(item.link) ? { link: item.link.slice(0, 500) } : {}),
@@ -58,7 +58,7 @@ export function parseOpenDecisions(text: string): OpenDecision[] {
 
 export function readOpenDecisions(agent: string): OpenDecision[] {
   try {
-    const text = readFileSync(join(decisionsHome(), `${slug(agent)}.json`), "utf8");
-    return text.length > MAX_BYTES ? [] : parseOpenDecisions(text);
+    const path = join(decisionsHome(), `${slug(agent)}.json`);
+    return statSync(path).size > MAX_BYTES ? [] : parseOpenDecisions(readFileSync(path, "utf8"));
   } catch { return []; }
 }

@@ -91,11 +91,12 @@ export function checksVerdict(checks: PrChecks | undefined): "failing" | "pendin
 }
 
 // GitHub detail is display evidence, never a gate: malformed values are dropped, not thrown.
-function parseDetail(value: any): Partial<TrackedPullRequest> {
+function parseDetail(repository: string, value: any): Partial<TrackedPullRequest> {
   const review = ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"].includes(value.reviewDecision) ? value.reviewDecision : undefined;
   const mergeState = ["BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"].includes(value.mergeStateStatus) ? value.mergeStateStatus : undefined;
   const detail: Partial<TrackedPullRequest> = {
-    title: clip(value.title, 200), baseRefName: clip(value.baseRefName, 200), headRefName: clip(value.headRefName, 200),
+    title: clip(value.title, 200), baseRefName: clip(value.baseRefName, 200), // A fork's branch name says nothing about this repository's branches, so stacks can't link through it.
+    headRefName: value.headRepository?.nameWithOwner?.toLowerCase() === repository.toLowerCase() ? clip(value.headRefName, 200) : undefined,
     draft: typeof value.isDraft === "boolean" ? value.isDraft : undefined,
     reviewDecision: review, mergeStateStatus: mergeState, checks: summarizeChecks(value.statusCheckRollup),
   };
@@ -123,7 +124,7 @@ export function parsePullRequest(repository: string, value: any): TrackedPullReq
     throw new Error("Merged PR is missing merge evidence");
   }
   return { repository, number: value.number, url, state: value.state, updatedAt: value.updatedAt,
-    ...parseDetail(value),
+    ...parseDetail(repository, value),
     ...(headSha ? { headSha } : {}), ...(mergeable ? { mergeable } : {}),
     ...(Number.isFinite(Date.parse(value.closedAt)) ? { closedAt: value.closedAt } : {}),
     ...(value.state === "MERGED" ? { mergedAt: value.mergedAt, mergeCommit: sha } : {}) };
