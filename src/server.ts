@@ -6,6 +6,7 @@ import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
 import { agentWorkspaceDiff, agentWorkspace, validateRemoteWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
+import { agentDecisions, decisionsPageLink, validDecisionsAgent } from "./webDecisions";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
 import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
@@ -633,7 +634,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage"]);
+  const actions = new Set(["stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage", "decisions"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -695,6 +696,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   if (parts.length === 1 && parts[0] === "concierge" && method === "POST") {
     try { const location = await ensureConcierge(undefined, { quiet: true }); return json({ key: location.key }); }
     catch (error) { return json({ error: (error as Error).message }, 409); }
+  }
+
+  // POST /api/decisions/link — {agent?}: the operator's decisions page URL from
+  // `drop decisions`. The URL is a credential: returned here only, never stored.
+  if (parts.length === 2 && parts[0] === "decisions" && parts[1] === "link" && method === "POST") {
+    const body = (await req.json().catch(() => null)) as { agent?: unknown } | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "JSON object required" }, 400);
+    if (body.agent !== undefined && !validDecisionsAgent(body.agent)) return json({ error: "invalid agent name", reason: "invalid_agent" }, 400);
+    const result = await decisionsPageLink(body.agent as string | undefined);
+    const response = result.ok ? json({ url: result.url }) : json({ error: result.error, reason: result.reason }, result.status);
+    response.headers.set("cache-control", "no-store");
+    return response;
   }
 
   // GET /api/health
@@ -869,6 +882,12 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
           { copy: false, start: true, exact: true, ...(body.dir ? { dir: body.dir } : {}) });
         return json({ ok: true, key: destination ? `${destination}:${target.name}` : target.name, message });
       } catch (error) { return json({ error: (error as Error).message }, 409); }
+    }
+    // GET /api/agents/:name/decisions — open decisions; remote stores are not read yet.
+    if (parts.length === 3 && parts[2] === "decisions" && method === "GET") {
+      if (target.host) return json({ decisions: [], remote: true });
+      if (!readAgent(target.name)) return json({ error: `no local agent "${target.name}"` }, 404);
+      return json({ decisions: agentDecisions(target.name) });
     }
     if (target.host) return handleRemoteAgent(req, target.host, target.name, parts.slice(2));
     const { name } = target;
@@ -1138,7 +1157,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/prs.js": "web/prs.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/prs.js": "web/prs.js", "/decisions.js": "web/decisions.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

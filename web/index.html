@@ -19,6 +19,7 @@
     <script src="/search.js" defer></script>
     <script src="/usage.js" defer></script>
     <script src="/prs.js" defer></script>
+    <script src="/decisions.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -94,6 +95,7 @@
               <p class="eyebrow">CONTROL PLANE</p>
               <h1 id="page-title">Fleet monitor</h1>
               <p id="page-subtitle"></p>
+              <p class="decisions-cue-line"><button id="decisions-cue" class="decisions-cue" type="button" hidden></button><span id="decisions-cue-note" class="decisions-note" role="status"></span></p>
             </div>
             <button id="new-agent" class="primary">+ New agent</button>
           </section>
@@ -347,6 +349,8 @@
             <div id="permissions"></div>
             <div class="conversation-layout">
               <div class="conversation">
+                <div id="decisions" hidden></div>
+                <p id="decisions-note" class="decisions-note" role="status"></p>
                 <section id="terminal-panel" aria-label="Interactive agent terminal">
                   <div class="terminal-toolbar">
                     <span id="terminal-status" role="status">Connecting…</span>

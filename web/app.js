@@ -248,6 +248,10 @@ function lock() {
   $("workspace-diff-dialog").close();
   $("manage-agent-dialog").close();
   state.related = null;
+  resetDecisions();
+  decisionsUnavailable = null;
+  $("decisions-cue").hidden = true;
+  $("decisions-cue-note").replaceChildren();
   $("related-agents").replaceChildren();
   $("subagent-output").replaceChildren();
   $("dock-transcript").replaceChildren();
@@ -428,6 +432,8 @@ function renderFleet() {
   });
   $("attention-count").textContent = rows.filter(attention).length;
   $("attention-count").hidden = !rows.some(attention);
+  renderDecisionsCue();
+  syncDecisions();
   const nav = $("agent-nav");
   nav.replaceChildren();
   const sidebarQuery = $("sidebar-search").value.trim().toLowerCase();
@@ -457,10 +463,13 @@ function renderFleet() {
     const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
     button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
     const heading = el("span", "side-agent-heading");
-    heading.append(dot(row.status), el("span", "side-agent-name", row.name), label);
+    heading.append(dot(row.status), el("span", "side-agent-name", row.name));
+    if (row.openDecisions > 0) heading.append(decisionsBadge(row));
+    heading.append(label);
     const age = Date.parse(row.updatedAt || "");
     const reason = row.statusDetail || row.statusReason;
-    button.setAttribute("aria-label", [row.name, statusName(row.status), reason, provider].filter(Boolean).join(", "));
+    button.setAttribute("aria-label", [row.name, statusName(row.status), reason, provider,
+      row.openDecisions > 0 ? decisionsBadgeLabel(row) : ""].filter(Boolean).join(", "));
     const meta = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : "",
       Number.isFinite(age) ? `${elapsed(Math.max(0, Date.now() - age))} ago` : ""].filter(Boolean);
     const prs = row.prMonitor?.pullRequests || [];
@@ -992,6 +1001,7 @@ async function refreshDetail() {
     openTerminal: () => { setDetailMode("terminal"); updateAgentView(); },
     onError: notice,
   });
+  renderDecisions();
   showWorking("chat-working", detail.status, detail.statusChangedAt, detail.busyWith);
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;
@@ -2199,3 +2209,140 @@ function showPrs() {
 }
 
 $("prs-nav").onclick = () => showPrs();
+
+// --- Open decisions -----------------------------------------------------------
+
+// The decisions page URL is a credential: fetched on click, handed to window.open and
+// a short-lived fallback link, and never kept in state or storage.
+let decisionsUnavailable = null;
+const decisionsView = { key: null, sig: null, decisions: [], seq: 0 };
+const pluralize = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function decisionsBadgeLabel(row) {
+  const label = `${pluralize(row.openDecisions, "decision", "decisions")} waiting on you`;
+  return row.firstDecision ? `${label}: ${row.firstDecision}` : label;
+}
+function decisionsBadge(row) {
+  const node = el("span", "decisions-badge" + (row.blockingDecisions > 0 ? " blocking" : ""), String(row.openDecisions));
+  node.title = decisionsBadgeLabel(row);
+  node.setAttribute("aria-label", node.title);
+  return node;
+}
+
+function showDecisionsNote(note, text, url) {
+  note.replaceChildren();
+  clearTimeout(note.clearTimer);
+  if (!text) return;
+  note.append(document.createTextNode(text));
+  if (url) {
+    // Popup blockers can swallow the window.open after the request; offer the link itself briefly.
+    const link = el("a", "", "Open it");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    note.append(document.createTextNode(" "), link);
+  }
+  note.clearTimer = setTimeout(() => note.replaceChildren(), 60_000);
+}
+
+async function openDecisionsPage(agent, anchor, note) {
+  const epoch = state.sessionEpoch;
+  let response, data;
+  try {
+    response = await fetch("/api/decisions/link", {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(agent ? { agent } : {}),
+    });
+    data = await response.json().catch(() => ({}));
+  } catch {
+    showDecisionsNote(note, "Could not reach the server.");
+    throw new Error("unreachable");
+  }
+  if (epoch !== state.sessionEpoch) return;
+  if (response.status === 401) { lock(); return; }
+  if (!response.ok || typeof data.url !== "string") {
+    if (data.reason === "drop_missing") {
+      decisionsUnavailable = "The decisions page is not set up on this server.";
+      renderDecisionsCue();
+      renderDecisions(true);
+    }
+    showDecisionsNote(note, data.error || "Could not open the decisions page.");
+    throw new Error("unavailable");
+  }
+  const target = data.url + (anchor || "");
+  window.open(target, "_blank", "noopener,noreferrer");
+  showDecisionsNote(note, "Opened the decisions page in a new tab. Didn't open?", target);
+}
+
+function renderDecisionsCue() {
+  const count = state.rows.filter((row) => row.openDecisions > 0).length;
+  const cue = $("decisions-cue");
+  cue.hidden = !count;
+  cue.textContent = `${pluralize(count, "agent", "agents")} waiting on decisions`;
+  cue.disabled = !!decisionsUnavailable;
+  cue.title = decisionsUnavailable || "Open the decisions page";
+}
+$("decisions-cue").onclick = async () => {
+  const cue = $("decisions-cue");
+  cue.disabled = true;
+  try { await openDecisionsPage(null, "", $("decisions-cue-note")); } catch {}
+  cue.disabled = !!decisionsUnavailable;
+};
+
+function resetDecisions() {
+  decisionsView.key = decisionsView.sig = null;
+  decisionsView.decisions = [];
+  decisionsView.seq++;
+  $("decisions").replaceChildren();
+  $("decisions").hidden = true;
+  delete $("decisions").dataset.content;
+  $("decisions-note").replaceChildren();
+}
+
+// Refetches the selected agent's decisions only when its row's counts change.
+function syncDecisions() {
+  const name = state.selected;
+  if (decisionsView.key !== name) {
+    resetDecisions();
+    decisionsView.key = name;
+  }
+  const row = name && state.rows.find((r) => key(r) === name);
+  if (!row || row.host || !(row.openDecisions > 0)) {
+    if (decisionsView.decisions.length || decisionsView.sig) {
+      decisionsView.sig = null;
+      decisionsView.decisions = [];
+      decisionsView.seq++;
+      renderDecisions();
+    }
+    return;
+  }
+  const sig = [row.openDecisions, row.blockingDecisions, row.oldestDecisionAt, row.firstDecision].join("|");
+  if (decisionsView.sig === sig) return;
+  decisionsView.sig = sig;
+  const seq = ++decisionsView.seq;
+  api("/api/agents/" + encodeURIComponent(name) + "/decisions").then((data) => {
+    if (seq !== decisionsView.seq || state.selected !== name) return;
+    decisionsView.decisions = data.remote ? [] : data.decisions || [];
+    renderDecisions();
+  }).catch(() => {
+    if (seq === decisionsView.seq) decisionsView.sig = null;
+  });
+}
+
+function renderDecisions(force = false) {
+  const container = $("decisions");
+  const name = state.selected;
+  const decisions = decisionsView.key === name ? decisionsView.decisions : [];
+  const now = Date.now();
+  const ages = decisions.map((d) => window.agentDecisions.relativeTime(d.asked_at, now));
+  const content = JSON.stringify([name, decisions, ages, decisionsUnavailable]);
+  if (!force && container.dataset.content === content) return;
+  container.dataset.content = content;
+  const card = window.agentDecisions.renderDecisionCard(decisions, {
+    agent: name, now, unavailable: decisionsUnavailable,
+    onAnswer: (decision, agent) => openDecisionsPage(agent, "#" + encodeURIComponent(`${agent}-${decision.id}`), $("decisions-note")),
+  });
+  container.replaceChildren(...(card ? [card] : []));
+  container.hidden = !card;
+}
