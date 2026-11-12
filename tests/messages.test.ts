@@ -277,6 +277,18 @@ describe("delivery receipts", () => {
       expect(queueDepth("api")).toBe(1);
     });
 
+    test("an interrupt does not end the turn while a dialog without an esc hint stays up", async () => {
+      fakeSession("working");
+      fastSleep();
+      writeFileSync(join(home, "dialog"), DIALOG.replace(" Esc to cancel · Tab to amend", " Enter to select · ↑/↓ to navigate"));
+      writeFileSync(join(home, "dialog-stays"), "");
+      const sent = await interruptCommand("api", "option 1 please", { exact: true, track: true });
+      expect(sent.outcome).toBe("queued");
+      expect(typed()).toBe("");
+      expect(readAgent("api")!.status).toBe("working");
+      expect(readMessage("api", sent.id!)!.state).toBe("queued");
+    });
+
     test("Codex: its approval overlay refuses typing; a pane mid-turn does not", async () => {
       fakeSession("working");
       fastSleep();

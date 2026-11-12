@@ -806,6 +806,8 @@ export async function endAbortedTurn(name: string, escAt: number): Promise<boole
     const pane = capturePane(agent.tmuxSession, { colors: true });
     const input = pane && parsedInputBoxText(pane, agentProvider(agent));
     if (!pane || input === null || turnRunning(pane, agentProvider(agent))) continue;
+    // A dialog the Esc left up can frame an empty box; the turn has not ended.
+    if (agentProvider(agent) === "claude" && claudePaneView(pane) !== "composer") continue;
     if (input !== "") {
       // Claude puts back a prompt Esc'd before its turn got going. Left
       // there, it would hold the queue behind it, and Enter would rerun it.
