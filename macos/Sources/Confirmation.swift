@@ -6,7 +6,8 @@ import AppKit
 /// reserves the slot before its pre-check, so a second confirmed call rejects instead of queueing.
 ///
 /// An unread accept is refused natively: for `armDelay` after the sheet appears, and again each time
-/// it becomes key, every key but Esc is swallowed, and a repeated Return, Enter or Space never counts.
+/// it becomes key, every key but Esc is swallowed (including keys aimed at the parent window), clicks
+/// on it are ignored for `armDelay` after it attaches, and a repeated Return, Enter or Space never counts.
 /// When the app is not active the sheet attaches without activating it, so typing in another app
 /// cannot land on it, and switching back to the app re-arms it.
 @MainActor
@@ -83,6 +84,8 @@ final class Confirmation {
         let sheet = alert.window
         let defaultButton = text.destructive ? cancel : confirm
         let armStart = ArmStart()
+        let attachedAt = armStart.uptime
+        let parentNumber = window.windowNumber
         // Key events reach the sheet only while it is key, so each time it becomes key
         // (the user switching back to the app, say) the delay starts over.
         let rearm = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: sheet, queue: .main) { [armStart] _ in
@@ -98,7 +101,9 @@ final class Confirmation {
             let typedAt = event.timestamp
             // Local monitors run on the main thread; only plain values cross into the actor.
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard let sheet, sheet.windowNumber == target, let cancel, let defaultButton else { return false }
+                // A key typed at the parent window before the sheet took over still lands on the sheet.
+                guard let sheet, let cancel, let defaultButton,
+                      sheet.isKeyWindow || target == sheet.windowNumber || target == parentNumber else { return false }
                 if code == 53 {
                     cancel.performClick(nil)
                     return true
@@ -115,6 +120,17 @@ final class Confirmation {
             return handled ? nil : event
         }
         defer { if let keys { NSEvent.removeMonitor(keys) } }
+        // A click already on its way (the second half of a double-click) cannot answer a sheet that just appeared.
+        let clicks = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak sheet] event in
+            let target = event.windowNumber
+            let clickedAt = event.timestamp
+            let swallowed = MainActor.assumeIsolated { () -> Bool in
+                guard let sheet, target == sheet.windowNumber else { return false }
+                return !ConfirmationArming.isArmed(typedAt: clickedAt, now: ProcessInfo.processInfo.systemUptime, since: attachedAt)
+            }
+            return swallowed ? nil : event
+        }
+        defer { if let clicks { NSEvent.removeMonitor(clicks) } }
         let confirmIndex = alert.buttons.firstIndex(of: confirm) ?? 0
         let response = await withCheckedContinuation { (continuation: CheckedContinuation<NSApplication.ModalResponse, Never>) in
             alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }

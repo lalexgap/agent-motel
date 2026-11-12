@@ -326,6 +326,27 @@ final class SmokeRunner {
         NSApp.postEvent(event, atStart: false)
     }
 
+    /// A left click (down and up) on `button`, posted to this app's own event queue.
+    func postClick(on button: NSButton, in sheet: NSWindow) throws {
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: sheet.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else {
+                throw SmokeFailure("could not make a mouse event")
+            }
+            NSApp.postEvent(event, atStart: false)
+        }
+    }
+
+    func defaultButtonOf(_ sheet: NSWindow) throws -> NSButton {
+        let buttons = views(sheet.contentView!).compactMap { $0 as? NSButton }
+        guard let button = buttons.first(where: { sheet.defaultButtonCell != nil && $0.cell === sheet.defaultButtonCell })
+                ?? buttons.first(where: { $0.keyEquivalent == "\r" }) else {
+            throw SmokeFailure("the sheet has no default button")
+        }
+        return button
+    }
+
     /// Calls a confirmed method, checks the native sheet (text, buttons, never activating the app)
     /// and answers it the way a person would: by clicking a button, or pressing Esc on the sheet.
     func confirmed(_ method: String, _ params: [String: Any], title: String, agentStatus expectedStatus: String, button confirmTitle: String,
@@ -379,8 +400,11 @@ final class SmokeRunner {
             defer { NotificationCenter.default.removeObserver(becameKey) }
             let before = try await fixtureRequests().count
             try postKey("\r", keyCode: 36, to: sheet)
+            try postKey("\r", keyCode: 36, to: delegate.window)
+            try postClick(on: defaultButtonOf(sheet), in: sheet)
             try await Task.sleep(nanoseconds: 250_000_000)
-            try expect(delegate.window.attachedSheet === sheet && !settled.value, "\(method): a Return right after the sheet appeared answered it")
+            try expect(delegate.window.attachedSheet === sheet && !settled.value,
+                       "\(method): a Return (to the sheet or the main window) or a click right after the sheet appeared answered it")
             try await Task.sleep(nanoseconds: UInt64(max(0, Confirmation.armDelay + 0.15 - Date().timeIntervalSince(seen)) * 1_000_000_000))
             try postKey("\r", keyCode: 36, to: sheet, isARepeat: true)
             try await Task.sleep(nanoseconds: 250_000_000)
