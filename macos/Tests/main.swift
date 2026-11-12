@@ -186,7 +186,8 @@ do {
           "decisions request body")
     let secret = #"{"url":"https://drop.example.test/q/SECRET?x=1"}"#.data(using: .utf8)!
     let url = try DecisionsPolicy.pageURL(body: secret, agent: "archived.design", decisionID: "d 1")
-    check(url.scheme == "https" && url.host == "drop.example.test" && url.fragment == "archived.design-d 1", "decisions link and anchor")
+    let fragment = URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment
+    check(url.scheme == "https" && url.host == "drop.example.test" && fragment == "archived.design-d 1", "decisions link and anchor")
     for raw in ["http://drop.example.test/q/SECRET", "file:///tmp/SECRET", "https://user:pass@drop.example.test/q/SECRET", "javascript:alert(1)"] {
         let data = try JSONSerialization.data(withJSONObject: ["url": raw])
         check(rejection { try DecisionsPolicy.pageURL(body: data, agent: "api", decisionID: nil) } == DecisionsPolicy.invalidLink,
