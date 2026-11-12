@@ -1,7 +1,3 @@
-// The fleet overview, the main area with no agent open: the browser UI's fleet
-// monitor (filter chips with counts, a text filter, sort with direction, status
-// group headers, one card per agent), a row that opens the concierge, and the
-// Overview control and `o` shortcut that come back here.
 import { selectAgent } from "./chat";
 import { $, composerInput, dot, h } from "./dom";
 import { agentId, agentKey, conciergeRow, fleetRows, statusLabel, type ConnectionFleet } from "./fleet";
@@ -100,7 +96,6 @@ function renderOverview(): void {
   const entries: Entry[] = all.flatMap((fleet) => fleetRows(fleet).map((row) => ({ fleet, row, key: agentKey(fleet.id, row) })));
   const rows = entries.map((entry) => entry.row);
 
-  // Concierge rows, one per connection that has one.
   const concierges = all.flatMap((fleet) => {
     const row = conciergeRow(fleet);
     return row ? [conciergeNode(fleet, row, multi)] : [];
@@ -196,7 +191,6 @@ export function showOverview(focus = false): void {
   focusCard(cards.find((card) => card.dataset.cardKey === cardCursor) ?? cards[0]);
 }
 
-// Running times on the cards, kept current by the app clock.
 export function tickOverview(now: number): void {
   if (!showing()) return;
   for (const node of document.querySelectorAll<HTMLElement>("#am-agent-grid .agent-runtime")) {
@@ -206,7 +200,6 @@ export function tickOverview(now: number): void {
 }
 
 function navControl(): HTMLElement {
-  // Navigation strip at the top of the sidebar, shared with other pages' controls.
   let nav = document.getElementById("am-nav");
   if (!nav) {
     nav = h("nav");

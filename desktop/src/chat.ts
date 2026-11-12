@@ -133,7 +133,6 @@ export function renderTranscript(pin = false): void {
   const bubbleFingerprint = JSON.stringify(list.map((bubble) => [bubble.key, bubble.state, bubble.cancelId && composer.cancelling.has(bubble.cancelId)]));
   const firstRender = view.dataset.agent !== detailState.key;
   const entriesChanged = firstRender || view.dataset.content !== fingerprint;
-  // What is on screen, for the unread bookkeeping in updateJump.
   const snapshot = () => {
     const last = entries.at(-1);
     if (last) view.dataset.lastIndex = String(last.index);

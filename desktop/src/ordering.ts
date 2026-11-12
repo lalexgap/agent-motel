@@ -1,7 +1,4 @@
-// Pure ordering, grouping, filtering and formatting shared by the overview and
-// the sidebar. These reproduce web/app.js (`compareRows`, `statusGroup`, the
-// sidebar's rank, `elapsed`, `repoName`) so the two UIs order a fleet the same
-// way; tests/desktopOrdering.test.ts checks them against the browser's code.
+// Reproduces web/app.js ordering; tests/desktopOrdering.test.ts checks parity against it.
 import { statusLabel, STOPPED } from "./fleet";
 import type { AgentRow } from "./types";
 
@@ -76,7 +73,6 @@ export function compareOverview(a: AgentRow, b: AgentRow, { sort, reverse, now }
   return (order || a.name.localeCompare(b.name)) * (reverse ? -1 : 1);
 }
 
-// The header a row sits under when the overview groups by status.
 export function statusGroup(status: string): string {
   if (status === "needs-attention") return "Needs attention";
   if (STOPPED.has(status)) return "Stopped";
@@ -118,7 +114,6 @@ export function parentId(row: Pick<AgentRow, "spawnedBy" | "host">): string | nu
   return row.spawnedBy.includes(":") || !row.host ? row.spawnedBy : `${row.host}:${row.spawnedBy}`;
 }
 
-// The sidebar row's second line: status · detail · queued · age · pull requests.
 export function sidebarMeta(row: AgentRow, now: number): { status: string; reason: string; queued: string; age: string; prs: string } {
   const updated = Date.parse(row.updatedAt || "");
   const prs = row.prMonitor?.pullRequests ?? [];

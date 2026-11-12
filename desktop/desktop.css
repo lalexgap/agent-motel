@@ -553,7 +553,6 @@ body.am-resizing {
 .am-overview-keys kbd {
   margin-right: 2px;
 }
-/* The navigation strip at the top of the sidebar. */
 #am-nav {
   display: grid;
   gap: 1px;
@@ -613,7 +612,6 @@ body.am-resizing {
   margin: 0;
   color: var(--fg-subtle);
 }
-/* Sidebar grouping and sorting. */
 /* Group and Sort share a line, and wrap onto two in a narrow sidebar. */
 .am-sidebar-order {
   display: flex;
