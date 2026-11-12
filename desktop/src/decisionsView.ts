@@ -47,8 +47,22 @@ const inbox = new DecisionsInbox(async (connection) => {
 function render(): void {
   if (!page) return;
   const reported = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0);
-  const count = visible() && reported !== undefined ? reported : [...(state.conns.get(inbox.connection ?? "")?.rows ?? [])]
-      .filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0);
+  const rows = state.conns.get(inbox.connection ?? "")?.rows ?? [];
+  if (visible() && reported !== undefined) {
+    badge.textContent = String(reported);
+    badge.hidden = !reported;
+    badge.title = `${reported} open decisions on the selected server`;
+    if (visible()) window.agentDecisionsPage.render(root, {
+      report: inbox.report, loading: inbox.loading, error: inbox.error,
+      query, blockingOnly, notice: notice || (!inbox.connection ? "Connect a server to view decisions." : ""),
+    }, actions);
+    return;
+  }
+  const live = new Set(rows.filter((row) => !row.host).map((row) => row.name));
+  const orphaned = inbox.report?.groups
+    .filter((group) => !live.has(group.agent))
+    .reduce((total, group) => total + group.decisions.length, 0) ?? 0;
+  const count = rows.filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0) + orphaned;
   badge.textContent = String(count);
   badge.hidden = !count;
   badge.title = `${count} open decisions on the selected server`;

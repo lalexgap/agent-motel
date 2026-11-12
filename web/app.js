@@ -2231,7 +2231,16 @@ const decisionsRoot = $("decisions-page");
 function updateDecisionsNavBadge() {
   const reported = decisionsInboxView.report?.groups?.reduce((sum, group) => sum + group.decisions.length, 0);
   const fleet = state.rows.filter((row) => !row.host).reduce((sum, row) => sum + (row.openDecisions || 0), 0);
-  const count = !decisionsRoot.hidden && reported !== undefined ? reported : fleet;
+  if (!decisionsRoot.hidden && reported !== undefined) {
+    $("decisions-count").textContent = String(reported);
+    $("decisions-count").hidden = !reported;
+    return;
+  }
+  const live = new Set(state.rows.filter((row) => !row.host).map((row) => row.name));
+  const orphaned = decisionsInboxView.report?.groups
+    ?.filter((group) => !live.has(group.agent))
+    .reduce((sum, group) => sum + group.decisions.length, 0) ?? 0;
+  const count = fleet + orphaned;
   $("decisions-count").textContent = String(count);
   $("decisions-count").hidden = !count;
 }
