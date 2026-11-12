@@ -1,8 +1,30 @@
 "use strict";
-window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
+// The browser reaches an agent's terminal over a same-origin WebSocket after a GET preflight.
+// A host without network access (the macOS app) passes its own transport instead:
+//   preflight(name) resolves to { ok, status, error } before each attempt; status 401 signs out.
+//   connect(name) returns a socket-like object with send(string), close(), readyState (1 when
+//   open) and the onopen, onmessage({ data }) and onclose({ code, reason }) handlers set here.
+//   Output arrives in data as an ArrayBuffer, control messages as JSON strings.
+window.createAgentTerminal = function ({ screen, status, onUnauthorized, preflight, connect: openSocket }) {
   let terminal, fit, observer, socket, retry, target = null, attempts = 0, generation = 0;
+  const OPEN = 1;
+  const terminalUrl = (name) => {
+    const url = new URL("/api/agents/" + encodeURIComponent(name) + "/terminal", location.href);
+    url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return url;
+  };
+  preflight ||= async (name) => {
+    const response = await fetch(terminalUrl(name).pathname);
+    const data = await response.json();
+    return { ok: response.ok, status: response.status, error: data.error };
+  };
+  openSocket ||= (name) => {
+    const ws = new WebSocket(terminalUrl(name));
+    ws.binaryType = "arraybuffer";
+    return ws;
+  };
   function send(message) {
-    if (socket?.readyState === WebSocket.OPEN)
+    if (socket?.readyState === OPEN)
       socket.send(JSON.stringify(message));
   }
   function input(data) {
@@ -36,24 +58,20 @@ window.createAgentTerminal = function ({ screen, status, onUnauthorized }) {
     if (!target) return;
     const current = ++generation;
     clearTimeout(retry);
-    const url = new URL("/api/agents/" + encodeURIComponent(target) + "/terminal", location.href);
-    url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     status.textContent = attempts ? "Reconnecting…" : "Connecting…";
     try {
-      const response = await fetch(url.pathname);
-      const data = await response.json();
+      const response = await preflight(target);
       if (current !== generation || !target) return;
       if (response.status === 401) { onUnauthorized(); return; }
-      if (!response.ok) { status.textContent = data.error || "Terminal unavailable"; return; }
+      if (!response.ok) { status.textContent = response.error || "Terminal unavailable"; return; }
     } catch {
       if (current !== generation || !target) return;
       status.textContent = "Connection interrupted · retrying…";
       retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10000));
       return;
     }
-    const ws = new WebSocket(url);
+    const ws = openSocket(target);
     let pendingOutput = 0;
-    ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
       if (socket !== ws) return;
