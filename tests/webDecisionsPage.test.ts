@@ -58,6 +58,7 @@ const page = window.agentDecisionsPage;
 
 const report = {
   enabled: true,
+  complete: true,
   remoteHosts: ["laptop"],
   groups: [
     { agent: "api<img>", decisions: [
@@ -114,10 +115,10 @@ test("loading, error, empty, filtered-empty and disabled states are distinct", (
   expect(root.querySelector("#decisions-inbox-list")!.textContent).toBe("Loading decisions…");
   page.render(root, { report: null, loading: false, error: "offline", query: "", blockingOnly: false }, actions);
   expect(root.querySelector("#decisions-inbox-list")!.textContent).toBe("The decisions inbox is unavailable.");
-  page.render(root, { report: { enabled: true, remoteHosts: [], groups: [] }, loading: false, error: null, query: "", blockingOnly: false }, actions);
+  page.render(root, { report: { enabled: true, complete: true, remoteHosts: [], groups: [] }, loading: false, error: null, query: "", blockingOnly: false }, actions);
   expect(root.querySelector("#decisions-inbox-list")!.textContent).toBe("No open decisions on this server.");
   page.render(root, { report, loading: false, error: null, query: "missing", blockingOnly: false }, actions);
   expect(root.querySelector("#decisions-inbox-list")!.textContent).toBe("No decisions match these filters.");
-  page.render(root, { report: { enabled: false, remoteHosts: [], groups: [] }, loading: false, error: null, query: "", blockingOnly: false }, actions);
+  page.render(root, { report: { enabled: false, complete: true, remoteHosts: [], groups: [] }, loading: false, error: null, query: "", blockingOnly: false }, actions);
   expect(root.querySelector("#decisions-inbox-list")!.textContent).toBe("Decisions are disabled on this server.");
 });

@@ -13,11 +13,12 @@ export interface DecisionsReport {
   groups: { agent: string; decisions: InboxDecision[] }[];
   remoteHosts: string[];
   enabled: boolean;
+  complete: boolean;
 }
 
 export function parseDecisionsReport(value: unknown): DecisionsReport {
   const report = value as DecisionsReport | null;
-  if (!report || typeof report.enabled !== "boolean" || !Array.isArray(report.remoteHosts)
+  if (!report || typeof report.enabled !== "boolean" || typeof report.complete !== "boolean" || !Array.isArray(report.remoteHosts)
     || !report.remoteHosts.every((host) => typeof host === "string") || !Array.isArray(report.groups)
     || !report.groups.every((group) => group && typeof group.agent === "string" && Array.isArray(group.decisions)
       && group.decisions.every((d) => d && typeof d.id === "string" && typeof d.question === "string"))) {

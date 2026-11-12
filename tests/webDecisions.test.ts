@@ -225,7 +225,7 @@ describe("GET /api/decisions", () => {
           { id: "d-4", question: "Orphan?", options: [], recommendation: null, why: null, blocking: false, link: null, prs: [], asked_at: null },
         ] },
       ],
-      remoteHosts: ["laptop", "build"], enabled: true,
+      remoteHosts: ["laptop", "build"], enabled: true, complete: true,
     });
     expect(() => readFileSync(join(home, "drop-called"))).toThrow();
   });
@@ -249,7 +249,7 @@ describe("GET /api/decisions", () => {
   test("decisions false returns the distinct disabled contract", async () => {
     writeStore("api", [{ id: "d-1", status: "open", question: "Hidden" }]);
     writeFileSync(join(process.env.AGENTMGR_HOME!, "config.json"), JSON.stringify({ decisions: false, remotes: ["laptop"] }));
-    expect(await (await getInbox()).json()).toEqual({ groups: [], remoteHosts: ["laptop"], enabled: false });
+    expect(await (await getInbox()).json()).toEqual({ groups: [], remoteHosts: ["laptop"], enabled: false, complete: true });
   });
 });
 

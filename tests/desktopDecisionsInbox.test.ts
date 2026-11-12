@@ -9,7 +9,7 @@ describe("decisions inbox requests", () => {
     expect(() => validateApiPath("/api/decisions")).not.toThrow();
   });
   test("rejects incompatible server data", () => {
-    for (const data of [null, {}, { groups: [], remoteHosts: [], enabled: 1 }, { groups: [{agent: "test", decisions: [null]}], remoteHosts: [], enabled: true }]) {
+    for (const data of [null, {}, { groups: [], remoteHosts: [], enabled: 1, complete: true }, { groups: [{agent: "test", decisions: [null]}], remoteHosts: [], enabled: true, complete: true }]) {
       expect(() => parseDecisionsReport(data)).toThrow();
     }
     expect(parseDecisionsReport(decisionsInboxFixture()).groups).toHaveLength(3);
@@ -21,7 +21,7 @@ describe("decisions inbox requests", () => {
     const one = inbox.refresh();
     inbox.select("two");
     const two = inbox.refresh();
-    pending[1]!({ groups: [], remoteHosts: [], enabled: true });
+    pending[1]!({ groups: [], remoteHosts: [], enabled: true, complete: true });
     await two;
     pending[0]!(decisionsInboxFixture());
     await one;

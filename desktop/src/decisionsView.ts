@@ -54,7 +54,7 @@ function render(): void {
     badge.title = `${reported} open decisions on the selected server`;
     if (visible()) window.agentDecisionsPage.render(root, {
       report: inbox.report, loading: inbox.loading, error: inbox.error,
-      query, blockingOnly, notice: notice || (!inbox.connection ? "Connect a server to view decisions." : ""),
+      query, blockingOnly, notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
     }, actions);
     return;
   }
@@ -64,7 +64,7 @@ function render(): void {
   badge.title = `${count} open decisions on the selected server`;
   if (visible()) window.agentDecisionsPage.render(root, {
     report: inbox.report, loading: inbox.loading, error: inbox.error,
-    query, blockingOnly, notice: notice || (!inbox.connection ? "Connect a server to view decisions." : ""),
+    query, blockingOnly, notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
   }, actions);
 }
 

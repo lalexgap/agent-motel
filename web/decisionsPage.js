@@ -84,8 +84,10 @@ window.agentDecisionsPage = (() => {
       : String(view.data.notice || "");
     status.classList.toggle("decisions-error", !!view.data.error);
     const coverage = find(root, "decisions-coverage");
-    coverage.textContent = report?.remoteHosts?.length
+    const remote = report?.remoteHosts?.length
       ? `Not included from configured remote hosts: ${report.remoteHosts.join(", ")}. Connect to those servers directly to see their decisions.` : "";
+    coverage.textContent = report && report.complete === false
+      ? `${remote}${remote ? " " : ""}Some local decision stores could not be read; refresh to try again.` : remote;
     coverage.hidden = !coverage.textContent;
     const list = find(root, "decisions-inbox-list");
     if (!report) {

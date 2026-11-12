@@ -12,6 +12,7 @@ const decision = (id: string, question: string, blocking: boolean, minutes: numb
 export function decisionsInboxFixture(): DecisionsReport {
   return {
     enabled: true,
+    complete: true,
     remoteHosts: ["annex", "lantern"],
     groups: [
       { agent: "anchor-watch", decisions: [decision("d-1", "Which release should include the new sidebar?", true, 95)] },

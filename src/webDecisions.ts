@@ -2,7 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { openDecisions, ownsStore, parseDecisionStore, readDecisionStoreTexts, type Decision } from "./decisions";
+import { openDecisions, ownsStore, parseDecisionStore, readDecisionStoreTextsResult, type Decision } from "./decisions";
 
 // The decisions page URL lets its holder answer for the operator: return it
 // only to decisionsPageLink's caller; never cache, log or put it in an error.
@@ -28,6 +28,7 @@ export interface WebDecisionsReport {
   groups: WebDecisionGroup[];
   remoteHosts: string[];
   enabled: boolean;
+  complete: boolean;
 }
 
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null);
@@ -71,9 +72,10 @@ export function agentDecisions(name: string): WebDecision[] {
 export function decisionsReport(): WebDecisionsReport {
   const config = loadConfig();
   const remoteHosts = [...new Set(config.remotes ?? [])];
-  if (config.decisions === false) return { groups: [], remoteHosts, enabled: false };
+  if (config.decisions === false) return { groups: [], remoteHosts, enabled: false, complete: true };
   const groups: WebDecisionGroup[] = [];
-  for (const [agent, source] of readDecisionStoreTexts()) {
+  const result = readDecisionStoreTextsResult();
+  for (const [agent, source] of result?.texts ?? []) {
     if (!validDecisionsAgent(agent)) continue;
     const store = parseDecisionStore(source);
     if (!store) continue;
@@ -87,7 +89,7 @@ export function decisionsReport(): WebDecisionsReport {
     const bOldest = b.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
     return Number(bBlocking) - Number(aBlocking) || aOldest.localeCompare(bOldest) || a.agent.localeCompare(b.agent);
   });
-  return { groups, remoteHosts, enabled: true };
+  return { groups, remoteHosts, enabled: true, complete: result?.complete === true };
 }
 
 // The store's file-name rule, within drop's own `--agent` limit.
