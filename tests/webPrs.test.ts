@@ -97,6 +97,19 @@ describe("filtering", () => {
     expect(P.filterPrs(undefined, {})).toEqual([]);
   });
 
+  test("the list signature changes only when what is drawn would", () => {
+    const rows = [pr(1, { lastActivity: "2026-07-22T11:59:30.000Z" }), pr(2, { stack: { position: 2, size: 2, parent: 1, children: [] } })];
+    const view = { state: "", showAllFinished: false, expanded: new Set(["acme/storefront#1"]) };
+    const base = P.listSignature(rows, 0, view, NOW);
+    expect(P.listSignature(rows.map((row) => ({ ...row })), 0, { ...view, expanded: new Set(["acme/storefront#1"]) }, NOW + 20_000)).toBe(base);
+    expect(P.listSignature(rows, 0, view, NOW + 40_000)).not.toBe(base);
+    expect(P.listSignature(rows, 0, { ...view, state: "merged" }, NOW)).not.toBe(base);
+    expect(P.listSignature([rows[0], { ...rows[1], reason: "CI green" }], 0, view, NOW)).not.toBe(base);
+    expect(P.listSignature(rows, 3, view, NOW)).not.toBe(base);
+    expect(P.listSignature(rows, 0, { ...view, expanded: new Set() }, NOW)).not.toBe(base);
+    expect(P.listSignature(rows, 0, { ...view, showAllFinished: true }, NOW)).not.toBe(base);
+  });
+
   test("finished PRs past the latest few wait behind a show-more row", () => {
     const open = [{ number: 1, state: "waiting" }, { number: 2, state: "conflict" }];
     const finished = Array.from({ length: 11 }, (_item, index) => ({ number: 10 + index, state: index % 2 ? "closed" : "merged" }));
