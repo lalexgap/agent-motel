@@ -107,7 +107,14 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
   function setStatus(row: FixtureRow, status: FixtureRow["status"]) {
     const now = new Date().toISOString();
     if (row.status !== status) row.statusChangedAt = now;
+    // A real transition ends what am derived from an idle agent's subagents.
+    if (row.busyWith || (row.rawStatus && row.rawStatus !== row.status)) {
+      delete row.busyWith;
+      delete row.statusReason;
+      delete row.statusDetail;
+    }
     row.status = status;
+    row.rawStatus = status;
     row.updatedAt = now;
     if (status === "working") row.workingSince ??= now;
     else delete row.workingSince;
@@ -173,7 +180,8 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
   }
   function newRow(fields: { name: string; host: string | null; provider: FixtureRow["provider"]; dir: string; task?: string; model?: string; effort?: string; role?: string }): FixtureRow {
     const now = new Date().toISOString();
-    const row: FixtureRow = { name: fields.name, status: "starting", statusChangedAt: now, provider: fields.provider, dir: fields.dir, createdAt: now, updatedAt: now };
+    const row: FixtureRow = { name: fields.name, status: "starting", statusChangedAt: now, provider: fields.provider, dir: fields.dir, createdAt: now, updatedAt: now,
+      rawStatus: "starting", openDecisions: 0, blockingDecisions: 0 };
     if (fields.host) row.host = fields.host;
     const repo = Object.values(REPO).find((root) => fields.dir === root);
     if (repo) {
@@ -283,14 +291,19 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
 
   function detail(row: FixtureRow) {
     const native = row.provider !== "antigravity";
+    // Like am, the detail carries no decision fields; those come on rows only.
+    const { openDecisions: _open, blockingDecisions: _blocking, oldestDecisionAt: _oldest, firstDecision: _first, ...fields } = row;
     const prompt = s().prompts.get(row);
     const runtime = {
       model: row.model ?? null, effort: row.effort ?? null,
       modelSource: row.model ? "configured" : "unknown", effortSource: row.effort ? "configured" : "unknown",
     };
     return {
-      ...row,
+      ...fields,
+      rawStatus: row.rawStatus ?? row.status,
+      busyWith: row.busyWith ?? null,
       statusReason: row.statusReason ?? null,
+      statusKind: row.status === "needs-attention" ? row.statusKind ?? null : null,
       capabilities: {
         remoteControl: native, quota: native, approvalRelay: native, interruptByReceipt: native,
         handoff: native, move: native, rename: native, subagents: native, attachments: native,

@@ -43,6 +43,10 @@ interface Seed {
   spawnedBy?: string;
   role?: string;
   prMonitor?: AgentRow["prMonitor"];
+  // The stored status when it differs from the shown one (am's derived presence).
+  rawStatus?: AgentRow["status"];
+  busyWith?: { subagents: number; background: number };
+  decisions?: { open: number; blocking: number; oldest: number; first: string };
 }
 
 const SEEDS: Seed[] = [
@@ -124,6 +128,35 @@ const SEEDS: Seed[] = [
     name: "slipway", status: "working", provider: "codex", model: "gpt-5.2-codex", effort: "medium", repo: "tideTables", repoName: "tide-tables",
     task: "Re-run the tide archive importer against the new schema", statusDetail: "moving to annex", changed: 6, updated: 0.6, created: 150,
   },
+  // Idle at its prompt with two live subagents: shown working, stored idle.
+  {
+    name: "bosun-call", status: "working", rawStatus: "idle", busyWith: { subagents: 2, background: 0 }, provider: "claude", model: "claude-opus-4-5",
+    repo: "lighthouse", repoName: "lighthouse", task: "Ship the lamp schedule export and see its PR through review",
+    statusReason: "waiting on 2 subagents (Shepherd PR 12, reviewer)", statusDetail: "waiting on 2 subagents (Shepherd PR 12, reviewer)",
+    changed: 8, updated: 2, created: 75,
+  },
+  // A subagent finished 12 minutes ago and the agent never took another turn.
+  {
+    name: "still-water", status: "needs-attention", rawStatus: "idle", provider: "claude", model: "claude-sonnet-4-5", repo: "tideTables", repoName: "tide-tables",
+    task: "Backfill the missing tide gauge readings for March",
+    statusReason: "subagent finished 12m ago, agent never resumed (reviewer)", statusDetail: "subagent finished 12m ago, agent never resumed (reviewer)",
+    changed: 20, updated: 12, created: 110,
+  },
+  {
+    name: "chart-table", status: "idle", provider: "codex", model: "gpt-5.2-codex", repo: "paperCrane", repoName: "paper-crane",
+    task: "Redesign the fold diagram legend",
+    decisions: { open: 2, blocking: 0, oldest: 40, first: "Should the legend sit below the diagram or in a side panel?" },
+    changed: 22, updated: 22, created: 160,
+  },
+  {
+    name: "anchor-watch", status: "idle", provider: "claude", model: "claude-opus-4-5", repo: "lighthouse", repoName: "lighthouse",
+    task: "Retire the v1 beacon protocol",
+    decisions: {
+      open: 1, blocking: 1, oldest: 95,
+      first: "The v1 beacon protocol still has two field units reporting through it every night from the north jetty; do we keep a compatibility shim for one more release while the harbour crew replaces them, or drop v1 now and accept that those units go dark until their firmware is flashed by hand?",
+    },
+    changed: 95, updated: 95, created: 300,
+  },
 ];
 
 const ago = (now: number, minutes: number) => new Date(now - minutes * 60_000).toISOString();
@@ -138,6 +171,9 @@ export function buildRows(now: number): FixtureRow[] {
       dir: seed.dir ?? worktree(seed.repoName ?? "", seed.name),
       createdAt: ago(now, seed.created),
       updatedAt: ago(now, seed.updated),
+      rawStatus: seed.rawStatus ?? seed.status,
+      openDecisions: seed.decisions?.open ?? 0,
+      blockingDecisions: seed.decisions?.blocking ?? 0,
     };
     if (seed.host) row.host = seed.host;
     if (seed.model) row.model = seed.model;
@@ -153,7 +189,13 @@ export function buildRows(now: number): FixtureRow[] {
     if (seed.spawnedBy) row.spawnedBy = seed.spawnedBy;
     if (seed.role) row.role = seed.role;
     if (seed.prMonitor) row.prMonitor = seed.prMonitor;
-    if (seed.status === "working" || seed.status === "waiting") row.workingSince = row.statusChangedAt;
+    if (seed.busyWith) row.busyWith = seed.busyWith;
+    if (seed.decisions) {
+      row.oldestDecisionAt = ago(now, seed.decisions.oldest);
+      row.firstDecision = seed.decisions.first;
+    }
+    // am clears workingSince at turn end, so an agent shown working only for its subagents has none.
+    if (row.rawStatus === "working" || row.rawStatus === "waiting") row.workingSince = row.statusChangedAt;
     return row;
   });
 }

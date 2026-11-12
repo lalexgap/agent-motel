@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { buildTree, LIST_GROUP, type ConnectionFleet, type TreeItem } from "../desktop/src/fleet";
+import { buildTree, busySubagents, LIST_GROUP, rowReasonBeside, rowStatusLabel, workingLabel, type ConnectionFleet, type TreeItem } from "../desktop/src/fleet";
 import {
   compareOverview,
   compareSidebar,
@@ -186,6 +186,43 @@ describe("sidebar row meta", () => {
     }), NOW);
     expect(meta).toEqual({ status: "Needs attention", reason: "detail", queued: "2 queued", age: "1h 15m ago", prs: "PR #12 · open, PR #13 · merged" });
     expect(sidebarMeta(row("b", "idle", { updatedAt: "" }), NOW)).toEqual({ status: "Idle", reason: "", queued: "", age: "", prs: "" });
+  });
+});
+
+describe("an agent waiting on its subagents", () => {
+  const reason = "waiting on 2 subagents (Shepherd PR 12, reviewer)";
+  const waiting = row("bosun", "working", { rawStatus: "idle", busyWith: { subagents: 2, background: 0 }, statusReason: reason, statusDetail: reason, updatedAt: ago(2) });
+
+  test("workingLabel matches the browser UI's for every status and count", () => {
+    const context: Record<string, unknown> = {};
+    runInNewContext(slice("function workingLabel(", "function tickWorking(") + "this.workingLabel = workingLabel;", context);
+    const web = context.workingLabel as (status: string, subagents?: number) => string;
+    for (const status of ["working", "starting", "waiting", "idle", "needs-attention", "mystery", ""])
+      for (const count of [undefined, 0, 1, 2, 5]) expect(workingLabel(status, count)).toBe(web(status, count));
+    expect(workingLabel("working", 2)).toBe("Waiting on 2 subagents");
+    expect(workingLabel("working", 1)).toBe("Waiting on 1 subagent");
+    expect(workingLabel("working", 0)).toBe("Working");
+    expect(workingLabel("waiting", 3)).toBe("Waiting on background tasks");
+  });
+
+  test("the row's label says what it waits on; only a working agent with live subagents changes", () => {
+    expect(rowStatusLabel(waiting)).toBe("Waiting on 2 subagents");
+    expect(rowStatusLabel(row("a", "working"))).toBe("Working");
+    expect(rowStatusLabel(row("a", "working", { busyWith: null }))).toBe("Working");
+    expect(rowStatusLabel(row("a", "working", { busyWith: { subagents: 0, background: 2 } }))).toBe("Working");
+    expect(rowStatusLabel(row("a", "waiting", { busyWith: { subagents: 2, background: 1 } }))).toBe("Waiting on background tasks");
+    expect(rowStatusLabel(row("a", "needs-attention", { rawStatus: "idle" }))).toBe("Needs attention");
+    expect(busySubagents({ busyWith: { subagents: -1, background: 0 } })).toBe(0);
+  });
+
+  test("the reason beside the label drops what the label already says", () => {
+    expect(rowReasonBeside(waiting, reason)).toBe("Shepherd PR 12, reviewer");
+    expect(rowReasonBeside(waiting, "waiting on 2 subagents (Shepherd PR 12, reviewer) and 1 shell")).toBe("Shepherd PR 12, reviewer and 1 shell");
+    // am clips the detail; a lost closing parenthesis still reads cleanly.
+    expect(rowReasonBeside(waiting, "waiting on 2 subagents (Shepherd PR 12, revi…")).toBe("Shepherd PR 12, revi…");
+    expect(rowReasonBeside(waiting, "something else")).toBe("something else");
+    expect(rowReasonBeside(row("a", "working"), "waiting on 2 subagents (x)")).toBe("waiting on 2 subagents (x)");
+    expect(sidebarMeta(waiting, NOW)).toEqual({ status: "Waiting on 2 subagents", reason: "Shepherd PR 12, reviewer", queued: "", age: "2m ago", prs: "" });
   });
 });
 

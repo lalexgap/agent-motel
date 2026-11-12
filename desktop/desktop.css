@@ -2057,3 +2057,49 @@ button.am-rel-item:hover {
 .am-action-dialog .am-dialog-actions .primary {
   width: auto;
 }
+/* Open decisions the agent registered for the owner: a count, warning-toned when any blocks. */
+.am-decisions,
+.am-card-decisions {
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 8px;
+  color: var(--fg-muted);
+  background: var(--surface-hover);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  font-variant-numeric: tabular-nums;
+}
+.am-decisions {
+  min-width: 16px;
+  text-align: center;
+}
+.am-decisions.blocking,
+.am-card-decisions.blocking {
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  box-shadow: inset 0 0 0 1px var(--warning-border);
+}
+.agent-identity .am-card-decisions {
+  align-self: center;
+}
+#am-agent-decisions {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+#am-agent-decisions b {
+  font-weight: 600;
+  color: var(--fg);
+}
+#am-agent-decisions.blocking b {
+  color: var(--warning-text);
+}
+.am-decisions-summary {
+  color: var(--warning-text);
+}

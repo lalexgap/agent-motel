@@ -1,6 +1,7 @@
 // Small element helpers shared by the views.
+import { blockingDecisions, decisionsName, decisionsTitle, openDecisions } from "./decisions";
 import { statusLabel } from "./fleet";
-import type { TranscriptEntry } from "./types";
+import type { AgentRow, TranscriptEntry } from "./types";
 
 interface AgentTranscriptApi {
   icon(name: string, className?: string): SVGElement;
@@ -69,5 +70,14 @@ export function dot(status: string): HTMLElement {
 export function badge(status: string): HTMLElement {
   const node = h("span", "badge");
   node.append(dot(status), document.createTextNode(statusLabel(status)));
+  return node;
+}
+export function decisionsBadge(row: AgentRow, now = Date.now()): HTMLElement | null {
+  const open = openDecisions(row);
+  if (!open) return null;
+  const node = h("span", `am-decisions${blockingDecisions(row) ? " blocking" : ""}`, String(open));
+  node.setAttribute("role", "img");
+  node.setAttribute("aria-label", decisionsName(row));
+  node.title = decisionsTitle(row, now);
   return node;
 }

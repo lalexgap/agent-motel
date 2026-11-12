@@ -349,6 +349,51 @@ describe("fixture parity routes", () => {
     expect((await read("/api/agents/old-lens")).pane).toBeNull();
   });
 
+  test("status presence and decisions mirror am's row and detail shapes", async () => {
+    const statuses = ["starting", "idle", "working", "waiting", "needs-attention", "exited", "dead"];
+    const decisionKeys = ["openDecisions", "blockingDecisions", "oldestDecisionAt", "firstDecision"];
+    for (const item of (await read("/api/agents")).rows) {
+      expect(statuses).toContain(item.rawStatus);
+      expect(Number.isInteger(item.openDecisions) && Number.isInteger(item.blockingDecisions)).toBe(true);
+      expect(item.blockingDecisions).toBeLessThanOrEqual(item.openDecisions);
+      // Only when something is open, as am's decisionFields writes them.
+      expect("oldestDecisionAt" in item).toBe(item.openDecisions > 0);
+      expect("firstDecision" in item).toBe(item.openDecisions > 0);
+      if ("busyWith" in item) expect(Object.keys(item.busyWith).sort()).toEqual(["background", "subagents"]);
+      expect("statusKind" in item && item.statusKind !== "prompt").toBe(false);
+      const detail = await read("/api/agents/" + enc(item.host ? `${item.host}:${item.name}` : item.name));
+      expect(detail.rawStatus).toBe(item.rawStatus);
+      expect(detail.busyWith).toEqual(item.busyWith ?? null);
+      expect(detail.statusKind).toBeNull();
+      for (const key of decisionKeys) expect(key in detail).toBe(false);
+    }
+    expect(await row("bosun-call")).toMatchObject({
+      status: "working", rawStatus: "idle", busyWith: { subagents: 2, background: 0 },
+      statusReason: "waiting on 2 subagents (Shepherd PR 12, reviewer)", statusDetail: "waiting on 2 subagents (Shepherd PR 12, reviewer)",
+    });
+    expect("workingSince" in (await row("bosun-call"))).toBe(false);
+    const running = (await read("/api/agents/bosun-call/subagents")).records.filter((record: { endedAt?: string }) => !record.endedAt);
+    expect(running.map((record: { description?: string; type: string }) => record.description ?? record.type)).toEqual(["Shepherd PR 12", "reviewer"]);
+    const stalled = await row("still-water");
+    expect(stalled).toMatchObject({ status: "needs-attention", rawStatus: "idle", statusReason: expect.stringMatching(/^subagent finished 12m ago, agent never resumed/) });
+    expect("busyWith" in stalled).toBe(false);
+    expect((await read("/api/agents/still-water")).pendingPermissions).toBe(0);
+    expect(await row("chart-table")).toMatchObject({ openDecisions: 2, blockingDecisions: 0, firstDecision: expect.any(String) });
+    const blocking = await row("anchor-watch");
+    expect(blocking).toMatchObject({ openDecisions: 1, blockingDecisions: 1 });
+    expect(blocking.firstDecision.length).toBeGreaterThan(200);
+    expect(Number.isFinite(Date.parse(blocking.oldestDecisionAt))).toBe(true);
+  });
+
+  test("a real turn ends the derived presence: shown and stored status agree again", async () => {
+    await expectReply(call("POST", "/api/agents/bosun-call/messages", { text: "Status?", mode: "now" }), 200, { ok: true });
+    await until(async () => (await row("bosun-call"))?.rawStatus === "working");
+    const item = await row("bosun-call");
+    expect(item).toMatchObject({ status: "working", rawStatus: "working" });
+    for (const key of ["busyWith", "statusReason", "statusDetail"]) expect(key in item).toBe(false);
+    expect((await read("/api/agents/bosun-call")).busyWith).toBeNull();
+  });
+
   test("resume: stopped → starting → idle with fleet events; live is a no-op; a missing directory is a 409", async () => {
     const fleet = await watchFleet();
     await expectReply(call("POST", "/api/agents/old-lens/resume", {}), 200, { ok: true });

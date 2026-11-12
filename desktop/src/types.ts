@@ -35,6 +35,24 @@ export interface AgentRow {
   spawnedBy?: string;
   prMonitor?: { pullRequests?: { number: number; state: string }[] };
   subagents?: SubagentSummary;
+  // The stored status where `status` is how the agent is shown: an agent idle
+  // at its prompt with live subagents shows `working` here and `idle` there.
+  rawStatus?: AgentStatus;
+  // What an idle-at-prompt agent still waits on: absent on rows, null on the detail, when nothing.
+  busyWith?: BusyWith | null;
+  // "prompt": needs-attention for a provider dialog.
+  statusKind?: "prompt" | null;
+  // Questions the agent registered for the owner. Rows only, and only from an
+  // am that reads decision stores (today, local agents); missing means none.
+  openDecisions?: number;
+  blockingDecisions?: number;
+  oldestDecisionAt?: string;
+  firstDecision?: string;
+}
+
+export interface BusyWith {
+  subagents: number;
+  background: number;
 }
 
 // The fleet row's rollup of the built-in subagents running under an agent.

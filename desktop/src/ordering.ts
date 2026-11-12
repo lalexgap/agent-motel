@@ -1,5 +1,5 @@
 // Reproduces web/app.js ordering; tests/desktopOrdering.test.ts checks parity against it.
-import { statusLabel, STOPPED } from "./fleet";
+import { rowReasonBeside, rowStatusLabel, statusLabel, STOPPED } from "./fleet";
 import type { AgentRow } from "./types";
 
 export const repoPath = (row: Pick<AgentRow, "repoRoot" | "dir">): string => row.repoRoot || row.dir || "";
@@ -118,8 +118,8 @@ export function sidebarMeta(row: AgentRow, now: number): { status: string; reaso
   const updated = Date.parse(row.updatedAt || "");
   const prs = row.prMonitor?.pullRequests ?? [];
   return {
-    status: statusLabel(row.status),
-    reason: row.statusDetail || row.statusReason || "",
+    status: rowStatusLabel(row),
+    reason: rowReasonBeside(row, row.statusDetail || row.statusReason || ""),
     queued: row.queued ? `${row.queued} queued` : "",
     age: Number.isFinite(updated) ? `${elapsed(Math.max(0, now - updated))} ago` : "",
     prs: prs.map((pr) => `PR #${pr.number} · ${String(pr.state).toLowerCase()}`).join(", "),

@@ -37,6 +37,33 @@ export const STATUS_SHORT: Record<AgentStatus, string> = {
 export const statusLabel = (status: string): string => STATUS_LABEL[status as AgentStatus] ?? status;
 export const statusShort = (status: string): string => STATUS_SHORT[status as AgentStatus] ?? status;
 
+// The browser UI's `workingLabel`: an agent idle at its prompt with live
+// subagents is shown as working; say what it is actually doing.
+export function workingLabel(status: string, subagents = 0): string {
+  if (status === "working" && subagents > 0) return `Waiting on ${subagents} subagent${subagents === 1 ? "" : "s"}`;
+  return ({ starting: "Starting", waiting: "Waiting on background tasks" } as Record<string, string>)[status] || "Working";
+}
+export const busySubagents = (row: Pick<AgentRow, "busyWith">): number => {
+  const count = row.busyWith?.subagents;
+  return typeof count === "number" && count > 0 ? count : 0;
+};
+const waitingOnSubagents = (row: Pick<AgentRow, "status" | "busyWith">): boolean => row.status === "working" && busySubagents(row) > 0;
+export const rowStatusLabel = (row: Pick<AgentRow, "status" | "busyWith">): string =>
+  waitingOnSubagents(row) ? workingLabel(row.status, busySubagents(row)) : statusLabel(row.status);
+// The reason shown beside rowStatusLabel: for an agent waiting on subagents,
+// am's "waiting on 2 subagents (a, b)" loses the part the label already says.
+export function rowReasonBeside(row: Pick<AgentRow, "status" | "busyWith">, reason: string): string {
+  if (!waitingOnSubagents(row)) return reason;
+  const label = rowStatusLabel(row);
+  if (!reason.toLowerCase().startsWith(label.toLowerCase())) return reason;
+  let rest = reason.slice(label.length).trim();
+  if (rest.startsWith("(")) {
+    const close = rest.lastIndexOf(")");
+    rest = close > 0 ? rest.slice(1, close) + rest.slice(close + 1) : rest.slice(1);
+  }
+  return rest.trim();
+}
+
 const basename = (path: string): string => path.replace(/\/+$/, "").split("/").pop() || path;
 const HOME_DIR = /^(~|\/home\/[^/]+|\/Users\/[^/]+|\/root|\/var\/root)\/?$/;
 export const NO_REPO = "No repository";
