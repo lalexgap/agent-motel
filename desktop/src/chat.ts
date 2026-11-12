@@ -30,7 +30,10 @@ function fillSlot(parts: AgentPart[], id: string, place: (box: HTMLElement) => v
     box.id = id;
     place(box);
   }
-  box.replaceChildren(...parts.map((part) => part(key)).filter((node): node is HTMLElement => !!node));
+  const nodes = parts.map((part) => part(key)).filter((node): node is HTMLElement => !!node);
+  // Reinserting a node drops its focus, and these refill on every background refresh.
+  if (nodes.length === box.children.length && nodes.every((node, index) => box.children[index] === node)) return;
+  box.replaceChildren(...nodes);
 }
 
 export function selectAgent(key: string | null, focusTranscript = false): void {

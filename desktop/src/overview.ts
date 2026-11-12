@@ -157,7 +157,9 @@ function renderOverview(): void {
   visible.sort((a, b) => compareOverview(a.row, b.row, order));
 
   const grid = $("am-agent-grid");
-  const focusedKey = grid.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.cardKey ?? null : null;
+  const active = grid.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+  const focusedKey = active?.dataset.cardKey ?? null;
+  const focusedSubagent = active?.dataset.subagentKey ?? null;
   const nodes: HTMLElement[] = [];
   if (!visible.length) {
     nodes.push(h("div", "empty", rows.length ? "No agents match this view."
@@ -183,6 +185,7 @@ function renderOverview(): void {
   if (!cards.some((card) => card.dataset.cardKey === cardCursor)) cardCursor = cards[0]?.dataset.cardKey ?? null;
   for (const card of cards) card.tabIndex = card.dataset.cardKey === cardCursor ? 0 : -1;
   if (focusedKey) cards.find((card) => card.dataset.cardKey === focusedKey)?.focus({ preventScroll: true });
+  else if (focusedSubagent) grid.querySelector<HTMLElement>(`[data-subagent-key="${CSS.escape(focusedSubagent)}"]`)?.focus({ preventScroll: true });
 }
 
 const cardList = (): HTMLElement[] => [...$("am-agent-grid").querySelectorAll<HTMLElement>("[data-card-key]")];

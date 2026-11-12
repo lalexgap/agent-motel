@@ -48,6 +48,7 @@ let failure: { status: number; message: string } | null = null;
 // The entries on screen, so a poll re-renders only on change.
 let shown: { key: string; fingerprint: string } | null = null;
 let lastState: SubagentState | null = null;
+let finalFetchPending = false;
 
 let page: HTMLElement;
 let output: HTMLElement;
@@ -80,6 +81,7 @@ export function openSubagent(agentKey: string, subagentId: string, label?: strin
     failure = null;
     shown = null;
     lastState = null;
+    finalFetchPending = false;
     open = { key, agentKey, connection: parsed.connection, agentId: parsed.id, id: subagentId, label: label || subagentId, hint: stateFromLabel(statusLabel) };
     output.replaceChildren(h("p", "am-transcript-note", "Loading output…"));
     $("am-sub-error").hidden = true;
@@ -119,6 +121,10 @@ async function load(): Promise<void> {
   }
   renderHeader();
   renderOutput();
+  if (finalFetchPending && !inFlight) {
+    finalFetchPending = false;
+    void load();
+  }
 }
 
 function note(text: string, detail?: string): HTMLElement[] {
@@ -169,8 +175,12 @@ function renderHeader(): void {
   const record = recordOf(current);
   if (record) current.label = subagentLabel(record);
   const subState = currentState(current);
-  // Once it stops, fetch the transcript one last time for its final turns.
-  if (lastState === "running" && subState && subState !== "running" && !inFlight) void load();
+  // Once it stops, fetch the transcript one last time for its final turns; a poll
+  // already under way may predate them.
+  if (lastState === "running" && subState && subState !== "running") {
+    if (inFlight) finalFetchPending = true;
+    else void load();
+  }
   lastState = subState;
   const name = parentName(current.agentKey);
   const crumb = $("am-sub-parent");
@@ -198,12 +208,12 @@ function renderHeader(): void {
   const started = record?.startedAt ?? findRow(current.agentKey)?.subagents?.running?.find((item) => item.id === current.id)?.startedAt;
   const ended = record?.endedAt ? Date.parse(record.endedAt) : NaN;
   const since = started ? relativeTime(started) : "";
-  const when = Number.isFinite(ended) && started ? `ran ${duration(ended - Date.parse(started))}` : since === "now" ? "just now" : since ? `${since} ago` : "";
+  const ran = Number.isFinite(ended) && started ? duration(ended - Date.parse(started)) : "";
+  const when = ran || (since === "now" ? "just now" : since ? `${since} ago` : "");
   if (started && when) {
     const item = h("span", "am-meta-item");
-    const text = when;
     item.title = `Started ${new Date(started).toLocaleString()}${record?.endedAt ? ` · ended ${new Date(record.endedAt).toLocaleString()}` : ""}`;
-    item.append(h("span", "", "Started"), h("b", "", text));
+    item.append(h("span", "", ran ? "Ran" : "Started"), h("b", "", when));
     meta.push(item);
   }
   const id = h("span", "am-meta-item mono");

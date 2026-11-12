@@ -234,7 +234,8 @@ function build(): void {
 export function initInspector(): void {
   build();
   wireDivider();
-  registerHeaderAction(() => inspectorToggle());
+  const chatToggle = inspectorToggle();
+  registerHeaderAction(() => chatToggle);
   subscribe("agent", applyLayout);
   onMainViewChange(applyLayout);
   // The sidebar's width decides whether the panel still docks.
