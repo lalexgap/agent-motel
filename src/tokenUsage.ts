@@ -539,13 +539,11 @@ export interface StepEvent {
   outputTokens: number;
   thinkingTokens: number;
   fast?: boolean;
-  // Reasoning effort the call ran at, when the transcript records it.
   effort?: string;
   tools: Array<{ category: string; workflow?: string; summary: string }>;
   workflow: string;
 }
 
-// A short lowercase word (low, medium, high, xhigh, max, minimal, …); anything else is dropped.
 export function effortLevel(value: unknown): string | undefined {
   return typeof value === "string" && /^[a-z]{2,12}$/.test(value) ? value : undefined;
 }

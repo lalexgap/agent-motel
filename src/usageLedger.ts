@@ -792,11 +792,9 @@ export interface UsageSummary {
   classes: Record<CostClass, { costUSD: number; tokens: number }>;
   byModel: Array<{ model: string; priced: boolean; costUSD: number; activeTokens: number }>;
   byRepo: Array<{ repo: string; costUSD: number; activeTokens: number; agents: number }>;
-  // Spend by who did the work: "main" for an agent's own session, else the
-  // subagent type (reviewer, engineer, shepherd, …). `runs` counts transcripts.
+  // type is "main" for an agent's own session, else the subagent type; runs counts transcripts.
   byType: Array<{ type: string; kind: "main" | "subagent"; costUSD: number; activeTokens: number; runs: number; agents: number }>;
-  // Spend by the reasoning effort each call ran at. History indexed before
-  // effort was recorded, and providers that do not log it, are "unrecorded".
+  // Calls indexed before effort was recorded, or from providers that do not log it, are "unrecorded".
   byEffort: Array<{ effort: string; costUSD: number; activeTokens: number; calls: number }>;
   agents: UsageSummaryAgent[];
   unattributed: { dailyCostUSD: number[]; dailyActiveTokens: number[]; range: UsageAmount };

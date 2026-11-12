@@ -790,12 +790,10 @@ window.usageDashboard = (() => {
     wrap.append(list);
   }
 
-  // "main" is an agent's own session; every other row is a subagent type.
   function typeLabel(row) {
     return row.kind === "main" ? "Main agent" : String(row.type || "subagent");
   }
 
-  // Past the first few types the tail is one row, so a long list cannot push the card down the page.
   const TYPE_ROWS = 8;
   function typeRows(byType, unit) {
     const valueOf = (t) => (unit === "tokens" ? t.activeTokens : t.costUSD) || 0;
@@ -807,15 +805,13 @@ window.usageDashboard = (() => {
     return [...rows.slice(0, TYPE_ROWS - 1), { label: `${tail.length} other types`, value: sum("value"), runs: sum("runs"), names: tail.map((row) => row.label) }];
   }
 
-  // The reasoning effort calls ran at. Calls indexed before effort was recorded have none.
   function effortRows(byEffort, unit) {
     const valueOf = (e) => (unit === "tokens" ? e.activeTokens : e.costUSD) || 0;
     return [...(byEffort || [])].sort((a, b) => valueOf(b) - valueOf(a))
       .map((e) => ({ label: e.effort === "unrecorded" ? "not recorded" : String(e.effort), value: valueOf(e), calls: e.calls || 0 }));
   }
 
-  // A name, a meter and "value · share" per row. A summary without the field (an older
-  // server) hides the card rather than calling it empty.
+  // A summary without the field (an older server) hides the card rather than calling it empty.
   function renderShares(root, id, present, rows, unit, titleOf) {
     const wrap = find(root, id);
     if (!wrap) return;
