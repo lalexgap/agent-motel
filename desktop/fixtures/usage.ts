@@ -303,7 +303,14 @@ export function agentTokenReport(row: FixtureRow, history: History | undefined, 
       { category: "search", calls: 23, tokens: share(0.1) },
     ] : [],
     anomalies: row.name === "harbor-lights" && active
-      ? [{ kind: "cache-bust", agent: row.name, title: "Cache rebuilt after a 7 min pause", detail: "38.2k tokens re-written to cache when the turn resumed after the test run.", tokens: 38_200, timestamp: new Date(Date.parse(row.updatedAt) - 1_800_000).toISOString() }]
+      ? [
+        { kind: "cache-bust", agent: row.name, title: "Cache rebuilt after a 7 min pause", detail: "38.2k tokens re-written to cache when the turn resumed after the test run.", tokens: 38_200, timestamp: new Date(Date.parse(row.updatedAt) - 1_800_000).toISOString() },
+        // One that points at a subagent, so the usage page can open it.
+        ...records.filter((record) => record.endedAt).slice(0, 1).map((record) => ({
+          kind: "bloated-tool", agent: row.name, subagentId: record.id, subagentLabel: record.label, title: "Large Grep output read in full",
+          detail: "A 9.1k-token search result went into context; a narrower pattern would have done.", tokens: 9_100, timestamp: record.endedAt,
+        })),
+      ]
       : [],
   };
 }

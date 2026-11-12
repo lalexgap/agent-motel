@@ -34,13 +34,47 @@ export interface AgentRow {
   workingSince?: string;
   spawnedBy?: string;
   prMonitor?: { pullRequests?: { number: number; state: string }[] };
-  subagents?: { running?: RunningSubagent[] };
+  subagents?: SubagentSummary;
 }
 
+// The fleet row's rollup of the built-in subagents running under an agent.
+// `running` is absent from a remote am that predates it.
 export interface RunningSubagent {
   id: string;
   type?: string;
   description?: string;
+  startedAt?: string;
+}
+export interface SubagentSummary {
+  active?: number;
+  types?: string;
+  detail?: string;
+  running?: RunningSubagent[];
+}
+
+// GET /api/agents/:key/subagents: `stale` marks a record still open when its
+// agent is no longer running.
+export interface SubagentTokens {
+  steps?: number;
+  inputTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  outputTokens?: number;
+  thinkingTokens?: number;
+}
+export interface SubagentRecord {
+  id: string;
+  type: string;
+  description?: string;
+  startedAt: string;
+  endedAt?: string;
+  message?: string;
+  transcriptPath?: string;
+  tokens?: SubagentTokens;
+  stale?: boolean;
+}
+export interface SubagentsResponse {
+  records: SubagentRecord[];
 }
 
 export interface QueueItem {

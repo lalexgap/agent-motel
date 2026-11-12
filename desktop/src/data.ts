@@ -4,6 +4,7 @@ import { ApiError, apiGet } from "./api";
 import { call } from "./bridge";
 import { agentPath, BUSY, parseAgentKey } from "./fleet";
 import { agentComposer, changed, findRow, newConnState, state } from "./state";
+import { parseRecords, subagentsAvailable } from "./subagents";
 import type { AgentDetail, AgentsResponse, BridgeEvents, Connection, HostsResponse, Transcript } from "./types";
 
 const AGENTS_DEBOUNCE_MS = 150;
@@ -127,6 +128,11 @@ export async function loadDetail(): Promise<void> {
     state.detail.detail = detail;
     state.detail.transcript = transcript;
     state.detail.notFound = false;
+    if (subagentsAvailable(detail)) void loadSubagents(key, parsed.connection, base);
+    else {
+      state.detail.subagents = [];
+      state.detail.subagentsError = null;
+    }
     changed("agent");
     changed("transcript");
   } catch (error) {
@@ -142,6 +148,23 @@ export async function loadDetail(): Promise<void> {
   } finally {
     if (seq === state.detailSeq) state.detailInFlight = false;
   }
+}
+
+// The open agent's built-in subagents, refreshed with the rest of its data. A
+// failure keeps the last records and shows its error, as the browser UI does.
+async function loadSubagents(key: string, connection: string, base: string): Promise<void> {
+  const seq = ++state.subagentsSeq;
+  let records: ReturnType<typeof parseRecords> | null = null;
+  let error: string | null = null;
+  try {
+    records = parseRecords(await apiGet<unknown>(connection, base + "/subagents"));
+  } catch (failure) {
+    error = failure instanceof Error ? failure.message : String(failure);
+  }
+  if (key !== state.selected || seq !== state.subagentsSeq || state.detail?.key !== key) return;
+  if (records || !state.detail.subagents) state.detail.subagents = records ?? [];
+  state.detail.subagentsError = error;
+  changed("agent");
 }
 
 export function onStreamState(payload: BridgeEvents["events.state"]): void {

@@ -19,6 +19,8 @@ import {
 } from "./ordering";
 import { fillOptions, openConcierge } from "./sidebar";
 import { fleets, loadProblem, persist, state, subscribe, unread } from "./state";
+import { parseSubagentKey, runningOf, subagentKey, subagentLabel } from "./subagents";
+import { openSubagent } from "./subagentView";
 import type { AgentRow } from "./types";
 import { mainView, onMainViewChange, registerMainView } from "./views";
 
@@ -80,13 +82,28 @@ function cardNode(entry: Entry, all: readonly AgentRow[], multi: boolean, now: n
   return card;
 }
 
-// Built-in subagents running inside the agent, listed under its card. Display only for now.
-function subagentNodes(row: AgentRow): HTMLElement[] {
-  return (row.subagents?.running ?? []).map((sub) => {
-    const node = h("div", "subagent-row");
-    node.append(h("span"), h("span", "", `↳ ${sub.description || sub.type || "subagent"} · built-in`), h("span"), h("span"), h("span"));
+// Built-in subagents running inside the agent, listed under its card; each
+// opens its transcript. Arrow keys reach them from the card above.
+function subagentNodes(key: string, row: AgentRow): HTMLElement[] {
+  return runningOf(row).map((sub) => {
+    const label = subagentLabel(sub);
+    const node = h("button", "subagent-row");
+    node.type = "button";
+    node.tabIndex = -1;
+    node.dataset.subagentKey = subagentKey(key, sub.id);
+    node.dataset.label = label;
+    node.title = `${label} · read the transcript`;
+    node.append(h("span"), h("span", "", `↳ ${label} · built-in`), h("span"), h("span"), h("span"));
+    node.setAttribute("aria-label", `Subagent ${label} of ${row.name}, running`);
     return node;
   });
+}
+
+function openSubagentNode(node: HTMLElement): void {
+  const parsed = parseSubagentKey(node.dataset.subagentKey ?? "");
+  if (!parsed) return;
+  openSubagent(parsed.agentKey, parsed.id, node.dataset.label);
+  $("am-sub-transcript").focus({ preventScroll: true });
 }
 
 function renderOverview(): void {
@@ -140,7 +157,9 @@ function renderOverview(): void {
   visible.sort((a, b) => compareOverview(a.row, b.row, order));
 
   const grid = $("am-agent-grid");
-  const focusedKey = grid.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.cardKey ?? null : null;
+  const active = grid.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+  const focusedKey = active?.dataset.cardKey ?? null;
+  const focusedSubagent = active?.dataset.subagentKey ?? null;
   const nodes: HTMLElement[] = [];
   if (!visible.length) {
     nodes.push(h("div", "empty", rows.length ? "No agents match this view."
@@ -159,13 +178,14 @@ function renderOverview(): void {
         h("span", "", String(visible.filter((other) => statusGroup(other.row.status) === name).length)));
       nodes.push(header);
     }
-    nodes.push(cardNode(entry, entry.fleet.rows, multi, now), ...subagentNodes(entry.row));
+    nodes.push(cardNode(entry, entry.fleet.rows, multi, now), ...subagentNodes(entry.key, entry.row));
   }
   grid.replaceChildren(...nodes);
   const cards = cardList();
   if (!cards.some((card) => card.dataset.cardKey === cardCursor)) cardCursor = cards[0]?.dataset.cardKey ?? null;
   for (const card of cards) card.tabIndex = card.dataset.cardKey === cardCursor ? 0 : -1;
   if (focusedKey) cards.find((card) => card.dataset.cardKey === focusedKey)?.focus({ preventScroll: true });
+  else if (focusedSubagent) grid.querySelector<HTMLElement>(`[data-subagent-key="${CSS.escape(focusedSubagent)}"]`)?.focus({ preventScroll: true });
 }
 
 const cardList = (): HTMLElement[] => [...$("am-agent-grid").querySelectorAll<HTMLElement>("[data-card-key]")];
@@ -269,6 +289,11 @@ export function initOverview(): void {
 
   const grid = $("am-agent-grid");
   grid.addEventListener("click", (event) => {
+    const sub = (event.target as HTMLElement).closest<HTMLElement>("[data-subagent-key]");
+    if (sub) {
+      openSubagentNode(sub);
+      return;
+    }
     const card = (event.target as HTMLElement).closest<HTMLElement>("[data-card-key]");
     if (card?.dataset.cardKey) openAgent(card.dataset.cardKey, false);
   });
@@ -276,17 +301,25 @@ export function initOverview(): void {
     const key = (event.target as HTMLElement).dataset?.cardKey;
     if (key) cardCursor = key;
   });
-  // Arrow keys walk the cards; Enter opens the agent to write to it, like the sidebar.
+  // Arrow keys walk the cards and the subagents under them; Enter opens the
+  // agent to write to it, like the sidebar, or the subagent to read it.
   grid.addEventListener("keydown", (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const cards = cardList();
-    const index = cards.indexOf(event.target as HTMLElement);
+    const items = [...grid.querySelectorAll<HTMLElement>("[data-card-key], [data-subagent-key]")];
+    const index = items.indexOf(event.target as HTMLElement);
     if (index < 0) return;
+    const focusItem = (node: HTMLElement | undefined) => {
+      if (!node || node.dataset.cardKey) return focusCard(node);
+      node.focus();
+      node.scrollIntoView({ block: "nearest" });
+    };
     const move: Record<string, number> = { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 };
-    if (event.key in move) focusCard(cards[Math.max(0, Math.min(cards.length - 1, index + move[event.key]!))]);
-    else if (event.key === "Home") focusCard(cards[0]);
-    else if (event.key === "End") focusCard(cards[cards.length - 1]);
-    else if (event.key === "Enter") openAgent(cards[index]!.dataset.cardKey!, true);
+    const current = items[index]!;
+    if (event.key in move) focusItem(items[Math.max(0, Math.min(items.length - 1, index + move[event.key]!))]);
+    else if (event.key === "Home") focusItem(items[0]);
+    else if (event.key === "End") focusItem(items[items.length - 1]);
+    else if (event.key === "Enter" && current.dataset.subagentKey) openSubagentNode(current);
+    else if (event.key === "Enter") openAgent(current.dataset.cardKey!, true);
     else return;
     event.preventDefault();
   });

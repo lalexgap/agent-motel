@@ -6,8 +6,8 @@ import { $, badge, composerInput, h } from "./dom";
 import { showDraft, stashDraft } from "./drafts";
 import { BUSY, parseAgentKey } from "./fleet";
 import { duration, firstLine } from "./format";
-import { agentComposer, agentSource, changed, composer, isConcierge, persist, state, subscribe, unread } from "./state";
-import { registerMainView, showMainView } from "./views";
+import { agentComposer, agentSource, changed, composer, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
+import { mainView, registerMainView, showMainView } from "./views";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
 // title row and cards above the message box. Each renders for the open agent on
@@ -30,14 +30,17 @@ function fillSlot(parts: AgentPart[], id: string, place: (box: HTMLElement) => v
     box.id = id;
     place(box);
   }
-  box.replaceChildren(...parts.map((part) => part(key)).filter((node): node is HTMLElement => !!node));
+  const nodes = parts.map((part) => part(key)).filter((node): node is HTMLElement => !!node);
+  // Reinserting a node drops its focus, and these refill on every background refresh.
+  if (nodes.length === box.children.length && nodes.every((node, index) => box.children[index] === node)) return;
+  box.replaceChildren(...nodes);
 }
 
 export function selectAgent(key: string | null, focusTranscript = false): void {
   if (key !== state.selected) {
     stashDraft();
     state.selected = key;
-    state.detail = key ? { key, detail: null, transcript: null, notFound: false } : null;
+    state.detail = key ? newDetailState(key) : null;
     state.taskExpanded = false;
     state.detailFetchedAt = 0;
     // Captured now, as the browser UI does, so reading this visit doesn't move the divider.
@@ -48,13 +51,13 @@ export function selectAgent(key: string | null, focusTranscript = false): void {
     persist();
     changed("seen");
   }
-  for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-agent-key]"))
-    node.setAttribute("aria-selected", String(node.dataset.agentKey === key));
   if (!key) {
     showMainView("overview");
+    markSelection();
     return;
   }
   showMainView("chat");
+  markSelection();
   showDraft(key);
   changed("agent");
   if (!state.detail?.transcript) {
@@ -63,6 +66,15 @@ export function selectAgent(key: string | null, focusTranscript = false): void {
   }
   void loadDetail();
   if (focusTranscript) $("transcript").focus({ preventScroll: true });
+}
+
+// The sidebar marks what the main area shows: the open subagent's row while
+// the subagent view is up, else the open agent's rows.
+export function markSelection(): void {
+  for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-agent-key]"))
+    node.setAttribute("aria-selected", String(!state.subagent && node.dataset.agentKey === state.selected));
+  for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-subagent-key]"))
+    node.setAttribute("aria-selected", String(node.dataset.subagentKey === state.subagent));
 }
 
 function metaItem(label: string, value: string | undefined, mono = false): HTMLElement | null {
@@ -240,14 +252,44 @@ export function tickWorking(): void {
   if (text) text.textContent = label + (Number.isFinite(start) ? ` for ${duration(Date.now() - start)}` : "");
 }
 
+// While another main view covers the chat (a subagent's transcript), the
+// chat keeps its agent, and its transcript waits to render until it shows
+// again with the reader's scroll position put back.
+let hiddenScroll: { key: string; top: number; pinned: boolean } | null = null;
+let renderWhenShown = false;
+function onChatHide(): void {
+  const view = $("transcript");
+  hiddenScroll = view.dataset.agent
+    ? { key: view.dataset.agent, top: view.scrollTop, pinned: view.scrollHeight - view.scrollTop - view.clientHeight < 4 }
+    : null;
+}
+function onChatShow(): void {
+  const view = $("transcript");
+  if (hiddenScroll && hiddenScroll.key === view.dataset.agent) {
+    view.scrollTop = hiddenScroll.pinned ? view.scrollHeight : hiddenScroll.top;
+    transcriptPinned = hiddenScroll.pinned;
+  }
+  hiddenScroll = null;
+  if (renderWhenShown) {
+    renderWhenShown = false;
+    showTranscript();
+  }
+  updateJump();
+}
+function showTranscript(): void {
+  if (mainView() !== "chat") {
+    renderWhenShown = true;
+    return;
+  }
+  if (state.detail?.notFound && !state.detail.transcript) {
+    $("transcript").replaceChildren(h("p", "am-transcript-note", "This agent is not on the server any more."));
+  } else renderTranscript();
+}
+
 export function initChat(): void {
-  registerMainView({ id: "chat", element: $("am-chat") });
+  registerMainView({ id: "chat", element: $("am-chat"), onShow: onChatShow, onHide: onChatHide });
   subscribe("agent", renderHeader);
-  subscribe("transcript", () => {
-    if (state.detail?.notFound && !state.detail.transcript) {
-      $("transcript").replaceChildren(h("p", "am-transcript-note", "This agent is not on the server any more."));
-    } else renderTranscript();
-  });
+  subscribe("transcript", showTranscript);
   // The fleet stream updates rows sooner than the detail poll; keep the header's
   // status in step with the sidebar.
   subscribe("fleet", () => {

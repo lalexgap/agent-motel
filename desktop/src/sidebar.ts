@@ -1,11 +1,12 @@
 // The sidebar: the agent tree with its pinned concierge, filter, show-stopped
 // toggle, keyboard navigation and the resizable divider.
-import { selectAgent } from "./chat";
+import { markSelection, selectAgent } from "./chat";
 import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
 import { $, composerInput, copyText, dot, h } from "./dom";
 import {
   ATTENTION_GROUP,
   buildTree,
+  CONCIERGE_SECTION,
   conciergeTarget,
   isPinnedConcierge,
   moveCursor,
@@ -15,6 +16,7 @@ import {
   STOPPED,
   type AgentItem,
   type GroupItem,
+  type SubagentItem,
   type TreeItem,
 } from "./fleet";
 import { relativeTime } from "./format";
@@ -30,6 +32,8 @@ import {
 } from "./ordering";
 import { fleets, loadProblem, persist, state, subscribe, unread } from "./state";
 import { flashStatus } from "./statusbar";
+import { itemKey, nestSubagents, runningOf } from "./subagents";
+import { openSubagent } from "./subagentView";
 
 const SIDEBAR_MIN = 200;
 
@@ -74,6 +78,8 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   const line = h("div", "am-agent-line");
   line.append(h("span", "am-agent-name", row.name));
   if (isNew(item)) line.append(newBadge());
+  const subcount = subagentCount(row);
+  if (subcount) line.append(subcount);
   line.append(h("span", "am-agent-provider", providerLabel(row.provider)));
   const parts = sidebarMeta(row, now);
   const meta = h("div", "am-agent-meta");
@@ -96,6 +102,38 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${providerLabel(row.provider)}\n${summary}`;
   return node;
 }
+
+function subagentCount(row: AgentItem["row"]): HTMLElement | null {
+  const count = runningOf(row).length || (row.subagents?.active ?? 0);
+  if (count <= 0) return null;
+  const node = h("span", "am-subcount", `↳${count}`);
+  node.title = `${count} subagent${count === 1 ? "" : "s"} running`;
+  return node;
+}
+
+// A running built-in subagent, nested under its parent's row. It carries
+// data-subagent-key, not data-agent-key, so agent-row logic and the context
+// menu pass it by.
+function subagentNode(item: SubagentItem): HTMLElement {
+  const node = h("div", "am-row am-subagent");
+  node.setAttribute("role", "treeitem");
+  node.setAttribute("aria-level", String(item.depth + 1));
+  node.setAttribute("aria-selected", String(item.key === state.subagent));
+  node.tabIndex = -1;
+  node.dataset.itemId = item.id;
+  node.dataset.subagentKey = item.key;
+  node.style.setProperty("--depth", String(item.depth));
+  const time = h("span", "am-agent-time", relativeTime(item.startedAt));
+  time.dataset.since = item.startedAt || "";
+  node.append(h("span", "am-subagent-mark", "↳"), h("span", "am-subagent-label", item.label), time);
+  node.title = `${item.label} · built-in subagent, running${item.startedAt ? ` since ${new Date(item.startedAt).toLocaleTimeString()}` : ""} · read-only`;
+  node.setAttribute("aria-label", `Subagent ${item.label}, running`);
+  return node;
+}
+
+// The pinned concierge section: its row and the subagents nested under it.
+const inPinned = (item: TreeItem): boolean =>
+  isPinnedConcierge(item) || (item.kind === "subagent" && item.parent.startsWith(`${CONCIERGE_SECTION}>`));
 
 function conciergeNode(item: AgentItem): HTMLElement {
   const { row } = item;
@@ -124,6 +162,8 @@ function conciergeNode(item: AgentItem): HTMLElement {
   if (stopped) meta.append(h("span", "am-status-text s-stopped", `stopped · ${statusShort(row.status)}`));
   else if (row.status !== "idle") meta.append(h("span", `am-status-text s-${row.status}`, statusShort(row.status)));
   if ((row.queued ?? 0) > 0) meta.append(h("span", "am-queued", `${row.queued} queued`));
+  const subcount = subagentCount(row);
+  if (subcount) meta.append(subcount);
   text.append(line, meta);
   node.append(dot(row.status), text);
   const where = item.connectionName ? ` on ${item.connectionName}` : "";
@@ -143,24 +183,26 @@ function renderTree(): void {
   const tree = $("am-tree");
   const hadFocus = tree.contains(document.activeElement);
   const now = Date.now();
-  state.tree = buildTree(fleets(), {
+  const built = buildTree(fleets(), {
     filter: state.filter, showStopped: state.showStopped, collapsed: state.collapsed,
     group: state.sidebarGroup, sort: state.sidebarSort, reverse: state.sidebarReverse, now,
   });
+  state.tree = { ...built, items: nestSubagents(built.items) };
   const { items } = state.tree;
   if (state.cursor && !items.some((item) => item.id === state.cursor)) {
-    // Keep the cursor on the same agent if it moved groups, else fall back.
+    // Keep the cursor on the same agent or subagent if it moved groups, else fall back.
     const key = state.cursor.split(">").pop();
-    state.cursor = items.find((item) => item.kind === "agent" && item.key === key)?.id ?? null;
+    state.cursor = items.find((item) => itemKey(item) === key)?.id ?? null;
   }
   if (!state.cursor && state.selected) state.cursor = items.find((item) => item.kind === "agent" && item.key === state.selected)?.id ?? null;
   if (!state.cursor) state.cursor = items[0]?.id ?? null;
   const nodes: HTMLElement[] = [];
   let pinned: HTMLElement | null = null;
   for (const item of items) {
-    const node = item.kind === "group" ? groupNode(item) : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item, now);
+    const node = item.kind === "group" ? groupNode(item) : item.kind === "subagent" ? subagentNode(item)
+      : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item, now);
     if (item.id === state.cursor) node.tabIndex = 0;
-    if (isPinnedConcierge(item)) {
+    if (inPinned(item)) {
       if (!pinned) {
         pinned = h("div", "am-pinned");
         pinned.setAttribute("role", "none");
@@ -169,7 +211,7 @@ function renderTree(): void {
       pinned.append(node);
     } else nodes.push(node);
   }
-  if (!items.some((item) => !isPinnedConcierge(item))) {
+  if (!items.some((item) => !inPinned(item))) {
     const loading = [...state.conns.values()].some((conn) => !conn.loaded);
     const message = state.filter ? `No agents match “${state.filter}”.`
       : loading ? loadProblem() ?? "Loading agents…"
@@ -178,6 +220,7 @@ function renderTree(): void {
     nodes.push(h("div", "am-tree-empty", message));
   }
   tree.replaceChildren(...nodes);
+  markSelection();
   // Background refreshes keep focus on the cursor row without yanking the scroll position.
   if (hadFocus) focusCursor(false);
   const summary = $("am-fleet-summary");
@@ -220,6 +263,7 @@ function toggleGroup(id: string, collapse?: boolean): void {
 
 function activateItem(item: TreeItem): void {
   if (item.kind === "group") toggleGroup(item.id);
+  else if (item.kind === "subagent") openSubagent(item.agentKey, item.subagentId, item.label);
   else selectAgent(item.key);
 }
 
@@ -328,8 +372,9 @@ function registerShortcuts(): void {
     keys: ["Enter", " "], when: onItem, run: (event) => {
       const current = cursorItem()!;
       activateItem(current);
-      // Enter opens the agent to write to it; Space only opens it.
+      // Enter opens the agent to write to it (a subagent to read it); Space only opens it.
       if (event.key === "Enter" && current.kind === "agent" && !composerInput().disabled) composerInput().focus();
+      if (event.key === "Enter" && current.kind === "subagent") $("am-sub-transcript").focus({ preventScroll: true });
     },
   });
   registerShortcut({

@@ -332,6 +332,9 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
         if (subagent !== null) {
           const found = (s().subagents.get(row) ?? []).find((item) => item.record.id === subagent);
           if (!found) return json({ error: `no subagent matches "${subagent}" for agent "${row.name}"` }, 409);
+          if (!found.entries) {
+            return json({ error: `codex keeps subagent turns out of the parent session — "${found.record.type}" has no transcript of its own (it is still running)` }, 409);
+          }
           return json({
             provider: row.provider, sessionId: `fixture-${row.name}-${subagent}`, status: found.record.endedAt ? "exited" : row.status,
             total: found.entries.length, entries: found.entries,

@@ -8,11 +8,14 @@ import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
 import { initOverview, tickOverview } from "./overview";
 import { parseAgentKey } from "./fleet";
+import { initInspector } from "./inspector";
 import { initKeyboard } from "./keyboard";
+import { initRelatedSection } from "./relatedSection";
 import { initSearch } from "./searchView";
 import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sidebar";
 import { changed, newConnState, state } from "./state";
 import { initStatusbar } from "./statusbar";
+import { initSubagentView, tickSubagent } from "./subagentView";
 import { initUsage } from "./usageView";
 import type { BridgeEvents, Connection } from "./types";
 import { setScreen } from "./views";
@@ -28,6 +31,10 @@ function onMenu(payload: BridgeEvents["menu.command"]): void {
 function wire(): void {
   initKeyboard();
   initComposer();
+  // Before the sidebar: their Esc (close the overlay, leave a subagent) comes
+  // before the sidebar's.
+  initInspector();
+  initSubagentView();
   initSidebar();
   // After the sidebar, so a fleet re-render has replaced the rows before the menu checks its row.
   initContextMenu();
@@ -37,6 +44,7 @@ function wire(): void {
   initChat();
   initUsage();
   initSearch();
+  initRelatedSection();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {
     const link = (event.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null;
@@ -64,6 +72,7 @@ function tick(): void {
   tickOverview(now);
   if (document.hidden) return;
   poll(now);
+  tickSubagent(now);
 }
 
 async function start(): Promise<void> {
