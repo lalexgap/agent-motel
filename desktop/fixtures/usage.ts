@@ -44,6 +44,7 @@ export interface History {
   repo?: string;
   role?: string;
   model: string;
+  effort?: string;
   days: Day[];
   subagents: number;
   subShare: number;
@@ -73,6 +74,7 @@ export function historyFor(row: FixtureRow, now: number): History {
   const subShare = harbor ? 0.22 : Math.round(next() * 15) / 100;
   return {
     name: row.name, provider: row.provider, repo: row.repoRoot?.split("/").pop(), ...(typeof row.role === "string" ? { role: row.role } : {}), model,
+    ...(row.effort ? { effort: row.effort } : {}),
     days: series(row.name, BASE[model] ?? 200_000, Math.max(0, DAYS - ageDays), DAYS - 1 - idleDays, row.status === "working"),
     subagents: harbor ? 3 : Math.floor(subShare * 20), subShare,
   };
@@ -82,6 +84,7 @@ export function historyFor(row: FixtureRow, now: number): History {
 export function removedHistories(): History[] {
   return [{
     name: "beacon-audit", provider: "claude", repo: "lighthouse", role: "reviewer", model: "claude-sonnet-4-5",
+    effort: "high",
     days: series("beacon-audit", 220_000, 21, 26, false), subagents: 2, subShare: 0.1, removed: true,
   }];
 }
@@ -143,7 +146,17 @@ export function usageSummary(entries: SummaryEntry[], opts: { range: 1 | 7 | 30;
   const classes = { cacheRead: { costUSD: 0, tokens: 0 }, cacheWrite1h: { costUSD: 0, tokens: 0 }, cacheWrite5m: { costUSD: 0, tokens: 0 }, output: { costUSD: 0, tokens: 0 }, input: { costUSD: 0, tokens: 0 } };
   const byModel = new Map<string, { model: string; priced: boolean; costUSD: number; activeTokens: number }>();
   const byRepo = new Map<string, { repo: string; costUSD: number; activeTokens: number; agents: number }>();
+  const byType = new Map<string, { type: string; kind: "main" | "subagent"; costUSD: number; activeTokens: number; runs: number; agents: number }>();
+  const byEffort = new Map<string, { effort: string; costUSD: number; activeTokens: number; calls: number }>();
   const agents = [];
+  const addEffort = (effort: string, range: UsageAmount) => {
+    const row = byEffort.get(effort) ?? { effort, costUSD: 0, activeTokens: 0, calls: 0 };
+    row.costUSD = round(row.costUSD + range.costUSD);
+    row.activeTokens += range.activeTokens;
+    row.calls += range.calls;
+    byEffort.set(effort, row);
+  };
+  if (withUnattributed) addEffort("unrecorded", amount(UNATTRIBUTED_MODEL, UNATTRIBUTED.slice(from)));
   for (const { history, row } of chosen) {
     const range = amount(history.model, history.days.slice(from));
     if (!range.activeTokens && !(row && !STOPPED.has(row.status))) continue;
@@ -172,6 +185,16 @@ export function usageSummary(entries: SummaryEntry[], opts: { range: 1 | 7 | 30;
     repo.activeTokens += range.activeTokens;
     if (range.activeTokens) repo.agents++;
     byRepo.set(repo.repo, repo);
+    const kind = row?.spawnedBy ? "subagent" : "main";
+    const type = kind === "main" ? "main" : history.role?.trim() || "unknown";
+    const typeKey = `${kind}\u0000${type}`;
+    const typeRow = byType.get(typeKey) ?? { type, kind, costUSD: 0, activeTokens: 0, runs: 0, agents: 0 };
+    typeRow.costUSD = round(typeRow.costUSD + range.costUSD);
+    typeRow.activeTokens += range.activeTokens;
+    if (range.calls > 0) typeRow.runs++;
+    typeRow.agents++;
+    byType.set(typeKey, typeRow);
+    addEffort(history.effort ?? "unrecorded", range);
     const slice = history.days.slice(from);
     const writes = slice.reduce((sum, day) => sum + day.cacheWrite, 0);
     const reads = slice.reduce((sum, day) => sum + day.cacheRead, 0);
@@ -201,6 +224,12 @@ export function usageSummary(entries: SummaryEntry[], opts: { range: 1 | 7 | 30;
     classes,
     byModel: [...byModel.values()].sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens),
     byRepo: [...byRepo.values()].sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens),
+    byType: [...byType.values()]
+      .filter((value) => value.activeTokens > 0 || value.costUSD > 0)
+      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.type.localeCompare(b.type) || a.kind.localeCompare(b.kind)),
+    byEffort: [...byEffort.values()]
+      .filter((value) => value.activeTokens > 0 || value.costUSD > 0)
+      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.effort.localeCompare(b.effort)),
     agents,
     unattributed: withUnattributed
       ? { dailyCostUSD: UNATTRIBUTED.map((day) => round(dayCost(UNATTRIBUTED_MODEL, day))), dailyActiveTokens: UNATTRIBUTED.map(activeOf), range: amount(UNATTRIBUTED_MODEL, UNATTRIBUTED.slice(from)) }

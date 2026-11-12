@@ -5,6 +5,7 @@ import { checkMessageText } from "../src/policy";
 import type { QueueItem, TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, REPO, worktree, type FixtureRow } from "./data";
 import { catalogsFor, findCatalog, ROLES, seedWorkspace, selectionError, type Workspace } from "./extras";
+import { decisionsInboxFixture } from "./decisionsInbox";
 import { PR_STATES, prReport, type PrState } from "./prs";
 import { ulid, type FixtureState, type Message } from "./store";
 import { agentTokenReport, fleetTokenReport, quota, usageSummary } from "./usage";
@@ -928,6 +929,15 @@ export function buildRoutes(fx: Fx): {
   ];
 
   const prRoutes: Route[] = [
+    { method: "GET", path: "/api/agents/:name/decisions", handler: ({ params }) => {
+      const target = parseTarget(params.name!);
+      if (target instanceof Response) return target;
+      if (target.host) return json({ decisions: [], remote: true });
+      const row = agentOf(target);
+      if (row instanceof Response) return row;
+      return json({ decisions: decisionsInboxFixture().groups.find((group) => group.agent === row.name)?.decisions ?? [] });
+    } },
+    { method: "GET", path: "/api/decisions", handler: () => json(decisionsInboxFixture()) },
     {
       // Like the real route: an unknown state is a 400; all/needsMe only when "1"; repo matches owner/name or name.
       method: "GET", path: "/api/prs", handler: (ctx) => {

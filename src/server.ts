@@ -6,7 +6,7 @@ import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
 import { agentWorkspaceDiff, agentWorkspace, validateRemoteWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
-import { agentDecisions, decisionsPageLink, validDecisionsAgent } from "./webDecisions";
+import { agentDecisions, decisionsPageLink, decisionsReport, validDecisionsAgent } from "./webDecisions";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
 import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
@@ -698,6 +698,14 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     catch (error) { return json({ error: (error as Error).message }, 409); }
   }
 
+  // GET /api/decisions — every open decision stored on this server. Configured
+  // remote hosts are reported but not contacted; connect to them directly.
+  if (parts.length === 1 && parts[0] === "decisions" && method === "GET") {
+    const response = json(decisionsReport());
+    response.headers.set("cache-control", "no-store");
+    return response;
+  }
+
   // POST /api/decisions/link — {agent?}: the operator's decisions page URL from
   // `drop decisions`. The URL is a credential: returned here only, never stored.
   if (parts.length === 2 && parts[0] === "decisions" && parts[1] === "link" && method === "POST") {
@@ -1157,7 +1165,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/prs.js": "web/prs.js", "/decisions.js": "web/decisions.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/prs.js": "web/prs.js", "/decisions.js": "web/decisions.js", "/decisionsPage.js": "web/decisionsPage.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

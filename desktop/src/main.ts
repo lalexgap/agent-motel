@@ -8,6 +8,8 @@ import { initConnections, openSetup } from "./connections";
 import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
 import { initOverview, tickOverview } from "./overview";
+import { initDecisionsCard } from "./decisionsCard";
+import { initDecisionsPage } from "./decisionsView";
 import { initPrs } from "./prsView";
 import { parseAgentKey } from "./fleet";
 import { initInspector } from "./inspector";
@@ -47,6 +49,7 @@ function wire(): void {
   initStatusbar();
   initConnections();
   initOverview();
+  initDecisionsCard();
   initChat();
   // After the chat and the composer, so its Resume and error line render on the same change.
   initAgentActions();
@@ -54,6 +57,7 @@ function wire(): void {
   initUsage();
   initSearch();
   initPrs();
+  initDecisionsPage();
   initRelatedSection();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {

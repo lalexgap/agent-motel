@@ -2553,7 +2553,7 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   .prs-table tr.prs-decision-row { margin: -8px 0 8px; padding: 10px 12px; border-radius: 0 0 var(--radius) var(--radius); background: var(--warning-soft); }
   .prs-table tr.prs-decision-row td { background: none; }
 }
-/* Six nav entries outgrow a phone's top bar: let the row scroll rather than widen the page. */
+/* Nav entries outgrow a phone's top bar: let the row scroll rather than widen the page. */
 @media (max-width: 700px) {
   .sidebar nav { min-width: 0; overflow-x: auto; scrollbar-width: none; justify-content: safe flex-end; }
 }
@@ -2618,3 +2618,24 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 .decision-link-text { font-size: 12px; color: var(--fg-subtle); overflow-wrap: anywhere; }
 .decision-answer { margin-left: auto; height: 26px; padding: 0 10px; border-radius: 8px; font-size: 12px; }
 .decisions-unavailable { margin: 8px 0 0; font-size: 12px; color: var(--fg-subtle); }
+
+/* Read-only decisions inbox. */
+#decisions-page { display: flex; flex-direction: column; gap: 12px; padding-bottom: 32px; }
+.decisions-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.decisions-query { display: grid; flex: 1 1 280px; gap: 4px; font-size: 12px; color: var(--fg-muted); }
+.decisions-query input { width: 100%; }
+.decisions-blocking { display: flex; align-items: center; gap: 5px; min-height: 32px; font-size: 13px; color: var(--fg-muted); }
+#decisions-status { margin-left: auto; align-self: center; }
+#decisions-status.decisions-error { color: var(--warning-text); }
+.decisions-coverage { margin: 0; padding: 8px 12px; border: 1px solid var(--warning-border); border-radius: var(--radius); background: var(--warning-soft); color: var(--warning-text); font-size: 12.5px; }
+.decisions-inbox-list { display: grid; gap: 14px; }
+.decisions-inbox-list > .empty { margin: 0; padding: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); text-align: center; }
+.decisions-inbox-group { min-width: 0; }
+.decisions-inbox-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.decisions-inbox-heading h2 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.decisions-open-agent { padding: 4px 10px; font-size: 12.5px; }
+.decisions-inbox-group .decisions-card { max-height: none; margin-bottom: 0; }
+.decisions-inbox-group .decisions-title { display: none; }
+@media (max-width: 700px) {
+  #decisions-status { width: 100%; margin-left: 0; }
+}

@@ -283,9 +283,13 @@ function lock() {
     $(id)?.replaceChildren();
   if ($("usage-page")) $("usage-page").hidden = true;
   if ($("prs-page")) $("prs-page").hidden = true;
+  if ($("decisions-page")) $("decisions-page").hidden = true;
   Object.assign(prsView, { report: null, loading: false, error: null });
+  Object.assign(decisionsInboxView, { report: null, loading: false, error: null, query: "", blockingOnly: false });
   renderPrs();
   updatePrsBadge();
+  renderDecisionInbox();
+  updateDecisionsNavBadge();
   $("pane").textContent = "";
   $("workspace-count").textContent = "";
   $("workspace-summary").textContent = "";
@@ -335,6 +339,8 @@ function showOverview(filter = "live") {
   $("usage-nav")?.classList.remove("active");
   if ($("prs-page")) $("prs-page").hidden = true;
   $("prs-nav")?.classList.remove("active");
+  if ($("decisions-page")) $("decisions-page").hidden = true;
+  $("decisions-nav")?.classList.remove("active");
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -432,6 +438,7 @@ function renderFleet() {
   });
   $("attention-count").textContent = rows.filter(attention).length;
   $("attention-count").hidden = !rows.some(attention);
+  updateDecisionsNavBadge();
   renderDecisionsCue();
   syncDecisions();
   const nav = $("agent-nav");
@@ -583,6 +590,7 @@ async function selectAgent(name, mode) {
   $("search-page").hidden = true;
   if ($("usage-page")) $("usage-page").hidden = true;
   if ($("prs-page")) $("prs-page").hidden = true;
+  if ($("decisions-page")) $("decisions-page").hidden = true;
   saveDraft();
   agentTerminal.close();
   state.selected = name;
@@ -1546,6 +1554,7 @@ async function refresh() {
       refreshSubagent(),
       !$("usage-page")?.hidden ? refreshUsageSummary({ periodic: true }) : Promise.resolve(),
       refreshPrs(),
+      refreshDecisionInbox(),
     ]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
@@ -1671,6 +1680,7 @@ function renderCommands() {
     ["Search conversations", () => $("search-nav").click()],
     ["Token usage", () => $("usage-nav").click()],
     ["Pull requests", () => $("prs-nav").click()],
+    ["Decisions", () => $("decisions-nav").click()],
     ["Concierge", () => $("concierge-nav").click()],
     ["New agent…", createDialog],
     ...(state.selected ? [["View chat", () => $("chat-tab").click()],
@@ -1969,6 +1979,7 @@ function showUsage(agentName) {
   $("detail").hidden = true;
   $("search-page").hidden = true;
   if ($("prs-page")) $("prs-page").hidden = true;
+  if ($("decisions-page")) $("decisions-page").hidden = true;
   $("usage-page").hidden = false;
   document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
@@ -2193,6 +2204,7 @@ function showPrs() {
   $("detail").hidden = true;
   $("search-page").hidden = true;
   $("usage-page").hidden = true;
+  if ($("decisions-page")) $("decisions-page").hidden = true;
   prsRoot.hidden = false;
   document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
@@ -2209,6 +2221,97 @@ function showPrs() {
 }
 
 $("prs-nav").onclick = () => showPrs();
+
+// --- Decisions inbox ---------------------------------------------------------
+
+let decisionsInboxRequestSeq = 0;
+const decisionsInboxView = { report: null, loading: false, error: null, query: "", blockingOnly: false };
+const decisionsRoot = $("decisions-page");
+
+function updateDecisionsNavBadge() {
+  const reported = decisionsInboxView.report?.groups?.reduce((sum, group) => sum + group.decisions.length, 0);
+  const fleet = state.rows.filter((row) => !row.host).reduce((sum, row) => sum + (row.openDecisions || 0), 0);
+  if (!decisionsRoot.hidden && reported !== undefined) {
+    $("decisions-count").textContent = String(reported);
+    $("decisions-count").hidden = !reported;
+    return;
+  }
+  const count = reported ?? fleet;
+  $("decisions-count").textContent = String(count);
+  $("decisions-count").hidden = !count;
+}
+
+async function refreshDecisionInbox() {
+  if (!state.authenticated) return;
+  const request = ++decisionsInboxRequestSeq;
+  const epoch = state.sessionEpoch;
+  decisionsInboxView.loading = true;
+  renderDecisionInbox();
+  try {
+    const report = await api("/api/decisions");
+    if (!state.authenticated || epoch !== state.sessionEpoch || request !== decisionsInboxRequestSeq) return;
+    decisionsInboxView.report = report;
+    decisionsInboxView.error = null;
+  } catch (error) {
+    if (!state.authenticated || epoch !== state.sessionEpoch || request !== decisionsInboxRequestSeq) return;
+    decisionsInboxView.error = error.message;
+  }
+  decisionsInboxView.loading = false;
+  updateDecisionsNavBadge();
+  renderDecisionInbox();
+}
+
+const decisionsInboxActions = {
+  refresh: refreshDecisionInbox,
+  setQuery(query) {
+    decisionsInboxView.query = query;
+    renderDecisionInbox();
+  },
+  setBlockingOnly(blockingOnly) {
+    decisionsInboxView.blockingOnly = !!blockingOnly;
+    renderDecisionInbox();
+  },
+  openAgent(name) {
+    if (!state.rows.some((row) => !row.host && row.name === name)) {
+      notice(`${name} is not in this server's current fleet.`);
+      return;
+    }
+    selectAgent(name);
+  },
+};
+
+function renderDecisionInbox() {
+  window.agentDecisionsPage.render(decisionsRoot, { ...decisionsInboxView }, decisionsInboxActions);
+}
+
+function showDecisionInbox() {
+  saveDraft();
+  agentTerminal.close();
+  state.selected = null;
+  state.detailVersion++;
+  connectEvents();
+  $("overview").hidden = true;
+  $("detail").hidden = true;
+  $("search-page").hidden = true;
+  $("usage-page").hidden = true;
+  $("prs-page").hidden = true;
+  decisionsRoot.hidden = false;
+  document.querySelector(".page-heading").hidden = false;
+  $("new-agent").hidden = false;
+  $("page-title").textContent = "Decisions";
+  $("page-title").classList.remove("agent-title");
+  $("page-subtitle").textContent = "Open questions waiting on you from agents on this server.";
+  $("breadcrumb").textContent = "Decisions";
+  document.querySelectorAll(".nav").forEach((button) => button.classList.toggle("active", button.id === "decisions-nav"));
+  renderFleet();
+  renderDecisionInbox();
+  refreshDecisionInbox();
+}
+
+$("decisions-nav").onclick = showDecisionInbox;
+// search.js owns its nav action; add this page to its existing hide sequence.
+const showSearchPage = $("search-nav").onclick;
+$("search-nav").onclick = (...args) => { decisionsRoot.hidden = true; return showSearchPage(...args); };
 
 // --- Open decisions -----------------------------------------------------------
 
@@ -2280,15 +2383,10 @@ function renderDecisionsCue() {
   const cue = $("decisions-cue");
   cue.hidden = !count;
   cue.textContent = `${pluralize(count, "agent", "agents")} waiting on decisions`;
-  cue.disabled = !!decisionsUnavailable;
-  cue.title = decisionsUnavailable || "Open the decisions page";
+  cue.disabled = false;
+  cue.title = "Open this server's decisions inbox";
 }
-$("decisions-cue").onclick = async () => {
-  const cue = $("decisions-cue");
-  cue.disabled = true;
-  try { await openDecisionsPage(null, "", $("decisions-cue-note")); } catch {}
-  cue.disabled = !!decisionsUnavailable;
-};
+$("decisions-cue").onclick = showDecisionInbox;
 
 function resetDecisions() {
   decisionsView.key = decisionsView.sig = null;

@@ -211,7 +211,9 @@ export function readDecisionStoreTextsResult(relevantNames?: string[]): { texts:
     if (file.startsWith(".") || !file.endsWith(".json")) continue;
     try {
       const text = readStoreFile(join(decisionsHome(), file));
-      if (text !== undefined) out.set(file.slice(0, -".json".length), text);
+      const name = file.slice(0, -".json".length);
+      if (text !== undefined) out.set(name, text);
+      else if (ownsStore(name) && (relevantSlugs === null || relevantSlugs.has(name))) complete = false;
     } catch {
       if (relevantSlugs === null || relevantSlugs.has(file.slice(0, -".json".length))) complete = false;
     }

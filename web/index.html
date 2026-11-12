@@ -20,6 +20,7 @@
     <script src="/usage.js" defer></script>
     <script src="/prs.js" defer></script>
     <script src="/decisions.js" defer></script>
+    <script src="/decisionsPage.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -60,6 +61,8 @@
             ◔ <span>Token usage</span></button
           ><button id="prs-nav" class="nav" data-short="PRs">
             ⇄ <span>PRs</span><b id="prs-count" hidden>0</b></button
+          ><button id="decisions-nav" class="nav" data-short="Decisions">
+            ? <span>Decisions</span><b id="decisions-count" hidden>0</b></button
           ><button id="concierge-nav" class="nav" data-short="Concierge">
             ✳ <span>Concierge</span>
           </button>
@@ -115,6 +118,16 @@
             </form>
             <p id="advanced-summary" role="status"></p>
             <div id="advanced-results" class="advanced-results"></div>
+          </section>
+          <section id="decisions-page" hidden aria-label="Open decisions">
+            <div class="decisions-toolbar">
+              <label class="decisions-query">Filter decisions<input id="decisions-query" type="search" placeholder="Agent, question, option…" autocomplete="off" /></label>
+              <label class="decisions-blocking"><input id="decisions-blocking" type="checkbox" /> Blocking only</label>
+              <button id="decisions-refresh" type="button">Refresh</button>
+              <span id="decisions-status" class="muted" role="status"></span>
+            </div>
+            <p id="decisions-coverage" class="decisions-coverage" hidden></p>
+            <div id="decisions-inbox-list" class="decisions-inbox-list"></div>
           </section>
           <section id="prs-page" hidden aria-label="Pull requests">
             <div class="usage-toolbar">
