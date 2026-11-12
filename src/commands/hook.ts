@@ -753,7 +753,7 @@ export async function hookCommand(event: string): Promise<void> {
       if (!current) return;
       agent = current;
       name = agent.name;
-      updateAgentStatus(agent, "working");
+      if (!promptStillWaiting(agent)) updateAgentStatus(agent, "working");
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
       agent.decisionsStopDeferred = undefined;
       writeAgent(agent);

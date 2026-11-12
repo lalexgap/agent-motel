@@ -7,6 +7,7 @@ import { ensurePlan } from "../src/plan";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth } from "../src/queue";
 import { acquireDeliverLock, releaseDeliverLock } from "../src/deliver";
+import { createPermission } from "../src/permissions";
 import { decisionBin, decisionsContext, resetDecisionBinForTests } from "../src/decisionHooks";
 
 const CLI = join(import.meta.dir, "../src/index.ts");
@@ -199,6 +200,17 @@ describe("stop hook", () => {
     expect(queueDepth("api")).toBe(1);
     expect(calls()).toEqual(["--agent api hook stop --mode block"]);
     expect(JSON.parse(readFileSync(join(fake, "stdin-stop"), "utf8"))).toMatchObject({ last_assistant_message: "Should I ship it?" });
+  }, 30_000);
+
+  test("a block keeps needs-attention while a subagent's dialog is still held", () => {
+    agent({ status: "needs-attention", statusKind: "prompt", statusReason: "approval requested — Bash" });
+    createPermission({
+      agent: "api", provider: "claude", tool: "Bash", summary: "Bash: ls", input: {}, options: [], decisions: {},
+      expiresAt: null, pid: process.pid, claude: { toolInput: {}, agentId: "sub-1" },
+    });
+    writeFileSync(join(fake, "stop-out"), BLOCK);
+    expect(hook("stop", { last_assistant_message: "Should I ship it?" }).out).toEqual(JSON.parse(BLOCK));
+    expect(readAgent("api")!.status).toBe("needs-attention");
   }, 30_000);
 
   test("the stop after a block passes through and the agent goes idle", () => {
