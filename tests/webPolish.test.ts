@@ -60,7 +60,7 @@ test("loading, failed and superseded visits cannot inherit another transcript's 
     lastRead: new Map([["A", 200], ["B", 10]]), lastSeen: new Map([["A", "T1"], ["B", "T0"]]) };
   const context: any = { state, $: (id: string) => nodes[id] ??= {}, el() {}, renderFleet() {} };
   runInNewContext(source.slice(source.indexOf("function markDetailSeen("), source.indexOf("async function refreshDetail(")), context);
-  runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf("function promptTerminalButton(")), context);
+  runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf("// A message sent mid-turn is held")), context);
   const unchanged = () => {
     expect([...state.lastRead]).toEqual([["A", 200], ["B", 10]]);
     expect([...state.lastSeen]).toEqual([["A", "T1"], ["B", "T0"]]);
@@ -129,7 +129,7 @@ test("scroll, Jump latest and terminal transitions acknowledge only the displaye
     const context: any = { state, $: node, renderFleet() {}, key: (row: any) => row.name,
       agentTerminal: { open() {}, close() {} } };
     runInNewContext(source.slice(source.indexOf("function markDetailSeen("), source.indexOf("async function refreshDetail(")), context);
-    runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf("function promptTerminalButton(")), context);
+    runInNewContext(source.slice(source.indexOf("function updateLatestButton("), source.indexOf("// A message sent mid-turn is held")), context);
     runInNewContext(source.slice(source.indexOf("function updateAgentView("), source.indexOf("// The Terminal/Chat choice")), context);
     context.setDetailMode = (mode: string) => { state.detailMode = mode; };
     runInNewContext(source.slice(source.indexOf('$("chat-tab").onclick'), source.indexOf('$("terminal-reconnect").onclick')), context);
