@@ -2507,6 +2507,7 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 .prs-agent-meta { font-size: 12px; color: var(--fg-subtle); }
 .prs-col-activity { white-space: nowrap; color: var(--fg-muted); }
 .prs-stack { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); cursor: help; }
+.prs-col-stack .prs-notes { white-space: nowrap; }
 .prs-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .prs-actions button { padding: 3px 9px; font-size: 12.5px; white-space: nowrap; }
 .prs-actions button[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-text); }
