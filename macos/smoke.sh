@@ -1,7 +1,7 @@
 #!/bin/bash
 # Opt-in integration check of the real app against the synthetic fixture server, which it starts.
-# It sends and cancels messages, so SMOKE_URL may only name another fixture-compatible server on
-# loopback (pipe its token on stdin), never a real fleet.
+# It sends messages and stops, removes and creates agents, so SMOKE_URL may only name another
+# fixture-compatible server on loopback (pipe its token on stdin), never a real fleet.
 # SMOKE_BRIDGE_ONLY=1 skips the UI steps; SMOKE_SCREENSHOT sets where the PNG is copied.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -40,7 +40,7 @@ if [[ -z "${SMOKE_URL:-}" ]]; then
   done
 else
   if [[ ! "$SMOKE_URL" =~ ^http://(127\.0\.0\.1|localhost|\[::1\]):[0-9]+$ ]]; then
-    echo "SMOKE_URL must be a loopback fixture server (http://127.0.0.1:<port>): the smoke test sends messages." >&2
+    echo "SMOKE_URL must be a loopback fixture server (http://127.0.0.1:<port>): the smoke test stops, removes and creates agents." >&2
     exit 1
   fi
   IFS= read -r token || true

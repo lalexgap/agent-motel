@@ -2,20 +2,22 @@ import AppKit
 import WebKit
 
 /// The page's only route to the network: `window.webkit.messageHandlers.am.postMessage({method, params})`.
-/// Every request is a GET except two: `messages.send` (`POST /api/agents/:key/messages`) and
-/// `messages.cancel` (`DELETE /api/agents/:key/messages/:id`), whose paths are built here from
-/// validated values. There is no generic POST or DELETE.
+/// `api.get` only sends GETs. Every write is a named method that takes values (`messages.*` and the
+/// `ActionPolicy` methods), whose method, path and body are built by the policy from validated
+/// values. There is no generic POST or DELETE. Destructive methods are confirmed natively first.
 @MainActor
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "am"
 
     weak var webView: WKWebView?
     let store: ConnectionStore
+    let confirmation: Confirmation
     private let api = APIClient()
     private(set) var streams: [String: EventStream] = [:]
 
-    init(store: ConnectionStore) {
+    init(store: ConnectionStore, confirmation: Confirmation) {
         self.store = store
+        self.confirmation = confirmation
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
@@ -68,12 +70,14 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             return try await get(params)
         case "messages.send":
             let connection = try savedConnection(params)
-            return try await message(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],
-                                                        mode: params["mode"]), connection: connection)
+            return try await write(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],
+                                                      mode: params["mode"]), connection: connection)
         case "messages.cancel":
             let connection = try savedConnection(params)
-            return try await message(MessagePolicy.cancel(base: connection.url, agent: params["agent"], id: params["id"]),
-                                     connection: connection)
+            return try await write(MessagePolicy.cancel(base: connection.url, agent: params["agent"], id: params["id"]),
+                                   connection: connection)
+        case _ where ActionPolicy.methods.contains(method):
+            return try await action(method, params)
         case "events.start":
             let id = try connectionID(params, "connection")
             if let stream = streams[id] {
@@ -102,6 +106,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     func stopAllStreams() {
         for stream in streams.values { stream.stop() }
         streams.removeAll()
+    }
+
+    /// At quit: in-flight requests (a move can take ten minutes) are cancelled, not left running.
+    func cancelRequests() {
+        api.cancelAll()
     }
 
     /// Delivers a native event to `window.__amNativeEvent(name, payload)`. Data is passed as
@@ -184,12 +193,37 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         return connection
     }
 
-    /// Sent once; a network failure rejects so the page can say the delivery state is unknown.
-    private func message(_ request: MessageRequest, connection: Connection) async throws -> [String: Any] {
+    /// Sent once; a network failure rejects so the page can say the outcome is unknown.
+    private func write(_ request: WriteRequest, connection: Connection) async throws -> [String: Any] {
         guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
         let response = try await api.send(request, token: token)
         let body = (try? JSONSerialization.jsonObject(with: response.body, options: [.fragmentsAllowed])) ?? NSNull()
         return ["status": response.status, "body": body]
+    }
+
+    /// Validates everything first; a confirmed method then checks the exact agent still exists (am's
+    /// `stop` also matches aliases and prefixes, so a stale name could hit another agent), shows its
+    /// status in the native sheet, and sends nothing unless the user accepts.
+    private func action(_ method: String, _ params: [String: Any]) async throws -> Any {
+        let connection = try savedConnection(params)
+        let plan = try ActionPolicy.plan(method, base: connection.url, params: params)
+        guard let confirm = plan.confirm else { return try await write(plan.request, connection: connection) }
+        guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
+        try confirmation.reserve()
+        defer { confirmation.release() }
+        let detail = try await api.get(confirm.precheck, token: token)
+        switch detail.status {
+        case 200: break
+        case 404: throw PolicyError(ActionPolicy.missingAgent)
+        default: throw PolicyError(ActionPolicy.precheckFailed(detail.status))
+        }
+        let text = confirm.text(status: ActionPolicy.status(fromDetail: detail.body), server: connection.name)
+        guard try await confirmation.ask(text) else { return ["cancelled": true] }
+        // The page keeps running behind the sheet; it may have removed or re-pointed the connection.
+        guard let current = store.get(connection.id), current.url == connection.url else {
+            throw PolicyError("unknown connection: \(connection.id)")
+        }
+        return try await write(plan.request, connection: current)
     }
 
     private func makeStream(_ id: String) -> EventStream {

@@ -102,7 +102,7 @@ func rejection(_ body: () throws -> Any) -> String? {
 for agent in ["harbor-lights", "annex:kelp-forest", "a_b-1", "host.example:agent", String(repeating: "n", count: 64)] {
     check((try? MessagePolicy.agent(agent)) == agent, "agent rejected: \(agent)")
 }
-for agent in ["", "a/b", "a:b:c", "../x", "a b", ":x", "x:", "host:../x", "a%2Fb", "-host:x", ".host:x",
+for agent in ["", "a/b", "a:b:c", "../x", "a b", ":x", "x:", "host:../x", "a%2Fb", "-host:x", ".host:x", "a..b:x", "annex..:x",
               String(repeating: "n", count: 65), "é", "a\u{0}", "a?b", "a#b", "a\nb"] {
     check(rejection { try MessagePolicy.agent(agent) } == "invalid agent: \(agent)", "agent accepted: \(agent.debugDescription)")
 }
@@ -164,7 +164,7 @@ do {
     check(post.httpMethod == "POST" && post.url == send.url && post.httpBody == send.body, "POST request")
     check(post.value(forHTTPHeaderField: "Content-Type") == "application/json", "POST content type")
     check(post.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token", "POST bearer")
-    check(post.timeoutInterval == 60 && !post.httpShouldHandleCookies, "POST timeout and cookies")
+    check(post.timeoutInterval == 60 && !post.httpShouldHandleCookies && send.timeout == 60, "POST timeout and cookies")
     let delete = APIClient.request(cancel, token: "fixture-token")
     check(delete.httpMethod == "DELETE" && delete.httpBody == nil && delete.value(forHTTPHeaderField: "Content-Type") == nil,
           "DELETE has no body")
@@ -177,6 +177,285 @@ for (agent, id) in [("a/b", "x"), ("harbor-lights", "../x"), ("harbor-lights", "
 }
 check((try? MessagePolicy.send(base: base, agent: "harbor-lights", text: "hi", mode: "interrupt")) == nil, "interrupt send")
 print("PASS message policy (agent, mode, text bytes, id, paths, request shape)")
+
+// Write surface (milestone 3): same vectors as tests/desktopPolicy.test.ts.
+func plan(_ method: String, _ params: [String: Any]) throws -> ActionPlan {
+    try ActionPolicy.plan(method, base: base, params: params)
+}
+func planError(_ method: String, _ params: [String: Any]) -> String? {
+    rejection { try plan(method, params) }
+}
+func body(_ request: WriteRequest) -> [String: Any] {
+    request.body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+}
+func expectRequest(_ method: String, _ params: [String: Any], _ verb: WriteRequest.Method, _ path: String, _ keys: Set<String>,
+                   timeout: TimeInterval, confirmed: Bool, line: Int = #line) -> [String: Any] {
+    do {
+        let result = try plan(method, params)
+        let request = result.request
+        check(request.method == verb && request.url.absoluteString == base + path, "\(method) \(request.method) \(request.url)", line: line)
+        check(request.timeout == timeout, "\(method) timeout \(request.timeout)", line: line)
+        check((result.confirm != nil) == confirmed, "\(method) confirm", line: line)
+        if confirmed {
+            check(result.confirm?.precheck.absoluteString == base + "/api/agents/" + MessagePolicy.encodedAgent(params["agent"] as? String ?? ""),
+                  "\(method) precheck \(String(describing: result.confirm?.precheck))", line: line)
+        }
+        if verb == .delete {
+            check(request.body == nil && request.contentType == nil, "\(method) DELETE has a body", line: line)
+            return [:]
+        }
+        let json = body(request)
+        check(request.contentType == "application/json" && Set(json.keys) == keys, "\(method) body keys \(json.keys.sorted())", line: line)
+        return json
+    } catch {
+        check(false, "\(method) rejected: \(error)", line: line)
+        return [:]
+    }
+}
+
+check(planError("agents.fly", ["agent": "keeper-log"]) == "unknown method: agents.fly", "unknown action")
+for method in ActionPolicy.methods where !["agents.create", "concierge.ensure", "search.query"].contains(method) {
+    for agent in ["a/b", "../x", "a..b:x", "a:b:c", ""] {
+        check(planError(method, ["agent": agent]) == "invalid agent: \(agent)", "\(method) agent \(agent)")
+    }
+    check(planError(method, [:]) == "invalid agent: null", "\(method) without agent")
+}
+
+_ = expectRequest("agents.resume", ["agent": "old-lens"], .post, "/api/agents/old-lens/resume", [], timeout: 60, confirmed: false)
+_ = expectRequest("agents.restart", ["agent": "keeper-log"], .post, "/api/agents/keeper-log/restart", [], timeout: 60, confirmed: true)
+// Interrupt never carries text, even when the page passes some.
+_ = expectRequest("agents.interrupt", ["agent": "annex:kelp-forest", "text": "x"], .post, "/api/agents/annex%3Akelp-forest/interrupt", [],
+                  timeout: 60, confirmed: true)
+_ = expectRequest("agents.stop", ["agent": "tide-pilot", "ifIdle": true], .post, "/api/agents/tide-pilot/stop", [], timeout: 60, confirmed: true)
+_ = expectRequest("agents.remove", ["agent": "errand-runner"], .delete, "/api/agents/errand-runner", [], timeout: 60, confirmed: true)
+
+let renamed = expectRequest("agents.rename", ["agent": "crease-check", "name": "crease-fold"], .post, "/api/agents/crease-check/rename",
+                            ["name"], timeout: 60, confirmed: false)
+check(renamed["name"] as? String == "crease-fold", "rename body")
+for name in ["a", "smoke-new_1", "Concierge", String(repeating: "n", count: 64)] {
+    check((try? ActionPolicy.name(name)) == name, "name \(name)")
+}
+for (value, shown) in [("concierge", "concierge"), ("", ""), ("a b", "a b"), ("a:b", "a:b"), ("a.b", "a.b"), ("é", "é"),
+                       (String(repeating: "n", count: 65), String(repeating: "n", count: 65))] {
+    check(planError("agents.rename", ["agent": "crease-check", "name": value]) == "invalid name: \(shown)", "name \(value)")
+}
+for (value, shown) in [(nil, "null"), (NSNull(), "null"), (7, "7"), (true, "true")] as [(Any?, String)] {
+    var params: [String: Any] = ["agent": "crease-check"]
+    params["name"] = value
+    check(planError("agents.rename", params) == "invalid name: \(shown)", "name type \(shown)")
+}
+
+let moved = expectRequest("agents.move", ["agent": "ebb-report", "host": "annex", "dir": "/srv/tide-tables"], .post,
+                          "/api/agents/ebb-report/move", ["host", "dir"], timeout: 600, confirmed: true)
+check(moved["host"] as? String == "annex" && moved["dir"] as? String == "/srv/tide-tables", "move body \(moved)")
+_ = expectRequest("agents.move", ["agent": "annex:kelp-forest", "host": "local", "dir": NSNull()], .post,
+                  "/api/agents/annex%3Akelp-forest/move", ["host"], timeout: 600, confirmed: true)
+for host in ["local", "annex", "box.tail1234.ts.net", "a_b", String(repeating: "h", count: 255)] {
+    check((try? ActionPolicy.host(host)) == host, "host \(host)")
+}
+for host in ["", ".annex", "-annex", "a..b", "a/b", "a:b", "a b", "é", String(repeating: "h", count: 256)] {
+    check(planError("agents.move", ["agent": "ebb-report", "host": host]) == "invalid host: \(host)", "host \(host)")
+}
+check(planError("agents.move", ["agent": "ebb-report"]) == "invalid host: null", "move without host")
+for dir in ["~/code", "relative/x", "", "/a\nb", "/a\u{0}b", "/" + String(repeating: "d", count: 4096)] {
+    check(planError("agents.move", ["agent": "ebb-report", "host": "annex", "dir": dir]) == "invalid directory", "move dir \(dir.debugDescription)")
+}
+
+let modelBody = expectRequest("agents.model", ["agent": "fold-line", "model": "  gpt-5.2-codex ", "effort": "high",
+                                               "createdAt": "2026-11-01T10:00:00.000Z", "status": "waiting"], .post,
+                              "/api/agents/fold-line/model", ["model", "effort", "createdAt", "status"], timeout: 120, confirmed: true)
+check(modelBody["model"] as? String == "gpt-5.2-codex" && modelBody["effort"] as? String == "high", "model sent trimmed \(modelBody)")
+let defaults = expectRequest("agents.model", ["agent": "fold-line", "model": NSNull(), "createdAt": "c", "status": "idle"], .post,
+                             "/api/agents/fold-line/model", ["model", "createdAt", "status"], timeout: 120, confirmed: true)
+check(defaults["model"] is NSNull, "null model is sent as null")
+let nullEffort = expectRequest("agents.model", ["agent": "fold-line", "model": "m", "effort": NSNull(), "createdAt": "c", "status": "idle"],
+                               .post, "/api/agents/fold-line/model", ["model", "effort", "createdAt", "status"], timeout: 120, confirmed: true)
+check(nullEffort["effort"] is NSNull, "null effort is sent as null")
+let modelOK: [String: Any] = ["agent": "fold-line", "model": "m", "effort": "e", "createdAt": "c", "status": "idle"]
+func modelError(_ change: [String: Any?]) -> String? {
+    var params = modelOK
+    for (key, value) in change { params[key] = value }
+    return planError("agents.model", params)
+}
+check(modelError(["model": nil]) == "invalid model", "model is required")
+for value in ["", "   ", "-x", " -x", "a\nb", "a\u{1b}", String(repeating: "m", count: 257), 5] as [Any] {
+    check(modelError(["model": value]) == "invalid model", "model \(value)")
+}
+check((try? plan("agents.model", modelOK.merging(["model": String(repeating: "m", count: 256)]) { $1 })) != nil, "256-byte model")
+for value in ["", "-high", String(repeating: "e", count: 65), true] as [Any] {
+    check(modelError(["effort": value]) == "invalid effort", "effort \(value)")
+}
+for value in ["", "a\nb", String(repeating: "c", count: 129), 5] as [Any] {
+    check(modelError(["createdAt": value]) == "invalid createdAt", "createdAt \(value)")
+}
+check(modelError(["createdAt": nil]) == "invalid createdAt", "createdAt required")
+check((try? plan("agents.model", modelOK.merging(["createdAt": String(repeating: "c", count: 128)]) { $1 })) != nil, "128-byte createdAt")
+for status in ActionPolicy.statuses { check(modelError(["status": status]) == nil, "status \(status)") }
+for value in ["exited", "Idle", "", 1] as [Any] { check(modelError(["status": value]) == "invalid status", "status \(value)") }
+check(modelError(["status": nil]) == "invalid status", "status required")
+check(modelError(["model": "-x", "status": "bad"]) == "invalid model", "model is checked before status")
+
+let handoff = expectRequest("agents.handoff", ["agent": "harbor-lights", "to": "codex", "newName": "harbor-codex", "full": true], .post,
+                            "/api/agents/harbor-lights/handoff", ["to", "newName", "full"], timeout: 150, confirmed: false)
+check(handoff["to"] as? String == "codex" && handoff["full"] as? Bool == true, "handoff body \(handoff)")
+check(String(data: (try! plan("agents.handoff", ["agent": "a", "to": "claude", "full": false])).request.body!, encoding: .utf8)
+      == #"{"full":false,"to":"claude"}"#, "full is a JSON boolean")
+_ = expectRequest("agents.handoff", ["agent": "harbor-lights", "to": "claude", "newName": NSNull(), "full": NSNull()], .post,
+                  "/api/agents/harbor-lights/handoff", ["to"], timeout: 150, confirmed: false)
+for value in ["antigravity", "Codex", "", 1] as [Any] {
+    check(planError("agents.handoff", ["agent": "a", "to": value]) == "invalid to", "to \(value)")
+}
+check(planError("agents.handoff", ["agent": "a", "to": "codex", "newName": "concierge"]) == "invalid name: concierge", "newName concierge")
+for value in [NSNumber(value: 1), NSNumber(value: 0), "true", "yes"] as [Any] {
+    check(planError("agents.handoff", ["agent": "a", "to": "codex", "full": value]) == "invalid full", "full \(value)")
+}
+
+let created = expectRequest("agents.create", ["name": "smoke-new", "task": "  Write the tide report.\n", "provider": "claude",
+                                              "dir": "~/code/lighthouse", "host": "local", "model": " claude-opus-4-5 ", "effort": "high",
+                                              "role": "engineer"], .post, "/api/agents",
+                            ["name", "task", "provider", "dir", "model", "effort", "role"], timeout: 150, confirmed: false)
+check(created["task"] as? String == "Write the tide report." && created["dir"] as? String == "~/code/lighthouse"
+      && created["model"] as? String == "claude-opus-4-5", "create body \(created)")
+let remote = expectRequest("agents.create", ["name": "smoke-annex", "task": "t", "provider": "codex", "dir": "/srv/lighthouse", "host": "annex"],
+                           .post, "/api/agents", ["name", "task", "provider", "remoteDir", "host"], timeout: 150, confirmed: false)
+check(remote["remoteDir"] as? String == "/srv/lighthouse" && remote["host"] as? String == "annex", "remote create body \(remote)")
+_ = expectRequest("agents.create", ["name": "n", "task": "t", "provider": "antigravity", "dir": NSNull(), "host": NSNull(), "model": NSNull(),
+                                    "inPlace": true, "codex": true], .post, "/api/agents", ["name", "task", "provider"], timeout: 150, confirmed: false)
+let createOK: [String: Any] = ["name": "smoke-new", "task": "t", "provider": "codex"]
+func createError(_ change: [String: Any?]) -> String? {
+    var params = createOK
+    for (key, value) in change { params[key] = value }
+    return planError("agents.create", params)
+}
+check(createError(["name": "concierge"]) == "invalid name: concierge", "create concierge")
+check(createError(["name": nil]) == "invalid name: null", "create needs a name")
+for value in ["", " \n\t ", "a\u{1b}b", "a\u{0}", String(repeating: "t", count: 100_001), 5] as [Any] {
+    check(createError(["task": value]) == "invalid task", "task \(String(describing: value).prefix(20))")
+}
+check(createError(["task": "a\tb\r\nc"]) == nil, "task allows tabs and line breaks")
+check(createError(["task": " " + String(repeating: "t", count: 100_000) + " "]) == nil, "task limit counts the trimmed text")
+for value in ["gemini", "Claude", "", 1] as [Any] { check(createError(["provider": value]) == "invalid provider", "provider \(value)") }
+check(createError(["provider": nil]) == "invalid provider", "provider required")
+for value in ["code", "", "/a\nb", 3] as [Any] { check(createError(["dir": value]) == "invalid directory", "create dir \(value)") }
+check(createError(["dir": "~/code", "host": "annex"]) == "invalid directory", "remote dir must be absolute")
+check(createError(["dir": "~/code", "host": "local"]) == nil, "local dir may start with ~")
+check(createError(["host": "a..b"]) == "invalid host: a..b", "create host")
+check(createError(["model": ""]) == "invalid model" && createError(["effort": "-x"]) == "invalid effort", "create model/effort")
+for value in ["concierge", "a b", "", String(repeating: "r", count: 65)] {
+    check(createError(["role": value]) == "invalid role", "role \(value)")
+}
+check(createError(["name": "bad name", "task": ""]) == "invalid name: bad name", "name is checked before task")
+check(createError(["dir": "x", "host": "a..b"]) == "invalid directory", "dir is checked before host")
+
+let permission = expectRequest("permissions.answer", ["agent": "fog-signal", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "optionId": "accept"], .post,
+                               "/api/agents/fog-signal/permissions/01JABCDEFGHJKMNPQRSTVWXYZ0", ["optionId"], timeout: 45, confirmed: false)
+check(permission["optionId"] as? String == "accept", "permission body")
+for id in ["01jabcdefghjkmnpqrstvwxyz0", "01JABCDEFGHJKMNPQRSTVWXYZ", "01JABCDEFGHJKMNPQRSTVWXYZ00", "01JABCDEFGHIKMNPQRSTVWXYZ0",
+           "01JABCDEFGHJKLNPQRSTVWXYZ0", "01JABCDEFGHJKMNOQRSTVWXYZ0", "01JABCDEFGHJKMNPQRSTUWXYZ0", "../x"] {
+    check(planError("permissions.answer", ["agent": "fog-signal", "id": id, "optionId": "accept"]) == "invalid id", "permission id \(id)")
+}
+for option in ["answer-0", "acceptForSession", String(repeating: "o", count: 64)] {
+    check(planError("permissions.answer", ["agent": "a", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "optionId": option]) == nil, "option \(option)")
+}
+for option in ["", "a b", "a.b", "a/b", String(repeating: "o", count: 65)] {
+    check(planError("permissions.answer", ["agent": "a", "id": "01JABCDEFGHJKMNPQRSTVWXYZ0", "optionId": option]) == "invalid optionId",
+          "option \(option)")
+}
+
+let promptID = "0123456789abcdef0123456789abcdef"
+let prompt = expectRequest("prompt.answer", ["agent": "origami-docs", "id": promptID, "optionId": "4", "text": " Use\tthe atlas "], .post,
+                           "/api/agents/origami-docs/prompt", ["id", "optionId", "text"], timeout: 45, confirmed: false)
+check(prompt["text"] as? String == " Use\tthe atlas " && prompt["optionId"] as? String == "4", "prompt text is sent as given \(prompt)")
+_ = expectRequest("prompt.answer", ["agent": "origami-docs", "id": promptID, "optionId": "1"], .post, "/api/agents/origami-docs/prompt",
+                  ["id", "optionId"], timeout: 45, confirmed: false)
+for id in ["0123456789ABCDEF0123456789abcdef", "0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdeg"] {
+    check(planError("prompt.answer", ["agent": "a", "id": id, "optionId": "1"]) == "invalid id", "prompt id \(id)")
+}
+for option in ["0", "10", "a", "", " 1"] {
+    check(planError("prompt.answer", ["agent": "a", "id": promptID, "optionId": option]) == "invalid optionId", "prompt option \(option)")
+}
+check(planError("prompt.answer", ["agent": "a", "id": promptID, "optionId": NSNumber(value: 1)]) == "invalid optionId", "numeric option")
+for text in ["", "a\nb", "a\rb", "a\u{1b}b", String(repeating: "t", count: 2001), String(repeating: "é", count: 1001)] {
+    check(planError("prompt.answer", ["agent": "a", "id": promptID, "optionId": "1", "text": text]) == "invalid text", "prompt text \(text.prefix(10))")
+}
+check(planError("prompt.answer", ["agent": "a", "id": promptID, "optionId": "1", "text": String(repeating: "t", count: 2000)]) == nil, "2000 bytes")
+
+let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D])
+let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10])
+let gif = Data("GIF89a\u{1}\u{0}".utf8)
+let webp = Data("RIFF\u{4}\u{0}\u{0}\u{0}WEBPVP8 ".utf8)
+for (type, data) in [("image/png", png), ("image/jpeg", jpeg), ("image/gif", gif), ("image/webp", webp)] {
+    do {
+        let upload = try plan("files.upload", ["agent": "keeper-log", "type": type, "data": data.base64EncodedString()]).request
+        check(upload.method == .post && upload.url.absoluteString == base + "/api/agents/keeper-log/files" && upload.body == data
+              && upload.contentType == type && upload.timeout == 120, "upload \(type)")
+        let sent = APIClient.request(upload, token: "fixture-token")
+        check(sent.httpBody == data && sent.value(forHTTPHeaderField: "Content-Type") == type && sent.timeoutInterval == 120, "upload request \(type)")
+    } catch {
+        check(false, "upload \(type) rejected: \(error)")
+    }
+    for other in ActionPolicy.imageTypes where other != type {
+        check(planError("files.upload", ["agent": "keeper-log", "type": other, "data": data.base64EncodedString()]) == "File is not a valid \(other) image",
+              "\(type) bytes as \(other)")
+    }
+}
+check(planError("files.upload", ["agent": "a", "type": "image/png", "data": Data("PNG".utf8).base64EncodedString()])
+      == "File is not a valid image/png image", "short image")
+for type in ["image/svg+xml", "IMAGE/PNG", "image/png; x=1", "", 1] as [Any] {
+    check(planError("files.upload", ["agent": "a", "type": type, "data": png.base64EncodedString()]) == "invalid type", "type \(type)")
+}
+for data in ["", "abc", "!!!!", "iVBO\nRw==", "iVBORw", "iVBORw=", "====", "AA=A", " iVBORw0KGgo=", "iVBORw0KGgo=\n", 7] as [Any] {
+    check(planError("files.upload", ["agent": "a", "type": "image/png", "data": data]) == "invalid data", "data \(data)")
+}
+var largest = Data(count: ActionPolicy.maxUploadBytes)
+largest.replaceSubrange(0..<png.count, with: png)
+check((try? plan("files.upload", ["agent": "a", "type": "image/png", "data": largest.base64EncodedString()]))?.request.body?.count
+      == 10 << 20, "10 MiB upload")
+largest.append(0)
+check(planError("files.upload", ["agent": "a", "type": "image/png", "data": largest.base64EncodedString()]) == "invalid data", "10 MiB + 1")
+check(planError("files.upload", ["agent": "a", "type": "image/png", "data": String(repeating: "A", count: ActionPolicy.maxUploadBase64 + 4)])
+      == "invalid data", "oversized base64 refused before decoding")
+
+_ = expectRequest("concierge.ensure", [:], .post, "/api/concierge", [], timeout: 120, confirmed: false)
+let search = expectRequest("search.query", ["query": "  tide report "], .post, "/api/search", ["query"], timeout: 30, confirmed: false)
+check(search["query"] as? String == "tide report", "query sent trimmed")
+for query in ["ab", "é☃", " ab "] { check(planError("search.query", ["query": query]) == nil, "query \(query)") }
+for query in ["", "a", "  a  ", "a\nb", "a\u{0}b", String(repeating: "q", count: 257), String(repeating: "é", count: 129)] {
+    check(planError("search.query", ["query": query]) == "invalid query", "query \(query.prefix(10).debugDescription)")
+}
+check(planError("search.query", [:]) == "invalid query", "query required")
+
+let confirmations: [(String, [String: Any], String, String, String, Bool)] = [
+    ("agents.restart", ["agent": "keeper-log"], "Restart keeper-log?", "This interrupts its current turn and reopens the conversation.", "Restart", false),
+    ("agents.interrupt", ["agent": "annex:kelp-forest"], "Interrupt annex:kelp-forest?", "This interrupts its current work.", "Interrupt", false),
+    ("agents.stop", ["agent": "tide-pilot"], "Stop tide-pilot?",
+     "This interrupts its current work and ends its session. It can be resumed later.", "Stop", false),
+    ("agents.remove", ["agent": "errand-runner"], "Remove errand-runner?",
+     "Its session will stop and the agent will be removed, along with its queued messages. The worktree is kept.", "Remove", true),
+    ("agents.move", ["agent": "ebb-report", "host": "annex"], "Move ebb-report to annex?",
+     "The source will stop; workspace files are not copied.", "Move", false),
+    ("agents.model", modelOK, "Change the model for fold-line?",
+     "This restarts the agent and interrupts its current turn. The conversation and queued messages are kept.", "Change model", false),
+]
+for (method, params, title, lead, button, destructive) in confirmations {
+    let text = (try? plan(method, params))?.confirm?.text(status: "idle", server: "Fixture")
+    check(text == ConfirmationText(title: title, message: "\(lead) Status: idle.\nServer: Fixture", button: button, destructive: destructive),
+          "\(method) confirmation \(String(describing: text))")
+}
+check(ActionPolicy.status(fromDetail: Data(#"{"status":"working","name":"x"}"#.utf8)) == "working", "detail status")
+check(ActionPolicy.status(fromDetail: Data(#"{"status":"wo\u001brking\n"}"#.utf8)) == "working", "status controls stripped")
+for detail in [#"{}"#, #"{"status":7}"#, "not json", #"{"status":"  "}"#] {
+    check(ActionPolicy.status(fromDetail: Data(detail.utf8)) == "unknown", "detail \(detail)")
+}
+check(ActionPolicy.status(fromDetail: Data("{\"status\":\"\(String(repeating: "s", count: 100))\"}".utf8)).count == 64, "status capped")
+
+let removal = APIClient.request(try! plan("agents.remove", ["agent": "errand-runner"]).request, token: "fixture-token")
+check(removal.httpMethod == "DELETE" && removal.httpBody == nil && removal.value(forHTTPHeaderField: "Content-Type") == nil
+      && removal.timeoutInterval == 60, "remove request")
+let move = APIClient.request(try! plan("agents.move", ["agent": "ebb-report", "host": "annex"]).request, token: "fixture-token")
+check(move.httpMethod == "POST" && move.timeoutInterval == 600 && move.value(forHTTPHeaderField: "Content-Type") == "application/json"
+      && move.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token", "move request")
+print("PASS action policy (15 methods: rules, rejection strings, paths, bodies, timeouts, confirmation text, upload decoding)")
 
 func parse(_ chunks: [String]) -> [SSEEvent] {
     var parser = SSEParser()

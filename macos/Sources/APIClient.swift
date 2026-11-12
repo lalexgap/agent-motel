@@ -1,15 +1,13 @@
 import Foundation
 
-/// HTTP client for am servers. It sends GETs, plus the two message requests a `MessageRequest`
-/// can describe (send and cancel); there is no way to give it any other method, path shape or body.
-/// Redirects are refused so the bearer token is never replayed to another origin; the 3xx response
-/// is returned as-is. Nothing is retried.
+/// HTTP client for am servers. It sends GETs, plus the writes a `WriteRequest` can describe, which
+/// only `MessagePolicy` and `ActionPolicy` can build; there is no way to give it any other method,
+/// path shape or body. Redirects are refused so the bearer token is never replayed to another origin;
+/// the 3xx response is returned as-is. Nothing is retried.
 @MainActor
 final class APIClient: NSObject {
     static let maxBodyBytes = 32 << 20
     static let requestTimeout: TimeInterval = 30
-    /// A `now` send to a remote host goes over ssh, so message requests get longer, but bounded.
-    nonisolated static let messageTimeout: TimeInterval = 60
 
     struct Response {
         let status: Int
@@ -25,7 +23,8 @@ final class APIClient: NSObject {
     }
 
     private var session: URLSession?
-    private var messageSession: URLSession?
+    /// One session per write timeout, since the resource timeout is a session setting.
+    private var writeSessions: [TimeInterval: URLSession] = [:]
     // Task identifiers are only unique within one session, so pending requests are keyed by task.
     private var pending: [ObjectIdentifier: Pending] = [:]
 
@@ -50,12 +49,12 @@ final class APIClient: NSObject {
         return request
     }
 
-    /// The only shape a message request can take: `POST` with a JSON body, or `DELETE` without one.
-    nonisolated static func request(_ message: MessageRequest, token: String) -> URLRequest {
-        var request = Self.request(message.url, token: token, accept: "application/json", timeout: messageTimeout)
-        request.httpMethod = message.method.rawValue
-        if let body = message.body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    /// The only shapes a write can take: `POST` with the policy's body and content type, or `DELETE` without a body.
+    nonisolated static func request(_ write: WriteRequest, token: String) -> URLRequest {
+        var request = Self.request(write.url, token: token, accept: "application/json", timeout: write.timeout)
+        request.httpMethod = write.method.rawValue
+        if let body = write.body {
+            request.setValue(write.contentType ?? "application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
         return request
@@ -74,17 +73,26 @@ final class APIClient: NSObject {
                                  in: session)
     }
 
-    /// Sends a message request once. A network failure or timeout throws: the server may or may
-    /// not have accepted it, so retrying could deliver the message twice.
-    func send(_ message: MessageRequest, token: String) async throws -> Response {
-        let session = messageSession ?? {
-            let configuration = Self.sessionConfiguration(requestTimeout: Self.messageTimeout)
-            configuration.timeoutIntervalForResource = Self.messageTimeout
+    /// Sends a write once. A network failure or timeout throws: the server may or may not have
+    /// acted on it, so retrying could deliver a message twice or create a second agent.
+    func send(_ write: WriteRequest, token: String) async throws -> Response {
+        let session = writeSessions[write.timeout] ?? {
+            let configuration = Self.sessionConfiguration(requestTimeout: write.timeout)
+            configuration.timeoutIntervalForResource = write.timeout
             let created = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
-            messageSession = created
+            writeSessions[write.timeout] = created
             return created
         }()
-        return try await perform(Self.request(message, token: token), in: session)
+        return try await perform(Self.request(write, token: token), in: session)
+    }
+
+    /// Cancels every request in flight (at quit, so a long move does not outlive the app); each
+    /// pending call rejects. Later calls create fresh sessions.
+    func cancelAll() {
+        session?.invalidateAndCancel()
+        session = nil
+        for session in writeSessions.values { session.invalidateAndCancel() }
+        writeSessions.removeAll()
     }
 
     private func perform(_ request: URLRequest, in session: URLSession) async throws -> Response {
