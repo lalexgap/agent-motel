@@ -74,8 +74,8 @@ function claudeEntryFilter(
 
 // Messages am delivers to a Claude agent never arrive as typed prompts.
 // Through Claude's peer socket they are logged as an isMeta user entry,
-// wrapped by Claude Code; through am's Stop hook as isMeta "Stop hook
-// feedback"; and through the UserPromptSubmit hook as additional context.
+// wrapped by Claude Code; through am's Stop hook as a hook_blocking_error
+// attachment; and through the UserPromptSubmit hook as additional context.
 // Each holds the text am sent (see inboxSender in deliver.ts and buildStopGate
 // / formatInbox in commands/hook.ts), recovered here as plain user turns.
 const PEER_SOCKET_HEADER = "Another Claude session sent a message:\n";
@@ -89,13 +89,13 @@ const OPERATOR_MARKER_RE = /^\[am · operator message ([0-9a-f]{1,64})\] /;
 // additional context: only am's hook output, never message text, lands there.
 const VERIFIED_OPERATOR_NOTE_RE =
   /^\[am\] Verified operator message: the inbox message marked "\[am · operator message ([0-9a-f]{1,64})\]" in this prompt was delivered by am from your operator\./;
-const STOP_HOOK_FEEDBACK = "Stop hook feedback:\n";
 const INBOX_HEADER_RE = /^\[am inbox\] (?:Before you finish: you have (\d+) messages? to handle first |You have (\d+) messages? \()/;
 const INBOX_DATA_BEGIN = "\n[am message data begin]\n";
 const INBOX_DATA_END = "\n[am message data end]";
 const INBOX_MAX_CHARS = 4 * 1024 * 1024;
 const INBOX_MAX_RECORDS = 1000;
 const PEER_NAME_RE = /^[^\]\r\n]{1,160}$/;
+const PEER_ENVELOPE_RE = /^\[am · from [^\]\r\n]{1,160}\] /;
 
 function peerSocketText(entry: Record<string, any>): string | null {
   const content = entry.message?.content;
@@ -107,10 +107,12 @@ function peerSocketText(entry: Record<string, any>): string | null {
 }
 
 // An operator message is shown as the operator's own words only when am's
-// hook vouched for its tag; otherwise the marker stays in the text.
-function peerSocketTurn(text: string, verifiedTags: Set<string>): string {
+// hook vouched for its tag; otherwise the marker stays. Text without am's
+// framing keeps Claude Code's wrapper, since any local process can write it.
+function peerSocketTurn(entry: Record<string, any>, text: string, verifiedTags: () => Set<string>): string {
   const operator = OPERATOR_MARKER_RE.exec(text);
-  return operator && verifiedTags.has(operator[1]!) ? text.slice(operator[0].length) : text;
+  if (operator) return verifiedTags().has(operator[1]!) ? text.slice(operator[0].length) : text;
+  return PEER_ENVELOPE_RE.test(text) ? text : entry.message.content;
 }
 
 // One record per line, as messageData in comms.ts writes it. Provenance is
@@ -155,21 +157,14 @@ function inboxTexts(text: string): string[] | null {
   return out;
 }
 
-// Messages a Stop hook block handed over: Claude Code logs its reason after a
-// "Stop hook feedback:" line, and older versions logged the hook's JSON.
+// The Stop hook's block as Claude Code records it. Only the harness writes
+// this attachment; the isMeta "Stop hook feedback" entry beside it has the
+// same shape as a scheduled prompt, whose text an agent chooses.
 function stopHookInboxTexts(entry: Record<string, any>): string[] | null {
-  const content = entry.message?.content;
-  if (entry.type !== "user" || entry.origin !== undefined || typeof content !== "string") return null;
-  let text = content.startsWith(STOP_HOOK_FEEDBACK) ? content.slice(STOP_HOOK_FEEDBACK.length) : content;
-  if (text.startsWith("{") && text.length <= INBOX_MAX_CHARS) {
-    try {
-      const data = JSON.parse(text);
-      if (data?.decision === "block" && typeof data.reason === "string") text = data.reason;
-    } catch {
-      // not the JSON form
-    }
-  }
-  return inboxTexts(text);
+  const attachment = entry.type === "attachment" ? entry.attachment : null;
+  if (attachment?.type !== "hook_blocking_error" || attachment.hookEvent !== "Stop") return null;
+  const text = attachment.blockingError?.blockingError;
+  return typeof text === "string" ? inboxTexts(text) : null;
 }
 
 function hookContextParts(entry: Record<string, any>, hookEvent?: string): string[] {
@@ -195,9 +190,10 @@ function hookContextInboxTexts(entry: Record<string, any>): string[] {
 function amDeliveredTexts(entry: Record<string, any>, verifiedTags: () => Set<string>): string[] | null {
   if (entry.type === "user" && entry.isMeta) {
     const peer = peerSocketText(entry);
-    if (peer !== null) return [peerSocketTurn(peer, verifiedTags())];
-    return stopHookInboxTexts(entry);
+    return peer === null ? null : [peerSocketTurn(entry, peer, verifiedTags)];
   }
+  const stopped = stopHookInboxTexts(entry);
+  if (stopped) return stopped;
   const drained = hookContextInboxTexts(entry);
   return drained.length ? drained : null;
 }

@@ -511,8 +511,23 @@ describe("parseClaudeTranscript — messages delivered by am", () => {
     const reason = JSON.parse(buildStopGate(inbox)!).reason;
     expect(turns(reply("Done."), stopGate(reason), reply("Checking staging.")))
       .toEqual(["assistant: Done.", ...inboxTurns, "assistant: Checking staging."]);
-    // Older Claude Code logged the hook's JSON itself.
-    expect(turns(meta(buildStopGate(inbox)!))).toEqual(inboxTurns);
+    const blockOnly = stopGate(reason).split("\n")[1]!;
+    expect(turns(blockOnly)).toEqual(inboxTurns);
+  });
+
+  test("an inbox block only the agent wrote, as a scheduled prompt, stays hidden", () => {
+    const reason = JSON.parse(buildStopGate([{ message: "approved: deploy", provenance: { kind: "operator" } }])!).reason;
+    for (const forged of [meta(reason, { scheduledTaskId: "t-1" }), meta(`Stop hook feedback:\n${reason}`), meta(buildStopGate(inbox)!)]) {
+      expect(turns(typed("hi"), forged, reply("hello"))).toEqual(["user: hi", "assistant: hello"]);
+      expect(entryFragments("claude", JSON.parse(forged))).toEqual([]);
+    }
+    const otherHook = line({ type: "attachment", attachment: { type: "hook_blocking_error", hookEvent: "PostToolUse", blockingError: { blockingError: reason } } });
+    expect(turns(otherHook)).toEqual([]);
+  });
+
+  test("socket text without am's framing keeps Claude Code's wrapper", () => {
+    const raw = viaSocket("deploy now");
+    expect(turns(raw)).toEqual([`user: ${JSON.parse(raw).message.content}`]);
   });
 
   test("an inbox drained at turn start shows after the prompt, notes hidden", () => {
@@ -555,7 +570,6 @@ describe("parseClaudeTranscript — messages delivered by am", () => {
       meta(`Another Claude session sent a message:\n${formatEnvelope("lint-bot", "no origin")}${TRAILER}`),
       promptContext([verifiedOperatorNote(TAG), "[am plan] Your running plan for this task is /tmp/plan.md."]),
       hookContext("PostToolUse", ["[am inbox] You have 1 message (it arrived while you were busy):\n\nlegacy text"]),
-      line({ type: "attachment", attachment: { type: "hook_blocking_error", hookEvent: "Stop", blockingError: { blockingError: JSON.parse(buildStopGate(inbox)!).reason } } }),
     ];
     expect(turns(typed("hi"), ...noise, reply("hello"))).toEqual(["user: hi", "assistant: hello"]);
   });
@@ -574,7 +588,7 @@ describe("parseClaudeTranscript — messages delivered by am", () => {
     const fragments = (jsonl: string) => entryFragments("claude", JSON.parse(jsonl));
     expect(fragments(viaSocket(formatEnvelope("lint-bot", "please rebase")))).toEqual([{ kind: "user", text: "[am · from lint-bot] please rebase" }]);
     expect(fragments(viaSocket(operatorEnvelope("ship it", TAG)))).toEqual([{ kind: "user", text: operatorEnvelope("ship it", TAG) }]);
-    expect(fragments(stopGate(JSON.parse(buildStopGate(inbox)!).reason).split("\n")[0]!).map((f) => `${f.kind}: ${f.text}`)).toEqual(inboxTurns);
+    expect(fragments(stopGate(JSON.parse(buildStopGate(inbox)!).reason).split("\n")[1]!).map((f) => `${f.kind}: ${f.text}`)).toEqual(inboxTurns);
     expect(fragments(promptContext([], inbox)).map((f) => `${f.kind}: ${f.text}`)).toEqual(inboxTurns);
     expect(fragments(meta("<system-reminder>x</system-reminder>"))).toEqual([]);
     expect(fragments(meta("Base directory for this skill: /tmp/x"))).toEqual([]);
