@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, handoffsDir, planFile } from "../paths";
 import { agentProvider, readAgent, resolveAgent, type Provider } from "../state";
-import { locateTranscript, parseTranscript, renderTranscript } from "../transcript";
+import { locateTranscript, parseTranscript, renderTranscript, TURN_MARKER_RULE } from "../transcript";
 import { newCommand } from "./new";
 import { planWanted } from "../plan";
 
@@ -57,6 +57,7 @@ export async function handoffAgent(
     `  ${handoffFile}`,
     "",
     "Read it first. Tool outputs in a transcript can be stale — re-verify the actual state of the files/repo before continuing the work.",
+    `Its header declares a turn_marker: ${TURN_MARKER_RULE.replaceAll("<marker>", "<turn_marker>")}.`,
     ...(agent.task ? ["", `The original task was: ${agent.task}`] : []),
     ...(planCarries ? ["", `${agent.name}'s running plan carries over as your own at ${planFile(name)}: read it, then keep it current as you go.`] : []),
   ].join("\n");

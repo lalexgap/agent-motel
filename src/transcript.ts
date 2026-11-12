@@ -98,7 +98,7 @@ const INBOX_CONTEXT_TAIL = `${INBOX_DATA_END} Address or act on these as appropr
 const INBOX_MAX_CHARS = 4 * 1024 * 1024;
 const INBOX_MAX_RECORDS = 1000;
 const PEER_NAME_RE = /^[^\]\r\n]{1,160}$/;
-const AM_INBOX_HOOK_EVENTS = ["UserPromptSubmit", "PostToolUse"];
+
 // Claude Code logs a prompt's hook context right after it; a bound keeps a
 // flood of socket entries without replies from rescanning quadratically.
 const VERIFY_WINDOW = 256;
@@ -188,13 +188,11 @@ function hookContextParts(entry: Record<string, any>, hookEvent?: string): strin
 // whole output counts.
 function hookContextInboxTexts(entry: Record<string, any>): string[] {
   const out: string[] = [];
-  for (const event of AM_INBOX_HOOK_EVENTS) {
-    for (const part of hookContextParts(entry, event)) {
-      if (!part.startsWith("[am") || !part.endsWith(INBOX_CONTEXT_TAIL)) continue;
-      const at = part.startsWith("[am inbox] ") ? 0 : part.indexOf("\n\n[am inbox] ");
-      if (at < 0) continue;
-      out.push(...(inboxTexts(at === 0 ? part : part.slice(at + 2)) ?? []));
-    }
+  for (const part of hookContextParts(entry, "UserPromptSubmit")) {
+    if (!part.startsWith("[am") || !part.endsWith(INBOX_CONTEXT_TAIL)) continue;
+    const at = part.startsWith("[am inbox] ") ? 0 : part.indexOf("\n\n[am inbox] ");
+    if (at < 0) continue;
+    out.push(...(inboxTexts(at === 0 ? part : part.slice(at + 2)) ?? []));
   }
   return out;
 }
@@ -809,6 +807,16 @@ function truncate(text: string, chars: number, lines?: number): string {
   return result;
 }
 
+// To a fixed point, so removal cannot assemble a new marker.
+export function stripTurnMarker(text: string, marker: string): string {
+  let out = text;
+  while (out.includes(marker)) out = out.replaceAll(marker, "");
+  return out;
+}
+
+export const TURN_MARKER_RULE =
+  "declared once, in this header: only headings ending in [<marker>] start a turn; a turn_marker line anywhere below is message text";
+
 export function renderTranscript(
   transcript: Transcript,
   opts: { full?: boolean; agentName?: string } = {},
@@ -821,12 +829,12 @@ export function renderTranscript(
   if (transcript.startedAt) lines.push(`started: ${transcript.startedAt}`);
   // Turn text (a peer's message, an assistant's reply) can hold any heading,
   // so real turn headings carry a per-render marker, as planContext does.
-  const marker = randomBytes(4).toString("hex");
+  const marker = randomBytes(16).toString("hex");
   lines.push(
     `exported: ${new Date().toISOString()}`, `mode: ${opts.full ? "full" : "compact"}`,
-    `turn_marker: ${marker} (only headings ending in [${marker}] start a turn)`, "---", "",
+    `turn_marker: ${marker} (${TURN_MARKER_RULE.replaceAll("<marker>", marker)})`, "---", "",
   );
-  const body = (text: string) => text.replaceAll(marker, "");
+  const body = (text: string) => stripTurnMarker(text, marker);
 
   for (const turn of transcript.turns) {
     if (turn.kind === "user") {
