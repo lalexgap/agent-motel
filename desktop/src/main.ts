@@ -9,6 +9,7 @@ import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from
 import { initOverview, tickOverview } from "./overview";
 import { parseAgentKey } from "./fleet";
 import { initKeyboard } from "./keyboard";
+import { initSearch } from "./searchView";
 import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sidebar";
 import { changed, newConnState, state } from "./state";
 import { initStatusbar } from "./statusbar";
@@ -35,6 +36,7 @@ function wire(): void {
   initOverview();
   initChat();
   initUsage();
+  initSearch();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {
     const link = (event.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null;
