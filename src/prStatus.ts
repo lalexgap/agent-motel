@@ -1,9 +1,7 @@
 import type { OpenDecision } from "./decisions";
 import { checksVerdict, type PrChecks, type TrackedPullRequest } from "./prMonitor";
 
-// A tracked PR's status in agent terms. Derived on the host that owns the
-// agent, because the inputs (subagent ledger, decisions store) live there; it
-// then travels in `am ls --json` like the rest of the row.
+// Derived on the agent's own host, where the subagent ledger and decisions store live.
 
 export type PrState = "needs-decision" | "merge-ready" | "conflict" | "ci-failing" | "shepherding" | "waiting" | "merged" | "closed";
 

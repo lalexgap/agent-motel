@@ -2,9 +2,7 @@ import type { DisplayStatus } from "./commands/ls";
 import { fleetKey, type Fleet, type FleetRow } from "./fleet";
 import { derivePrStatuses, PR_STATES, RECENT_MS, type PrState, type PrStatus } from "./prStatus";
 
-// The fleet's PRs as one list: every row's prStatus flattened, de-duplicated,
-// linked into stacks and sorted by who has to act next. Pure over a Fleet, so
-// it never waits on GitHub: the daemon's PR monitor keeps the inputs fresh.
+// Pure over a Fleet, so it never waits on GitHub: the daemon's PR monitor keeps the inputs fresh.
 
 export interface PrRow extends PrStatus {
   // "owner/repo#123"
@@ -135,7 +133,6 @@ function age(iso: string | undefined, now: number): string {
   return `${Math.floor(seconds / 86_400)}d`;
 }
 
-// "conflicts with main · 2h": the reason with how long it has held.
 export function prReasonLine(pr: PrStatus, now: Date): string {
   const held = pr.since ? age(pr.since, now.getTime()) : "";
   return held ? `${pr.reason} · ${held}` : pr.reason;
