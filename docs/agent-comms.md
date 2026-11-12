@@ -85,6 +85,11 @@ current turn) and `am interrupt` (Esc + redirect), not just queued delivery —
 useful for urgent questions. These carry the same attribution envelope. The
 rate limiter (below) is what bounds abuse, not a queue-only restriction.
 
+Neither types into a pane that shows a dialog: text typed there answers the
+dialog, and its Enter confirms the selected option. A `--now` send to an agent
+whose pane is not at its composer is queued instead, and an interrupt whose
+Esc leaves a dialog up queues its message.
+
 A hop counter rides in the envelope for loop safety (see below):
 `[am · from A · hop 2]` — omitted at hop 1 to keep the common case clean.
 

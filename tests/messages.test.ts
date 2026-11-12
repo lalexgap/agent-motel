@@ -96,6 +96,7 @@ case "$1" in
       else echo "$n" > "$AGENTMGR_HOME/redraw-in"; fi
     fi
     [ -e "$AGENTMGR_HOME/busy" ] && { echo '✻ Working… (esc to interrupt)'; exit 0; }
+    [ -e "$AGENTMGR_HOME/dialog" ] && { cat "$AGENTMGR_HOME/dialog"; exit 0; }
     echo '────────────────────'
     printf '❯ '; cat "$AGENTMGR_HOME/input"; echo
     echo '────────────────────'
@@ -107,6 +108,7 @@ case "$1" in
       printf '%s\\n' "$6" >> "$AGENTMGR_HOME/typed"
     else
       printf '%s\\n' "$4" >> "$AGENTMGR_HOME/keys"
+      [ "$4" = Escape ] && [ ! -e "$AGENTMGR_HOME/dialog-stays" ] && rm -f "$AGENTMGR_HOME/dialog"
       [ "$4" = C-u ] && [ -e "$AGENTMGR_HOME/late" ] && cp "$AGENTMGR_HOME/late" "$AGENTMGR_HOME/redraw-in"
       [ "$4" = C-u ] && [ ! -e "$AGENTMGR_HOME/stuck" ] && [ ! -e "$AGENTMGR_HOME/late" ] && { printf '' > "$AGENTMGR_HOME/input"; echo submit > "$AGENTMGR_HOME/mode"; }
       [ "$(cat "$AGENTMGR_HOME/mode")" = submit ] && printf '' > "$AGENTMGR_HOME/input"
@@ -219,6 +221,78 @@ describe("delivery receipts", () => {
     hook("user-prompt-submit", { prompt: "steer one" });
     hook("stop");
     expect(readMessage("api", id!)!.state).toBe("done");
+  });
+
+  describe("a dialog in the pane", () => {
+    const RULE = "─".repeat(40);
+    // A rule right above it: the shape that reads as an empty composer.
+    const DIALOG = [
+      "● Here is the summary.", RULE, "", RULE,
+      " Bash command", " rm -rf build", " Do you want to proceed?",
+      " ❯ 1. Yes", "   2. Yes, and don’t ask again for: rm *", "   3. No",
+      " Esc to cancel · Tab to amend",
+    ].join("\n") + "\n";
+    const typed = () => (existsSync(join(home, "typed")) ? readFileSync(join(home, "typed"), "utf8") : "");
+    const keys = () => (existsSync(join(home, "keys")) ? readFileSync(join(home, "keys"), "utf8").trim().split("\n") : []);
+
+    test("--now does not type into it: the message is queued for the next turn boundary", async () => {
+      fakeSession("working");
+      fastSleep();
+      writeFileSync(join(home, "dialog"), DIALOG);
+      const log = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const sent = await sendCommand("api", "2 is fine, go ahead", { now: true, track: true });
+        expect(sent.outcome).toBe("queued");
+        expect(readMessage("api", sent.id!)!.state).toBe("queued");
+        expect(log.mock.calls.map((call) => call[0]).join("\n")).toContain("not steering");
+      } finally { log.mockRestore(); }
+      expect(typed()).toBe("");
+      expect(keys()).toEqual([]);
+      expect(queueDepth("api")).toBe(1);
+      // Once it is answered, steering types as before.
+      rmSync(join(home, "dialog"));
+      expect((await sendCommand("api", "carry on", { now: true })).outcome).toBe("steered");
+      expect(typed()).toBe("carry on\n");
+    });
+
+    test("an interrupt's Esc closes it and the message is typed at the composer", async () => {
+      fakeSession("working");
+      fastSleep();
+      writeFileSync(join(home, "dialog"), DIALOG);
+      const sent = await interruptCommand("api", "change course", { exact: true, track: true });
+      expect(sent.outcome).toBe("steered");
+      expect(keys()[0]).toBe("Escape");
+      expect(typed()).toBe("change course\n");
+    });
+
+    test("an interrupt that leaves a dialog up queues its message instead", async () => {
+      fakeSession("working");
+      fastSleep();
+      writeFileSync(join(home, "dialog"), DIALOG);
+      writeFileSync(join(home, "dialog-stays"), "");
+      const sent = await interruptCommand("api", "option 1 please", { exact: true, track: true });
+      expect(sent.outcome).toBe("queued");
+      expect(keys()).toEqual(["Escape"]);
+      expect(typed()).toBe("");
+      expect(readMessage("api", sent.id!)!.state).toBe("queued");
+      expect(queueDepth("api")).toBe(1);
+    });
+
+    test("Codex: its approval overlay refuses typing; a pane mid-turn does not", async () => {
+      fakeSession("working");
+      fastSleep();
+      writeAgent({ ...readAgent("api")!, provider: "codex" });
+      writeFileSync(join(home, "dialog"), [
+        "  Would you like to run the following command?", "", "  $ touch /tmp/x", "",
+        "› 1. Yes, proceed (y)", "  2. No, and tell Codex what to do differently (esc)", "",
+        "  Press enter to confirm or esc to cancel",
+      ].join("\n") + "\n");
+      expect((await sendCommand("api", "1", { now: true })).outcome).toBe("queued");
+      expect(typed()).toBe("");
+      writeFileSync(join(home, "dialog"), "• Working (3s • esc to interrupt)\n\n› \n");
+      expect((await sendCommand("api", "also check the logs", { now: true })).outcome).toBe("steered");
+      expect(typed()).toBe("also check the logs\n");
+    });
   });
 
   test("a stale stop after an interrupt leaves it delivered; the new turn's stop finishes it", async () => {
