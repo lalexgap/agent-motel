@@ -148,6 +148,14 @@ describe("nightly decision freshness run", () => {
     expect(existsSync(stateFile)).toBe(false);
   });
 
+  test("does not mark the day complete after a partial store read", () => {
+    const stateFile = join(home, "freshness.json");
+    const result = runDecisionFreshness({ now, config, stores: new Map(), storesComplete: false, stateFile, notify: () => {} });
+
+    expect(result).toEqual({ status: "not-due" });
+    expect(existsSync(stateFile)).toBe(false);
+  });
+
   test("waits until the configured hour and runs again on the next local day", () => {
     writeStore("gone", [decision("young")]);
     const stateFile = join(home, "freshness.json");

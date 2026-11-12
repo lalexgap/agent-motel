@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
-import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTextsIfAvailable } from "./decisions";
+import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTextsResult } from "./decisions";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { notify } from "./notify";
 import { baseDir } from "./paths";
@@ -98,6 +98,7 @@ export interface RunDecisionFreshnessOptions {
   config?: FreshnessConfig;
   agents?: AgentState[];
   stores?: Map<string, string> | null;
+  storesComplete?: boolean;
   stateFile?: string;
   notify?: (title: string, message: string) => void;
 }
@@ -113,8 +114,17 @@ export function runDecisionFreshness(options: RunDecisionFreshnessOptions = {}):
   const stateFile = options.stateFile ?? decisionFreshnessStateFile();
   if (!decisionFreshnessDue(now, config, readState(stateFile))) return { status: "not-due" };
 
-  const stores = options.stores === undefined ? readDecisionStoreTextsIfAvailable() : options.stores;
-  if (stores === null) return { status: "not-due" };
+  let stores: Map<string, string> | null;
+  let storesComplete = options.storesComplete ?? true;
+  if (options.stores === undefined) {
+    const result = readDecisionStoreTextsResult();
+    if (result === null) return { status: "not-due" };
+    stores = result.texts;
+    storesComplete = result.complete;
+  } else {
+    stores = options.stores;
+  }
+  if (stores === null || !storesComplete) return { status: "not-due" };
   const summary = scanDecisionFreshness(now, options.agents, stores);
   writeJsonAtomic(stateFile, { version: STATE_VERSION, lastRunDay: localDay(now), lastRunAt: now.toISOString() }, { durable: true });
   if (summary.attentionDecisions > 0) {
