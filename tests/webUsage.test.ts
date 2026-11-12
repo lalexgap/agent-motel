@@ -273,6 +273,29 @@ describe("table helpers", () => {
   });
 });
 
+test("buildPage builds the same skeleton as index.html's usage page", () => {
+  class Node {
+    attrs: [string, string][] = [];
+    children: (Node | string)[] = [];
+    constructor(readonly tag: string) {}
+    setAttribute(name: string, value: string) { this.attrs.push([name, value]); }
+    append(...nodes: (Node | string)[]) { this.children.push(...nodes); }
+    get html(): string {
+      const attrs = this.attrs.map(([name, value]) => (name === "hidden" ? ` ${name}` : ` ${name}="${value.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`)).join("");
+      const inner = this.children.map(child => typeof child === "string" ? child.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : child.html).join("");
+      return `<${this.tag}${attrs}>${inner}</${this.tag}>`;
+    }
+  }
+  const window: any = {};
+  runInNewContext(readFileSync(new URL("../web/usage.js", import.meta.url), "utf8"), { window, document: { createElement: (tag: string) => new Node(tag) } });
+  const root = new Node("section");
+  window.usageDashboard.buildPage(root);
+  const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
+  const page = html.slice(html.indexOf('<section id="usage-page"'), html.indexOf('<section id="overview">'));
+  const inner = page.slice(page.indexOf(">") + 1, page.lastIndexOf("</section>")).replace(/>\s+</g, "><").trim();
+  expect(root.html.slice("<section>".length, -"</section>".length)).toBe(inner);
+});
+
 test("the page loads usage.js before app.js, the server serves it, and the stale eyebrows are gone", () => {
   const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
   const server = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
