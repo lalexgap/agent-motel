@@ -241,6 +241,21 @@ am plan api --json      # {name, path, exists, updatedAt, content}
 
 `am new` writes it from a short template holding the task (Goal, Current status, Next steps, Decisions, Notes); the agent keeps it current. Its first 80 lines (6 KB at most) are injected into the agent's context once per session (at startup, resume, compaction and `/clear`), on the next prompt rather than every turn or tool call, so it costs a few hundred tokens per session. When a turn of five minutes or more ends without the plan changing, the next prompt carries a one-line nudge. The plan follows the agent through rename, move, `am rm`/`am restore` (it goes to trash with the state), and `am handoff` (the new agent inherits it). Agents created before plans existed get one on their next resume. The concierge and caretaker get none; skip one with `am new --no-plan`, or turn plans off with `"plans": false` in `~/.agent-manager/config.json`. `am ls --json` includes each local agent's `planFile`.
 
+### Open decisions
+
+Agents that use the decisions skill register the questions they are waiting on you for with its `decision` CLI, which keeps one store per agent at `${DECISIONS_HOME:-~/.local/state/agent-decisions}/<agent>.json`. am reads that store; it never keeps its own copy:
+
+- `am ls` adds `· 2 decisions` (or `· 1 decision (blocking)`) to the status column of any agent with open decisions, exited ones included, and `am ls --json` rows carry `openDecisions` and `blockingDecisions` (0 when none). Each host reads its own stores, so rows from a remote running an older am have neither.
+- `am summary` lists those agents under "Needs attention" with `waiting on 2 decisions from you: <first question>`, adding `(open 3d)` once the oldest is two days old, and its first line counts the agents waiting on decisions.
+- The store follows the agent through rename, move and `am rm`/`am restore` (it goes to trash with the plan, so a removed agent's questions leave the decisions page). `am handoff` leaves it with the original agent.
+
+When `decision` is on the hook's `PATH` or in `~/.local/bin`, am's hooks run it for each main agent (never subagents, the concierge or the caretaker), bounded to 3 seconds and silent on any failure:
+
+- On each prompt, `decision hook prompt` lists the agent's open decisions and answers given on the decisions page, so it can resolve any the message settles. am adds that text to the context as data from the store, in its own paragraph, with am's own markers stripped.
+- At the end of a turn, `decision hook stop` checks whether the last message asks you something that was never registered. In `block` mode the turn continues until the agent registers it (or says it is not a decision), and am keeps the agent working rather than idle; in `nudge` mode the reminder rides the next prompt instead. When the inbox gate is already blocking that stop for unread messages, the decisions check moves to the stop after it. Claude and Codex both honour the block.
+
+Turn it all off with `"decisions": false` in `~/.agent-manager/config.json`, or set `"decisionsStopMode"` to `"nudge"` or `"off"` (default `"block"`).
+
 ### Quota headroom
 
 ```sh

@@ -63,6 +63,7 @@ import {
 } from "../subagents";
 import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
+import { decisionPromptNotes, decisionsStopMode, decisionStopBlock, decisionsWanted } from "../decisionHooks";
 import { holdModelSwitch, triggerModelSwitch } from "./switchModel";
 import { noteWorkDir } from "../worktreeOwnership";
 import { promptStillWaiting } from "../promptStatus";
@@ -649,6 +650,18 @@ function backgroundWork(agent: AgentState, pane: string[] | null): string | null
   return open > 0 ? `${open} background subagent${open === 1 ? "" : "s"}` : null;
 }
 
+// The decisions stop check: a block when the turn ends on a question for the
+// operator that the agent never registered. A stop that already follows a
+// block is let through, unless that block was the inbox gate's.
+function decisionsStopGate(agent: AgentState, payload: Record<string, unknown>): string | null {
+  if (!decisionsWanted(agent)) return null;
+  const mode = decisionsStopMode();
+  if (mode === "off") return null;
+  const deferred = !!agent.decisionsStopDeferred;
+  if (payload.stop_hook_active === true && !deferred) return null;
+  return decisionStopBlock(agent.name, deferred ? { ...payload, stop_hook_active: false } : payload, mode);
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   let inheritedName = process.env.AGENTMGR_AGENT;
@@ -719,8 +732,32 @@ export async function hookCommand(event: string): Promise<void> {
       name = agent.name;
       if (!promptStillWaiting(agent)) updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
+      // The inbox block wins this stop, kept apart from the decisions reason;
+      // the decisions check moves to the stop that follows.
+      if (decisionsWanted(agent) && decisionsStopMode() !== "off") agent.decisionsStopDeferred = true;
       writeAgent(agent);
       process.stdout.write(gate);
+      return;
+    }
+
+    // A decisions block continues the turn just like the inbox gate: no idle,
+    // no turn-end receipts, no drain and no plan bookkeeping for this stop.
+    let decisionsGate: string | null = null;
+    try {
+      decisionsGate = decisionsStopGate(agent, payload);
+    } catch {
+      // the check is advisory; the stop goes ahead
+    }
+    if (decisionsGate) {
+      const current = refreshAgent();
+      if (!current) return;
+      agent = current;
+      name = agent.name;
+      updateAgentStatus(agent, "working");
+      if (!agent.workingSince) agent.workingSince = new Date().toISOString();
+      agent.decisionsStopDeferred = undefined;
+      writeAgent(agent);
+      process.stdout.write(decisionsGate);
       return;
     }
   }
@@ -802,6 +839,7 @@ export async function hookCommand(event: string): Promise<void> {
   }
   // Inject once per session, never per tool call: per-call injection is what made plan files expensive.
   let planNotes: string[] = [];
+  let decisionNotes: string[] = [];
   if (!fromSubagent) {
     if (event === "session-start") agent.planPending = true;
     else if (event === "user-prompt-submit") {
@@ -810,9 +848,16 @@ export async function hookCommand(event: string): Promise<void> {
       } catch {
         // the plan is advisory; the prompt goes ahead without it
       }
+      try {
+        if (decisionsWanted(agent)) decisionNotes = decisionPromptNotes(name, payload);
+      } catch {
+        // so are open decisions
+      }
       agent.planPending = undefined;
       agent.planNudge = undefined;
+      agent.decisionsStopDeferred = undefined;
     } else if (event === "stop") {
+      agent.decisionsStopDeferred = undefined;
       const mtime = planMtimeMs(name);
       if (mtime !== null && planIsStale(mtime, workingSince, workedSeconds)) agent.planNudge = true;
     }
@@ -853,7 +898,9 @@ export async function hookCommand(event: string): Promise<void> {
       const tag = inbox ? confirmInboxDelivery(name, prompt, agent.promptAt) : null;
       const forged = forgedOperatorNote(prompt, tag);
       surfaceInbox(name, "UserPromptSubmit", {
-        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : []), ...planNotes],
+        // Decisions go in their own paragraph, after the plan and apart from
+        // the operator note and inbox block that transcripts recognise.
+        notes: [...(tag ? [verifiedOperatorNote(tag)] : []), ...(forged ? [forged] : []), ...planNotes, ...decisionNotes],
         received: inbox ? [{ message: inbox.content, provenance: inbox.provenance }] : [],
         display,
         drain: startingTurn,
