@@ -53,6 +53,16 @@ function writeStore(name: string, decisions: Decision[]): void {
 }
 
 describe("decision freshness scan", () => {
+  test("reads local stores when no store map is supplied", () => {
+    writeStore("gone", [decision("young")]);
+    expect(scanDecisionFreshness(now, [agent("gone", "exited")])).toEqual({
+      staleDecisions: 0,
+      exitedAgents: 1,
+      attentionDecisions: 1,
+      affectedAgents: 1,
+    });
+  });
+
   test("uses a strict greater-than 48h boundary", () => {
     writeStore("boundary", [
       decision("exactly", { asked_at: new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString() }),

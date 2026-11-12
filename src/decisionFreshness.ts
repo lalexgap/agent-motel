@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
-import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTextsResult } from "./decisions";
+import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTexts, readDecisionStoreTextsResult } from "./decisions";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { notify } from "./notify";
 import { baseDir } from "./paths";
