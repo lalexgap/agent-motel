@@ -97,3 +97,7 @@ export const saveSendModeRaw = (mode: string): void => write(SEND_MODE_KEY, mode
 const USAGE_KEY = "am.desktop.usage.v1";
 export const loadUsagePrefsRaw = (): string | null => read(USAGE_KEY);
 export const saveUsagePrefsRaw = (raw: string): void => write(USAGE_KEY, raw);
+
+const INSPECTOR_KEY = "am.desktop.inspector.v1";
+export const loadInspectorPrefsRaw = (): string | null => read(INSPECTOR_KEY);
+export const saveInspectorPrefsRaw = (raw: string): void => write(INSPECTOR_KEY, raw);

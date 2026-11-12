@@ -15,6 +15,8 @@ export const FIXTURE_IDS = {
     audit: "a3f1c9e27b5d4e80",
     explore: "b84d02e6c1a9f357",
     tests: "c6e9a1b3d5f70824",
+    // fold-line's: a running Codex subagent with no transcript yet.
+    baselines: "d17b5e0a9c3f6284",
   },
 };
 
@@ -122,10 +124,14 @@ export interface SubagentRecord {
 }
 export interface Subagent {
   record: SubagentRecord;
-  entries: TranscriptEntry[];
+  // Null: am has no transcript for it yet, as for a Codex subagent still running.
+  entries: TranscriptEntry[] | null;
 }
 
 export function seedSubagents(row: FixtureRow, now: number): Subagent[] {
+  if (row.name === "fold-line" && !row.host) {
+    return [{ record: { id: FIXTURE_IDS.subagents.baselines, type: "explorer", description: "Diff the visual baselines", startedAt: minutesAgo(now, 6) }, entries: null }];
+  }
   if (row.name !== "harbor-lights" || row.host) return [];
   const sidecar = (id: string) => `${FIXTURE_HOME}/.claude/projects/-home-keeper--agent-manager-worktrees-lighthouse-harbor-lights/subagents/agent-${id}.jsonl`;
   const ids = FIXTURE_IDS.subagents;

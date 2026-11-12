@@ -3,7 +3,7 @@
 import { parseDrafts, parseModePreference, type PendingMessage } from "./composer";
 import { agentKey, fleetRows, isConciergeKey, parseAgentKey, type ConnectionFleet, type TreeModel } from "./fleet";
 import { loadDraftsRaw, loadPrefs, loadSendModeRaw, savePrefs } from "./store";
-import type { AgentDetail, AgentRow, AppInfo, Connection, StreamState, Transcript } from "./types";
+import type { AgentDetail, AgentRow, AppInfo, Connection, StreamState, SubagentRecord, Transcript } from "./types";
 import { Unread } from "./unread";
 
 export interface ConnState {
@@ -30,7 +30,13 @@ export interface DetailState {
   detail: AgentDetail | null;
   transcript: Transcript | null;
   notFound: boolean;
+  // Built-in subagent records, once fetched; the last fetch's error, if it failed.
+  subagents: SubagentRecord[] | null;
+  subagentsError: string | null;
 }
+
+export const newDetailState = (key: string): DetailState =>
+  ({ key, detail: null, transcript: null, notFound: false, subagents: null, subagentsError: null });
 
 // Per agent key. Survives switching agents; pending bubbles last for the session.
 export interface AgentComposer {
@@ -78,6 +84,9 @@ export const state = {
   detailApplied: 0,
   detailFetchedAt: 0,
   detailInFlight: false,
+  subagentsSeq: 0,
+  // The subagent the subagent view shows (`<agent key>#<id>`); its parent stays `selected`.
+  subagent: null as string | null,
   taskExpanded: false,
   editing: null as string | null,
   formOpen: false,
@@ -98,7 +107,8 @@ export const persist = () =>
 // order they subscribed, synchronously.
 //   fleet       connections, rows, hosts or the concierge changed
 //   status      only connection health (stream state, errors, token, app info)
-//   agent       the open agent's header data: selection, detail, a fresher row
+//   agent       the open agent's header data: selection, detail, a fresher row,
+//               its subagent records
 //   transcript  the open agent's transcript was fetched (or found missing)
 //   seen        the selection or what has been read changed ("New" badges)
 export type Change = "fleet" | "status" | "agent" | "transcript" | "seen";

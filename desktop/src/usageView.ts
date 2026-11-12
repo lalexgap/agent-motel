@@ -3,6 +3,7 @@
 // controls as web/app.js's glue. Shown with `u` or the sidebar's Usage control.
 import { apiGet } from "./api";
 import { selectAgent } from "./chat";
+import { openSubagent } from "./subagentView";
 import { $, dot, h } from "./dom";
 import { agentId, conciergeId } from "./fleet";
 import { registerShortcut } from "./keyboard";
@@ -21,7 +22,7 @@ import {
   type UsageRange,
   type UsageUnit,
 } from "./usage";
-import { registerMainView, screen, showMainView } from "./views";
+import { onMainViewChange, registerMainView, screen, showMainView } from "./views";
 
 interface UsageView {
   range: UsageRange;
@@ -39,7 +40,7 @@ interface UsageAgentReport {
 }
 interface UsageReport {
   agents?: UsageAgentReport[];
-  anomalies?: { subagentId?: string }[];
+  anomalies?: { agent?: string; subagentId?: string }[];
 }
 interface UsageActions {
   statusDot(status: string): Node;
@@ -74,7 +75,6 @@ declare global {
 }
 
 const SUBTITLE = "What the fleet costs, who is spending it, and whether caching is paying off. Dollars are API-equivalent list prices, not a bill.";
-const SUBAGENT_NOTE = "Subagent transcripts are not in the app yet";
 
 const prefs = parseUsagePrefs(loadUsagePrefsRaw());
 const view: UsageView = { range: prefs.range, unit: prefs.unit, summary: null, fetchedAt: 0, showAllAgents: false };
@@ -182,21 +182,35 @@ function renderReport(next: UsageReport | null): void {
       renderReport(next);
     },
   });
-  disableSubagentLinks(next);
+  disableGoneSubagentLinks(next);
 }
 
-// Subagent transcripts have no page in the app yet, so their links render
-// disabled: the subagent rows, and anomalies that point at a subagent.
-function disableSubagentLinks(data: UsageReport): void {
-  const disable = (button: HTMLButtonElement) => {
+// A subagent opens under its parent, so its links render disabled when the
+// parent is no longer in the fleet: the subagent rows (each follows its
+// agent's row, in report order) and anomalies that point at a subagent.
+function disableGoneSubagentLinks(data: UsageReport): void {
+  const disable = (button: HTMLButtonElement, agent: string) => {
+    if (fleetKey(agent)) return;
     button.disabled = true;
-    button.title = SUBAGENT_NOTE;
+    button.title = `${agent} is not in the fleet any more`;
   };
-  for (const button of root.querySelectorAll<HTMLButtonElement>("#usage-agents .usage-subagent-btn")) disable(button);
+  const agents = data.agents ?? [];
+  let index = -1;
+  for (const row of root.querySelectorAll<HTMLElement>("#usage-agents tbody > tr")) {
+    if (row.classList.contains("usage-agent-row")) index++;
+    const button = row.querySelector<HTMLButtonElement>(".usage-subagent-btn");
+    const agent = agents[index];
+    if (button && agent) disable(button, agent.name);
+  }
   const targets = root.querySelectorAll<HTMLButtonElement>("#usage-anomalies .usage-anomaly-target");
-  (data.anomalies ?? []).forEach((item, index) => {
-    if (item.subagentId && targets[index]) disable(targets[index]);
+  (data.anomalies ?? []).forEach((item, position) => {
+    if (item.subagentId && targets[position]) disable(targets[position], item.agent ?? "");
   });
+}
+
+function fleetKey(name: string): string | null {
+  const conn = connection ? state.conns.get(connection) : undefined;
+  return conn ? usageAgentKey(conn.conn.id, conn.rows, name) : null;
 }
 
 // Expands the detailed breakdown scoped to one agent ("" = all); fetches only when needed.
@@ -210,9 +224,14 @@ function openBreakdown(agentName: string): void {
 }
 
 function openAgent(name: string): void {
-  const conn = connection ? state.conns.get(connection) : undefined;
-  const key = conn ? usageAgentKey(conn.conn.id, conn.rows, name) : null;
+  const key = fleetKey(name);
   if (key) selectAgent(key);
+  else setStatus(`${name} is not in the fleet any more`);
+}
+
+function openSubagentOf(name: string, id: string, label: string, statusLabel: string): void {
+  const key = fleetKey(name);
+  if (key) openSubagent(key, id, label, statusLabel);
   else setStatus(`${name} is not in the fleet any more`);
 }
 
@@ -253,7 +272,7 @@ const actions: UsageActions = {
     if (view.summary) dashboard().renderTopAgents(root, view, actions);
   },
   openAgent,
-  openSubagent() {},
+  openSubagent: openSubagentOf,
   chartResized() {
     if (view.summary && pageVisible()) dashboard().renderChart(root, view);
   },
@@ -363,7 +382,7 @@ function buildPage(): void {
   navButton.addEventListener("click", () => showUsage());
   navStrip().append(navButton);
 
-  new MutationObserver(() => {
+  onMainViewChange(() => {
     const shown = !page.hidden;
     if (shown) navButton.setAttribute("aria-current", "page");
     else {
@@ -371,7 +390,7 @@ function buildPage(): void {
       const tip = root.querySelector<HTMLElement>("#usage-tooltip");
       if (tip) tip.hidden = true;
     }
-  }).observe(page, { attributes: true, attributeFilter: ["hidden"] });
+  });
 }
 
 export function initUsage(): void {

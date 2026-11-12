@@ -17,6 +17,8 @@ import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAge
 import { cachedFleetRows } from "./fleet";
 import { agentPresence, displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
+import { buildPrReport } from "./prReport";
+import { PR_STATES, type PrState } from "./prStatus";
 import { gcSummaryLine } from "./autoGc";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
@@ -730,6 +732,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   // GET /api/summary — the same prioritized fleet report as `am summary`.
   if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
     return json(buildFleetSummary(cachedFleetRows(), new Date(), gcSummaryLine()));
+  }
+
+  // GET /api/prs[?all=1][&needsMe=1][&state=][&repo=] — the same list as `am
+  // prs`, from the cached fleet: it never waits on GitHub or ssh.
+  if (parts.length === 1 && parts[0] === "prs" && method === "GET") {
+    const params = new URL(req.url).searchParams;
+    const state = params.get("state") ?? undefined;
+    if (state !== undefined && !PR_STATES.includes(state as PrState)) return json({ error: `unknown PR state "${state}"` }, 400);
+    return json(buildPrReport(cachedFleetRows(), new Date(), {
+      all: params.get("all") === "1", needsMe: params.get("needsMe") === "1",
+      state: state as PrState | undefined, repo: params.get("repo")?.slice(0, 200) || undefined,
+    }));
   }
 
   // GET /api/usage/summary?range=1|7|30[&repo=][&provider=][&quota=0][&refresh=1]

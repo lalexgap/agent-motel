@@ -134,7 +134,20 @@ export interface AgentItem {
   concierge?: boolean;
   connectionName?: string;
 }
-export type TreeItem = GroupItem | AgentItem;
+// A running built-in subagent nested under its parent's row (subagents.ts adds them).
+export interface SubagentItem {
+  kind: "subagent";
+  id: string;
+  // `<agent key>#<subagent id>`.
+  key: string;
+  agentKey: string;
+  subagentId: string;
+  label: string;
+  startedAt: string;
+  depth: number;
+  parent: string;
+}
+export type TreeItem = GroupItem | AgentItem | SubagentItem;
 
 export interface TreeModel {
   items: TreeItem[];

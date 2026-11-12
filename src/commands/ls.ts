@@ -18,6 +18,8 @@ import {
   type SubagentRecord,
   type SubagentSummary,
 } from "../subagents";
+import { derivePrStatuses, hasRecentPullRequests, type PrStatus } from "../prStatus";
+import { readOpenDecisions } from "../decisions";
 import { reconcileAntigravityAgent } from "../antigravity";
 import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
 
@@ -442,6 +444,8 @@ export interface AgentRow {
   // The agent's running plan file (am plan), when it has one. JSON only.
   planFile?: string;
   prMonitor?: AgentState["prMonitor"];
+  // Open and recently finished PRs with their status in agent terms (prStatus.ts).
+  prStatus?: PrStatus[];
 }
 
 export interface DiffSummary {
@@ -527,8 +531,14 @@ export function agentRows(): AgentRow[] {
     const { status, subagents } = presence;
     const { roleInstructions: _roleInstructions, ...visible } = a;
     const derived = !!presence.busyWith?.subagents || !!presence.stalled;
+    const now = new Date();
+    const prStatus = hasRecentPullRequests(a.prMonitor?.pullRequests, now) ? derivePrStatuses({
+      prs: a.prMonitor!.pullRequests, alive: status !== "exited" && status !== "dead",
+      subagents: readSubagents(a.name), decisions: readOpenDecisions(a.name), now,
+    }) : undefined;
     return {
       ...visible,
+      ...(prStatus?.length ? { prStatus } : {}),
       status,
       rawStatus: presence.rawStatus,
       statusReason: presence.reason,

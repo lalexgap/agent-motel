@@ -45,6 +45,7 @@ am new claude-take --claude --no-jump            # use Claude Code, stay in the 
 am                         # open the hub
 am ls                      # list agents (--json; --role/--sort for scripts)
 am summary                 # prioritized attention/active/idle fleet report
+am prs                     # every PR agents own, by who has to act next
 am usage                   # quota headroom for claude and codex
 am j api                   # jump by name prefix
 am -                       # return to the previous agent
