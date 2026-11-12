@@ -2554,7 +2554,7 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 }
 /* Six nav entries outgrow a phone's top bar: let the row scroll rather than widen the page. */
 @media (max-width: 700px) {
-  .sidebar nav { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .sidebar nav { min-width: 0; overflow-x: auto; scrollbar-width: none; justify-content: safe flex-end; }
 }
 @media (max-width: 440px) {
   .sidebar { gap: 12px; }

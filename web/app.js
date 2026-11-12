@@ -280,6 +280,7 @@ function lock() {
   if ($("usage-page")) $("usage-page").hidden = true;
   if ($("prs-page")) $("prs-page").hidden = true;
   Object.assign(prsView, { report: null, loading: false, error: null });
+  renderPrs();
   updatePrsBadge();
   $("pane").textContent = "";
   $("workspace-count").textContent = "";

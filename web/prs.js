@@ -338,7 +338,9 @@ window.agentPrs = (() => {
     if (pr.decision.link) {
       const link = safeLink(pr.decision.link);
       if (link) {
-        td.append(externalLink("Open the discussion", link, actions));
+        const discussion = externalLink(`Open the discussion on ${new URL(link).host}`, link, actions);
+        discussion.title = link;
+        td.append(discussion);
       } else td.append(el("p", "prs-notes", pr.decision.link));
     }
     tr.append(td);
