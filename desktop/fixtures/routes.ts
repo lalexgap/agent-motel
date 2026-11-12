@@ -111,6 +111,8 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     if (status === "working") row.workingSince ??= now;
     else delete row.workingSince;
   }
+  // Richer than the real stream, which sends only `{id, type: "fleet", event, agent?, at}` and only for
+  // local agents: UI code must treat these as refresh cues and never read `status`, `host` or `type` here.
   const emitStatus = (row: FixtureRow) => fx.broadcast("fleet", { type: "status", agent: row.name, host: row.host, status: row.status, at: row.updatedAt });
   const emit = (type: string, row: FixtureRow, extra: Record<string, unknown> = {}) =>
     fx.broadcast("fleet", { type, agent: row.name, host: row.host, ...extra, at: new Date().toISOString() });
