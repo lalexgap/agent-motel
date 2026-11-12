@@ -77,6 +77,7 @@
               </div>
               <div id="am-agent-meta" class="am-chat-meta"></div>
               <p id="am-agent-reason" hidden></p>
+              <div id="am-action-error" hidden><span id="am-action-error-text" role="alert"></span><button id="am-action-error-dismiss" type="button" class="text-button">Dismiss</button></div>
               <div id="am-agent-task" class="am-chat-task" hidden>
                 <span id="am-agent-task-text"></span>
                 <button id="am-agent-task-toggle" type="button" class="text-button" aria-expanded="false">More</button>
@@ -89,7 +90,7 @@
             <div id="am-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
             <form id="am-composer" autocomplete="off" novalidate>
               <div id="composer-error" role="alert" hidden></div>
-              <p id="am-composer-blocked" hidden></p>
+              <div id="am-composer-blocked" hidden><span id="am-composer-blocked-text"></span><button id="am-composer-resume" type="button" hidden>Resume</button></div>
               <div class="am-composer-box">
                 <textarea id="composer-input" rows="1" aria-label="Message the agent" aria-describedby="composer-mode-hint am-composer-keys" placeholder="Message the agent" spellcheck="true"></textarea>
                 <div class="am-composer-bar">

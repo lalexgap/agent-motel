@@ -53,7 +53,7 @@ function renderStatusbar(): void {
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
-export function flashStatus(text: string, ms = 2000): void {
+export function flashStatus(text: string, ms = 2000, tone: "ok" | "error" = "ok"): void {
   const node = document.getElementById("am-sb-flash") ?? h("span", "am-sb-item am-sb-flash");
   if (!node.id) {
     node.id = "am-sb-flash";
@@ -61,6 +61,9 @@ export function flashStatus(text: string, ms = 2000): void {
     $("am-sb-right").prepend(node);
   }
   node.textContent = text;
+  // Capped to one line by CSS; the whole text on hover.
+  node.title = text;
+  node.classList.toggle("am-sb-flash-error", tone === "error");
   node.hidden = false;
   if (flashTimer) clearTimeout(flashTimer);
   flashTimer = setTimeout(() => {

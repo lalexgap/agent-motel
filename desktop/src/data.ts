@@ -66,6 +66,12 @@ async function loadAgents(id: string): Promise<void> {
   }
 }
 
+// After a write: the fleet, and the open agent when it is on that connection.
+export async function refreshConnection(id: string): Promise<void> {
+  const open = state.selected && parseAgentKey(state.selected)?.connection === id;
+  await Promise.all([loadAgents(id), open ? loadDetail() : Promise.resolve()]);
+}
+
 export function noteError(id: string, error: unknown): void {
   const conn = state.conns.get(id);
   if (!conn) return;
