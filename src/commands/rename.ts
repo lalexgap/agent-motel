@@ -12,6 +12,7 @@ import {
 } from "../state";
 import { inboxDir, planFile, sharedDir } from "../paths";
 import { renamePlan } from "../plan";
+import { decisionStoreExists, decisionStoreFile, ownsStore, renameDecisionStore } from "../decisions";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { acquireProducerLock, releaseProducerLock } from "../mailbox";
 import { queueAppendForAgent, queueStorageExists, renameQueue } from "../queue";
@@ -129,6 +130,12 @@ async function renameAgentLocked(
   if (existsSync(planFile(newName))) {
     throw new Error(`a plan file already exists for "${newName}" (${planFile(newName)}) — remove it or choose another name`);
   }
+  if (decisionStoreExists(oldName) && !ownsStore(newName)) {
+    throw new Error(`"${newName}" cannot keep "${oldName}"'s decisions store (${decisionStoreFile(newName)} names another agent) — choose another name`);
+  }
+  if (decisionStoreExists(oldName) && decisionStoreExists(newName)) {
+    throw new Error(`a decisions store already exists for "${newName}" (${decisionStoreFile(newName)}) — remove it or choose another name`);
+  }
 
   if (!acquireDeliverLock(oldName)) {
     throw new Error(`agent "${oldName}" is receiving a queued message — retry the rename in a moment`);
@@ -149,6 +156,7 @@ async function renameAgentLocked(
   const hadSubagents = subagentsExist(oldName);
   const hadShared = existsSync(sharedDir(oldName));
   const hadPlan = existsSync(planFile(oldName));
+  const hadDecisions = decisionStoreExists(oldName);
   let stateRenamed = false;
   let sessionRenamed = false;
   try {
@@ -159,6 +167,7 @@ async function renameAgentLocked(
     if (hadInbox) renameSync(inboxDir(oldName), inboxDir(newName));
     if (hadShared) renameSync(sharedDir(oldName), sharedDir(newName));
     if (hadPlan) renamePlan(oldName, newName);
+    if (hadDecisions) renameDecisionStore(oldName, newName);
     if (live) {
       renameSession(oldSession, newSession);
       sessionRenamed = true;
@@ -179,6 +188,7 @@ async function renameAgentLocked(
     if (!stateRenamed) {
       try {
         if (hadPlan && existsSync(planFile(newName))) renamePlan(newName, oldName);
+        if (hadDecisions && decisionStoreExists(newName)) renameDecisionStore(newName, oldName);
         if (hadShared && existsSync(sharedDir(newName))) renameSync(sharedDir(newName), sharedDir(oldName));
         if (hadInbox && existsSync(inboxDir(newName))) renameSync(inboxDir(newName), inboxDir(oldName));
         if (hadSnapshot && snapshotExists(newName)) renameSnapshot(newName, oldName);

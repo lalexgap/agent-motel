@@ -336,7 +336,7 @@ describe("importPayload", () => {
     const present = { exitCode: 0, stdout: JSON.stringify([original]), stderr: "" };
 
     const created = await importAfterRenew(JSON.stringify({ ...raw, plan: "# carried" }), async () => {});
-    expect(created).toEqual({ name: "migrated", planCreated: true });
+    expect(created).toEqual({ name: "migrated", planCreated: true, decisionsCreated: false });
     const recovery = resolveSourceRemovalFailure("migrated", readAgent("migrated")!, queueList("migrated"), original, present, created.planCreated);
     expect(recovery.rolledBack).toBe(true);
     expect(existsSync(planFile("migrated"))).toBe(false);

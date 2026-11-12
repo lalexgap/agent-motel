@@ -154,6 +154,15 @@ export interface Config {
   // Keep a running plan file per agent (am plan <name>), injected into its
   // context once per session. Per-agent opt-out: am new --no-plan.
   plans: boolean;
+  // Read each agent's `decision` store (the decisions skill): `am ls` and
+  // `am summary` show open decisions, and the prompt/stop hooks run
+  // `decision hook` when the CLI is installed. false turns all of it off; a
+  // remote host's PR status follows that host's own config.
+  decisions: boolean;
+  // What the stop hook does when a turn ends on a question nothing registered:
+  // "block" makes the agent register it before stopping, "nudge" reminds it on
+  // the next prompt, "off" skips the check.
+  decisionsStopMode: "block" | "nudge" | "off";
   // `am switch-model` lets an agent change its own model during its first N
   // turns, while the uncached re-read of the conversation is still cheap.
   // 0 disables it.
@@ -194,6 +203,8 @@ const DEFAULTS: Config = {
   permissionWaitSeconds: 120,
   pretrustClaudeDirs: true,
   plans: true,
+  decisions: true,
+  decisionsStopMode: "block",
   selfModelSwitchMaxTurns: 2,
 };
 

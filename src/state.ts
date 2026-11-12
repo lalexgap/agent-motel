@@ -125,6 +125,9 @@ export interface AgentState {
   planPending?: boolean;
   // A long turn ended without touching the plan; the next prompt nudges once.
   planNudge?: boolean;
+  // The inbox gate blocked this turn's stop, so the stop that follows (marked
+  // stop_hook_active) still gets the decisions check it skipped.
+  decisionsStopDeferred?: boolean;
   // Prompts received since `am new` started a fresh conversation. Absent for
   // adopted conversations and older agents: their context age is unknown.
   turns?: number;

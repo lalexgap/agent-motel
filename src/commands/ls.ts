@@ -19,9 +19,18 @@ import {
   type SubagentSummary,
 } from "../subagents";
 import { derivePrStatuses, hasRecentPullRequests, type PrStatus, type PrSubagent } from "../prStatus";
-import { readOpenDecisions } from "../decisions";
 import { reconcileAntigravityAgent } from "../antigravity";
 import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
+import {
+  decisionStoreTextFor,
+  decisionsLabel,
+  parseDecisionStore,
+  parseOpenDecisions,
+  readDecisionStoreTexts,
+  summarizeDecisions,
+  type DecisionSummary,
+} from "../decisions";
+import { loadConfig } from "../config";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -446,6 +455,14 @@ export interface AgentRow {
   prMonitor?: AgentState["prMonitor"];
   // Open and recently finished PRs with their status in agent terms (prStatus.ts).
   prStatus?: PrStatus[];
+  // Open questions in the agent's `decision` store, read on the agent's own
+  // host. Absent on rows from an am that predates them.
+  openDecisions?: number;
+  blockingDecisions?: number;
+  // Only when openDecisions > 0: the oldest asked_at, and the question that
+  // would be answered first (blocking, then oldest).
+  oldestDecisionAt?: string;
+  firstDecision?: string;
 }
 
 export interface DiffSummary {
@@ -535,7 +552,32 @@ export function prSubagents(agent: AgentState, alive: boolean): PrSubagent[] {
   return records.map((record) => quiet.has(record.id) ? { ...record, quiet: true } : record);
 }
 
+function decisionFields(summary: DecisionSummary | undefined): Pick<AgentRow, "openDecisions" | "blockingDecisions" | "oldestDecisionAt" | "firstDecision"> {
+  if (!summary || summary.open === 0) return { openDecisions: 0, blockingDecisions: 0 };
+  return {
+    openDecisions: summary.open,
+    blockingDecisions: summary.blocking,
+    ...(summary.oldestAskedAt ? { oldestDecisionAt: summary.oldestAskedAt } : {}),
+    ...(summary.first ? { firstDecision: summary.first } : {}),
+  };
+}
+
+function storeSummary(text: string | undefined): DecisionSummary | undefined {
+  const store = text === undefined ? null : parseDecisionStore(text);
+  return store ? summarizeDecisions(store.decisions) : undefined;
+}
+
 export function agentRows(): AgentRow[] {
+  let showDecisions = true;
+  try {
+    showDecisions = loadConfig().decisions !== false;
+  } catch {
+    // a broken config still lists agents
+  }
+  // One directory read serves both the decisions column and PR status, and
+  // only when one of them needs it.
+  let texts: Map<string, string> | undefined;
+  const storeText = (name: string) => decisionStoreTextFor((texts ??= readDecisionStoreTexts()), name);
   return listAgents().map((a) => {
     const presence = agentPresence(a);
     const { status, subagents } = presence;
@@ -544,7 +586,8 @@ export function agentRows(): AgentRow[] {
     const now = new Date();
     const alive = status !== "exited" && status !== "dead";
     const prStatus = hasRecentPullRequests(a.prMonitor?.pullRequests, now) ? derivePrStatuses({
-      prs: a.prMonitor!.pullRequests, alive, subagents: prSubagents(a, alive), decisions: readOpenDecisions(a.name), now,
+      prs: a.prMonitor!.pullRequests, alive, subagents: prSubagents(a, alive),
+      decisions: showDecisions ? parseOpenDecisions(storeText(a.name) ?? "") : [], now,
     }) : undefined;
     return {
       ...visible,
@@ -566,14 +609,19 @@ export function agentRows(): AgentRow[] {
         : derived
           ? clipDetail(presence.reason ?? "")
           : subagents && clipDetail(subagents.detail),
+      ...decisionFields(showDecisions ? storeSummary(storeText(a.name)) : undefined),
     };
   });
+}
+
+export function rowDecisionsLabel(row: Pick<AgentRow, "openDecisions" | "blockingDecisions">): string | undefined {
+  return row.openDecisions ? decisionsLabel(row.openDecisions, row.blockingDecisions ?? 0) : undefined;
 }
 
 export function formatRows(rows: (AgentRow & { host?: string })[]): string[] {
   if (rows.length === 0) return ["no agents — create one with `am new <name>`"];
   const nameWidth = Math.max(4, ...rows.map((r) => r.name.length));
-  const statusOf = (r: AgentRow) => (r.statusDetail ? `${r.status} · ${r.statusDetail}` : r.status);
+  const statusOf = (r: AgentRow) => [r.status, r.statusDetail, rowDecisionsLabel(r)].filter(Boolean).join(" · ");
   const statusWidth = Math.max(6, ...rows.map((r) => statusOf(r).length));
   const withHost = rows.some((r) => r.host);
   const hostWidth = withHost ? Math.max(4, ...rows.map((r) => (r.host ?? "local").length)) : 0;
@@ -625,6 +673,14 @@ export function lsCommand(opts: { json: boolean; localOnly?: boolean; role?: str
   const { fleetRows } = require("../fleet") as typeof import("../fleet");
   const fleet = fleetRows({ localOnly: opts.localOnly });
   fleet.rows = sortLsRows(filterRowsByRole(fleet.rows, opts.role), opts.sort);
+  // Remote hosts read their own stores; turning decisions off here hides theirs too.
+  if (loadConfig().decisions === false) {
+    for (const row of fleet.rows) {
+      Object.assign(row, { openDecisions: 0, blockingDecisions: 0 });
+      delete row.oldestDecisionAt;
+      delete row.firstDecision;
+    }
+  }
   if (opts.json) {
     // Diff stats ride along in the JSON: the hub polls remote fleets through
     // `am ls --json --local-only` over ssh, and only this process can see this

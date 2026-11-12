@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { agentProvider, readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
 import { restorePlan } from "../plan";
+import { restoreDecisionStore } from "../decisions";
 import { findRemovedWorktree, salvageSummary } from "../gc";
 import { reviveAgent } from "./resume";
 
@@ -53,6 +54,7 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
     }
 
     restorePlan(name);
+    restoreDecisionStore(name);
     updateAgentStatus(state, "exited", "restored; not running");
     state.workingSince = undefined;
     writeAgent(state, { ownershipSource: { kind: "trash", owner: trashed } });

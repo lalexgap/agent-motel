@@ -2,8 +2,13 @@ import type { DisplayStatus } from "./commands/ls";
 import { fleetKey, type Fleet, type FleetRow } from "./fleet";
 import { formatTrackedPullRequest } from "./prMonitorDisplay";
 import { buildPrReport, prReasonLine, type PrRow } from "./prReport";
+import { loadConfig } from "./config";
+import { flattenStoreText } from "./decisions";
 
 export const STALE_STARTING_SECONDS = 120;
+// An open decision this old gets its age shown beside it.
+export const DECISION_AGE_SHOWN_SECONDS = 48 * 3600;
+const DECISION_QUESTION_MAX = 80;
 
 export type SummaryStatus = DisplayStatus | "unreachable";
 
@@ -21,6 +26,8 @@ export interface SummaryItem {
   ageSeconds: number;
   dir?: string;
   prMonitor?: FleetRow["prMonitor"];
+  // Open questions in the agent's decisions store, when it has any.
+  decisions?: { open: number; blocking: number; oldestAskedAt?: string; first?: string };
 }
 
 export interface FleetSummary {
@@ -31,6 +38,8 @@ export interface FleetSummary {
   active: SummaryItem[];
   idle: SummaryItem[];
   exited: SummaryItem[];
+  // Agents with at least one open decision waiting on the operator.
+  waitingOnDecisions: number;
   // This host's last scheduled gc, in a line (see autoGc.ts).
   gc?: string;
   // PRs waiting on the operator, then the ones ready to merge (see `am prs`).
@@ -55,6 +64,38 @@ function shortTask(task: string | undefined, max = 80): string | undefined {
   const first = task?.split("\n")[0]?.trim();
   if (!first) return undefined;
   return first.length > max ? first.slice(0, max - 1) + "…" : first;
+}
+
+function oneLine(text: string, max: number): string {
+  const flat = flattenStoreText(text);
+  return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
+}
+
+// "waiting on 2 decisions from you: <first question> (open 3d)". Pure.
+export function decisionsReason(decisions: NonNullable<SummaryItem["decisions"]>, nowMs: number): string {
+  const noun = `${decisions.open} decision${decisions.open === 1 ? "" : "s"}`;
+  const first = decisions.first ? `: ${oneLine(decisions.first, DECISION_QUESTION_MAX)}` : "";
+  const age = ageSeconds(decisions.oldestAskedAt, nowMs);
+  const open = decisions.oldestAskedAt && age >= DECISION_AGE_SHOWN_SECONDS ? ` (open ${formatAge(age)})` : "";
+  return `waiting on ${noun} from you${first}${open}`;
+}
+
+function rowDecisions(row: FleetRow): SummaryItem["decisions"] {
+  if (!row.openDecisions || row.openDecisions <= 0) return undefined;
+  return {
+    open: row.openDecisions,
+    blocking: row.blockingDecisions ?? 0,
+    ...(row.oldestDecisionAt ? { oldestAskedAt: row.oldestDecisionAt } : {}),
+    ...(row.firstDecision ? { first: row.firstDecision } : {}),
+  };
+}
+
+function decisionsShown(): boolean {
+  try {
+    return loadConfig().decisions !== false;
+  } catch {
+    return true;
+  }
 }
 
 function summaryItem(row: FleetRow, nowMs: number): SummaryItem {
@@ -97,8 +138,14 @@ function sortItems(items: SummaryItem[]): SummaryItem[] {
   return items.sort((a, b) => itemPriority(a) - itemPriority(b) || a.key.localeCompare(b.key));
 }
 
-export function buildFleetSummary(fleet: Fleet, now: Date = new Date(), gc?: string | null): FleetSummary {
+export function buildFleetSummary(
+  fleet: Fleet,
+  now: Date = new Date(),
+  gc?: string | null,
+  opts: { decisions?: boolean } = {},
+): FleetSummary {
   const nowMs = now.getTime();
+  const showDecisions = opts.decisions ?? decisionsShown();
   const summary: FleetSummary = {
     generatedAt: now.toISOString(),
     totalAgents: fleet.rows.length,
@@ -107,12 +154,21 @@ export function buildFleetSummary(fleet: Fleet, now: Date = new Date(), gc?: str
     active: [],
     idle: [],
     exited: [],
+    waitingOnDecisions: 0,
   };
 
   for (const row of fleet.rows) {
     const item = summaryItem(row, nowMs);
     const staleStarting = row.status === "starting" && item.ageSeconds >= STALE_STARTING_SECONDS;
-    if (row.status === "needs-attention" || row.status === "dead" || staleStarting) {
+    const decisions = showDecisions ? rowDecisions(row) : undefined;
+    if (decisions) {
+      // One row per agent: an agent already flagged for another reason keeps
+      // it, with the decisions after.
+      item.decisions = decisions;
+      item.reason = [item.reason, decisionsReason(decisions, nowMs)].filter(Boolean).join("; ");
+      summary.waitingOnDecisions += 1;
+    }
+    if (row.status === "needs-attention" || row.status === "dead" || staleStarting || decisions) {
       summary.attention.push(item);
     } else if (row.status === "working" || row.status === "waiting" || row.status === "starting") {
       summary.active.push(item);
@@ -188,7 +244,10 @@ export function formatFleetSummary(summary: FleetSummary): string[] {
   const unreachable = summary.unreachableHosts > 0
     ? ` · ${plural(summary.unreachableHosts, "unreachable host")}`
     : "";
-  const lines = [`Fleet: ${plural(summary.totalAgents, "agent")}${unreachable}`];
+  const decisions = summary.waitingOnDecisions > 0
+    ? ` · ${plural(summary.waitingOnDecisions, "agent")} waiting on decisions`
+    : "";
+  const lines = [`Fleet: ${plural(summary.totalAgents, "agent")}${unreachable}${decisions}`];
   for (const [title, items] of [
     ["Needs attention", summary.attention],
     ["Active", summary.active],

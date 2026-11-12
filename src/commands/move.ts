@@ -22,13 +22,14 @@ import { sendText } from "../tmux";
 import { acquireDeliverLock, beginDeliveryHandoff, endDeliveryHandoff, enterDelayMs, releaseDeliverLock, renewDeliveryHandoff } from "../deliver";
 import { runAsync, sshAmAsync, sshRunAsync } from "../remote";
 import { splitFleetKey } from "../fleet";
-import { expandHome, worktreesDir } from "../paths";
+import { expandHome, planFile, worktreesDir } from "../paths";
 import { hasSession } from "../tmux";
-import { loadConfig } from "../config";
+import { loadConfig, shortHost } from "../config";
 import { createWorktree, isGitRepo } from "./new";
 import { newMsgId } from "../msgid";
 import { acquireLifecycleLock, currentLifecycleAgent, releaseLifecycleLock } from "../lifecycle";
 import { importPlan, readPlan, removePlan } from "../plan";
+import { importDecisionStore, readDecisionStoreText, removeDecisionStore } from "../decisions";
 import type { MessageProvenance } from "../comms";
 
 // `am move <name> <host>` (push) / `am move <host>:<name>` (pull): a TRUE
@@ -44,6 +45,8 @@ export interface MovePayload {
   receivedMsgIds?: string[];
   // The agent's running plan file; absent from older am versions.
   plan?: string;
+  // The agent's `decision` store, verbatim; absent from older am versions.
+  decisions?: string;
 }
 
 interface MoveHooks {
@@ -57,7 +60,7 @@ export async function importAfterRenew(raw: string, renew: () => Promise<void>, 
   return importPayloadResult(raw, handoffToken);
 }
 
-function rollbackImportedAgent(name: string, imported: AgentState, queue: ReturnType<typeof queueList>, planCreated: boolean): boolean {
+function rollbackImportedAgent(name: string, imported: AgentState, queue: ReturnType<typeof queueList>, planCreated: boolean, decisionsCreated: boolean): boolean {
   const current = readAgent(name);
   if (!current || current.updatedAt !== imported.updatedAt || hasSession(current.tmuxSession)) return false;
   const currentQueue = queueList(name);
@@ -65,6 +68,7 @@ function rollbackImportedAgent(name: string, imported: AgentState, queue: Return
   queueClear(name);
   removeAgent(name);
   if (planCreated) removePlan(name);
+  if (decisionsCreated) removeDecisionStore(name);
   return true;
 }
 
@@ -95,9 +99,10 @@ export function resolveSourceRemovalFailure(
   original: AgentState,
   probe: SourceProbe,
   planCreated = false,
+  decisionsCreated = false,
 ): { source: "present" | "gone" | "uncertain"; rolledBack: boolean } {
   const source = sourcePresence(probe, original);
-  return { source, rolledBack: source === "present" && rollbackImportedAgent(name, imported, importedQueue, planCreated) };
+  return { source, rolledBack: source === "present" && rollbackImportedAgent(name, imported, importedQueue, planCreated, decisionsCreated) };
 }
 
 // Swap one $HOME prefix for another; null when the path isn't under $HOME
@@ -226,6 +231,7 @@ export function sourceTranscript(agent: AgentState): { path: string; codexRelati
 export interface ImportResult {
   name: string;
   planCreated: boolean;
+  decisionsCreated: boolean;
 }
 
 export function importPayload(raw: string, handoffToken?: string): string {
@@ -269,8 +275,19 @@ function importPayloadResult(raw: string, handoffToken?: string): ImportResult {
     } catch {
       // the plan is advisory; the agent gets a fresh one on resume
     }
+    let decisionsCreated = false;
+    try {
+      // The store names the host and dir it was asked from; this is now both.
+      decisionsCreated = importDecisionStore(state.name, typeof payload.decisions === "string" ? payload.decisions : undefined, {
+        host: shortHost(hostname()),
+        dir: state.dir,
+        plan: existsSync(planFile(state.name)) ? planFile(state.name) : null,
+      });
+    } catch {
+      // open questions stay behind in the source host's trash
+    }
     if (handoffToken) beginDeliveryHandoff(state.name, handoffToken);
-    return { name: state.name, planCreated };
+    return { name: state.name, planCreated, decisionsCreated };
   } finally {
     releaseDeliverLock(state.name);
   }
@@ -519,6 +536,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions, hooks: M
         queueProvenance: [undefined, ...backlog.map((m) => m.provenance)],
         receivedMsgIds: queueReceiptIds(agent.name),
         plan: readPlan(agent.name) ?? undefined,
+        decisions: readDecisionStoreText(agent.name),
       };
       const imported = await sshAm(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
       if (imported.exitCode !== 0) {
@@ -604,6 +622,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
       home: string;
       transcript: { path: string; codexRelative: string | null } | null;
       plan?: unknown;
+      decisions?: unknown;
     };
 
     validateRemoteExport(remote, opts.exact ? name : undefined);
@@ -721,9 +740,10 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
         queueProvenance: [undefined, ...(remote.queueProvenance ?? remote.queue.map(() => undefined))],
         receivedMsgIds: remote.receivedMsgIds,
         plan: typeof remote.plan === "string" ? remote.plan : undefined,
+        decisions: typeof remote.decisions === "string" ? remote.decisions : undefined,
       });
 
-    const { planCreated } = await importAfterRenew(importRaw, renew, handoff);
+    const { planCreated, decisionsCreated } = await importAfterRenew(importRaw, renew, handoff);
     const imported = readAgent(name)!;
     const importedQueue = queueList(name);
     try {
@@ -731,7 +751,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions, hooks: M
         const removed = await sshAm(host, ["rm", name, "--for-move"], { timeoutMs: 15000 });
         if (removed.exitCode !== 0) {
           const probe = await sshAm(host, ["ls", "--json", "--local-only"], { timeoutMs: 8000 });
-          const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe, planCreated);
+          const recovery = resolveSourceRemovalFailure(name, imported, importedQueue, remote.state, probe, planCreated, decisionsCreated);
           const detail = (removed.stderr + removed.stdout).trim();
           const outcome = recovery.rolledBack
             ? "source is still present; local import rolled back"
@@ -850,6 +870,7 @@ export function exportCommand(name: string, mode?: string, token?: string): void
           home: homedir(),
           transcript: sourceTranscript(agent),
           plan: readPlan(agent.name) ?? undefined,
+          decisions: readDecisionStoreText(agent.name),
           ...(mode === "handoff" ? { handoffToken: token } : {}),
         }),
       );
