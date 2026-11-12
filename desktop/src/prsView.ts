@@ -169,7 +169,7 @@ const actions: PrsActions = {
       notInFleet(key);
       return;
     }
-    selectAgent(target);
+    selectAgent(target, false, "chat");
     const input = composerInput();
     input.value = mergeNudge(input.value, text);
     onComposerInput();
