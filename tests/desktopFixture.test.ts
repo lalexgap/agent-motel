@@ -812,6 +812,50 @@ describe("fixture parity routes", () => {
     expect((await expectReply(call("POST", "/api/search", { query: "zzqq-nothing" }), 200)).matches).toEqual([]);
   });
 
+  test("tracked PRs: the PrReport shape over fixture agents, filters, all=1 and the bearer token", async () => {
+    expect((await call("GET", "/api/prs", undefined, {}, null)).status).toBe(401);
+    const report = await read("/api/prs");
+    expect(Object.keys(report).sort()).toEqual(["counts", "generatedAt", "prs", "stale", "unreachable"]);
+    const fleet = (await read("/api/agents")).rows.map((item: { name: string; host?: string }) => (item.host ? `${item.host}:${item.name}` : item.name));
+    for (const pr of report.prs) {
+      expect(fleet).toContain(pr.agent);
+      expect(pr.key).toBe(`${pr.repository}#${pr.number}`);
+      expect(pr.url).toBe(`https://github.com/${pr.repository}/pull/${pr.number}`);
+      expect(pr.repository).toStartWith("example/");
+      expect(pr.agentName).toBe(pr.agent.split(":").pop());
+    }
+    // Server order: needs-me first, then by state.
+    expect(report.prs.map((pr: { state: string }) => pr.state)).toEqual(["needs-decision", "ci-failing", "merge-ready", "conflict", "shepherding", "shepherding", "shepherding", "waiting", "waiting"]);
+    expect(report.counts).toMatchObject({ open: 9, needsMe: 2, "needs-decision": 1, "merge-ready": 1, conflict: 1, "ci-failing": 1, shepherding: 3, waiting: 2, merged: 0, closed: 0 });
+    expect(report.stale).toEqual(["annex:sandbar"]);
+    expect(report.unreachable).toEqual(["lantern"]);
+    const byNumber = (n: number) => report.prs.find((pr: { number: number }) => pr.number === n);
+    expect(byNumber(131).decision).toMatchObject({ blocking: true, link: "https://github.com/example/lighthouse/pull/131", more: 1 });
+    expect(byNumber(119)).toMatchObject({ agent: "old-lens", agentStatus: "exited", needsMe: true, orphaned: true });
+    expect(byNumber(64)).toMatchObject({ agent: "annex:kelp-forest", agentName: "kelp-forest", host: "annex" });
+    expect(byNumber(73).alsoTrackedBy).toEqual(["ebb-report"]);
+    expect([byNumber(127).stack, byNumber(128).stack]).toEqual([{ position: 1, size: 2, children: [128] }, { position: 2, size: 2, parent: 127, children: [] }]);
+
+    const all = await read("/api/prs?all=1");
+    expect(all.prs.slice(-2).map((pr: { state: string; number: number }) => [pr.state, pr.number])).toEqual([["merged", 97], ["closed", 88]]);
+    expect(all.counts).toMatchObject({ open: 9, merged: 1, closed: 1 });
+    // Filters narrow the list, not the counts.
+    const needsMe = await read("/api/prs?needsMe=1");
+    expect(needsMe.prs.map((pr: { number: number }) => pr.number)).toEqual([131, 119]);
+    expect(needsMe.counts).toEqual(report.counts);
+    expect((await read("/api/prs?state=waiting")).prs.map((pr: { number: number }) => pr.number).sort()).toEqual([125, 134]);
+    expect((await read("/api/prs?repo=tide-tables")).prs.map((pr: { number: number }) => pr.number)).toEqual([73, 64]);
+    expect((await read("/api/prs?repo=EXAMPLE/paper-crane&all=1")).prs.map((pr: { number: number }) => pr.number)).toEqual([102, 97, 88]);
+    expect((await read("/api/prs?all=0&needsMe=yes")).prs).toHaveLength(9);
+    for (const state of ["open", "", "Merged"]) await expectReply(call("GET", `/api/prs?state=${state}`), 400, { error: `unknown PR state "${state}"` });
+
+    // The rows follow the fleet: a stopped agent's status, a removed agent's PRs gone.
+    await call("POST", "/api/agents/tide-pilot/stop", {});
+    await until(async () => (await read("/api/prs")).prs.find((pr: { number: number }) => pr.number === 73)?.agentStatus === "exited");
+    await call("DELETE", "/api/agents/drift-net");
+    await until(async () => !(await read("/api/prs")).prs.some((pr: { agent: string }) => pr.agent === "drift-net"));
+  });
+
   test("request log: every authorised non-GET with its parsed body, nothing for GETs or unauthorised calls", async () => {
     await call("GET", "/api/agents");
     await call("POST", "/api/agents/keeper-log/resume", {}, {}, null);

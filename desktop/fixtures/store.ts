@@ -4,6 +4,7 @@
 import type { TranscriptEntry } from "../src/types";
 import { buildRows, buildTranscript, seedQueue, type FixtureRow } from "./data";
 import { runningSummary, seedPermissions, seedPrompt, seedSubagents, type PanePrompt, type PermissionRecord, type Subagent, type Workspace } from "./extras";
+import { seedPrs, type AgentPrs } from "./prs";
 import { historyFor, removedHistories, type History } from "./usage";
 
 export interface Message {
@@ -33,6 +34,8 @@ export interface FixtureState {
   histories: Map<FixtureRow, History>;
   // Usage ledger entries of agents no longer in the fleet.
   removed: History[];
+  // Tracked pull requests, by owning agent.
+  prs: Map<FixtureRow, AgentPrs>;
   uploads: number;
 }
 
@@ -61,6 +64,7 @@ export function createState(rows: FixtureRow[], now = Date.now()): FixtureState 
     workspaces: new Map(),
     histories: new Map(rows.filter((row) => !row.host).map((row) => [row, historyFor(row, now)])),
     removed: removedHistories(),
+    prs: seedPrs(rows, now),
     uploads: 0,
   };
   for (const row of rows) {

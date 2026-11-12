@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 export const desktopDir = join(root, "desktop");
 export const distDir = join(desktopDir, "dist");
-const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "favicon.svg"];
+const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "prs.js", "favicon.svg"];
 
 async function mustExist(path: string): Promise<void> {
   const info = await stat(path).catch(() => null);
