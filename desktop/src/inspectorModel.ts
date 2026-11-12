@@ -19,7 +19,6 @@ export const clampInspectorWidth = (width: number, windowWidth: number): number 
 // Narrowest the transcript may get with the inspector docked beside it; any
 // narrower and the inspector only opens as an overlay.
 export const TRANSCRIPT_MIN = 480;
-// The sidebar's and the inspector's dividers.
 const DIVIDERS = 10;
 export function inspectorDocks(options: { windowWidth: number; sidebarWidth: number; inspectorWidth: number }): boolean {
   const width = clampInspectorWidth(options.inspectorWidth, options.windowWidth);

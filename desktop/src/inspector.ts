@@ -41,7 +41,6 @@ export function registerInspectorSection(section: InspectorSection): void {
 export const inspectorPrefs = parseInspectorPrefs(loadInspectorPrefsRaw());
 export const saveInspectorPrefs = (): void => saveInspectorPrefsRaw(serializeInspectorPrefs(inspectorPrefs));
 
-// The main views the inspector sits beside.
 const HOST_VIEWS = new Set(["chat", "subagent"]);
 // Open as an overlay because the window is too narrow to dock it; not saved.
 let overlayOpen = false;
@@ -83,7 +82,6 @@ function applyWidth(): void {
   document.documentElement.style.setProperty("--am-inspector-width", `${width}px`);
 }
 
-// Shows, docks or hides the panel for the current view and window size.
 export function applyLayout(): void {
   if (!panel) return;
   // The overlay is for this view at this width only.
@@ -139,7 +137,6 @@ export function renderInspector(): void {
   if (focused) body.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
-// The header button that toggles the panel; the chat header and the subagent header each have one.
 export function inspectorToggle(): HTMLButtonElement {
   const button = h("button", "am-icon-button am-inspector-toggle");
   button.type = "button";

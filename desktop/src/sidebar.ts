@@ -103,7 +103,6 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   return node;
 }
 
-// How many built-in subagents the row has running, when it has any.
 function subagentCount(row: AgentItem["row"]): HTMLElement | null {
   const count = runningOf(row).length || (row.subagents?.active ?? 0);
   if (count <= 0) return null;

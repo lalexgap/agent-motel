@@ -127,7 +127,6 @@ export function nestSubagents(items: readonly TreeItem[]): TreeItem[] {
   return out;
 }
 
-// What a tree item stands for, for keeping the cursor on it when it moves groups.
 export const itemKey = (item: TreeItem): string | null => (item.kind === "group" ? null : item.key);
 
 // A subagent's status from the best source at hand: its record, the parent's
@@ -146,7 +145,6 @@ export function resolveState(options: {
   return options.hint ?? null;
 }
 
-// Keep polling a subagent's transcript while it may still change.
 export const shouldPoll = (state: SubagentState | null): boolean => state === "running" || state === null;
 
 export const NOT_AVAILABLE = "Output is not available yet. Running Codex subagents may publish their transcript only when they finish.";

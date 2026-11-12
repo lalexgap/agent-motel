@@ -92,7 +92,6 @@ export function openSubagent(agentKey: string, subagentId: string, label?: strin
   void load();
 }
 
-// Back to the parent's chat, scrolled where it was.
 export function closeSubagent(focus: "transcript" | "composer" = "transcript"): void {
   const parent = open?.agentKey ?? state.selected;
   if (!parent) return;
