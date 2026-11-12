@@ -23,12 +23,25 @@ export interface TrackedPullRequest {
   mergeCommit?: string;
   headSha?: string;
   mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  title?: string;
+  draft?: boolean;
+  baseRefName?: string;
+  headRefName?: string;
+  reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED";
+  mergeStateStatus?: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
+  checks?: PrChecks;
+  // When the checks verdict last changed for this head.
+  checksSince?: string;
+  // When a sweep first saw the current head replace another.
+  headSince?: string;
+  conflictSince?: string;
   conflictActive?: boolean;
   conflictNotifiedHead?: string;
   readyNotifiedHead?: string;
   readyNotifiedAt?: string;
   updatedAt: string;
 }
+export interface PrChecks { total: number; pending: number; failing: string[] }
 interface PrEvent { id: string; message: string; url?: string; title?: string }
 export interface PrMonitorState {
   pullRequests: TrackedPullRequest[];
@@ -38,7 +51,9 @@ export interface PrMonitorState {
   pending?: PrEvent[];
 }
 const exec = promisify(execFile);
-const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt,headRepository,headRefOid,mergeable";
+const FIELDS = "number,state,url,mergedAt,mergeCommit,updatedAt,closedAt,headRepository,headRefOid,mergeable,title,isDraft,baseRefName,headRefName,reviewDecision,mergeStateStatus,statusCheckRollup";
+// Present on every lookup that asked for FIELDS; absent keys then mean "cleared on GitHub".
+const DETAIL_KEYS = ["title", "draft", "baseRefName", "headRefName", "reviewDecision", "mergeStateStatus", "checks"] as const;
 export type PrCommand = (cwd: string, executable: string, args: string[]) => Promise<string>;
 const command: PrCommand = async (cwd, executable, args) => (await exec(executable, args, {
   cwd, timeout: 15_000, maxBuffer: 1024 * 1024,
@@ -50,6 +65,44 @@ export function parsePrUrl(url: string): { repository: string; number: number } 
   if (!match) throw new Error("Expected a GitHub pull request URL");
   return { repository: match[1]!, number: Number(match[2]) };
 }
+function clip(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+  return text ? text.slice(0, max) : undefined;
+}
+
+const PASSED = ["SUCCESS", "NEUTRAL", "SKIPPED"];
+export function summarizeChecks(rollup: unknown): PrChecks | undefined {
+  if (!Array.isArray(rollup)) return undefined;
+  const failing = new Set<string>();
+  let pending = 0;
+  for (const check of rollup) {
+    const run = check?.__typename !== "StatusContext";
+    const done = run ? check?.status === "COMPLETED" : !["PENDING", "EXPECTED"].includes(check?.state);
+    if (!done) pending++;
+    else if (!PASSED.includes(run ? check?.conclusion : check?.state)) failing.add(clip(run ? check?.name : check?.context, 80) ?? "check");
+  }
+  return { total: rollup.length, pending, failing: [...failing].slice(0, 8) };
+}
+
+export function checksVerdict(checks: PrChecks | undefined): "failing" | "pending" | "passing" | "none" {
+  if (!checks || checks.total === 0) return "none";
+  return checks.failing.length ? "failing" : checks.pending ? "pending" : "passing";
+}
+
+// GitHub detail is display evidence, never a gate: malformed values are dropped, not thrown.
+function parseDetail(value: any): Partial<TrackedPullRequest> {
+  const review = ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"].includes(value.reviewDecision) ? value.reviewDecision : undefined;
+  const mergeState = ["BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"].includes(value.mergeStateStatus) ? value.mergeStateStatus : undefined;
+  const detail: Partial<TrackedPullRequest> = {
+    title: clip(value.title, 200), baseRefName: clip(value.baseRefName, 200), headRefName: clip(value.headRefName, 200),
+    draft: typeof value.isDraft === "boolean" ? value.isDraft : undefined,
+    reviewDecision: review, mergeStateStatus: mergeState, checks: summarizeChecks(value.statusCheckRollup),
+  };
+  for (const key of Object.keys(detail) as (keyof TrackedPullRequest)[]) if (detail[key] === undefined) delete detail[key];
+  return detail;
+}
+
 export function parsePullRequest(repository: string, value: any): TrackedPullRequest {
   if (!value || !Number.isSafeInteger(value.number) || value.number < 1 ||
       !["OPEN", "CLOSED", "MERGED"].includes(value.state) || !Number.isFinite(Date.parse(value.updatedAt))) {
@@ -70,6 +123,7 @@ export function parsePullRequest(repository: string, value: any): TrackedPullReq
     throw new Error("Merged PR is missing merge evidence");
   }
   return { repository, number: value.number, url, state: value.state, updatedAt: value.updatedAt,
+    ...parseDetail(value),
     ...(headSha ? { headSha } : {}), ...(mergeable ? { mergeable } : {}),
     ...(Number.isFinite(Date.parse(value.closedAt)) ? { closedAt: value.closedAt } : {}),
     ...(value.state === "MERGED" ? { mergedAt: value.mergedAt, mergeCommit: sha } : {}) };
@@ -138,10 +192,18 @@ export function recordPrObservations(agent: AgentState, prs: TrackedPullRequest[
         if (!pending.some(event => event.id === id)) pending.push({ id, message: prEventMessage(pr), url: pr.url });
       }
       const next: TrackedPullRequest = { ...previous, ...pr };
-      if (pr.state === "OPEN" && pr.mergeable === "MERGEABLE") next.conflictActive = false;
+      if (pr.baseRefName !== undefined) {
+        for (const key of DETAIL_KEYS) if (pr[key] === undefined) delete next[key];
+        const moved = !previous || previous.headSha !== pr.headSha || checksVerdict(previous.checks) !== checksVerdict(pr.checks);
+        next.checksSince = moved || !previous?.checksSince ? now : previous.checksSince;
+      }
+      if (previous?.headSha && pr.headSha && previous.headSha !== pr.headSha) next.headSince = now;
+      if (pr.state === "OPEN" && pr.mergeable === "MERGEABLE") { next.conflictActive = false; delete next.conflictSince; }
+      if (pr.state !== "OPEN") delete next.conflictSince;
       if (pr.state === "OPEN" && pr.mergeable === "CONFLICTING" && pr.headSha) {
         const newEpisode = previous?.conflictActive !== true || previous.conflictNotifiedHead !== pr.headSha;
         next.conflictActive = true;
+        if (previous?.conflictActive !== true || !previous.conflictSince) next.conflictSince = now;
         if (newEpisode) {
           const event = conflictEvent(pr);
           pending.push(event);

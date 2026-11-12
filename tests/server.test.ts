@@ -224,6 +224,29 @@ describe("agents api", () => {
     expect(data.attention[0]).toMatchObject({ name: "alpha", status: "dead" });
   });
 
+  test("GET /api/prs lists tracked PRs by who has to act, from stored state alone", async () => {
+    const now = new Date().toISOString();
+    const tracked = (number: number, extra: object = {}) => ({
+      repository: "owner/repo", number, url: `https://github.com/owner/repo/pull/${number}`, state: "OPEN" as const, updatedAt: now,
+      title: `Change ${number}`, baseRefName: "main", headRefName: `am/${number}`, mergeable: "MERGEABLE" as const, ...extra,
+    });
+    writeAgent({ name: "gone", status: "exited", dir: "/tmp", tmuxSession: "agentmgr-gone", createdAt: now, updatedAt: now, prMonitor: { pullRequests: [
+      tracked(1, { checks: { total: 1, pending: 0, failing: ["rspec"] } }),
+      tracked(2, { state: "MERGED", mergedAt: now, mergeCommit: "a".repeat(40) }),
+    ] } });
+    expect((await fetch(url("/api/prs"))).status).toBe(401);
+    expect((await fetch(url("/api/prs?state=nope"), auth())).status).toBe(400);
+    const data = (await (await fetch(url("/api/prs"), auth())).json()) as any;
+    expect(data.prs.map((pr: any) => [pr.key, pr.state, pr.agent, pr.needsMe])).toEqual([
+      ["owner/repo#1", "ci-failing", "gone", true], ["owner/repo#2", "merged", "gone", false],
+    ]);
+    expect(data.prs[0]).toMatchObject({ title: "Change 1", reason: "CI failing: rspec · agent not running", agentStatus: "exited" });
+    expect(data.counts).toMatchObject({ open: 1, needsMe: 1, merged: 1 });
+    const merged = (await (await fetch(url("/api/prs?state=merged&repo=repo"), auth())).json()) as any;
+    expect(merged.prs.map((pr: any) => pr.number)).toEqual([2]);
+    expect(((await (await fetch(url("/api/summary"), auth())).json()) as any).prs.needsMe[0]).toMatchObject({ key: "owner/repo#1", agent: "gone" });
+  });
+
   test("GET /api/agents/:name returns detail + queue", async () => {
     const now = new Date().toISOString();
     writeAgent({ name: "beta", role: "reviewer", status: "idle", dir: "/tmp", tmuxSession: "agentmgr-beta", createdAt: now, updatedAt: now });

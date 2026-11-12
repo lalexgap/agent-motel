@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { notifyPrEvent, trackPullRequests } from "./prMonitor";
 import { declarePullRequestReady } from "./prReadiness";
+import { prsCommand } from "./commands/prs";
 import { answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { withAuditContext } from "./audit";
 import { parseArgs, selectedProvider, type ParsedArgs } from "./args";
@@ -129,6 +130,12 @@ usage:
   am pr <agent> [URL ...]     list or register PRs for lifecycle monitoring
   am pr <agent> <URL> --ready [--dir review-worktree]
                               announce verified readiness after shepherding
+  am prs [--json] [--needs-me] [--state s] [--repo r] [--all] [--local-only]
+                              every PR agents own, with its status in agent
+                              terms (needs-decision, merge-ready, conflict,
+                              ci-failing, shepherding, waiting, merged,
+                              closed), who has to act first; --all keeps old
+                              merged and closed ones
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
   am notifications [--json] [--limit n]
@@ -673,6 +680,12 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(readAgent(agent.name)?.prMonitor ?? { pullRequests: [] }, null, 2));
       break;
     }
+    case "prs":
+      prsCommand({
+        json: !!args.flags.json, localOnly: !!args.flags["local-only"], all: !!args.flags.all, needsMe: !!args.flags["needs-me"],
+        repo: args.flags.repo as string | undefined, state: args.flags.state as string | undefined,
+      });
+      break;
     case "summary":
       summaryCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
       break;

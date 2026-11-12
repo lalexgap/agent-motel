@@ -31,6 +31,38 @@ Transition IDs are durably persisted before inbox insertion, including when reco
 
 On macOS, clickable PR notifications require terminal-notifier 3 or newer and notification permission for terminal-notifier. If it is unavailable, denied, or exits unsuccessfully, Agent Motel falls back to the existing iTerm or AppleScript notification path; those fallback banners do not provide the PR click action. A custom `notifyCommand` receives the validated URL in `AM_URL`. Notification permission is currently denied in the development environment, so the clickable banner has not been verified there.
 
+## PR status in agent terms
+
+`am prs` lists every tracked PR across the fleet with the state that says who acts next, and one line of reason:
+
+```sh
+am prs                      # open PRs, plus ones merged or closed in the last 72 hours
+am prs --needs-me           # only what is waiting on you
+am prs --state conflict --repo producthunt
+am prs --all --json         # everything tracked, as the web and macOS clients read it
+```
+
+| State | Meaning |
+| --- | --- |
+| `needs-decision` | An open decision in the decisions store is tagged with this PR. |
+| `merge-ready` | GitHub is green and a shepherd verdict or `am pr --ready` covers the current head. |
+| `conflict` | GitHub reports merge conflicts with the base branch. |
+| `ci-failing` | A completed check failed; the reason names the checks. |
+| `shepherding` | A shepherd subagent is running for it, or is between wake-ups. |
+| `waiting` | Nothing above: CI still running, changes requested, behind its base, or no review verdict yet. |
+| `merged`, `closed` | Finished; shown for 72 hours. |
+
+Rows marked `!` need you: a PR with an open decision, or an open PR whose agent is exited or dead. They sort first, then merge-ready, then work in progress. `am summary` names the same PRs under “PRs needing you” and “PRs merge-ready”, and `GET /api/prs` (`?all=1`, `?needsMe=1`, `?state=`, `?repo=`) returns the same report from stored state; it never waits on GitHub.
+
+The same sweep that watches lifecycle now also stores each PR's title, draft flag, base and head branches, review decision and a check summary, so there is still one lookup per unmerged PR per sweep. `gh` reads PRs through GraphQL, which has no conditional requests, so there are no ETags to send. Status is derived on the host that owns the agent, because it reads that host's subagent ledger and decisions store, and travels in `am ls --json`; a host on an older Agent Motel shows the states its rows allow. Clients refresh on the existing fleet event stream, which fires whenever a sweep changes an agent's stored PR state.
+
+How the inputs are read:
+
+- **Shepherd.** A subagent of type `shepherd`, or whose description mentions a shepherd, belongs to the PR number in its description (`Shepherd PR 123`); one that names no PR is attributed only when its agent has a single open PR. A shepherd that stopped without a verdict counts as `shepherding` for 30 minutes, or for as long as a reviewer for that PR is still running. Its last message is read for a verdict: “merge-ready” counts, unless the message also says not ready, blocked or no verdict. A verdict given more than five minutes before the sweep first saw the current head is ignored.
+- **Readiness.** Derived from GitHub and the shepherd verdict, not from `am pr --ready` alone, because that command can withhold a mark it should give. The mark is shown as evidence: a merge-ready row without it says so, a mark for an older head is reported as stale, and a marked PR whose state has since changed says the two disagree.
+- **Decisions.** Read from `~/.local/state/agent-decisions/<agent>.json` (`DECISIONS_HOME` overrides), the decisions skill's store. Agent Motel never writes it. An open decision applies to the PRs in its `prs` list, else to a PR `link`; an untagged one applies only when its agent has a single open PR.
+- **Stacks.** A PR whose base branch is another tracked open PR's head branch in the same repository is its child; rows carry their position and the chain length.
+
 ## Alternatives and future events
 
 Polling needs no public endpoint or repository webhook installation. Its latency is the interval plus sweep/request time, and its cost scales with active branches and unmerged registered PRs. GitHub CLI exposes [state and merge evidence](https://cli.github.com/manual/gh_pr_view).
@@ -39,4 +71,4 @@ Webhooks could reduce latency, but the current server has no GitHub webhook rece
 
 The [notifications API](https://docs.github.com/en/rest/activity/notifications) is tied to an authenticated user's subscribed/participating threads. It is not a complete lifecycle feed for an explicit set of agent-owned PRs. An operator-side `gh` wrapper can catch CLI merges but misses browser merges; a local Git hook does not observe GitHub's merge button.
 
-Review-comment notifications and general failing/green-check alerts remain deferred. Readiness uses an explicit finished-shepherd declaration instead of inferring completion from CI, while conflict alerts use head-aware episode deduplication so repeated polls do not continually wake agents.
+Review-comment notifications and general failing/green-check alerts remain deferred; `am prs` shows those states without alerting on them. Readiness uses an explicit finished-shepherd declaration instead of inferring completion from CI, while conflict alerts use head-aware episode deduplication so repeated polls do not continually wake agents.

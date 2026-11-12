@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
-import { flushPrEvents, parsePrUrl, parsePullRequest, pollPullRequests, recordPrObservations, trackPullRequests, type PrCommand, type TrackedPullRequest } from "../src/prMonitor";
+import { checksVerdict, flushPrEvents, parsePrUrl, parsePullRequest, pollPullRequests, recordPrObservations, summarizeChecks, trackPullRequests, type PrCommand, type TrackedPullRequest } from "../src/prMonitor";
+import { agentRows } from "../src/commands/ls";
+import { recordSubagentStart, recordSubagentStop } from "../src/subagents";
 import { queueAppendOnceLocked, queueDepth, queueList, queuePop, queueReceived, queueRecordReceipt } from "../src/queue";
 import { acquireMailboxLock, releaseMailboxLock } from "../src/mailbox";
 import { acquireLifecycleLock, releaseLifecycleLock } from "../src/lifecycle";
@@ -448,4 +450,87 @@ test("CLI entrypoint parses with the shebang first", () => {
   expect(result.stdout.toString()).toContain("Agent Motel (am)");
   expect(result.stdout.toString()).toContain("--ready [--dir review-worktree]");
   expect(result.stderr.toString()).toBe("");
+});
+
+test("GitHub detail is parsed for display and never rejects a lookup", () => {
+  const raw = { ...api(pr()), title: " Add\tthe\nthing ", isDraft: true, baseRefName: "main", headRefName: "am/thing", headRefOid: headA,
+    reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE", statusCheckRollup: [
+      { __typename: "CheckRun", name: "rspec", status: "COMPLETED", conclusion: "FAILURE" },
+      { __typename: "CheckRun", name: "rspec", status: "COMPLETED", conclusion: "FAILURE" },
+      { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+      { __typename: "CheckRun", name: "docs", status: "COMPLETED", conclusion: "SKIPPED" },
+      { __typename: "CheckRun", name: "build", status: "IN_PROGRESS", conclusion: "" },
+      { __typename: "StatusContext", context: "ci/circleci: deploy", state: "ERROR" },
+      { __typename: "StatusContext", context: "ci/circleci: e2e", state: "PENDING" },
+      { __typename: "StatusContext", context: "cla", state: "SUCCESS" },
+    ] };
+  expect(parsePullRequest("owner/repo", raw)).toMatchObject({
+    title: "Add the thing", draft: true, baseRefName: "main", headRefName: "am/thing", reviewDecision: "CHANGES_REQUESTED",
+    mergeStateStatus: "BLOCKED", checks: { total: 8, pending: 2, failing: ["rspec", "ci/circleci: deploy"] },
+  });
+  const odd = parsePullRequest("owner/repo", { ...api(pr()), title: 7, isDraft: "no", reviewDecision: "", mergeStateStatus: "WAT", statusCheckRollup: "nope" });
+  expect(odd).toEqual(pr());
+  expect(summarizeChecks([])).toEqual({ total: 0, pending: 0, failing: [] });
+  expect([undefined, summarizeChecks([]), summarizeChecks([{ __typename: "CheckRun", status: "QUEUED" }]),
+    summarizeChecks([{ __typename: "StatusContext", state: "SUCCESS" }]), summarizeChecks([{ __typename: "CheckRun", status: "COMPLETED", conclusion: "CANCELLED" }])]
+    .map(checksVerdict)).toEqual(["none", "none", "pending", "passing", "failing"]);
+});
+
+test("detail follows GitHub, with times for when conflicts, checks and the head changed", () => {
+  const owner = agent();
+  const stored = () => readAgent(owner.name)!.prMonitor!.pullRequests[0]!;
+  const seen = (day: number, extra: Partial<TrackedPullRequest>) => recordPrObservations(readAgent(owner.name)!, [{ ...pr("OPEN", 1, day), baseRefName: "main", headSha: headA, ...extra }], `2026-02-0${day}T00:00:00Z`);
+  const failing = { total: 1, pending: 0, failing: ["rspec"] }, passing = { total: 1, pending: 0, failing: [] };
+
+  seen(1, { title: "First", reviewDecision: "CHANGES_REQUESTED", checks: failing, mergeable: "CONFLICTING" });
+  expect(stored()).toMatchObject({ title: "First", reviewDecision: "CHANGES_REQUESTED", checksSince: "2026-02-01T00:00:00Z", conflictSince: "2026-02-01T00:00:00Z" });
+  expect(stored().headSince).toBeUndefined();
+
+  seen(2, { title: "First", checks: failing, mergeable: "CONFLICTING" });
+  expect(stored().reviewDecision).toBeUndefined();
+  expect(stored()).toMatchObject({ checksSince: "2026-02-01T00:00:00Z", conflictSince: "2026-02-01T00:00:00Z" });
+
+  seen(3, { checks: passing, mergeable: "UNKNOWN" });
+  expect(stored()).toMatchObject({ checksSince: "2026-02-03T00:00:00Z", conflictSince: "2026-02-01T00:00:00Z", conflictActive: true });
+  expect(stored().title).toBeUndefined();
+
+  seen(4, { checks: passing, mergeable: "MERGEABLE", headSha: headB });
+  expect(stored()).toMatchObject({ checksSince: "2026-02-04T00:00:00Z", headSince: "2026-02-04T00:00:00Z", conflictActive: false });
+  expect(stored().conflictSince).toBeUndefined();
+
+  // A lookup without detail (am pr --ready's snapshot) leaves the stored detail alone.
+  recordPrObservations(readAgent(owner.name)!, [{ ...pr("OPEN", 1, 5), headSha: headB, mergeable: "MERGEABLE" }], "2026-02-05T00:00:00Z");
+  expect(stored()).toMatchObject({ checks: passing, baseRefName: "main", checksSince: "2026-02-04T00:00:00Z" });
+});
+
+test("agent rows carry each tracked PR's status, read from this host's ledger and decisions store", () => {
+  const owner = agent("driver", "idle");
+  const decisions = fs.mkdtempSync(join(tmpdir(), "am-pr-decisions-"));
+  process.env.DECISIONS_HOME = decisions;
+  try {
+    const at = new Date().toISOString();
+    recordPrObservations(owner, [
+      { ...pr("OPEN", 1), updatedAt: at, baseRefName: "main", headRefName: "a", headSha: headA, mergeable: "MERGEABLE", checks: { total: 1, pending: 0, failing: [] } },
+      { ...pr("OPEN", 2), updatedAt: at, baseRefName: "a", headRefName: "b", headSha: headB, mergeable: "MERGEABLE" },
+      { ...pr("MERGED", 3), mergedAt: "2020-01-01T00:00:00Z" },
+    ]);
+    recordSubagentStart(owner.name, { id: "s1", type: "shepherd", description: "Shepherd PR 1" });
+    recordSubagentStop(owner.name, { id: "s1", message: "PR #1 is **merge-ready**." });
+    fs.writeFileSync(join(decisions, "driver.json"), JSON.stringify({ version: 1, decisions: [
+      { id: "d-1", status: "open", question: "Split it?", blocking: true, prs: ["https://github.com/owner/repo/pull/2"] },
+    ] }));
+    const mine = agentRows().find(row => row.name === owner.name)!;
+    // No tmux session in tests, so the agent reads as dead: its open PRs are orphaned.
+    expect(mine.prStatus?.map(item => [item.number, item.state, item.reason])).toEqual([
+      [1, "merge-ready", "merge-ready: CI green, shepherd verdict · agent not running"],
+      [2, "needs-decision", "needs decision: Split it? · agent not running"],
+    ]);
+    expect(mine.prStatus![1]).toMatchObject({ needsMe: true, orphaned: true, decision: { id: "d-1", question: "Split it?", blocking: true } });
+
+    writeAgent({ ...readAgent(owner.name)!, name: "done", tmuxSession: "agentmgr-done", prMonitor: { pullRequests: [{ ...pr("MERGED", 3), mergedAt: "2020-01-01T00:00:00Z" }] } });
+    expect(agentRows().find(row => row.name === "done")).not.toHaveProperty("prStatus");
+  } finally {
+    delete process.env.DECISIONS_HOME;
+    rmSync(decisions, { recursive: true, force: true });
+  }
 });

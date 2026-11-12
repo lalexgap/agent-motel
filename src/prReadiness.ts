@@ -122,8 +122,9 @@ function markReady(agent: AgentState, pr: ReadyPullRequest, at: string): "notifi
     }
     const alreadyNotified = existing?.readyNotifiedHead === pr.headSha;
     if (alreadyNotified) result = "already-notified";
-    const next = { ...existing, ...pr, conflictActive: false, readyNotifiedHead: pr.headSha,
+    const next: TrackedPullRequest = { ...existing, ...pr, conflictActive: false, readyNotifiedHead: pr.headSha,
       readyNotifiedAt: alreadyNotified ? existing?.readyNotifiedAt : at };
+    delete next.conflictSince;
     current.prMonitor = {
       ...monitor,
       pullRequests: [...monitor.pullRequests.filter(item => item.url !== pr.url), next],

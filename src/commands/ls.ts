@@ -7,7 +7,9 @@ import { planFile } from "../paths";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { roleForAgent } from "../roles";
-import { describeRunning, reconcileOpenSubagents, subagentSummary, type SubagentSummary } from "../subagents";
+import { describeRunning, readSubagents, reconcileOpenSubagents, subagentSummary, type SubagentSummary } from "../subagents";
+import { derivePrStatuses, hasRecentPullRequests, type PrStatus } from "../prStatus";
+import { readOpenDecisions } from "../decisions";
 import { reconcileAntigravityAgent } from "../antigravity";
 import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
 
@@ -270,6 +272,8 @@ export interface AgentRow {
   // The agent's running plan file (am plan), when it has one. JSON only.
   planFile?: string;
   prMonitor?: AgentState["prMonitor"];
+  // Open and recently finished PRs with their status in agent terms (prStatus.ts).
+  prStatus?: PrStatus[];
 }
 
 export interface DiffSummary {
@@ -370,8 +374,14 @@ export function agentRows(): AgentRow[] {
       reconcileOpenSubagents(a);
       return describeRunning(a, subagentSummary(a.name));
     });
+    const now = new Date();
+    const prStatus = hasRecentPullRequests(a.prMonitor?.pullRequests, now) ? derivePrStatuses({
+      prs: a.prMonitor!.pullRequests, alive: status !== "exited" && status !== "dead",
+      subagents: readSubagents(a.name), decisions: readOpenDecisions(a.name), now,
+    }) : undefined;
     return {
       ...visible,
+      ...(prStatus?.length ? { prStatus } : {}),
       status,
       statusReason: displayStatusReason(a, status),
       provider: agentProvider(a),
