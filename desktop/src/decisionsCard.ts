@@ -1,4 +1,5 @@
 import { apiGet } from "./api";
+import { call } from "./bridge";
 import { registerCard } from "./chat";
 import type { InboxDecision } from "./decisionsInbox";
 import { showDecisionsForAgent } from "./decisionsView";
@@ -10,7 +11,10 @@ import { onMainViewChange } from "./views";
 declare global {
   interface Window {
     agentDecisions: {
-      renderDecisionCard(decisions: InboxDecision[], options: { agent: string; showAnswer: boolean }): HTMLElement | null;
+      renderDecisionCard(decisions: InboxDecision[], options: {
+        agent: string;
+        onAnswer?: (decision: InboxDecision, agent: string) => Promise<void>;
+      }): HTMLElement | null;
     };
   }
 }
@@ -22,6 +26,7 @@ let fetchedAt = 0;
 let loading = false;
 let entries: InboxDecision[] = [];
 let error = "";
+let actionError = "";
 let node: HTMLElement | null = null;
 let content = "";
 
@@ -32,7 +37,7 @@ function card(key: string): HTMLElement | null {
     selected = key;
     sequence++;
     entries = [];
-    error = signature = content = "";
+    error = actionError = signature = content = "";
     node = null;
     fetchedAt = 0;
     loading = false;
@@ -42,7 +47,7 @@ function card(key: string): HTMLElement | null {
       sequence++;
       loading = false;
       entries = [];
-      signature = content = "";
+      actionError = signature = content = "";
       fetchedAt = 0;
       node = null;
     }
@@ -71,15 +76,33 @@ function card(key: string): HTMLElement | null {
         }
       });
   }
-  const nextContent = JSON.stringify([key, entries, error, !entries.length && loading]);
+  const nextContent = JSON.stringify([key, entries, error, actionError, !entries.length && loading]);
   if (content === nextContent) return node;
   content = nextContent;
   node = h("section", "am-agent-decisions-card");
   node.setAttribute("aria-label", "Agent decisions");
-  const rendered = window.agentDecisions.renderDecisionCard(entries, { agent: row.name, showAnswer: false });
+  const rendered = window.agentDecisions.renderDecisionCard(entries, {
+    agent: row.name,
+    onAnswer: async (decision) => {
+      try {
+        await call("decisions.open", { connection: parsed.connection, agent: row.name, decisionId: decision.id });
+        if (selected === key && state.selected === key && actionError) {
+          actionError = "";
+          changed("agent");
+        }
+      } catch (cause) {
+        if (selected === key && state.selected === key) {
+          actionError = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+          changed("agent");
+        }
+        throw cause;
+      }
+    },
+  });
   if (rendered) node.append(rendered);
   else if (loading) node.append(h("p", "", "Loading open decisions…"));
   if (error) node.append(h("p", "decisions-note", error));
+  if (actionError) node.append(h("p", "decisions-note decisions-error", actionError));
   const open = h("button", "", "View in Decisions");
   open.type = "button";
   open.onclick = () => showDecisionsForAgent(parsed.connection, row.name);

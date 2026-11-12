@@ -1,7 +1,7 @@
 import Foundation
 
 /// One of the app's non-GET requests. The initialiser is private to this file, so every instance
-/// comes from `MessagePolicy` or `ActionPolicy`, which validate the values and build the path and
+/// comes from `MessagePolicy`, `DecisionsPolicy` or `ActionPolicy`, which validate the values and build the path and
 /// body themselves. Nothing else in the app can describe a write.
 struct WriteRequest: Equatable {
     enum Method: String {
@@ -28,6 +28,48 @@ struct WriteRequest: Equatable {
     fileprivate static func json(_ url: URL, _ body: [String: Any], timeout: TimeInterval) throws -> WriteRequest {
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
         return WriteRequest(method: .post, url: url, body: data, contentType: "application/json", timeout: timeout)
+    }
+}
+
+/// The one decisions-page write. Its response contains a secret capability URL, so the bridge
+/// validates and opens it natively instead of returning it to the page.
+enum DecisionsPolicy {
+    static let timeout: TimeInterval = 30
+    static let invalidLink = "The server returned an invalid decisions page link"
+    private static let nameCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-".unicodeScalars)
+
+    static func agent(_ value: Any?) throws -> String {
+        guard let name = value as? String, (1...100).contains(name.unicodeScalars.count),
+              name.unicodeScalars.allSatisfy(nameCharacters.contains),
+              let first = name.unicodeScalars.first, let last = name.unicodeScalars.last,
+              first != ".", first != "-", last != ".", last != "-" else {
+            throw PolicyError("invalid decisions agent: \(MessagePolicy.describe(value))")
+        }
+        return name
+    }
+
+    static func decisionID(_ value: Any?) throws -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let id = value as? String, (1...200).contains(id.count), !MessagePolicy.hasControl(id, allowLineBreaks: false) else {
+            throw PolicyError("invalid decision id")
+        }
+        return id
+    }
+
+    static func request(base: String, agent rawAgent: Any?) throws -> WriteRequest {
+        let agent = try agent(rawAgent)
+        let url = try ConnectionPolicy.apiURL(base: base, path: "/api/decisions/link")
+        return try .json(url, ["agent": agent], timeout: timeout)
+    }
+
+    static func pageURL(body: Data, agent: String, decisionID: String?) throws -> URL {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let raw = json["url"] as? String, var parts = URLComponents(string: raw),
+              parts.scheme?.lowercased() == "https", parts.host?.isEmpty == false,
+              parts.user == nil, parts.password == nil else { throw PolicyError(invalidLink) }
+        if let decisionID { parts.fragment = "\(agent)-\(decisionID)" }
+        guard let url = parts.url else { throw PolicyError(invalidLink) }
+        return url
     }
 }
 

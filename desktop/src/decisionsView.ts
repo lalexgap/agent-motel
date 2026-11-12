@@ -1,4 +1,5 @@
 import { apiGet, ApiError } from "./api";
+import { call } from "./bridge";
 import { selectAgent } from "./chat";
 import { DecisionsInbox, type DecisionsReport } from "./decisionsInbox";
 import { $, h } from "./dom";
@@ -13,6 +14,7 @@ interface DecisionsActions {
   setQuery(query: string): void;
   setBlockingOnly(blocking: boolean): void;
   openAgent(name: string): void;
+  onAnswer?(decision: { id: string }, agent: string): Promise<void>;
 }
 declare global {
   interface Window {
@@ -77,6 +79,19 @@ const actions: DecisionsActions = {
     const row = conn?.rows.find((row) => !row.host && row.name === name);
     if (conn && row) selectAgent(agentKey(conn.conn.id, row), false, "chat");
     else { notice = `${name} is no longer in this server's fleet. Its open decisions are still shown here.`; render(); }
+  },
+  async onAnswer(decision, agent) {
+    const connection = inbox.connection;
+    if (!connection) throw new Error("Select a server to answer this decision.");
+    try {
+      await call("decisions.open", { connection, agent, decisionId: decision.id });
+    } catch (cause) {
+      if (inbox.connection === connection) {
+        notice = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+        render();
+      }
+      throw cause;
+    }
   },
 };
 

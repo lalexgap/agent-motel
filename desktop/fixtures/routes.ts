@@ -1,7 +1,7 @@
 // Route handlers of the fixture am server, one group per area. Each mirrors
 // the real route in src/server.ts: the same validation order, statuses, error
 // strings and `reason` values, including the quirks a client has to survive.
-import { checkMessageText } from "../src/policy";
+import { checkDecisionsAgent, checkMessageText } from "../src/policy";
 import type { QueueItem, TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, REPO, worktree, type FixtureRow } from "./data";
 import { catalogsFor, findCatalog, ROLES, seedWorkspace, selectionError, type Workspace } from "./extras";
@@ -938,6 +938,11 @@ export function buildRoutes(fx: Fx): {
       return json({ decisions: decisionsInboxFixture().groups.find((group) => group.agent === row.name)?.decisions ?? [] });
     } },
     { method: "GET", path: "/api/decisions", handler: () => json(decisionsInboxFixture()) },
+    { method: "POST", path: "/api/decisions/link", handler: ({ body }) => {
+      const agent = isObject(body) ? checkDecisionsAgent(body.agent) : { ok: false as const, error: "JSON object required" };
+      if (!agent.ok) return json({ error: agent.error, reason: "invalid_agent" }, 400);
+      return json({ url: `https://drop.example.test/q/FIXTURE-CAPABILITY?agent=${encodeURIComponent(agent.value)}` });
+    } },
     {
       // Like the real route: an unknown state is a 400; all/needsMe only when "1"; repo matches owner/name or name.
       method: "GET", path: "/api/prs", handler: (ctx) => {

@@ -14,6 +14,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     let store: ConnectionStore
     let confirmation: Confirmation
     private let api = APIClient()
+    /// Replaced only by the smoke app so a synthetic capability is captured without launching a browser.
+    var decisionsOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     private(set) var streams: [String: EventStream] = [:]
     private(set) lazy var terminals = TerminalManager(store: store, confirmation: confirmation) { [weak self] name, payload, delivered in
         guard let self else { return }
@@ -74,6 +76,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             return [String: Any]()
         case "api.get":
             return try await get(params)
+        case "decisions.open":
+            return try await openDecisions(params)
         case "messages.send":
             let connection = try savedConnection(params)
             return try await write(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],
@@ -210,6 +214,32 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         let id = try connectionID(params, "connection")
         guard let connection = store.get(id) else { throw PolicyError("unknown connection: \(id)") }
         return connection
+    }
+
+    private func openDecisions(_ params: [String: Any]) async throws -> [String: Any] {
+        let connection = try savedConnection(params)
+        let agent = try DecisionsPolicy.agent(params["agent"])
+        let decisionID = try DecisionsPolicy.decisionID(params["decisionId"])
+        let request = try DecisionsPolicy.request(base: connection.url, agent: agent)
+        guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
+        let response: APIClient.Response
+        do {
+            response = try await api.send(request, token: token)
+        } catch {
+            // URLSession errors can include response details. This method never surfaces them because its
+            // successful response contains a secret capability URL.
+            throw PolicyError("Could not reach the server to open the decisions page")
+        }
+        guard (200..<300).contains(response.status) else {
+            if response.status == 404 { throw PolicyError("The decisions page is not set up on this server") }
+            throw PolicyError("Could not open the decisions page (HTTP \(response.status))")
+        }
+        let url = try DecisionsPolicy.pageURL(body: response.body, agent: agent, decisionID: decisionID)
+        guard let current = store.get(connection.id), current.url == connection.url else {
+            throw PolicyError("unknown connection: \(connection.id)")
+        }
+        guard decisionsOpener(url) else { throw PolicyError("The default browser could not open the decisions page") }
+        return [:]
     }
 
     /// Sent once; a network failure rejects so the page can say the outcome is unknown.

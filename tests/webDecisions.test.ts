@@ -346,25 +346,26 @@ describe("web/decisions.js", () => {
     const buttons = card.find("decision-answer");
     expect(buttons.map((b) => b.textContent)).toEqual(["Answer on the decisions page", "Answer on the decisions page"]);
     const clicked = buttons[1]!.onclick!();
+    const duplicate = buttons[1]!.onclick!();
     expect(buttons[1]!.disabled).toBe(true);
     expect(calls).toEqual([[second, "api"]]);
     settle();
-    await clicked;
+    await Promise.all([clicked, duplicate]);
     expect(buttons[1]!.disabled).toBe(false);
   });
 
   test("an unavailable page disables the buttons with its explanation", () => {
-    const card = D.renderDecisionCard([decision()], { agent: "api", now: NOW, unavailable: "Not set up here." }) as Node;
+    const card = D.renderDecisionCard([decision()], { agent: "api", now: NOW, unavailable: "Not set up here.", onAnswer() {} }) as Node;
     const button = card.find("decision-answer")[0]!;
     expect([button.disabled, button.title]).toEqual([true, "Not set up here."]);
     expect(card.find("decisions-unavailable")[0]!.textContent).toBe("Not set up here.");
   });
 
-  test("the inbox opt-out removes answer controls without changing the default", () => {
+  test("answer controls only render when the host supplies a callback", () => {
     const readonly = D.renderDecisionCard([decision()], { agent: "api", showAnswer: false }) as Node;
-    const existing = D.renderDecisionCard([decision()], { agent: "api" }) as Node;
+    const defaultCard = D.renderDecisionCard([decision()], { agent: "api" }) as Node;
     expect(readonly.find("decision-answer")).toHaveLength(0);
-    expect(existing.find("decision-answer")).toHaveLength(1);
+    expect(defaultCard.find("decision-answer")).toHaveLength(0);
   });
 
   test("the page loads decisions.js before app.js and the server serves it", () => {

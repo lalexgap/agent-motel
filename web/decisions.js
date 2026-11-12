@@ -39,7 +39,7 @@ window.agentDecisions = (() => {
     return `${n} decision${n === 1 ? "" : "s"} waiting on you`;
   }
 
-  // opts: { agent, now, unavailable, showAnswer, onAnswer(decision, agent) }. onAnswer may return a
+  // opts: { agent, now, unavailable, onAnswer(decision, agent) }. onAnswer may return a
   // promise (no payload) to keep the button busy until it settles.
   function decisionItem(decision, opts) {
     const item = el("li", "decision-item" + (decision.blocking ? " blocking" : ""));
@@ -82,15 +82,17 @@ window.agentDecisions = (() => {
     } else if (decision.link) {
       footer.append(el("span", "decision-link-text", decision.link));
     }
-    if (opts.showAnswer !== false) {
+    if (typeof opts.onAnswer === "function") {
       const button = el("button", "decision-answer", "Answer on the decisions page");
       button.type = "button";
       if (opts.unavailable) {
         button.disabled = true;
         button.title = opts.unavailable;
       }
+      let busy = false;
       button.onclick = async () => {
-        if (!opts.onAnswer) return;
+        if (busy) return;
+        busy = true;
         button.disabled = true;
         button.setAttribute("aria-busy", "true");
         try {
@@ -98,6 +100,7 @@ window.agentDecisions = (() => {
         } catch {
           // the host reports its own failures
         } finally {
+          busy = false;
           button.removeAttribute("aria-busy");
           button.disabled = !!opts.unavailable;
         }

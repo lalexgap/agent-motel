@@ -7,6 +7,8 @@ import {
   AGENT_GONE,
   buildAction,
   checkAgent,
+  checkDecisionId,
+  checkDecisionsAgent,
   checkMessageId,
   checkMessageText,
   checkMode,
@@ -14,6 +16,7 @@ import {
   checkTerminalInput,
   checkTerminalSize,
   externalUrlAllowed,
+  decisionsPageUrl,
   isActionMethod,
   isConfirmMethod,
   MAX_TERMINALS,
@@ -220,6 +223,8 @@ export class DevBridge {
       }
       case "api.get":
         return this.apiGet(text(params.connection, "connection"), params.path);
+      case "decisions.open":
+        return this.openDecisions(params);
       case "messages.send": {
         const conn = this.connection(text(params.connection, "connection"));
         const agent = checked(checkAgent(params.agent));
@@ -363,6 +368,31 @@ export class DevBridge {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     return { status: response.status, body: await readJson(response) };
+  }
+
+  private async openDecisions(params: Record<string, unknown>): Promise<Record<string, never>> {
+    const conn = this.connection(text(params.connection, "connection"));
+    const agent = checked(checkDecisionsAgent(params.agent));
+    const decisionId = checked(checkDecisionId(params.decisionId));
+    let response: Response;
+    try {
+      response = await this.fetchImpl(conn.url + "/api/decisions/link", {
+        method: "POST",
+        headers: { authorization: `Bearer ${conn.token}`, accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ agent }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error("Could not reach the server to open the decisions page");
+    }
+    const body = await readJson(response);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(response.status === 404 ? "The decisions page is not set up on this server" : `Could not open the decisions page (HTTP ${response.status})`);
+    }
+    checked(decisionsPageUrl(body, agent, decisionId));
+    // Native hands the validated URL to NSWorkspace. Browser dev mode deliberately performs no external open.
+    return {};
   }
 
   // Never retried: after a network failure the server may or may not have acted.

@@ -476,6 +476,17 @@ final class SmokeRunner {
         }
         print("PASS api.get rejects /etc/passwd, //evil.example/api/x and /api/../x")
 
+        var openedDecision: URL?
+        delegate.bridge.decisionsOpener = { openedDecision = $0; return true }
+        let decisionResult = try object(try await call("decisions.open", [
+            "connection": id, "agent": "chart-table", "decisionId": "d-2",
+        ]), "decisions.open")
+        try expect(decisionResult.isEmpty, "decisions.open returned data")
+        try expect(openedDecision?.scheme == "https" && openedDecision?.host == "drop.example.test"
+                   && openedDecision?.fragment == "chart-table-d-2", "decisions.open did not pass the anchored fixture link to the native opener")
+        delegate.bridge.decisionsOpener = { NSWorkspace.shared.open($0) }
+        print("PASS decisions.open used the fixed authenticated POST and native opener without returning the capability")
+
         let baseline = try await fixtureRequests().count
         let invalidSends: [([String: Any], String)] = [
             (["agent": "harbor-lights", "text": "hi", "mode": "interrupt"], "mode must be queue or now"),

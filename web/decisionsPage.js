@@ -102,7 +102,8 @@ window.agentDecisionsPage = (() => {
       return;
     }
     const groups = visibleGroups(report.groups, query, blockingOnly);
-    const signature = JSON.stringify([groups, query, blockingOnly]);
+    const canAnswer = typeof view.actions.onAnswer === "function";
+    const signature = JSON.stringify([groups, query, blockingOnly, canAnswer]);
     if (view.signature === signature) return;
     view.signature = signature;
     if (!groups.length) {
@@ -118,7 +119,10 @@ window.agentDecisionsPage = (() => {
       open.type = "button";
       open.onclick = () => view.actions.openAgent(group.agent);
       heading.append(open);
-      const card = window.agentDecisions.renderDecisionCard(group.decisions, { agent: group.agent, showAnswer: false });
+      const card = window.agentDecisions.renderDecisionCard(group.decisions, {
+        agent: group.agent,
+        ...(canAnswer ? { onAnswer: view.actions.onAnswer } : {}),
+      });
       section.append(heading);
       if (card) section.append(card);
       nodes.push(section);

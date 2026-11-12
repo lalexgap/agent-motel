@@ -73,6 +73,38 @@ export function externalUrlAllowed(input: unknown): boolean {
   }
 }
 
+const DECISIONS_AGENT_RE = /^[A-Za-z0-9_](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_])?$/;
+
+// POST /api/decisions/link accepts local decision-store names, never host:name.
+export function checkDecisionsAgent(value: unknown): Checked<string> {
+  if (typeof value !== "string" || value.length > 100 || !DECISIONS_AGENT_RE.test(value)) {
+    return { ok: false, error: `invalid decisions agent: ${describe(value)}` };
+  }
+  return { ok: true, value };
+}
+
+export function checkDecisionId(value: unknown): Checked<string | undefined> {
+  if (value === undefined || value === null) return { ok: true, value: undefined };
+  if (typeof value !== "string" || !value || value.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(value)) {
+    return { ok: false, error: "invalid decision id" };
+  }
+  return { ok: true, value };
+}
+
+// The URL is a credential. Callers must consume it inside the bridge and never return or log it.
+export function decisionsPageUrl(value: unknown, agent: string, decisionId?: string): Checked<URL> {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as { url?: unknown }).url : undefined;
+  if (typeof raw !== "string") return { ok: false, error: "The server returned an invalid decisions page link" };
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) throw new Error();
+    if (decisionId) url.hash = `${agent}-${decisionId}`;
+    return { ok: true, value: url };
+  } catch {
+    return { ok: false, error: "The server returned an invalid decisions page link" };
+  }
+}
+
 // messages.send / messages.cancel. The bridge builds the request path from these
 // parts itself, so the page can never aim a mutation anywhere else. The Swift
 // MessagePolicy applies the same rules to the same test vectors.

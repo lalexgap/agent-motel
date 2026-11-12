@@ -93,6 +93,20 @@ test("shared page is pure DOM and filters decisions without interpreting hostile
   expect(root.querySelector("#decisions-coverage")!.textContent).toContain("Connect to those servers directly");
 });
 
+test("the host can add answer actions and receives the clicked decision and agent", async () => {
+  const root = setup();
+  const answered: unknown[] = [];
+  const actions = {
+    refresh() {}, setQuery() {}, setBlockingOnly() {}, openAgent() {},
+    onAnswer: async (decision: unknown, agent: string) => { answered.push([decision, agent]); },
+  };
+  page.render(root, { report, loading: false, error: null, query: "", blockingOnly: false }, actions);
+  const buttons = root.find("decision-answer");
+  expect(buttons).toHaveLength(2);
+  await buttons[1]!.onclick!();
+  expect(answered).toEqual([[report.groups[0]!.decisions[1], "api<img>"]]);
+});
+
 test("unchanged and partial-error results preserve DOM and filter focus controls", () => {
   const root = setup();
   const actions = { refresh() {}, setQuery() {}, setBlockingOnly() {}, openAgent() {} };
