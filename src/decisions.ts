@@ -190,12 +190,22 @@ export function decisionSummary(name: string): DecisionSummary {
 // Every store's text in one directory read: `am ls` lists hundreds of agents
 // every second and most have no store. Look one up with decisionStoreTextFor.
 export function readDecisionStoreTexts(): Map<string, string> {
+  return readDecisionStoreTextsResult()?.texts ?? new Map();
+}
+
+export function readDecisionStoreTextsIfAvailable(): Map<string, string> | null {
+  return readDecisionStoreTextsResult()?.texts ?? null;
+}
+
+export function readDecisionStoreTextsResult(relevantNames?: string[]): { texts: Map<string, string>; complete: boolean } | null {
   const out = new Map<string, string>();
+  const relevantSlugs = relevantNames === undefined ? null : new Set(relevantNames.filter(ownsStore).map(slug));
+  let complete = true;
   let files: string[];
   try {
     files = readdirSync(decisionsHome());
   } catch {
-    return out;
+    return null;
   }
   for (const file of files) {
     if (file.startsWith(".") || !file.endsWith(".json")) continue;
@@ -203,10 +213,10 @@ export function readDecisionStoreTexts(): Map<string, string> {
       const text = readStoreFile(join(decisionsHome(), file));
       if (text !== undefined) out.set(file.slice(0, -".json".length), text);
     } catch {
-      // unreadable: no decisions
+      if (relevantSlugs === null || relevantSlugs.has(file.slice(0, -".json".length))) complete = false;
     }
   }
-  return out;
+  return { texts: out, complete };
 }
 
 export function decisionStoreTextFor(texts: Map<string, string>, name: string): string | undefined {
