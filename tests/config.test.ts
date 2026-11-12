@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, shouldNotifyIdle, type Config } from "../src/config";
+import { loadConfig, shouldNotifyIdle, subagentPermissionWait, type Config } from "../src/config";
 import { configFile } from "../src/paths";
 import { readSnapshot, removeSnapshot, writeSnapshot } from "../src/snapshots";
 
@@ -20,12 +20,12 @@ afterEach(() => {
 
 describe("loadConfig", () => {
   test("defaults when no file exists", () => {
-    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
+    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, subagentPermissionWaitSeconds: 15, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
   });
 
   test("file values override defaults, missing keys keep defaults", () => {
     writeFileSync(configFile(), JSON.stringify({ idleNotifyMinSeconds: 120, remoteControl: false }));
-    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 120, remoteControl: false, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
+    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 120, remoteControl: false, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, subagentPermissionWaitSeconds: 15, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
   });
 
   test("corrupt file falls back to defaults", () => {
@@ -41,7 +41,7 @@ describe("loadConfig", () => {
 });
 
 describe("shouldNotifyIdle", () => {
-  const config: Config = { defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 };
+  const config: Config = { defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, subagentPermissionWaitSeconds: 15, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 };
   const base = { config, workedSeconds: 60, queueDepth: 0, attached: false };
 
   test("notifies after a real unattended stint", () => {
@@ -74,5 +74,22 @@ describe("snapshots", () => {
 
     removeSnapshot("alpha");
     expect(readSnapshot("alpha")).toBeNull();
+  });
+});
+
+describe("subagentPermissionWait", () => {
+  const wait = (permissionWaitSeconds: number, subagentPermissionWaitSeconds: number) =>
+    subagentPermissionWait({ permissionWaitSeconds, subagentPermissionWaitSeconds });
+
+  test("is the subagent wait, never longer than the relay's own", () => {
+    expect(wait(120, 15)).toBe(15);
+    expect(wait(10, 15)).toBe(10);
+    expect(wait(120, 300)).toBe(120);
+  });
+
+  test("either wait at zero turns the hold off", () => {
+    expect(wait(0, 15)).toBe(0);
+    expect(wait(120, 0)).toBe(0);
+    expect(wait(120, -5)).toBe(0);
   });
 });

@@ -29,7 +29,7 @@ import {
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { awaitTurnReply, claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
-import { loadConfig, shouldNotifyIdle } from "../config";
+import { loadConfig, shouldNotifyIdle, subagentPermissionWait } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
@@ -705,7 +705,7 @@ export async function hookCommand(event: string): Promise<void> {
         updateAgentStatus(parent, asked.status, reason, undefined, "prompt");
         writeAgent(parent);
         notify(`am: ${parent.name}`, reason, { agent: parent.name, kind: "attention" });
-        await awaitPermissionDecision(parent, payload, { waitMs: loadConfig().permissionWaitSeconds * 1000 });
+        await awaitPermissionDecision(parent, payload, { waitMs: subagentPermissionWait(loadConfig()) * 1000 });
       } else if (event === "post-tool-use") {
         if (retiredPermissions(event, agent, payload, hookEffects(event, payload)) > 0) {
           await notifyDaemon(name, "permission-resolved");
