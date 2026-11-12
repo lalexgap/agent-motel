@@ -4,10 +4,8 @@ import { join } from "node:path";
 import { loadConfig } from "./config";
 import { openDecisions, ownsStore } from "./decisions";
 
-// The web UI's view of open decisions, and the link to the operator's
-// decisions page. That page belongs to the `drop` service: whoever holds its
-// URL can answer for the operator, so the URL is only ever returned to the
-// caller of decisionsPageLink and never cached, logged or put in an error.
+// The decisions page URL lets its holder answer for the operator: return it
+// only to decisionsPageLink's caller; never cache, log or put it in an error.
 
 export interface WebDecision {
   id: string;

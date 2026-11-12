@@ -106,7 +106,6 @@ window.agentDecisions = (() => {
     return item;
   }
 
-  // Returns the card, or null when there is nothing open.
   function renderDecisionCard(decisions, opts = {}) {
     const open = Array.isArray(decisions) ? decisions.filter((d) => d && typeof d.question === "string") : [];
     if (!open.length) return null;
