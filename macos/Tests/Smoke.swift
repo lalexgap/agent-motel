@@ -45,6 +45,11 @@ final class Flag {
     var value = false
 }
 
+@MainActor
+final class Uptime {
+    var value: TimeInterval = 0
+}
+
 struct SmokeFailure: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
@@ -62,6 +67,8 @@ final class SmokeRunner {
     var terminalConnectionID: String?
     /// Every bridge result and rejection, as JSON, for the session cookie leak scan.
     var transcript: [String] = []
+    /// Checks where the app or its windows were active or key while another app was frontmost.
+    var activationWarnings = 0
 
     init(delegate: AppDelegate, server: String, token: String, bridgeOnly: Bool, relaunch: Bool) {
         self.delegate = delegate
@@ -80,7 +87,7 @@ final class SmokeRunner {
     func run() async -> Bool {
         do {
             if relaunch { try await relaunchSteps() } else { try await steps() }
-            print("PASS all smoke checks")
+            print("PASS all smoke checks (\(activationWarnings) activation warning(s))")
             return true
         } catch {
             print("FAIL \(error)")
@@ -152,6 +159,19 @@ final class SmokeRunner {
 
     func expect(_ condition: Bool, _ message: String) throws {
         if !condition { throw SmokeFailure(message) }
+    }
+
+    /// What matters is the system's frontmost app: the smoke app must never be it. `NSApp.isActive`
+    /// and key windows can be briefly true while another app is frontmost; those only warn.
+    func expectNotActivated(_ what: String, sheet: NSWindow? = nil) throws {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let details = "active \(NSApp.isActive), sheet key \(sheet.map { String($0.isKeyWindow) } ?? "-"), "
+            + "window key \(delegate.window.isKeyWindow), frontmost \(frontmost?.bundleIdentifier ?? "?")"
+        try expect(frontmost?.processIdentifier != ProcessInfo.processInfo.processIdentifier, "\(what): the smoke app is frontmost (\(details))")
+        if NSApp.isActive || sheet?.isKeyWindow == true || delegate.window.isKeyWindow {
+            activationWarnings += 1
+            print("WARN \(what): the app or its window was active or key while another app was frontmost (\(details))")
+        }
     }
 
     /// The fixture's log of mutation requests it received, read directly (it is outside /api/, so
@@ -323,9 +343,7 @@ final class SmokeRunner {
             let outcome = await pending.result
             throw SmokeFailure("\(method): no sheet; the call gave \(outcome)")
         }
-        try expect(!NSApp.isActive && !sheet.isKeyWindow && !delegate.window.isKeyWindow,
-                   "\(method): the sheet activated the app (active \(NSApp.isActive), sheet key \(sheet.isKeyWindow), "
-                   + "window key \(delegate.window.isKeyWindow), frontmost \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"))")
+        try expectNotActivated("\(method): the sheet", sheet: sheet)
         let shown = views(sheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
         try expect(shown.contains(title), "\(method): sheet title, saw \(shown)")
         try expect(shown.contains { $0.contains("Status: \(expectedStatus).") && $0.hasSuffix("\nServer: Smoke 2 (\(serverHost))") },
@@ -350,7 +368,15 @@ final class SmokeRunner {
         case .returnKey:
             // A Return already in flight when the sheet appears, and a held (repeating) Return later,
             // must not answer it; a fresh Return once the sheet has been up for the arming delay does.
+            // The sheet re-arms whenever it becomes key; it should not, but if it does, the fresh
+            // Return waits for the delay from then rather than being swallowed.
             let seen = Date()
+            let keyAt = Uptime()
+            keyAt.value = ProcessInfo.processInfo.systemUptime
+            let becameKey = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: sheet, queue: .main) { [keyAt] _ in
+                MainActor.assumeIsolated { keyAt.value = ProcessInfo.processInfo.systemUptime }
+            }
+            defer { NotificationCenter.default.removeObserver(becameKey) }
             let before = try await fixtureRequests().count
             try postKey("\r", keyCode: 36, to: sheet)
             try await Task.sleep(nanoseconds: 250_000_000)
@@ -360,6 +386,8 @@ final class SmokeRunner {
             try await Task.sleep(nanoseconds: 250_000_000)
             try expect(delegate.window.attachedSheet === sheet && !settled.value, "\(method): a repeated Return answered the sheet")
             try expect(try await fixtureRequests().count == before, "\(method): an early or repeated Return reached the fixture")
+            let wait = keyAt.value + Confirmation.armDelay + 0.15 - ProcessInfo.processInfo.systemUptime
+            if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
             try postKey("\r", keyCode: 36, to: sheet)
         }
         let result = try object(try JSONSerialization.jsonObject(with: try await pending.value, options: [.fragmentsAllowed]), method)

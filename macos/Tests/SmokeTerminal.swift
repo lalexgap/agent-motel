@@ -123,8 +123,7 @@ extension SmokeRunner {
         } catch {
             throw SmokeFailure("terminal.open: no consent sheet; the call gave \(await call.result)")
         }
-        try expect(!NSApp.isActive && !sheet.isKeyWindow && !delegate.window.isKeyWindow,
-                   "terminal consent: the sheet activated the app (frontmost \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"))")
+        try expectNotActivated("terminal consent: the sheet", sheet: sheet)
         let shown = views(sheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
         try expect(shown.contains("Open interactive terminals on \(name)?"), "consent title, saw \(shown)")
         try expect(shown.contains("Keys you type in a terminal go straight to the agent's terminal on \(serverHost), including Ctrl-C and shell commands."),
@@ -145,7 +144,7 @@ extension SmokeRunner {
         }
         let answered = try JSONSerialization.jsonObject(with: try await call.value) as? [String: Any] ?? [:]
         try await waitForNoSheet()
-        try expect(!NSApp.isActive, "the consent sheet activated the app")
+        try expectNotActivated("the consent sheet")
         return (answered["result"] as? [String: Any], answered["error"] as? String)
     }
 
@@ -355,7 +354,7 @@ extension SmokeRunner {
         try await waitFor("""
             ['chat', 'terminal'].every((c) => window.__smokeEvents.some((e) => e.name === 'menu.command' && e.payload.command === c))
             """, "menu.command chat and terminal")
-        try expect(!NSApp.isActive, "the app was activated")
+        try expectNotActivated("View > Show Chat / Show Terminal")
         print("PASS View > Show Chat / Show Terminal emit menu.command chat / terminal")
     }
 
@@ -385,7 +384,7 @@ extension SmokeRunner {
         try await waitFor("document.querySelector('#am-main')?.dataset.agentView === 'terminal'", "#am-main[data-agent-view=terminal]")
         // The main smoke connection has not been allowed yet, so the real consent sheet appears.
         let sheet = try await waitForSheet()
-        try expect(!NSApp.isActive, "the consent sheet activated the app")
+        try expectNotActivated("the consent sheet")
         let shown = views(sheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
         try expect(shown.contains { $0.hasPrefix("Open interactive terminals on ") }, "UI terminal: unexpected sheet \(shown)")
         try button("Allow", in: sheet).performClick(nil)
@@ -476,7 +475,8 @@ extension SmokeRunner {
         try expect(asked.result?["cancelled"] as? Bool == true, "re-added connection: \(asked)")
         _ = try await call("connections.remove", ["id": againID])
         terminalConnectionID = nil
-        try expect(delegate.store.list().isEmpty && !NSApp.isActive, "relaunch cleanup")
+        try expect(delegate.store.list().isEmpty, "relaunch cleanup")
+        try expectNotActivated("relaunch cleanup")
         print("PASS removing the connection closed its terminal (1006, once) and cleared \"Don't ask again\"; re-adding it asks again")
     }
 }

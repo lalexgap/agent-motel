@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private(set) var webView: WKWebView!
     let store = ConnectionStore()
     private(set) lazy var bridge = Bridge(store: store, confirmation: Confirmation(
-        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.showWindow() }))
+        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.revealForSheet() }))
     /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
     var activatesWindow = true
     private var errorPanel: NSStackView!
@@ -129,6 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if activatesWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderBack(nil)
+        }
+    }
+
+    /// Brings the window forward for a confirmation sheet without activating the app: if the app
+    /// stopped being active a moment ago, activating it would take focus from the other app.
+    func revealForSheet() {
+        if activatesWindow {
+            window.makeKeyAndOrderFront(nil)
         } else {
             window.orderBack(nil)
         }

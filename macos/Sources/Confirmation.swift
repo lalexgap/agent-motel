@@ -23,8 +23,9 @@ final class Confirmation {
     private let reveal: () -> Void
     private var open = false
 
-    /// `reveal` brings the window forward before the sheet appears when the app is already active
-    /// (the app's own `showWindow`, which never activates the background smoke app).
+    /// `reveal` brings the window forward before the sheet appears when the app is already active.
+    /// It never activates the app (`isActive` can be stale just after the user switched away), and
+    /// only orders the background smoke app's window back.
     init(window: @escaping () -> NSWindow?, reveal: @escaping () -> Void) {
         self.window = window
         self.reveal = reveal
