@@ -1,5 +1,6 @@
 import { startPrMonitor } from "./prMonitor";
 import { startAutoGc } from "./autoGc";
+import { startDecisionFreshness } from "./decisionFreshness";
 import { startUsageLedgerJob } from "./usageLedger";
 import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
@@ -429,6 +430,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
 
   const prMonitor = startPrMonitor();
   const autoGc = startAutoGc(log);
+  const decisionFreshness = startDecisionFreshness(log);
   const usageLedger = startUsageLedgerJob({ log });
 
   const keepalive = setInterval(() => {
@@ -475,6 +477,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       stopped = true;
       prMonitor.stop();
       autoGc.stop();
+      decisionFreshness.stop();
       usageLedger.stop();
       clearInterval(reconciler);
       clearInterval(keepalive);
