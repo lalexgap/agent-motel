@@ -8,6 +8,10 @@ install_web() {
       echo "bun is required to build the frontend (or set WEB_DIST to an already built frontend)." >&2
       exit 1
     fi
+    # The bundle ships xterm.js from node_modules; a fresh checkout has none yet.
+    if [[ ! -d ../node_modules/@xterm/xterm ]]; then
+      (cd .. && bun install --frozen-lockfile)
+    fi
     (cd .. && bun desktop/build.ts)
     dist=../desktop/dist
   fi

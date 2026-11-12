@@ -2,8 +2,10 @@
 // over HTTP so the frontend runs in a plain browser.
 //   bun desktop/dev.ts [--port 5199] [--fixture] [--fixture-url http://127.0.0.1:8791] [--watch]
 // /__bridge has no secret: its Host/Origin checks stop browsers, not other local
-// processes, which can drive it and use any saved token. Run it on a single-user
-// machine with fixture or throwaway tokens, never a production token on a shared host.
+// processes, which can drive it and use any saved token (including terminal.open, which
+// types into an agent's pane). Run it on a single-user machine with fixture or throwaway
+// tokens, never a production token on a shared host. Closing the page's /__bridge/events
+// stream (a reload) closes every terminal the bridge holds.
 import { watch } from "node:fs";
 import { join, normalize, resolve, sep } from "node:path";
 import { build, desktopDir, distDir } from "./build";
@@ -60,7 +62,8 @@ function arg(name: string): string | undefined {
 
 export function startDevServer(options: { port: number; bridge: DevBridge; root?: string }) {
   const root = resolve(options.root ?? distDir);
-  const sse = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  // Each page's event stream: write(text) queues a chunk and resolves once the stream has handed it on.
+  const sse = new Set<(text: string) => Promise<void>>();
   const encoder = new TextEncoder();
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -93,30 +96,46 @@ export function startDevServer(options: { port: number; bridge: DevBridge; root?
           }
         }
         if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
-        let self: ReadableStreamDefaultController<Uint8Array>;
+        // Pull-based, so an event counts as delivered only once the response has taken it:
+        // terminal output the page is not reading stays undelivered and hits the backlog cap.
+        const queue: { bytes: Uint8Array; delivered: () => void }[] = [];
+        let wake: (() => void) | null = null;
+        let closed = false;
         let unsubscribe = () => {};
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            self = controller;
-            sse.add(controller);
-            controller.enqueue(encoder.encode(": bridge\n\n"));
-            unsubscribe = options.bridge.subscribe((name, payload) => {
-              try {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ name, payload })}\n\n`));
-              } catch {
-                unsubscribe();
-              }
-            });
-          },
-          cancel() {
-            unsubscribe();
-            sse.delete(self);
-          },
-        });
-        req.signal.addEventListener("abort", () => {
+        const write = (text: string) =>
+          new Promise<void>((delivered) => {
+            if (closed) return delivered();
+            queue.push({ bytes: encoder.encode(text), delivered });
+            wake?.();
+          });
+        // The page reloaded or closed: the terminals it opened are unreachable now.
+        const finish = () => {
+          if (closed) return;
+          closed = true;
           unsubscribe();
-          sse.delete(self);
-        });
+          sse.delete(write);
+          for (const item of queue.splice(0)) item.delivered();
+          wake?.();
+          options.bridge.closeAllTerminals();
+        };
+        sse.add(write);
+        void write(": bridge\n\n");
+        unsubscribe = options.bridge.subscribe((name, payload) => write(`data: ${JSON.stringify({ name, payload })}\n\n`));
+        const stream = new ReadableStream<Uint8Array>(
+          {
+            async pull(controller) {
+              while (!queue.length && !closed) await new Promise<void>((resolve) => (wake = resolve));
+              wake = null;
+              const item = queue.shift();
+              if (!item) return;
+              controller.enqueue(item.bytes);
+              item.delivered();
+            },
+            cancel: finish,
+          },
+          { highWaterMark: 0 },
+        );
+        req.signal.addEventListener("abort", finish);
         return new Response(stream, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" } });
       }
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 });
@@ -144,13 +163,7 @@ export function startDevServer(options: { port: number; bridge: DevBridge; root?
   });
   port = server.port ?? options.port;
   const keepalive = setInterval(() => {
-    for (const controller of sse) {
-      try {
-        controller.enqueue(encoder.encode(": keepalive\n\n"));
-      } catch {
-        sse.delete(controller);
-      }
-    }
+    for (const write of sse) void write(": keepalive\n\n");
   }, 15000);
   return {
     port,

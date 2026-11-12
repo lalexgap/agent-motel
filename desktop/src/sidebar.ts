@@ -22,6 +22,7 @@ import {
 } from "./fleet";
 import { relativeTime } from "./format";
 import { registerShortcut } from "./keyboard";
+import { focusAgentInput } from "./terminalView";
 import {
   elapsed,
   providerLabel,
@@ -279,7 +280,8 @@ export function openConcierge(key = conciergeTarget(fleets(), state.selected)): 
   if (!key) return;
   const item = state.tree.items.find((candidate) => isPinnedConcierge(candidate) && candidate.key === key);
   if (item) state.cursor = item.id;
-  selectAgent(key);
+  // Opening it to write: chat for this visit, whatever the saved Chat/Terminal choice.
+  selectAgent(key, false, "chat");
   focusCursor();
   if (!composerInput().disabled) composerInput().focus();
 }
@@ -324,7 +326,7 @@ function registerAgentMenu(): void {
   registerAgentMenuItem({
     id: "open", label: "Open", group: "open", run: (key) => {
       selectAgent(key);
-      if (!composerInput().disabled) composerInput().focus();
+      focusAgentInput();
     },
   });
   registerAgentMenuItem({
@@ -379,7 +381,7 @@ function registerShortcuts(): void {
       const current = cursorItem()!;
       activateItem(current);
       // Enter opens the agent to write to it (a subagent to read it); Space only opens it.
-      if (event.key === "Enter" && current.kind === "agent" && !composerInput().disabled) composerInput().focus();
+      if (event.key === "Enter" && current.kind === "agent") focusAgentInput();
       if (event.key === "Enter" && current.kind === "subagent") $("am-sub-transcript").focus({ preventScroll: true });
     },
   });

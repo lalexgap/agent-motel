@@ -247,8 +247,9 @@ export function showSearch(): void {
   ui.query.focus();
 }
 
+// A hit is in the conversation: chat for this visit, whatever the saved Chat/Terminal choice.
 function openResult(key: string, fromKeyboard: boolean): void {
-  selectAgent(key);
+  selectAgent(key, false, "chat");
   if (fromKeyboard && !composerInput().disabled) composerInput().focus();
 }
 

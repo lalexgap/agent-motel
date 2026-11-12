@@ -16,6 +16,38 @@ import {
   normalizeServerUrl,
   plainHttpAllowed,
   precheckStatus,
+  checkTerminalId,
+  checkTerminalInput,
+  checkTerminalSize,
+  isTerminalMethod,
+  MAX_TERMINALS,
+  parseTerminalControl,
+  sessionFromSetCookie,
+  TERMINAL_CLOSE,
+  TERMINAL_CONNECTIONS_LIMIT,
+  TERMINAL_NEEDS_HTTPS,
+  TERMINAL_NO_SESSION,
+  TERMINAL_NO_WEB_SIGNIN,
+  TERMINAL_PAGE_CHANGED,
+  TERMINAL_SESSION_REJECTED,
+  TERMINAL_SIGNIN_LIMIT,
+  TERMINAL_TOKEN_REJECTED,
+  TERMINAL_TOO_MANY,
+  TERMINAL_UNAVAILABLE,
+  TERMINAL_UNEXPECTED,
+  TERMINAL_UNKNOWN,
+  TERMINAL_UNREACHABLE,
+  terminalCloseReason,
+  terminalConsent,
+  terminalConsentMessage,
+  terminalHttpError,
+  terminalLoginError,
+  terminalOriginRejected,
+  terminalPreflightOutcome,
+  terminalRequests,
+  terminalServerText,
+  terminalTransportAllowed,
+  terminalUpgradeOutcome,
   validateApiPath,
   type ActionRequest,
 } from "../desktop/src/policy";
@@ -699,5 +731,290 @@ describe("action policy: Swift test vectors", () => {
     expect(build("agents.rename", { name: 1.5 })).toEqual({ ok: false, error: "invalid name: 1.5" });
     expect(precheckStatus({ status: "id\u202ele\u2066\u200f" })).toBe("idle");
     expect(confirmMessage("T", "B", "Fixture\u202e\nStatus: idle", "https://fixture.example")).toBe("T\n\nB\n\nServer: FixtureStatus: idle (fixture.example)");
+  });
+});
+
+// The Swift TerminalPolicy (macos/Sources/TerminalPolicy.swift, tested in macos/Tests/main.swift)
+// must give the same answers for every vector below.
+describe("terminal policy", () => {
+  const ORIGIN_REJECTED = "This server only allows terminals from its own web address. Connect the app to that address to use terminals.";
+
+  test("every user-facing string, exactly", () => {
+    expect([
+      TERMINAL_UNKNOWN, TERMINAL_TOO_MANY, TERMINAL_TOKEN_REJECTED, terminalOriginRejected(), terminalOriginRejected("https://am.example.com"),
+      TERMINAL_NO_WEB_SIGNIN, TERMINAL_SIGNIN_LIMIT, TERMINAL_CONNECTIONS_LIMIT, TERMINAL_UNREACHABLE, TERMINAL_NEEDS_HTTPS,
+      TERMINAL_SESSION_REJECTED, TERMINAL_NO_SESSION, TERMINAL_UNEXPECTED, TERMINAL_PAGE_CHANGED, TERMINAL_UNAVAILABLE, terminalHttpError(502),
+    ]).toEqual([
+      "unknown terminal",
+      "Too many terminals open",
+      "The server rejected the access token",
+      ORIGIN_REJECTED,
+      "This server only allows terminals from its own web address (https://am.example.com). Connect the app to that address to use terminals.",
+      "This server has no web sign-in, so terminals are unavailable",
+      "Too many sign-in attempts. Wait a minute and try again.",
+      "Too many terminal connections",
+      "Couldn't reach the server",
+      "Terminals need an https connection",
+      "The server rejected the terminal session",
+      "The server did not start a terminal session",
+      "This server did not answer like Agent Motel",
+      "The page changed while the terminal was opening",
+      "Terminal unavailable",
+      "The server returned HTTP 502",
+    ]);
+    expect(TERMINAL_CLOSE).toEqual({
+      closed: { code: 1000, reason: "Terminal closed" },
+      removed: { code: 1006, reason: "The connection was removed or changed" },
+      lost: { code: 1006, reason: "Connection lost" },
+      inputOverflow: { code: 1008, reason: "Terminal input limit exceeded" },
+      outputOverflow: { code: 1013, reason: "Output exceeded rendering capacity" },
+    });
+    expect(MAX_TERMINALS).toBe(4);
+    expect(["terminal.open", "terminal.input", "terminal.resize", "terminal.close", "terminal.write", "terminal"].map(isTerminalMethod))
+      .toEqual([true, true, true, true, false, false]);
+  });
+
+  test("terminal ids: 32 lowercase hex characters, nothing else", () => {
+    const vectors: [unknown, boolean][] = [
+      ["0123456789abcdef0123456789abcdef", true],
+      ["ffffffffffffffffffffffffffffffff", true],
+      ["0123456789ABCDEF0123456789ABCDEF", false],
+      ["0123456789abcdef0123456789abcde", false],
+      ["0123456789abcdef0123456789abcdef0", false],
+      ["0123456789abcdef0123456789abcdeg", false],
+      ["0123456789abcdef0123456789abcde\n", false],
+      ["t1", false],
+      ["", false],
+      [null, false],
+      [42, false],
+      [{}, false],
+    ];
+    for (const [value, valid] of vectors) expect([value, checkTerminalId(value)]).toEqual([value, valid]);
+  });
+
+  test("input: 1 to 16,384 UTF-8 bytes of anything", () => {
+    const vectors: [unknown, boolean][] = [
+      ["a", true],
+      ["\x03", true],
+      ["\x1b[A", true],
+      ["\x00\x7f\u2028\u202e", true],
+      ["echo hi\r", true],
+      ["a".repeat(16384), true],
+      ["a".repeat(16385), false],
+      ["é".repeat(8192), true],
+      ["é".repeat(8193), false],
+      ["😀".repeat(4096), true],
+      ["😀".repeat(4096) + "a", false],
+      ["", false],
+      [null, false],
+      [undefined, false],
+      [7, false],
+      [["a"], false],
+    ];
+    for (const [value, valid] of vectors) {
+      const result = checkTerminalInput(value);
+      expect(result).toEqual(valid ? { ok: true, value: value as string } : { ok: false, error: "invalid data" });
+    }
+  });
+
+  test("resize: integers, cols 2..500 then rows 2..200", () => {
+    const vectors: [unknown, unknown, string | null][] = [
+      [2, 2, null],
+      [80, 24, null],
+      [500, 200, null],
+      [80.0, 24.0, null],
+      [1, 24, "invalid cols"],
+      [501, 24, "invalid cols"],
+      [80.5, 24, "invalid cols"],
+      ["80", 24, "invalid cols"],
+      [true, 24, "invalid cols"],
+      [Number.NaN, 24, "invalid cols"],
+      [null, 24, "invalid cols"],
+      [1, 1, "invalid cols"],
+      [80, 1, "invalid rows"],
+      [80, 201, "invalid rows"],
+      [80, 24.5, "invalid rows"],
+      [80, "24", "invalid rows"],
+      [80, undefined, "invalid rows"],
+      [80, Number.POSITIVE_INFINITY, "invalid rows"],
+    ];
+    for (const [cols, rows, error] of vectors) {
+      expect([cols, rows, checkTerminalSize(cols, rows)]).toEqual([cols, rows, error ? { ok: false, error } : { ok: true, value: { cols: cols as number, rows: rows as number } }]);
+    }
+  });
+
+  test("the session cookie only travels over https or plain http to loopback", () => {
+    const vectors: [string, boolean][] = [
+      ["https://am.example.com", true],
+      ["https://100.64.0.1", true],
+      ["http://127.0.0.1:8791", true],
+      ["http://127.8.9.10", true],
+      ["http://localhost:5199", true],
+      ["http://[::1]:8791", true],
+      ["http://100.64.0.1", false],
+      ["http://box.tail1234.ts.net", false],
+      ["http://192.168.1.5", false],
+      ["http://am.example.com", false],
+      ["http://128.0.0.1", false],
+      ["ftp://127.0.0.1", false],
+      ["not a url", false],
+    ];
+    for (const [url, allowed] of vectors) expect([url, terminalTransportAllowed(url)]).toEqual([url, allowed]);
+  });
+
+  test("requests are built from the stored base and the checked agent key", () => {
+    expect(terminalRequests("https://am.example.com", "keeper-log")).toEqual({
+      origin: "https://am.example.com",
+      login: "https://am.example.com/auth/login",
+      terminal: "https://am.example.com/api/agents/keeper-log/terminal",
+      socket: "wss://am.example.com/api/agents/keeper-log/terminal",
+    });
+    expect(terminalRequests("http://127.0.0.1:8791", "annex:kelp-forest")).toEqual({
+      origin: "http://127.0.0.1:8791",
+      login: "http://127.0.0.1:8791/auth/login",
+      terminal: "http://127.0.0.1:8791/api/agents/annex%3Akelp-forest/terminal",
+      socket: "ws://127.0.0.1:8791/api/agents/annex%3Akelp-forest/terminal",
+    });
+  });
+
+  test("Set-Cookie: only __Host-am_session, 16 to 512 base64url characters", () => {
+    const id = "Wq4G3JtFmIMCH3REiljWw8nAcsyEAPOv6_dqa8ZyqVc";
+    const vectors: [string | null, string | null][] = [
+      [`__Host-am_session=${id}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`, id],
+      [`other=1; Path=/, __Host-am_session=${id}; Path=/`, id],
+      [`theme=dark, Expires=Wed, 21 Oct 2015 07:28:00 GMT, __Host-am_session=${id}`, id],
+      [` __Host-am_session = ${id} ; Path=/`, id],
+      [`__Host-am_session=${"a".repeat(16)}`, "a".repeat(16)],
+      [`__Host-am_session=${"a".repeat(512)}`, "a".repeat(512)],
+      [`__Host-am_session=${"a".repeat(15)}`, null],
+      [`__Host-am_session=${"a".repeat(513)}`, null],
+      ["__Host-am_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0", null],
+      [`__Host-am_session=${id}\r\nX-Evil: 1`, null],
+      [`__Host-am_session=${id.slice(0, 20)}+/=`, null],
+      [`__Host-am_session="${id}"`, null],
+      // The first __Host-am_session decides.
+      [`__Host-am_session=bad!, __Host-am_session=${id}`, null],
+      [`am_session=${id}`, null],
+      [`__host-am_session=${id}`, null],
+      [`__Host-am_sessionX=${id}`, null],
+      ["", null],
+      [null, null],
+    ];
+    for (const [header, value] of vectors) expect([header, sessionFromSetCookie(header)]).toEqual([header, value]);
+  });
+
+  test("sign-in statuses", () => {
+    const vectors: [number, string | null][] = [
+      [200, null],
+      [401, "The server rejected the access token"],
+      [403, ORIGIN_REJECTED],
+      [404, "This server has no web sign-in, so terminals are unavailable"],
+      [429, "Too many sign-in attempts. Wait a minute and try again."],
+      [302, "The server returned HTTP 302"],
+      [405, "The server returned HTTP 405"],
+      [413, "The server returned HTTP 413"],
+      [500, "The server returned HTTP 500"],
+    ];
+    for (const [status, error] of vectors) expect([status, terminalLoginError(status)]).toEqual([status, error]);
+  });
+
+  test("preflight answers", () => {
+    const vectors: [number, unknown, unknown][] = [
+      [200, { available: true, transport: "local" }, { ok: true, transport: "local" }],
+      [200, { available: true, transport: "ssh" }, { ok: true, transport: "ssh" }],
+      [200, { available: true, transport: "mosh" }, { ok: false, error: TERMINAL_UNEXPECTED }],
+      [200, { available: false, transport: "local" }, { ok: false, error: TERMINAL_UNEXPECTED }],
+      [200, { transport: "local" }, { ok: false, error: TERMINAL_UNEXPECTED }],
+      [200, null, { ok: false, error: TERMINAL_UNEXPECTED }],
+      [200, [], { ok: false, error: TERMINAL_UNEXPECTED }],
+      [401, { error: "Web terminal requires a browser session" }, { ok: false, unauthorized: true }],
+      [401, null, { ok: false, unauthorized: true }],
+      [403, { error: "origin rejected" }, { ok: false, error: ORIGIN_REJECTED }],
+      [403, { error: "Web terminal is disabled; configure webOrigin" }, { ok: false, error: ORIGIN_REJECTED }],
+      [404, { error: "Agent no longer exists under this name" }, { ok: false, error: "Agent no longer exists under this name" }],
+      [404, { error: 'no agent matches "x"' }, { ok: false, error: 'no agent matches "x"' }],
+      [409, { error: "Agent is stopped; resume it before attaching" }, { ok: false, error: "Agent is stopped; resume it before attaching" }],
+      [409, { error: "  Remote am needs an upgrade\u202e for identity-checked terminal attachment\n" }, { ok: false, error: "Remote am needs an upgrade for identity-checked terminal attachment" }],
+      [409, { error: "\u200b\n" }, { ok: false, error: "Terminal unavailable" }],
+      [409, { error: 42 }, { ok: false, error: "The server returned HTTP 409" }],
+      [404, null, { ok: false, error: "The server returned HTTP 404" }],
+      [429, { error: "Too many terminal requests" }, { ok: false, error: "Too many terminal connections" }],
+      [400, { error: 'invalid agent name "x y"' }, { ok: false, error: "The server returned HTTP 400" }],
+      [502, { error: "ssh lantern: connect to host lantern port 22: Operation timed out" }, { ok: false, error: "The server returned HTTP 502" }],
+      [500, { error: "request failed" }, { ok: false, error: "The server returned HTTP 500" }],
+    ];
+    for (const [status, body, outcome] of vectors) expect([status, body, terminalPreflightOutcome(status, body)]).toEqual([status, body, outcome]);
+  });
+
+  test("refused upgrades (no body)", () => {
+    const vectors: [number, unknown][] = [
+      [0, { ok: false, error: "Couldn't reach the server" }],
+      [401, { ok: false, unauthorized: true }],
+      [403, { ok: false, error: ORIGIN_REJECTED }],
+      [429, { ok: false, error: "Too many terminal connections" }],
+      [404, { ok: false, error: "The server returned HTTP 404" }],
+      [409, { ok: false, error: "The server returned HTTP 409" }],
+      [426, { ok: false, error: "The server returned HTTP 426" }],
+      [502, { ok: false, error: "The server returned HTTP 502" }],
+    ];
+    for (const [status, outcome] of vectors) expect([status, terminalUpgradeOutcome(status)]).toEqual([status, outcome]);
+  });
+
+  test("server text and close reasons", () => {
+    const vectors: [string, string][] = [
+      ["Session expired or revoked", "Session expired or revoked"],
+      ["  padded\t", "padded"],
+      ["line\nbreak\u2028here", "linebreakhere"],
+      ["bidi\u202eflip\u200b", "bidiflip"],
+      ["", "Terminal unavailable"],
+      ["\u0000\u001b", "Terminal unavailable"],
+      ["x".repeat(301), "x".repeat(300)],
+      ["😀".repeat(301), "😀".repeat(300)],
+      ["x".repeat(299) + " y", "x".repeat(299)],
+    ];
+    for (const [raw, shown] of vectors) expect([raw, terminalServerText(raw)]).toEqual([raw, shown]);
+    expect(terminalCloseReason("")).toBe("");
+    expect(terminalCloseReason("Terminal detached")).toBe("Terminal detached");
+    expect(terminalCloseReason("\u0007")).toBe("Terminal unavailable");
+  });
+
+  test("control frames: ready, exit with an integer code, error with a string; anything else dropped", () => {
+    const vectors: [string, unknown][] = [
+      ['{"type":"ready"}', { type: "ready" }],
+      ['{"type":"ready","extra":1}', { type: "ready" }],
+      ['{"type":"exit","code":0}', { type: "exit", code: 0 }],
+      ['{"type":"exit","code":-15}', { type: "exit", code: -15 }],
+      ['{"type":"exit","code":1.0}', { type: "exit", code: 1 }],
+      ['{"type":"exit","code":1.5}', null],
+      ['{"type":"exit","code":"0"}', null],
+      ['{"type":"exit","code":true}', null],
+      ['{"type":"exit","code":1e9}', null],
+      ['{"type":"exit"}', null],
+      ['{"type":"error","message":"Session expired or revoked"}', { type: "error", message: "Session expired or revoked" }],
+      ['{"type":"error","message":"a\\u202eb"}', { type: "error", message: "ab" }],
+      ['{"type":"error","message":""}', { type: "error", message: "Terminal unavailable" }],
+      ['{"type":"error"}', null],
+      ['{"type":"error","message":7}', null],
+      ['{"type":"output","data":"x"}', null],
+      ['{"type":"READY"}', null],
+      ["[]", null],
+      ["null", null],
+      ['"ready"', null],
+      ["not json", null],
+      ["", null],
+      [`{"type":"error","message":"${"x".repeat(64 * 1024)}"}`, null],
+    ];
+    for (const [text, control] of vectors) expect([text.slice(0, 80), parseTerminalControl(text)]).toEqual([text.slice(0, 80), control]);
+  });
+
+  test("consent text", () => {
+    expect(terminalConsent("Home server", "https://am.example.com")).toEqual({
+      title: "Open interactive terminals on Home server?",
+      body: "Keys you type in a terminal go straight to the agent's terminal on am.example.com, including Ctrl-C and shell commands.",
+    });
+    expect(terminalConsent(" Lab\u202e ", "http://127.0.0.1:8791").title).toBe("Open interactive terminals on Lab?");
+    expect(terminalConsentMessage("Fixture motel", "http://127.0.0.1:8791")).toBe(
+      "Open interactive terminals on Fixture motel?\n\nKeys you type in a terminal go straight to the agent's terminal on 127.0.0.1:8791, including Ctrl-C and shell commands.",
+    );
   });
 });

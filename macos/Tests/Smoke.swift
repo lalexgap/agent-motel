@@ -25,9 +25,9 @@ struct Smoke {
         // owner's way while still being real sheets on this window.
         app.setActivationPolicy(.prohibited)
         let runner = SmokeRunner(delegate: delegate, server: server, token: token,
-                                 bridgeOnly: environment["SMOKE_BRIDGE_ONLY"] == "1")
+                                 bridgeOnly: environment["SMOKE_BRIDGE_ONLY"] == "1", relaunch: environment["SMOKE_PHASE"] == "relaunch")
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 180_000_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000_000)
             print("FAIL smoke test timed out")
             runner.cleanUp()
             exit(1)
@@ -38,6 +38,11 @@ struct Smoke {
         }
         withExtendedLifetime(delegate) { app.run() }
     }
+}
+
+@MainActor
+final class Flag {
+    var value = false
 }
 
 struct SmokeFailure: Error, CustomStringConvertible {
@@ -51,13 +56,19 @@ final class SmokeRunner {
     let server: String
     let token: String
     let bridgeOnly: Bool
+    /// The second launch, which checks what the first one left (the terminal consent).
+    let relaunch: Bool
     var connectionID: String?
+    var terminalConnectionID: String?
+    /// Every bridge result and rejection, as JSON, for the session cookie leak scan.
+    var transcript: [String] = []
 
-    init(delegate: AppDelegate, server: String, token: String, bridgeOnly: Bool) {
+    init(delegate: AppDelegate, server: String, token: String, bridgeOnly: Bool, relaunch: Bool) {
         self.delegate = delegate
         self.server = server
         self.token = token
         self.bridgeOnly = bridgeOnly
+        self.relaunch = relaunch
     }
 
     /// host:port of the fixture server, as the sheet's server line shows it (smoke.sh only allows
@@ -68,7 +79,7 @@ final class SmokeRunner {
 
     func run() async -> Bool {
         do {
-            try await steps()
+            if relaunch { try await relaunchSteps() } else { try await steps() }
             print("PASS all smoke checks")
             return true
         } catch {
@@ -80,6 +91,7 @@ final class SmokeRunner {
 
     func cleanUp() {
         delegate.bridge.stopAllStreams()
+        delegate.bridge.terminals.shutDown()
         for connection in delegate.store.list() { try? delegate.store.remove(connection.id) }
         if let connectionID, delegate.store.hasToken(connectionID) { try? delegate.store.remove(connectionID) }
     }
@@ -100,8 +112,27 @@ final class SmokeRunner {
     }
 
     func call(_ method: String, _ params: [String: Any] = [:]) async throws -> Any? {
-        try await js("return await window.webkit.messageHandlers.am.postMessage({method, params});",
-                     ["method": method, "params": params])
+        let result = try await js("return await window.webkit.messageHandlers.am.postMessage({method, params});",
+                                  ["method": method, "params": params])
+        record(result ?? NSNull())
+        return result
+    }
+
+    func record(_ value: Any) {
+        transcript.append(canonical(value))
+    }
+
+    /// Keeps every native event the page receives in window.__smokeEvents, still passing it on.
+    func installRecorder() async throws {
+        _ = try await js("""
+            window.__smokeEvents = [];
+            const previous = window.__amNativeEvent;
+            window.__amNativeEvent = function (name, payload) {
+              window.__smokeEvents.push({ name, payload });
+              if (typeof previous === 'function') return previous.apply(this, arguments);
+            };
+            return true;
+            """)
     }
 
     /// Returns the rejection message, or throws if the call succeeded.
@@ -111,6 +142,7 @@ final class SmokeRunner {
             catch (error) { return String(error && error.message || error); }
             """, ["method": method, "params": params])
         guard let message = outcome as? String else { throw SmokeFailure("\(method) \(params) was not rejected") }
+        record(message)
         return message
     }
 
@@ -263,15 +295,27 @@ final class SmokeRunner {
         try expect(delegate.window.attachedSheet == nil, "the sheet stayed open")
     }
 
-    enum Answer { case accept, cancel, escape }
+    enum Answer { case accept, cancel, escape, returnKey }
+
+    /// A key press posted to this app's own event queue for the sheet's window: the same path a key press takes.
+    func postKey(_ characters: String, keyCode: UInt16, to sheet: NSWindow, isARepeat: Bool = false) throws {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: sheet.windowNumber, context: nil, characters: characters,
+                                           charactersIgnoringModifiers: characters, isARepeat: isARepeat, keyCode: keyCode) else {
+            throw SmokeFailure("could not make a key event")
+        }
+        NSApp.postEvent(event, atStart: false)
+    }
 
     /// Calls a confirmed method, checks the native sheet (text, buttons, never activating the app)
     /// and answers it the way a person would: by clicking a button, or pressing Esc on the sheet.
     func confirmed(_ method: String, _ params: [String: Any], title: String, agentStatus expectedStatus: String, button confirmTitle: String,
                    destructive: Bool = false, answer: Answer) async throws -> [String: Any] {
         // Data crosses the task boundary (the bridge's reply is a plain property list, not Sendable).
+        let settled = Flag()
         let pending = Task { @MainActor () throws -> Data in
-            try JSONSerialization.data(withJSONObject: try await self.call(method, params) ?? NSNull(), options: [.fragmentsAllowed])
+            defer { settled.value = true }
+            return try JSONSerialization.data(withJSONObject: try await self.call(method, params) ?? NSNull(), options: [.fragmentsAllowed])
         }
         let sheet: NSWindow
         do {
@@ -303,13 +347,21 @@ final class SmokeRunner {
         case .accept: confirm.performClick(nil)
         case .cancel: cancel.performClick(nil)
         case .escape:
-            // Posted to this app's own event queue for the sheet's window: the same path a key press takes.
-            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                               windowNumber: sheet.windowNumber, context: nil, characters: "\u{1b}",
-                                               charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) else {
-                throw SmokeFailure("could not make an Esc event")
-            }
-            NSApp.postEvent(event, atStart: false)
+            try postKey("\u{1b}", keyCode: 53, to: sheet)
+        case .returnKey:
+            // A Return already in flight when the sheet appears, and a held (repeating) Return later,
+            // must not answer it; a fresh Return once the sheet has been up for the arming delay does.
+            let seen = Date()
+            let before = try await fixtureRequests().count
+            try postKey("\r", keyCode: 36, to: sheet)
+            try await Task.sleep(nanoseconds: 250_000_000)
+            try expect(delegate.window.attachedSheet === sheet && !settled.value, "\(method): a Return right after the sheet appeared answered it")
+            try await Task.sleep(nanoseconds: UInt64(max(0, Confirmation.armDelay + 0.15 - Date().timeIntervalSince(seen)) * 1_000_000_000))
+            try postKey("\r", keyCode: 36, to: sheet, isARepeat: true)
+            try await Task.sleep(nanoseconds: 250_000_000)
+            try expect(delegate.window.attachedSheet === sheet && !settled.value, "\(method): a repeated Return answered the sheet")
+            try expect(try await fixtureRequests().count == before, "\(method): an early or repeated Return reached the fixture")
+            try postKey("\r", keyCode: 36, to: sheet)
         }
         let result = try object(try JSONSerialization.jsonObject(with: try await pending.value, options: [.fragmentsAllowed]), method)
         try await waitForNoSheet()
@@ -330,15 +382,7 @@ final class SmokeRunner {
         try expect(href.hasPrefix("am-app://app/"), "page loaded from \(href)")
         print("PASS page loaded from the bundle (\(href)) and signalled ready")
 
-        _ = try await js("""
-            window.__smokeEvents = [];
-            const previous = window.__amNativeEvent;
-            window.__amNativeEvent = function (name, payload) {
-              window.__smokeEvents.push({ name, payload });
-              if (typeof previous === 'function') return previous.apply(this, arguments);
-            };
-            return true;
-            """)
+        try await installRecorder()
 
         let info = try object(try await call("app.info"), "app.info")
         try expect(info["platform"] as? String == "macos" && info["version"] is String, "app.info: \(info)")
@@ -525,11 +569,13 @@ final class SmokeRunner {
         print("PASS messages.send to an unreachable server rejects (\(down))")
 
         try await writeSurface(id)
+        try await terminalBridge()
 
         if bridgeOnly {
             print("SKIP sidebar rows [data-agent-key] (SMOKE_BRIDGE_ONLY=1)")
             print("SKIP open harbor-lights and render #transcript .turn (SMOKE_BRIDGE_ONLY=1)")
             print("SKIP composer send to keeper-log and queue/cancel on harbor-lights (SMOKE_BRIDGE_ONLY=1)")
+            print("SKIP Terminal tab on keeper-log: Live terminal, typing through xterm, back to Chat (SMOKE_BRIDGE_ONLY=1)")
         } else {
             delegate.loadHome()
             try await waitFor("document.body && document.body.dataset.ready === 'true' && document.body.dataset.view === 'fleet'",
@@ -580,20 +626,22 @@ final class SmokeRunner {
             try expectSend(typed[1], agent: "harbor-lights", text: typedQueued, mode: "queue")
             try expectCancel(typed[2], agent: "harbor-lights", id: nil)
             print("PASS fixture saw exactly the UI's 3 mutations (now send, queue send, cancel)")
+            try await terminalUI()
         }
 
         if !screenshotTaken { try await screenshot() }
 
         _ = try await call("events.stop", ["connection": id])
-        try expect(delegate.bridge.streams.isEmpty, "events.stop left a stream")
+        try expect(delegate.bridge.streams[id] == nil, "events.stop left a stream")
         _ = try await call("events.start", ["connection": id])
         _ = try await call("connections.remove", ["id": id])
-        try expect(delegate.bridge.streams.isEmpty, "connections.remove left a stream")
-        let after = try await call("connections.list") as? [Any] ?? [0]
-        try expect(after.isEmpty, "connection still listed")
+        try expect(delegate.bridge.streams[id] == nil, "connections.remove left a stream")
+        let after = try await call("connections.list") as? [[String: Any]] ?? [["id": 0]]
+        try expect(after.map { $0["id"] as? String } == [terminalConnectionID], "connection still listed: \(after)")
         try expect(!delegate.store.hasToken(id), "Keychain item still present after remove")
         connectionID = nil
         print("PASS connections.remove deleted metadata, Keychain item and event stream")
+        print("NOTE leaving \(Self.terminalConnectionName) with \"Don't ask again\" for the relaunch check")
     }
 
     // MARK: Write surface
@@ -673,7 +721,7 @@ final class SmokeRunner {
         try expect(outcome["cancelled"] as? Bool == true && outcome.count == 1, "cancelled restart: \(outcome)")
         try expect(try await fixtureRequests().count == start, "a cancelled restart reached the fixture")
         outcome = try await confirmed("agents.restart", ["connection": id, "agent": "keeper-log"], title: "Restart keeper-log?",
-                                      agentStatus: restartStatus, button: "Restart", answer: .accept)
+                                      agentStatus: restartStatus, button: "Restart", answer: .returnKey)
         try expect(outcome["status"] as? Int == 200, "restart: \(outcome)")
         record("POST", "/api/agents/keeper-log/restart")
 
@@ -739,7 +787,8 @@ final class SmokeRunner {
         record("POST", "/api/agents/fold-line/model", ["model": NSNull(), "createdAt": createdAt, "status": foldStatus])
         print("PASS confirmed writes (restart, interrupt, stop, remove, move, model): native sheet with title, status and server, "
               + "Cancel/Esc -> {cancelled: true} with nothing sent, accept -> one request; second concurrent confirm rejected; "
-              + "removed agent -> \"This agent no longer exists\" without a sheet; the app never activated")
+              + "removed agent -> \"This agent no longer exists\" without a sheet; a Return posted as the sheet appeared and a repeated "
+              + "Return were ignored, a fresh Return after \(Confirmation.armDelay)s accepted; the app never activated")
 
         func accepted(_ method: String, _ params: [String: Any], _ statuses: ClosedRange<Int> = 200...299) async throws -> [String: Any] {
             var params = params

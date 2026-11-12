@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func applicationWillTerminate(_ notification: Notification) {
         bridge.stopAllStreams()
+        bridge.terminals.shutDown()
         bridge.cancelRequests()
     }
 
@@ -111,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         section("View", [
             ("Reload", #selector(reloadPage), "r"),
             ("Find", #selector(find), "f"),
+            nil,
+            ("Show Chat", #selector(showChat), "1"),
+            ("Show Terminal", #selector(showTerminal), "2"),
         ])
         section("Window", [
             ("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
@@ -155,6 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         bridge.emit("menu.command", ["command": "find"])
     }
 
+    @objc func showChat() {
+        bridge.emit("menu.command", ["command": "chat"])
+    }
+
+    @objc func showTerminal() {
+        bridge.emit("menu.command", ["command": "terminal"])
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow()
         return true
@@ -196,6 +208,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
+    /// A new page load replaces the page and its terminal ids, so its terminals close.
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        bridge.terminals.pageChanged()
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         showError(error)
     }
@@ -205,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        bridge.terminals.pageChanged()
         showError("The page stopped unexpectedly.")
     }
 

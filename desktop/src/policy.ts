@@ -1,5 +1,6 @@
 // Connection URL policy and api.get path rules. The dev bridge enforces these the
 // same way the Swift ConnectionPolicy does; the page uses them for early feedback.
+import type { TerminalControl } from "./types";
 
 export type PolicyResult = { ok: true; url: string } | { ok: false; error: string };
 
@@ -447,3 +448,216 @@ export function buildAction(method: unknown, params: Record<string, unknown>): C
     throw error;
   }
 }
+
+// Interactive terminal (terminal.*). The page passes values; the bridge builds the
+// sign-in, preflight and WebSocket requests from the stored connection URL and the
+// validated agent key. The Swift TerminalPolicy applies the same rules, vectors and strings.
+export const TERMINAL_METHODS = ["terminal.open", "terminal.input", "terminal.resize", "terminal.close"] as const;
+export type TerminalMethod = (typeof TERMINAL_METHODS)[number];
+export const isTerminalMethod = (method: unknown): method is TerminalMethod => (TERMINAL_METHODS as readonly unknown[]).includes(method);
+
+export const MAX_TERMINALS = 4;
+export const TERMINAL_INPUT_MAX_BYTES = 16 * 1024;
+export const TERMINAL_COLS = { min: 2, max: 500 } as const;
+export const TERMINAL_ROWS = { min: 2, max: 200 } as const;
+// Output is coalesced for up to 16 ms or 64 KiB per terminal.output event, in order.
+export const TERMINAL_OUTPUT_EVENT_BYTES = 64 * 1024;
+export const TERMINAL_OUTPUT_EVENT_MS = 16;
+// More output than this waiting to be delivered to the page closes the terminal with 1013.
+export const TERMINAL_PENDING_MAX_BYTES = 4 * 1024 * 1024;
+// Input written to the socket but not yet sent; more closes the terminal with 1008.
+export const TERMINAL_QUEUED_INPUT_MAX_BYTES = 1024 * 1024;
+export const TERMINAL_PING_MS = 30_000;
+// Each of sign-in, preflight and upgrade.
+export const TERMINAL_STEP_TIMEOUT_MS = 30_000;
+// Larger server text frames are dropped.
+export const TERMINAL_CONTROL_MAX_BYTES = 64 * 1024;
+export const TERMINAL_SESSION_COOKIE = "__Host-am_session";
+
+export const TERMINAL_UNKNOWN = "unknown terminal";
+export const TERMINAL_TOO_MANY = "Too many terminals open";
+export const TERMINAL_TOKEN_REJECTED = "The server rejected the access token";
+export const TERMINAL_NO_WEB_SIGNIN = "This server has no web sign-in, so terminals are unavailable";
+export const TERMINAL_SIGNIN_LIMIT = "Too many sign-in attempts. Wait a minute and try again.";
+export const TERMINAL_CONNECTIONS_LIMIT = "Too many terminal connections";
+export const TERMINAL_UNREACHABLE = "Couldn't reach the server";
+export const TERMINAL_NEEDS_HTTPS = "Terminals need an https connection";
+// A 401 from the preflight or upgrade right after a fresh sign-in.
+export const TERMINAL_SESSION_REJECTED = "The server rejected the terminal session";
+// A 200 sign-in without a usable __Host-am_session cookie.
+export const TERMINAL_NO_SESSION = "The server did not start a terminal session";
+// A 200 preflight without {available: true, transport: "local"|"ssh"}.
+export const TERMINAL_UNEXPECTED = "This server did not answer like Agent Motel";
+// The page reloaded (its terminals were closed) while terminal.open was in progress.
+export const TERMINAL_PAGE_CHANGED = "The page changed while the terminal was opening";
+// An empty, or entirely invisible, server message.
+export const TERMINAL_UNAVAILABLE = "Terminal unavailable";
+export const terminalHttpError = (status: number): string => `The server returned HTTP ${status}`;
+// The parenthetical is left out when the server's web address is not known (no route reports it).
+export const terminalOriginRejected = (webOrigin?: string): string =>
+  `This server only allows terminals from its own web address${webOrigin ? ` (${webOrigin})` : ""}. Connect the app to that address to use terminals.`;
+
+// Codes and reasons of the closes the bridge itself makes (terminal.closed).
+export const TERMINAL_CLOSE = {
+  closed: { code: 1000, reason: "Terminal closed" },
+  // The connection was removed or its URL changed.
+  removed: { code: 1006, reason: "The connection was removed or changed" },
+  lost: { code: 1006, reason: "Connection lost" },
+  inputOverflow: { code: 1008, reason: "Terminal input limit exceeded" },
+  outputOverflow: { code: 1013, reason: "Output exceeded rendering capacity" },
+} as const;
+
+// The session cookie only travels over TLS, or over plain http to this machine (the fixture).
+export function terminalTransportAllowed(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") return true;
+  if (parsed.protocol !== "http:") return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host === "[::1]") return true;
+  return ipv4(host)?.[0] === 127;
+}
+
+// `^[a-f0-9]{32}$`; anything else cannot name a terminal.
+export const checkTerminalId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+
+// 1 to 16,384 UTF-8 bytes of anything: control keys are the point of a terminal.
+export function checkTerminalInput(value: unknown): Checked<string> {
+  if (typeof value !== "string" || value.length === 0 || value.length > TERMINAL_INPUT_MAX_BYTES || utf8Length(value) > TERMINAL_INPUT_MAX_BYTES)
+    return { ok: false, error: "invalid data" };
+  return { ok: true, value };
+}
+
+const inRange = (value: unknown, range: { min: number; max: number }): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= range.min && value <= range.max;
+
+export function checkTerminalSize(cols: unknown, rows: unknown): Checked<{ cols: number; rows: number }> {
+  if (!inRange(cols, TERMINAL_COLS)) return { ok: false, error: "invalid cols" };
+  if (!inRange(rows, TERMINAL_ROWS)) return { ok: false, error: "invalid rows" };
+  return { ok: true, value: { cols, rows } };
+}
+
+// Built from a stored, normalised `scheme://host[:port]` URL and a checked agent key:
+// POST <base>/auth/login; GET and upgrade on <base>/api/agents/<key>/terminal (wss for https).
+export function terminalRequests(base: string, agent: string): { origin: string; login: string; terminal: string; socket: string } {
+  const terminal = `${base}${agentPath(agent, "/terminal")}`;
+  return { origin: base, login: `${base}/auth/login`, terminal, socket: terminal.replace(/^http/, "ws") };
+}
+
+// The __Host-am_session value from a login response's Set-Cookie header (repeated headers
+// joined with commas, as Foundation does). Other cookies are ignored; a value that is not
+// 16 to 512 base64url characters is refused, so it can never inject anything into a header.
+export function sessionFromSetCookie(header: string | null): string | null {
+  if (header === null) return null;
+  for (const piece of header.split(",")) {
+    const pair = piece.split(";", 1)[0]!;
+    const equals = pair.indexOf("=");
+    if (equals < 0) continue;
+    if (pair.slice(0, equals).trim() !== TERMINAL_SESSION_COOKIE) continue;
+    const value = pair.slice(equals + 1).trim();
+    return /^[A-Za-z0-9_-]{16,512}$/.test(value) ? value : null;
+  }
+  return null;
+}
+
+// null for a successful sign-in (the cookie is checked separately).
+export function terminalLoginError(status: number): string | null {
+  switch (status) {
+    case 200:
+      return null;
+    case 401:
+      return TERMINAL_TOKEN_REJECTED;
+    case 403:
+      return terminalOriginRejected();
+    case 404:
+      return TERMINAL_NO_WEB_SIGNIN;
+    case 429:
+      return TERMINAL_SIGNIN_LIMIT;
+    default:
+      return terminalHttpError(status);
+  }
+}
+
+// `unauthorized`: no session, or one the server forgot; sign in once more and retry the step once.
+export type TerminalOutcome = { ok: true; transport: "local" | "ssh" } | { ok: false; unauthorized: true } | { ok: false; error: string };
+
+export function terminalPreflightOutcome(status: number, body: unknown): TerminalOutcome {
+  const object = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  switch (status) {
+    case 200:
+      return object.available === true && (object.transport === "local" || object.transport === "ssh")
+        ? { ok: true, transport: object.transport }
+        : { ok: false, error: TERMINAL_UNEXPECTED };
+    case 401:
+      return { ok: false, unauthorized: true };
+    case 403:
+      return { ok: false, error: terminalOriginRejected() };
+    case 404:
+    case 409:
+      return { ok: false, error: typeof object.error === "string" ? terminalServerText(object.error) : terminalHttpError(status) };
+    case 429:
+      return { ok: false, error: TERMINAL_CONNECTIONS_LIMIT };
+    default:
+      return { ok: false, error: terminalHttpError(status) };
+  }
+}
+
+// A refused upgrade has no readable body; status 0 means it never got an HTTP answer.
+export function terminalUpgradeOutcome(status: number): Exclude<TerminalOutcome, { ok: true }> {
+  switch (status) {
+    case 0:
+      return { ok: false, error: TERMINAL_UNREACHABLE };
+    case 401:
+      return { ok: false, unauthorized: true };
+    case 403:
+      return { ok: false, error: terminalOriginRejected() };
+    case 429:
+      return { ok: false, error: TERMINAL_CONNECTIONS_LIMIT };
+    default:
+      return { ok: false, error: terminalHttpError(status) };
+  }
+}
+
+// Server-supplied text shown to the person: controls, format characters and line/paragraph
+// separators dropped, at most 300 code points, space separators trimmed, never empty.
+export function terminalServerText(raw: string): string {
+  const kept = Array.from(raw.replace(INVISIBLE_RE, "")).slice(0, 300).join("");
+  return kept.replace(EDGE_SPACE_RE, "") || TERMINAL_UNAVAILABLE;
+}
+
+// A server close frame's reason: empty stays empty.
+export const terminalCloseReason = (raw: string): string => (raw ? terminalServerText(raw) : "");
+
+// A server TEXT frame, reduced to the three known messages; anything else is null (dropped).
+export function parseTerminalControl(text: string): TerminalControl | null {
+  if (text.length > TERMINAL_CONTROL_MAX_BYTES || utf8Length(text) > TERMINAL_CONTROL_MAX_BYTES) return null;
+  let message: unknown;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return null;
+  const { type, code, message: detail } = message as { type?: unknown; code?: unknown; message?: unknown };
+  if (type === "ready") return { type: "ready" };
+  if (type === "exit" && typeof code === "number" && Number.isInteger(code) && Math.abs(code) < 1e9) return { type: "exit", code };
+  if (type === "error" && typeof detail === "string") return { type: "error", message: terminalServerText(detail) };
+  return null;
+}
+
+// The consent question: a native sheet in the app (buttons Allow / Cancel, checkbox
+// "Don't ask again for this server"), window.confirm in browser dev mode.
+export function terminalConsent(name: string, url: string): { title: string; body: string } {
+  return {
+    title: `Open interactive terminals on ${displayText(name)}?`,
+    body: `Keys you type in a terminal go straight to the agent's terminal on ${serverHost(url)}, including Ctrl-C and shell commands.`,
+  };
+}
+export const terminalConsentMessage = (name: string, url: string): string => {
+  const { title, body } = terminalConsent(name, url);
+  return `${title}\n\n${body}`;
+};

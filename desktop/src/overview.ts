@@ -1,8 +1,9 @@
 import { selectAgent } from "./chat";
 import { agentsWaitingOnDecisions, blockingDecisions, decisionsName, rowDecisionsLabel } from "./decisions";
-import { $, composerInput, decisionsBadge, dot, h } from "./dom";
+import { $, decisionsBadge, dot, h } from "./dom";
 import { agentId, agentKey, conciergeRow, fleetRows, rowStatusLabel, type ConnectionFleet } from "./fleet";
 import { registerShortcut } from "./keyboard";
+import { focusAgentInput } from "./terminalView";
 import {
   compareOverview,
   elapsed,
@@ -220,7 +221,7 @@ function openAgent(key: string, write: boolean): void {
   if (item) state.cursor = item.id;
   cardCursor = key;
   selectAgent(key);
-  if (write && !composerInput().disabled) composerInput().focus();
+  if (write) focusAgentInput();
 }
 
 export function showOverview(focus = false): void {

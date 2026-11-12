@@ -3,6 +3,8 @@
 # It sends messages and stops, removes and creates agents, so SMOKE_URL may only name another
 # fixture-compatible server on loopback (pipe its token on stdin), never a real fleet.
 # SMOKE_BRIDGE_ONLY=1 skips the UI steps; SMOKE_SCREENSHOT sets where the PNG is copied.
+# The app is launched twice: the second launch (SMOKE_PHASE=relaunch) checks that the terminal
+# consent's "Don't ask again" survived the relaunch and is cleared when the connection is removed.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [[ "$(uname -s)" != Darwin ]]; then
@@ -19,7 +21,7 @@ cp Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier ca.alexgap.agent-motel.smoke' "$app/Contents/Info.plist"
 sources=()
 for file in Sources/*.swift; do [[ "$file" == Sources/main.swift ]] || sources+=("$file"); done
-xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx12.3" "${sources[@]}" Tests/Smoke.swift \
+xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx12.3" "${sources[@]}" Tests/Smoke.swift Tests/SmokeTerminal.swift \
   -o "$app/Contents/MacOS/AgentMotel"
 codesign --force --options runtime --entitlements Entitlements.plist --sign - "$app"
 
@@ -53,25 +55,38 @@ screenshot="${SMOKE_SCREENSHOT:-${TMPDIR:-/tmp}/am-macos-smoke.png}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/am-smoke.XXXXXX")"
 writer_pid=""
 trap 'cleanup; [[ -z "$writer_pid" ]] || kill "$writer_pid" 2>/dev/null || true; rm -rf "$work"' EXIT
-mkfifo -m 600 "$work/token"
-: >build/smoke.log
-printf '%s\n' "$token" >"$work/token" &
-writer_pid=$!
-env_args=(--env "SMOKE_URL=$SMOKE_URL")
-[[ "${SMOKE_BRIDGE_ONLY:-}" == 1 ]] && env_args+=(--env SMOKE_BRIDGE_ONLY=1)
-tail -f build/smoke.log &
-tail_pid=$!
-open -W -n -g --stdin "$work/token" --stdout "$PWD/build/smoke.log" --stderr "$PWD/build/smoke.log" "${env_args[@]}" "$app"
-sleep 0.3
-kill "$tail_pid" 2>/dev/null || true
-wait "$tail_pid" 2>/dev/null || true
+
+# launch <log> [extra open(1) arguments…]: one run of the smoke app; fails unless it passed.
+launch() {
+  local log="$1"
+  shift
+  rm -f "$work/token"
+  mkfifo -m 600 "$work/token"
+  : >"$log"
+  printf '%s\n' "$token" >"$work/token" &
+  writer_pid=$!
+  local env_args=(--env "SMOKE_URL=$SMOKE_URL")
+  [[ "${SMOKE_BRIDGE_ONLY:-}" == 1 ]] && env_args+=(--env SMOKE_BRIDGE_ONLY=1)
+  tail -f "$log" &
+  local tail_pid=$!
+  open -W -n -g --stdin "$work/token" --stdout "$log" --stderr "$log" "${env_args[@]}" "$@" "$app"
+  sleep 0.3
+  kill "$tail_pid" 2>/dev/null || true
+  wait "$tail_pid" 2>/dev/null || true
+  wait "$writer_pid" 2>/dev/null || true
+  writer_pid=""
+  if grep -q '^FAIL' "$log" || ! grep -q '^PASS all smoke checks' "$log"; then
+    echo "Smoke test failed ($log)." >&2
+    exit 1
+  fi
+}
+
+launch "$PWD/build/smoke.log"
 captured="$(sed -n 's/^SCREENSHOT //p' build/smoke.log | tail -1)"
 if [[ -n "$captured" && -f "$captured" ]]; then
   mv "$captured" "$screenshot"
   echo "Screenshot: $screenshot"
 fi
-if grep -q '^FAIL' build/smoke.log || ! grep -q '^PASS all smoke checks' build/smoke.log; then
-  echo "Smoke test failed." >&2
-  exit 1
-fi
+echo "Relaunching for the terminal consent check."
+launch "$PWD/build/smoke-relaunch.log" --env SMOKE_PHASE=relaunch
 echo "Smoke test passed."

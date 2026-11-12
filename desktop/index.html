@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <title>Agent Motel</title>
     <link rel="icon" type="image/svg+xml" href="web/favicon.svg" />
+    <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="web/style.css" />
     <link rel="stylesheet" href="desktop.css" />
     <script src="web/links.js" defer></script>
@@ -13,6 +14,10 @@
     <script src="web/transcript.js" defer></script>
     <script src="web/usage.js" defer></script>
     <script src="web/prs.js" defer></script>
+    <script src="vendor/xterm.js" defer></script>
+    <script src="vendor/addon-fit.js" defer></script>
+    <script src="vendor/addon-web-links.js" defer></script>
+    <script src="web/terminal.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body data-view="fleet">
@@ -76,6 +81,10 @@
                 <h1 id="am-agent-name"></h1>
                 <span id="am-agent-status"></span>
                 <span id="am-agent-flag" hidden></span>
+                <div id="am-view-switch" class="segmented" role="group" aria-label="Agent view">
+                  <button id="am-view-chat" type="button" aria-pressed="true" title="Chat (⌘1)">Chat</button
+                  ><button id="am-view-terminal" type="button" aria-pressed="false" title="Terminal (⌘2)">Terminal</button>
+                </div>
               </div>
               <div id="am-agent-meta" class="am-chat-meta"></div>
               <p id="am-agent-reason" hidden></p>
@@ -86,27 +95,37 @@
                 <button id="am-agent-task-toggle" type="button" class="text-button" aria-expanded="false">More</button>
               </div>
             </header>
-            <div id="am-chat-body">
-              <div id="transcript" tabindex="0" aria-label="Transcript"></div>
-              <button id="am-jump-latest" type="button" hidden>↓ Jump to latest</button>
-            </div>
-            <div id="am-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
-            <form id="am-composer" autocomplete="off" novalidate>
-              <div id="composer-error" role="alert" hidden></div>
-              <div id="am-composer-blocked" hidden><span id="am-composer-blocked-text"></span><button id="am-composer-resume" type="button" hidden>Resume</button></div>
-              <div class="am-composer-box">
-                <textarea id="composer-input" rows="1" aria-label="Message the agent" aria-describedby="composer-mode-hint am-composer-keys" placeholder="Message the agent" spellcheck="true"></textarea>
-                <div class="am-composer-bar">
-                  <div class="am-mode" role="group" aria-label="When the agent gets the message">
-                    <button type="button" data-send-mode="now" aria-pressed="true">Now</button>
-                    <button type="button" data-send-mode="queue" aria-pressed="false">Queue</button>
-                  </div>
-                  <span id="composer-mode-hint"></span>
-                  <button id="composer-send" type="submit" class="primary">Send</button>
-                </div>
+            <div id="am-chat-pane">
+              <div id="am-chat-body">
+                <div id="transcript" tabindex="0" aria-label="Transcript"></div>
+                <button id="am-jump-latest" type="button" hidden>↓ Jump to latest</button>
               </div>
-              <div id="am-composer-keys"></div>
-            </form>
+              <div id="am-working" class="working-indicator" hidden><span class="sr-only" role="status"></span><span class="working-text" aria-hidden="true">Working</span></div>
+              <form id="am-composer" autocomplete="off" novalidate>
+                <div id="composer-error" role="alert" hidden></div>
+                <div id="am-composer-blocked" hidden><span id="am-composer-blocked-text"></span><button id="am-composer-resume" type="button" hidden>Resume</button></div>
+                <div class="am-composer-box">
+                  <textarea id="composer-input" rows="1" aria-label="Message the agent" aria-describedby="composer-mode-hint am-composer-keys" placeholder="Message the agent" spellcheck="true"></textarea>
+                  <div class="am-composer-bar">
+                    <div class="am-mode" role="group" aria-label="When the agent gets the message">
+                      <button type="button" data-send-mode="now" aria-pressed="true">Now</button>
+                      <button type="button" data-send-mode="queue" aria-pressed="false">Queue</button>
+                    </div>
+                    <span id="composer-mode-hint"></span>
+                    <button id="composer-send" type="submit" class="primary">Send</button>
+                  </div>
+                </div>
+                <div id="am-composer-keys"></div>
+              </form>
+            </div>
+            <section id="am-terminal-panel" aria-label="Interactive agent terminal" hidden>
+              <div class="am-terminal-bar">
+                <span id="am-terminal-status" role="status"></span>
+                <span class="am-terminal-hint" hidden><kbd>⌃⇧`</kbd> to the agent list</span>
+                <button id="am-terminal-reconnect" type="button" hidden>Reconnect</button>
+              </div>
+              <div id="am-terminal" data-keyboard-isolated></div>
+            </section>
           </section>
         </div>
       </div>

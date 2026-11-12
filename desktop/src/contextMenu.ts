@@ -1,5 +1,5 @@
 // The web view's own menu (only "Reload") is suppressed except in text fields
-// and on a text selection, where Copy and Look Up still belong.
+// (and the terminal) and on a text selection, where Copy and Look Up still belong.
 import { h } from "./dom";
 import { parseAgentKey } from "./fleet";
 import { findRow, subscribe } from "./state";
@@ -72,7 +72,9 @@ export function menuSections(items: readonly AgentMenuItem[], row: AgentRow, key
   return sections;
 }
 
-const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+// The terminal counts as a text field: xterm moves its input under the pointer
+// on a right-click, so the native menu offers Copy (its selection) and Paste (as input).
+const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false']), .xterm";
 
 function inSelection(x: number, y: number): boolean {
   const selection = document.getSelection();
