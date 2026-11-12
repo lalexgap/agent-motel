@@ -16,7 +16,6 @@ import {
   parsePrsPrefs,
   periodicDue,
   prAgentKey,
-  prRowId,
   prsPath,
   serializePrsPrefs,
 } from "./prs";
@@ -42,6 +41,7 @@ interface PrsData {
   loading: boolean;
   error: string | null;
   includeOlder: boolean;
+  notice?: string;
 }
 interface AgentPrsApi {
   buildPage(root: HTMLElement): HTMLElement;
@@ -63,6 +63,8 @@ const prefs = parsePrsPrefs(loadPrsPrefsRaw());
 let connection: string | null = null;
 let report: PrsReport | null = null;
 let error: string | null = null;
+// A message for the status line until the next user action on the page.
+let notice = "";
 let inFlight = false;
 let fetchedAt = 0;
 let seq = 0;
@@ -81,45 +83,7 @@ const pageVisible = () => !!page && !page.hidden && screen() === "fleet";
 
 function render(): void {
   if (!pageVisible()) return;
-  const focused = focusMark();
-  window.agentPrs.render(root, { report, loading: inFlight && !report, error, includeOlder: prefs.includeOlder }, actions);
-  if (focused) restoreFocus(focused);
-}
-
-// The module rebuilds the list on every render, and a background refetch must
-// not drop keyboard focus: the focused control is found again by its row's PR and by what it is.
-interface FocusMark {
-  row: string;
-  tag: string;
-  label: string | null;
-  title: string | null;
-  href: string | null;
-  text: string | null;
-}
-function rowOf(node: Element): string | null {
-  const tr = node.closest("tr");
-  if (!tr) return null;
-  if (tr.classList.contains("prs-decision-row")) {
-    const owner = tr.previousElementSibling;
-    return owner ? `${rowOf(owner)} decision` : null;
-  }
-  if (!tr.classList.contains("prs-row")) return null;
-  return prRowId(tr.querySelector(".prs-repo")?.textContent ?? "", tr.querySelector(".prs-title")?.textContent ?? "");
-}
-function focusMark(): FocusMark | null {
-  const active = document.activeElement as HTMLElement | null;
-  const list = root.querySelector("#prs-list");
-  if (!active || !list?.contains(active)) return null;
-  const row = rowOf(active);
-  if (!row) return null;
-  return { row, tag: active.tagName, label: active.getAttribute("aria-label"), title: active.getAttribute("title"), href: active.getAttribute("href"), text: active.textContent };
-}
-function restoreFocus(mark: FocusMark): void {
-  if (root.querySelector("#prs-list")?.contains(document.activeElement)) return;
-  const same = [...root.querySelectorAll<HTMLElement>("#prs-list button, #prs-list a[href]")].find((node) =>
-    node.tagName === mark.tag && node.getAttribute("aria-label") === mark.label && node.getAttribute("title") === mark.title &&
-    node.getAttribute("href") === mark.href && node.textContent === mark.text && rowOf(node) === mark.row);
-  same?.focus({ preventScroll: true });
+  window.agentPrs.render(root, { report, loading: inFlight && !report, error, includeOlder: prefs.includeOlder, notice }, actions);
 }
 
 function updateBadge(): void {
@@ -173,24 +137,33 @@ function fleetKey(key: string): string | null {
   return conn ? prAgentKey(conn.conn.id, conn.rows, key) : null;
 }
 
+function clearNotice(): void {
+  if (!notice) return;
+  notice = "";
+  render();
+}
+
 function notInFleet(key: string): void {
-  const status = root.querySelector<HTMLElement>("#prs-status");
-  if (status) status.textContent = `${key} is not in the fleet any more`;
+  notice = `${key} is not in the fleet any more`;
+  render();
 }
 
 const actions: PrsActions = {
   openAgent(key) {
+    clearNotice();
     const target = fleetKey(key);
     if (target) selectAgent(target, true);
     else notInFleet(key);
   },
   openUrl(url) {
+    clearNotice();
     call("open.external", { url })
       .then(() => { if (!isNative()) window.open(url, "_blank", "noopener"); })
       .catch((failure: unknown) => console.warn("open.external failed", failure));
   },
   // Opens the agent with the text in its message box, after any draft; never sends.
   nudge(key, text) {
+    clearNotice();
     const target = fleetKey(key);
     if (!target) {
       notInFleet(key);
@@ -210,8 +183,12 @@ const actions: PrsActions = {
     input.setSelectionRange(input.value.length, input.value.length);
     input.scrollTop = input.scrollHeight;
   },
-  refresh: () => void refresh(),
+  refresh() {
+    clearNotice();
+    void refresh();
+  },
   setIncludeOlder(include) {
+    notice = "";
     prefs.includeOlder = !!include;
     savePrefs();
     render();
@@ -236,6 +213,7 @@ function setConnection(id: string | null): void {
   seq++;
   report = null;
   error = null;
+  notice = "";
   inFlight = false;
   fetchedAt = 0;
   seenAgents = id ? state.conns.get(id)?.agentsApplied ?? 0 : 0;

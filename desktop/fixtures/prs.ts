@@ -106,10 +106,9 @@ const SEEDS: Record<string, { prs: Seed[]; stale?: boolean }> = {
         stack: { position: 1, size: 2, children: [128] },
       },
       {
-        repository: LIGHTHOUSE, number: 128, title: "[Status] Report each station's sync state", state: "shepherding",
-        reason: "shepherd: CI green. Waiting on the main reviewer.", sinceMin: 6, needsMe: false, activityMin: 3, base: "am/harbor-lights", head: "am/harbor-lights-status",
-        checks: { total: 7, pending: 0, failing: [] }, shepherd: { state: "waiting", note: "CI green. Waiting on the main reviewer.", atMin: 6 },
-        stack: { position: 2, size: 2, parent: 127, children: [] },
+        repository: LIGHTHOUSE, number: 128, title: "[Status] Report each station's sync state", state: "waiting",
+        reason: "waiting on review", sinceMin: 6, needsMe: false, activityMin: 3, base: "am/harbor-lights", head: "am/harbor-lights-status",
+        checks: { total: 7, pending: 0, failing: [] }, stack: { position: 2, size: 2, parent: 127, children: [] },
       },
     ],
   },

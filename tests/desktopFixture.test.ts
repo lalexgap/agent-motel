@@ -825,8 +825,8 @@ describe("fixture parity routes", () => {
       expect(pr.agentName).toBe(pr.agent.split(":").pop());
     }
     // Server order: needs-me first, then by state.
-    expect(report.prs.map((pr: { state: string }) => pr.state)).toEqual(["needs-decision", "ci-failing", "merge-ready", "conflict", "shepherding", "shepherding", "shepherding", "waiting", "waiting"]);
-    expect(report.counts).toMatchObject({ open: 9, needsMe: 2, "needs-decision": 1, "merge-ready": 1, conflict: 1, "ci-failing": 1, shepherding: 3, waiting: 2, merged: 0, closed: 0 });
+    expect(report.prs.map((pr: { state: string }) => pr.state)).toEqual(["needs-decision", "ci-failing", "merge-ready", "conflict", "shepherding", "shepherding", "waiting", "waiting", "waiting"]);
+    expect(report.counts).toMatchObject({ open: 9, needsMe: 2, "needs-decision": 1, "merge-ready": 1, conflict: 1, "ci-failing": 1, shepherding: 2, waiting: 3, merged: 0, closed: 0 });
     expect(report.stale).toEqual(["annex:sandbar"]);
     expect(report.unreachable).toEqual(["lantern"]);
     const byNumber = (n: number) => report.prs.find((pr: { number: number }) => pr.number === n);
@@ -843,7 +843,7 @@ describe("fixture parity routes", () => {
     const needsMe = await read("/api/prs?needsMe=1");
     expect(needsMe.prs.map((pr: { number: number }) => pr.number)).toEqual([131, 119]);
     expect(needsMe.counts).toEqual(report.counts);
-    expect((await read("/api/prs?state=waiting")).prs.map((pr: { number: number }) => pr.number).sort()).toEqual([125, 134]);
+    expect((await read("/api/prs?state=waiting")).prs.map((pr: { number: number }) => pr.number).sort()).toEqual([125, 128, 134]);
     expect((await read("/api/prs?repo=tide-tables")).prs.map((pr: { number: number }) => pr.number)).toEqual([73, 64]);
     expect((await read("/api/prs?repo=EXAMPLE/paper-crane&all=1")).prs.map((pr: { number: number }) => pr.number)).toEqual([102, 97, 88]);
     expect((await read("/api/prs?all=0&needsMe=yes")).prs).toHaveLength(9);
