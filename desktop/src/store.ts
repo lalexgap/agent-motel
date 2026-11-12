@@ -93,3 +93,7 @@ export const loadDraftsRaw = (): string | null => read(DRAFTS_KEY);
 export const saveDraftsRaw = (raw: string): void => write(DRAFTS_KEY, raw);
 export const loadSendModeRaw = (): string | null => read(SEND_MODE_KEY);
 export const saveSendModeRaw = (mode: string): void => write(SEND_MODE_KEY, mode);
+
+const USAGE_KEY = "am.desktop.usage.v1";
+export const loadUsagePrefsRaw = (): string | null => read(USAGE_KEY);
+export const saveUsagePrefsRaw = (raw: string): void => write(USAGE_KEY, raw);

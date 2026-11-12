@@ -1203,6 +1203,91 @@ body.am-resizing {
   padding: 0 7px;
   color: var(--fg-subtle);
 }
+/* Token usage: web/usage.js renders the browser UI's dashboard into
+   #usage-page. These rules only fit it into the main area, whose width is the
+   window minus the sidebar, so the page's own breakpoints are container
+   queries on the main area rather than the viewport ones in style.css. */
+#am-usage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 0;
+  container: am-usage / inline-size;
+  -webkit-user-select: text;
+  user-select: text;
+}
+#am-usage[hidden] {
+  display: none;
+}
+.am-usage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 14px;
+}
+.am-usage-titles {
+  min-width: 0;
+  flex: 1 1 360px;
+}
+.am-usage-titles h1 {
+  margin: 0;
+  font-size: 18px;
+}
+.am-usage-sub {
+  margin: 4px 0 0;
+  max-width: 720px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.am-usage-conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.am-usage-conn[hidden] {
+  display: none;
+}
+#am-usage .usage-subagent-btn:disabled,
+#am-usage .usage-anomaly-target:disabled {
+  opacity: 1;
+  cursor: default;
+  text-decoration: none;
+}
+#am-usage .usage-anomaly-target:disabled {
+  color: var(--fg);
+}
+#am-usage .usage-subagent-btn:disabled:hover {
+  background: none;
+}
+@container am-usage (max-width: 880px) {
+  .usage-dash-row { grid-template-columns: minmax(0, 1fr); }
+}
+@container am-usage (max-width: 720px) {
+  .usage-grid { grid-template-columns: minmax(0, 1fr); }
+  .usage-dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container am-usage (max-width: 560px) {
+  .usage-top-table .usage-col-split,
+  .usage-top-table .usage-col-cache,
+  .usage-top-table .usage-col-context,
+  .usage-top-table .usage-col-spark { display: none; }
+  .usage-top-table .usage-col-agent { max-width: 0; width: 100%; }
+  .usage-top-table .usage-agent-label,
+  .usage-top-table .usage-agent-meta { overflow: hidden; text-overflow: ellipsis; }
+  .usage-col-spend { width: auto; min-width: 0; }
+  .usage-spend { justify-content: flex-end; }
+  .usage-top-table th.usage-col-spend { text-align: right; }
+  .usage-spend .usage-bar-track { display: none; }
+  .usage-spend .usage-num { min-width: 0; }
+}
+@container am-usage (max-width: 400px) {
+  .usage-dash-kpis { grid-template-columns: minmax(0, 1fr); }
+  .usage-toolbar { padding: 10px; }
+}
 @media (max-width: 1100px) {
   #am-sb-counts .am-count-label {
     display: none;

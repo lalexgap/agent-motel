@@ -12,6 +12,7 @@ import { initKeyboard } from "./keyboard";
 import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sidebar";
 import { changed, newConnState, state } from "./state";
 import { initStatusbar } from "./statusbar";
+import { initUsage } from "./usageView";
 import type { BridgeEvents, Connection } from "./types";
 import { setScreen } from "./views";
 
@@ -33,6 +34,7 @@ function wire(): void {
   initConnections();
   initOverview();
   initChat();
+  initUsage();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {
     const link = (event.target as HTMLElement).closest?.("a[href]") as HTMLAnchorElement | null;
