@@ -87,7 +87,7 @@ describe("busyPresence — what an idle agent is shown as", () => {
     }));
     expect(shown.status).toBe("needs-attention");
     expect(shown.stalled).toBe(true);
-    expect(shown.reason).toBe("subagent Shepherd PR 74 silent for 34m — the agent is still waiting on it");
+    expect(shown.reason).toBe("subagent silent for 34m, agent still waiting on it (Shepherd PR 74)");
     expect(shown.busyWith).toBeUndefined();
   });
 
@@ -103,7 +103,7 @@ describe("busyPresence — what an idle agent is shown as", () => {
     expect(shown).toEqual({
       status: "needs-attention",
       stalled: true,
-      reason: "subagent Shepherd PR 74 finished 12m ago and the agent has not resumed",
+      reason: "subagent finished 12m ago, agent never resumed (Shepherd PR 74)",
     });
   });
 
@@ -397,7 +397,7 @@ exit 0
     expect(presence.status).toBe("needs-attention");
     expect(presence.stalled).toBe(true);
     expect(presence.busyWith).toBeUndefined();
-    expect(presence.reason).toMatch(/^subagent Shepherd PR 74 silent for 45m/);
+    expect(presence.reason).toBe("subagent silent for 45m, agent still waiting on it (Shepherd PR 74)");
     const row = agentRows().find((r) => r.name === "api")!;
     expect(buildFleetSummary({ rows: [row], unreachable: [] } as any).attention.map((item) => item.name)).toEqual(["api"]);
     // Nothing is running, so nothing blocks the stop.
@@ -410,7 +410,7 @@ exit 0
     recordSubagentStop("api", { id: "s1", at: minutesAgo(15) });
     const presence = agentPresence(readAgent("api")!);
     expect(presence.status).toBe("needs-attention");
-    expect(presence.reason).toBe("subagent Shepherd PR 74 finished 15m ago and the agent has not resumed");
+    expect(presence.reason).toBe("subagent finished 15m ago, agent never resumed (Shepherd PR 74)");
   });
 
   test("a subagent the turn boundary swept up is not a missed report", () => {

@@ -326,11 +326,14 @@ export function busyPresence(input: BusyInput): Pick<Presence, "status" | "reaso
     // Silent for QUIET_AFTER_MS already, so there is no second grace period.
     const silent = input.now - (input.quietSince ?? input.now);
     if (silent >= STALLED_FORGET_MS) return { status: "idle" };
-    const who = input.quiet.length === 1 ? `subagent ${shortLabel(input.quiet[0]!)}` : plural(input.quiet.length, "subagent");
+    // What happened first, who last: the status column clips the tail.
+    const one = input.quiet.length === 1;
     return {
       status: "needs-attention",
       stalled: true,
-      reason: `${who} silent for ${age(silent)} — the agent is still waiting on ${input.quiet.length === 1 ? "it" : "them"}`,
+      reason: one
+        ? `subagent silent for ${age(silent)}, agent still waiting on it (${shortLabel(input.quiet[0]!)})`
+        : `${input.quiet.length} subagents silent for ${age(silent)}, agent still waiting on them`,
     };
   }
   const stop = input.lastStop;
@@ -342,7 +345,7 @@ export function busyPresence(input: BusyInput): Pick<Presence, "status" | "reaso
       return {
         status: "needs-attention",
         stalled: true,
-        reason: `subagent ${shortLabel(stop)} finished ${age(waited)} ago and the agent has not resumed`,
+        reason: `subagent finished ${age(waited)} ago, agent never resumed (${shortLabel(stop)})`,
       };
     }
   }
