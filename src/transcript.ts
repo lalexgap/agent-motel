@@ -810,7 +810,7 @@ function truncate(text: string, chars: number, lines?: number): string {
 
 // Message text (a peer's, or an assistant's) must not open a turn of its own.
 function escapeTurnHeadings(text: string): string {
-  return text.replace(/^(?=## (?:User|Assistant)[ \t]*$)/gm, "\\");
+  return text.replace(/^(?=[ \t]{0,3}(?:#{1,6}[ \t]*(?:User|Assistant)\b|(?:User|Assistant)[ \t]*$))/gim, "\\");
 }
 
 export function renderTranscript(
