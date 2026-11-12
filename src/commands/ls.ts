@@ -18,7 +18,7 @@ import {
   type SubagentRecord,
   type SubagentSummary,
 } from "../subagents";
-import { derivePrStatuses, hasRecentPullRequests, type PrStatus } from "../prStatus";
+import { derivePrStatuses, hasRecentPullRequests, type PrStatus, type PrSubagent } from "../prStatus";
 import { readOpenDecisions } from "../decisions";
 import { reconcileAntigravityAgent } from "../antigravity";
 import { CLAUDE_TRUST_PROMPT_REASON, paneShowsClaudeTrustPrompt } from "../claudeTrust";
@@ -525,6 +525,15 @@ export function cachedGitDiffSummary(dir: string): DiffSummary | null | undefine
   return cached ? cached.value : undefined;
 }
 
+// The ledger for PR status, with open records that show no life marked quiet
+// so a shepherd that died silently stops holding its PR in "shepherding".
+function prSubagents(agent: AgentState, alive: boolean): PrSubagent[] {
+  const records = readSubagents(agent.name);
+  if (!alive || records.every((record) => record.endedAt)) return records;
+  const quiet = new Set(subagentLiveness(agent, records).quiet.map((record) => record.id));
+  return records.map((record) => quiet.has(record.id) ? { ...record, quiet: true } : record);
+}
+
 export function agentRows(): AgentRow[] {
   return listAgents().map((a) => {
     const presence = agentPresence(a);
@@ -532,9 +541,9 @@ export function agentRows(): AgentRow[] {
     const { roleInstructions: _roleInstructions, ...visible } = a;
     const derived = !!presence.busyWith?.subagents || !!presence.stalled;
     const now = new Date();
+    const alive = status !== "exited" && status !== "dead";
     const prStatus = hasRecentPullRequests(a.prMonitor?.pullRequests, now) ? derivePrStatuses({
-      prs: a.prMonitor!.pullRequests, alive: status !== "exited" && status !== "dead",
-      subagents: readSubagents(a.name), decisions: readOpenDecisions(a.name), now,
+      prs: a.prMonitor!.pullRequests, alive, subagents: prSubagents(a, alive), decisions: readOpenDecisions(a.name), now,
     }) : undefined;
     return {
       ...visible,

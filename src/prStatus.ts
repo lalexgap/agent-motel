@@ -41,6 +41,10 @@ export interface PrSubagent {
   startedAt: string;
   endedAt?: string;
   message?: string;
+  // "turn": swept up by the parent's turn boundary, so it never reported.
+  endedBy?: "stop" | "turn";
+  // Still open in the ledger but showing no sign of life.
+  quiet?: boolean;
 }
 
 export interface PrStatusInput {
@@ -83,14 +87,14 @@ function shepherdFor(pr: TrackedPullRequest, input: PrStatusInput, sole: boolean
   const mine = input.subagents.filter(sub => concerns(sub, pr.number, sole));
   const latest = mine.filter(isShepherd).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
   if (!latest) return undefined;
-  if (!latest.endedAt) return input.alive ? { state: "running", note: latest.description, at: latest.startedAt } : undefined;
+  if (!latest.endedAt) return input.alive && !latest.quiet ? { state: "running", note: latest.description, at: latest.startedAt } : undefined;
   const verdict = shepherdVerdict(latest.message);
   const headSeen = Date.parse(pr.headSince ?? "");
   const namesHead = !!pr.headSha && (latest.message ?? "").includes(pr.headSha.slice(0, 7));
   const stale = Number.isFinite(headSeen) && Date.parse(latest.endedAt) < headSeen && !namesHead;
   if (verdict && !stale) return { state: verdict, note: plain(latest.message), at: latest.endedAt };
-  const helpers = mine.some(sub => !sub.endedAt && !isShepherd(sub));
-  const fresh = input.now.getTime() - Date.parse(latest.endedAt) < SHEPHERD_WAIT_MS;
+  const helpers = mine.some(sub => !sub.endedAt && !sub.quiet && !isShepherd(sub));
+  const fresh = latest.endedBy !== "turn" && input.now.getTime() - Date.parse(latest.endedAt) < SHEPHERD_WAIT_MS;
   if (!verdict && input.alive && (helpers || fresh)) return { state: "waiting", note: plain(latest.message ?? latest.description), at: latest.endedAt };
   return undefined;
 }
@@ -156,7 +160,8 @@ function derive(pr: TrackedPullRequest, input: PrStatusInput, sole: boolean): Pr
     else if (shepherd?.state === "not-ready") { reason = `shepherd: ${shepherd.note}`; since = shepherd.at; }
     else if (pr.mergeable !== "MERGEABLE") reason = "GitHub is still computing mergeability";
     else if (marked && !markCurrent) reason = "head moved since it was marked ready; needs re-review";
-    else if (input.subagents.some(sub => !sub.endedAt && isReviewer(sub) && concerns(sub, pr.number, sole))) reason = "review running";
+    else if (input.subagents.some(sub => !sub.endedAt && !sub.quiet && isReviewer(sub) && concerns(sub, pr.number, sole))) reason = "review running";
+    else if (input.alive && input.subagents.some(sub => !sub.endedAt && sub.quiet && isShepherd(sub) && concerns(sub, pr.number, sole))) reason = "shepherd has gone quiet";
     else reason = `${ci === "none" ? "no CI checks" : "CI green"}, no review verdict yet`;
   }
 

@@ -60,6 +60,17 @@ describe("PR status derivation", () => {
     expect(status([pr()], { subagents: [shepherd()], alive: false })[0]!.state).toBe("waiting");
   });
 
+  test("a shepherd that has gone silent, or was only swept up by a turn ending, does not hold the PR", () => {
+    expect(status([pr()], { subagents: [shepherd({ quiet: true })] })[0]).toMatchObject({ state: "waiting", reason: "shepherd has gone quiet" });
+    expect(status([pr({ mergeable: "CONFLICTING" })], { subagents: [shepherd({ quiet: true })] })[0]!.state).toBe("conflict");
+    expect(status([pr()], { subagents: [shepherd({ endedAt: ago(4), endedBy: "turn" })] })[0])
+      .toMatchObject({ state: "waiting", reason: "CI green, no review verdict yet" });
+    expect(status([pr()], { subagents: [shepherd({ endedAt: ago(4), endedBy: "stop", message: "Waiting on CI." })] })[0]!.state).toBe("shepherding");
+    const swept = shepherd({ endedAt: ago(90), endedBy: "turn" });
+    expect(status([pr()], { subagents: [swept, { type: "reviewer", description: "Review PR 7", startedAt: ago(80) }] })[0]!.state).toBe("shepherding");
+    expect(status([pr()], { subagents: [swept, { type: "reviewer", description: "Review PR 7", startedAt: ago(80), quiet: true }] })[0]!.state).toBe("waiting");
+  });
+
   test("subagents are matched to their own PR, and unlabelled ones only when there is a single open PR", () => {
     const other = pr({ number: 8, url: "https://github.com/owner/repo/pull/8" });
     const both = status([pr(), other], { subagents: [shepherd({ description: "Shepherd PR 8" })] });
