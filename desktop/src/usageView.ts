@@ -365,7 +365,6 @@ function buildPage(): void {
 
   new MutationObserver(() => {
     const shown = !page.hidden;
-    navButton.classList.toggle("active", shown);
     if (shown) navButton.setAttribute("aria-current", "page");
     else {
       navButton.removeAttribute("aria-current");
