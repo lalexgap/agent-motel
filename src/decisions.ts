@@ -199,7 +199,7 @@ export function readDecisionStoreTextsIfAvailable(): Map<string, string> | null 
 
 export function readDecisionStoreTextsResult(relevantNames?: string[]): { texts: Map<string, string>; complete: boolean } | null {
   const out = new Map<string, string>();
-  const relevantSlugs = relevantNames === undefined ? null : new Set(relevantNames.map(slug));
+  const relevantSlugs = relevantNames === undefined ? null : new Set(relevantNames.filter(ownsStore).map(slug));
   let complete = true;
   let files: string[];
   try {
