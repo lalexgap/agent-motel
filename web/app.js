@@ -278,6 +278,10 @@ function lock() {
   ])
     $(id)?.replaceChildren();
   if ($("usage-page")) $("usage-page").hidden = true;
+  if ($("prs-page")) $("prs-page").hidden = true;
+  Object.assign(prsView, { report: null, loading: false, error: null });
+  renderPrs();
+  updatePrsBadge();
   $("pane").textContent = "";
   $("workspace-count").textContent = "";
   $("workspace-summary").textContent = "";
@@ -325,6 +329,8 @@ function showOverview(filter = "live") {
   $("search-nav").classList.remove("active");
   if ($("usage-page")) $("usage-page").hidden = true;
   $("usage-nav")?.classList.remove("active");
+  if ($("prs-page")) $("prs-page").hidden = true;
+  $("prs-nav")?.classList.remove("active");
   saveDraft();
   agentTerminal.close();
   state.selected = null;
@@ -567,6 +573,7 @@ async function selectAgent(name, mode) {
   if (modelDialog && modelDialog.name !== name) closeModelDialog();
   $("search-page").hidden = true;
   if ($("usage-page")) $("usage-page").hidden = true;
+  if ($("prs-page")) $("prs-page").hidden = true;
   saveDraft();
   agentTerminal.close();
   state.selected = name;
@@ -1528,6 +1535,7 @@ async function refresh() {
       refreshDock(),
       refreshSubagent(),
       !$("usage-page")?.hidden ? refreshUsageSummary({ periodic: true }) : Promise.resolve(),
+      refreshPrs(),
     ]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
@@ -1652,6 +1660,7 @@ function renderCommands() {
     ["Needs attention", () => showOverview("attention")],
     ["Search conversations", () => $("search-nav").click()],
     ["Token usage", () => $("usage-nav").click()],
+    ["Pull requests", () => $("prs-nav").click()],
     ["Concierge", () => $("concierge-nav").click()],
     ["New agent…", createDialog],
     ...(state.selected ? [["View chat", () => $("chat-tab").click()],
@@ -1949,6 +1958,7 @@ function showUsage(agentName) {
   $("overview").hidden = true;
   $("detail").hidden = true;
   $("search-page").hidden = true;
+  if ($("prs-page")) $("prs-page").hidden = true;
   $("usage-page").hidden = false;
   document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
@@ -2102,3 +2112,90 @@ function renderUsage(report) {
 
 $("usage-nav").onclick = () => showUsage();
 window.usageDashboard.bindControls(usageRoot, usageActions);
+
+// --- PRs Page ----------------------------------------------------------------
+
+// Fetched on every refresh, page open or not, so the nav badge stays current.
+let prsRequestSeq = 0;
+const prsView = { report: null, loading: false, error: null, includeOlder: false };
+const prsRoot = $("prs-page");
+
+function updatePrsBadge() {
+  const count = prsView.report?.counts?.needsMe || 0;
+  $("prs-count").textContent = String(count);
+  $("prs-count").hidden = !count;
+}
+
+async function refreshPrs() {
+  if (!state.authenticated) return;
+  const reqId = ++prsRequestSeq;
+  const epoch = state.sessionEpoch;
+  prsView.loading = true;
+  if (!prsRoot.hidden && !prsView.report) renderPrs();
+  try {
+    const report = await api("/api/prs" + (prsView.includeOlder ? "?all=1" : ""));
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== prsRequestSeq) return;
+    prsView.report = report;
+    prsView.error = null;
+  } catch (error) {
+    if (!state.authenticated || epoch !== state.sessionEpoch || reqId !== prsRequestSeq) return;
+    prsView.error = error.message;
+  }
+  prsView.loading = false;
+  updatePrsBadge();
+  if (!prsRoot.hidden) renderPrs();
+}
+
+const prsActions = {
+  openUrl: (url) => window.open(url, "_blank", "noopener,noreferrer"),
+  openAgent: (agentKey) => {
+    if (!state.rows.some((row) => key(row) === agentKey)) { notice(`${agentKey} is no longer in the fleet.`); return; }
+    selectAgent(agentKey);
+  },
+  // Prefills the composer and leaves sending to the user.
+  nudge: (agentKey, text) => {
+    if (!state.rows.some((row) => key(row) === agentKey)) { notice(`${agentKey} is no longer in the fleet.`); return; }
+    const opening = selectAgent(agentKey, "chat");
+    const draft = $("message").value.trim();
+    $("message").value = draft ? `${draft}\n\n${text}` : text;
+    $("message").focus();
+    return opening;
+  },
+  refresh: () => refreshPrs(),
+  setIncludeOlder: (include) => {
+    prsView.includeOlder = !!include;
+    renderPrs();
+    refreshPrs();
+  },
+};
+
+function renderPrs() {
+  window.agentPrs.render(prsRoot, { ...prsView }, prsActions);
+}
+
+function showPrs() {
+  saveDraft();
+  agentTerminal.close();
+  state.selected = null;
+  state.detailVersion++;
+  connectEvents();
+  $("overview").hidden = true;
+  $("detail").hidden = true;
+  $("search-page").hidden = true;
+  $("usage-page").hidden = true;
+  prsRoot.hidden = false;
+  document.querySelector(".page-heading").hidden = false;
+  $("new-agent").hidden = false;
+  $("page-title").textContent = "Pull requests";
+  $("page-title").classList.remove("agent-title");
+  $("page-subtitle").textContent = "Every PR your agents track, the ones that need you first.";
+  $("breadcrumb").textContent = "Pull requests";
+  document
+    .querySelectorAll(".nav")
+    .forEach((button) => button.classList.toggle("active", button.id === "prs-nav"));
+  renderFleet();
+  renderPrs();
+  refreshPrs();
+}
+
+$("prs-nav").onclick = () => showPrs();

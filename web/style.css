@@ -2424,3 +2424,139 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   .keyboard-hint { display: none; }
   .mobile-agent-context { display: block; color: #b8b8c4; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 }
+
+/* --- PRs Page ------------------------------------------------------------ */
+#prs-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 32px;
+}
+.prs-toggle {
+  padding: 5px 12px;
+  font-size: 13px;
+  border-color: var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+}
+.prs-toggle:hover { background: var(--surface-hover); }
+.prs-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+#prs-status.prs-error { color: var(--warning-text); }
+.prs-summary { margin: 0; font-size: 13.5px; color: var(--fg-strong); }
+.prs-notice {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+}
+.prs-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.prs-list .empty button { margin-top: 10px; padding: 5px 12px; font-size: 13px; }
+.prs-list .empty code { font-family: var(--mono); color: var(--fg); }
+.prs-table td { vertical-align: top; }
+.prs-table tbody tr:last-child td { border-bottom: 0; }
+.prs-col-pr { min-width: 220px; }
+.prs-col-status { min-width: 240px; }
+.prs-col-agent { min-width: 130px; }
+.prs-repo { font-size: 11.5px; color: var(--fg-subtle); }
+.prs-title { margin-top: 2px; overflow-wrap: anywhere; }
+.prs-title a { color: var(--fg-strong); text-decoration: none; }
+.prs-title a:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+.prs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.prs-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font: 500 11.5px/1.5 var(--sans);
+  white-space: nowrap;
+  background: rgb(255 255 255 / 6%);
+  color: var(--fg-muted);
+}
+.prs-chip.state-needs-decision { background: var(--warning-soft); color: var(--warning-text); }
+.prs-chip.state-merge-ready { background: var(--success-soft); color: var(--success-text); }
+.prs-chip.state-conflict,
+.prs-chip.state-ci-failing { background: var(--danger-soft); color: var(--danger-text); }
+.prs-chip.state-shepherding { background: var(--accent-soft); color: var(--accent-text); }
+.prs-chip.state-waiting { background: rgb(255 255 255 / 8%); color: var(--fg); }
+.prs-chip.state-closed { color: var(--fg-subtle); }
+.prs-chip.needs-you { background: transparent; border: 1px solid var(--attention); color: var(--attention); }
+.prs-reason { margin-top: 4px; color: var(--fg); overflow-wrap: anywhere; }
+.prs-notes { margin: 3px 0 0; font-size: 12px; color: var(--fg-subtle); overflow-wrap: anywhere; }
+.prs-agent {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.prs-agent:hover { text-decoration: underline; text-underline-offset: 2px; }
+.prs-agent-meta { font-size: 12px; color: var(--fg-subtle); }
+.prs-col-activity { white-space: nowrap; color: var(--fg-muted); }
+.prs-stack { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); cursor: help; }
+.prs-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.prs-actions button { padding: 3px 9px; font-size: 12.5px; white-space: nowrap; }
+.prs-actions button[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-text); }
+/* Adjacent stack members read as one chain. */
+.prs-chain-up td:first-child,
+.prs-chain-down td:first-child { box-shadow: inset 2px 0 var(--accent); }
+.prs-chain-up td:first-child { padding-left: 22px; }
+.prs-chain-down td { border-bottom-color: transparent; }
+.prs-decision-row td { background: var(--warning-soft); }
+.prs-decision strong { font-size: 12px; color: var(--warning-text); }
+.prs-decision p { margin: 4px 0; overflow-wrap: anywhere; }
+.prs-decision a { color: var(--link); }
+@media (max-width: 1250px) {
+  .prs-actions { display: grid; grid-template-columns: repeat(2, auto); }
+}
+@media (max-width: 1000px) {
+  .prs-table .prs-col-stack, .prs-table .prs-col-activity { display: none; }
+}
+@media (max-width: 700px) {
+  .prs-list { background: none; border: 0; overflow: visible; }
+  .prs-table, .prs-table tbody, .prs-table tr, .prs-table td { display: block; }
+  .prs-table thead { display: none; }
+  .prs-table tr.prs-row {
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .prs-table td, .prs-table tbody tr:last-child td { padding: 0; border: 0; min-width: 0; }
+  .prs-table td + td { margin-top: 8px; }
+  .prs-table .prs-col-stack:empty { display: none; }
+  .prs-table .prs-col-stack, .prs-table .prs-col-activity { display: block; font-size: 12px; }
+  .prs-table .prs-col-activity::before { content: "Last activity "; color: var(--fg-subtle); }
+  .prs-table .prs-col-stack:not(:empty)::before { content: "Stack "; color: var(--fg-subtle); font-size: 12px; }
+  .prs-table td.actions-col { width: auto; text-align: left; }
+  .prs-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; }
+  .prs-actions button { padding: 6px 10px; font-size: 13px; }
+  .prs-chain-up, .prs-chain-down { box-shadow: inset 2px 0 var(--accent); }
+  .prs-chain-up td:first-child, .prs-chain-down td:first-child { box-shadow: none; padding-left: 0; }
+  .prs-table tr.prs-chain-down { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .prs-table tr.prs-chain-up { margin-left: 14px; border-top-left-radius: 0; border-top-right-radius: 0; }
+  .prs-table tr.prs-decision-row { margin: -8px 0 8px; padding: 10px 12px; border-radius: 0 0 var(--radius) var(--radius); background: var(--warning-soft); }
+  .prs-table tr.prs-decision-row td { background: none; }
+}
+/* Six nav entries outgrow a phone's top bar: let the row scroll rather than widen the page. */
+@media (max-width: 700px) {
+  .sidebar nav { min-width: 0; overflow-x: auto; scrollbar-width: none; justify-content: safe flex-end; }
+}
+@media (max-width: 440px) {
+  .sidebar { gap: 12px; }
+  .sidebar .nav { min-width: 48px; padding: 6px 5px; }
+}

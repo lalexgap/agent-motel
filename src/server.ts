@@ -14,7 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { apiTokenFile, ensureDirs, inboxDir } from "./paths";
 import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
-import { cachedFleetRows } from "./fleet";
+import { cachedFleetRows, type Fleet } from "./fleet";
 import { agentPresence, displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
 import { buildPrReport } from "./prReport";
@@ -721,7 +721,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
 
   // GET /api/agents — merged local + remote fleet (cached; never blocks on ssh)
   if (parts.length === 1 && parts[0] === "agents" && method === "GET") {
-    const fleet = cachedFleetRows();
+    const fleet = liveFleet();
     return json({ rows: fleet.rows, unreachable: fleet.unreachable });
   }
 
@@ -735,12 +735,13 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   }
 
   // GET /api/prs[?all=1][&needsMe=1][&state=][&repo=] — the same list as `am
-  // prs`, from the cached fleet: it never waits on GitHub or ssh.
+  // prs`. It never waits on GitHub or ssh, and reuses the rows a fleet request
+  // built in the last few seconds.
   if (parts.length === 1 && parts[0] === "prs" && method === "GET") {
     const params = new URL(req.url).searchParams;
     const state = params.get("state") ?? undefined;
     if (state !== undefined && !PR_STATES.includes(state as PrState)) return json({ error: `unknown PR state "${state}"` }, 400);
-    return json(buildPrReport(cachedFleetRows(), new Date(), {
+    return json(buildPrReport(fleetForPrs(), new Date(), {
       all: params.get("all") === "1", needsMe: params.get("needsMe") === "1",
       state: state as PrState | undefined, repo: params.get("repo")?.slice(0, 200) || undefined,
     }));
@@ -1090,7 +1091,24 @@ export interface ApiServerHandle {
   url: string;
 }
 
+// Clients poll /api/prs beside /api/agents, and building the rows is the
+// expensive part. PR state moves on a two-minute sweep, so a few seconds of
+// reuse costs nothing visible.
+const PR_FLEET_MAX_AGE_MS = 5000;
+let fleetSnapshot: { at: number; fleet: Fleet } | undefined;
+
+function liveFleet(): Fleet {
+  const fleet = cachedFleetRows();
+  fleetSnapshot = { at: Date.now(), fleet };
+  return fleet;
+}
+
+function fleetForPrs(): Fleet {
+  return fleetSnapshot && Date.now() - fleetSnapshot.at < PR_FLEET_MAX_AGE_MS ? fleetSnapshot.fleet : liveFleet();
+}
+
 export function startApiServer(opts: { port?: number; hostname?: string; token: string; webOrigin?: string }): ApiServerHandle {
+  fleetSnapshot = undefined;
   const { token } = opts;
   const webAuth = opts.webOrigin ? createWebAuth(opts.webOrigin, token) : null;
   const terminal = createWebTerminal();
@@ -1118,7 +1136,7 @@ export function startApiServer(opts: { port?: number; hostname?: string; token: 
       if (webAuth) {
         const authResponse = await webAuth.route(req, path);
         if (authResponse) return respond(authResponse);
-        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
+        const assets: Record<string, string> = { "/": "web/index.html", "/index.html": "web/index.html", "/favicon.svg": "web/favicon.svg", "/app.js": "web/app.js", "/search.js": "web/search.js", "/style.css": "web/style.css", "/terminal.js": "web/terminal.js", "/links.js": "web/links.js", "/markdown.js": "web/markdown.js", "/transcript.js": "web/transcript.js", "/prompts.js": "web/prompts.js", "/usage.js": "web/usage.js", "/prs.js": "web/prs.js", "/vendor/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js", "/vendor/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js", "/vendor/xterm.css": "node_modules/@xterm/xterm/css/xterm.css", "/vendor/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js" };
         if ((req.method === "GET" || req.method === "HEAD") && assets[path]) {
           return respond(new Response(Bun.file(new URL("../" + assets[path], import.meta.url))));
         }

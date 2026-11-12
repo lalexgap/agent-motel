@@ -28,6 +28,7 @@ function showSearch() {
   $("overview").hidden = true;
   $("detail").hidden = true;
   if ($("usage-page")) $("usage-page").hidden = true;
+  if ($("prs-page")) $("prs-page").hidden = true;
   $("search-page").hidden = false;
   document.querySelector(".page-heading").hidden = false;
   $("new-agent").hidden = false;
