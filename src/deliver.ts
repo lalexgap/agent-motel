@@ -336,7 +336,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
     // Rules in the transcript or in a dialog's own text can frame nothing,
     // which reads as an empty composer; typing there would answer the dialog.
-    if (provider === "claude" && claudePaneView(before) === "dialog") return { status: "queued", reason: "unavailable" };
+    if (provider === "claude" && claudePaneView(before) !== "composer") return { status: "queued", reason: "unavailable" };
     if (provider === "antigravity" && turnRunning(before, provider)) return { status: "queued", reason: "unavailable" };
     let mark = pending?.id === head.id ? pending.mark : undefined;
     const submitStartedAt = new Date().toISOString();
@@ -387,7 +387,7 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
       // A dialog that came up since: neither a submitted prompt nor one to retry Enter on.
-      if (provider === "claude" && claudePaneView(pane) === "dialog") return { status: "queued", reason: "unverified" };
+      if (provider === "claude" && claudePaneView(pane) !== "composer") return { status: "queued", reason: "unverified" };
       if (parsedInputBoxText(pane, provider) === "") {
         recordSubmitted();
         return { status: "submitted", id: head.id };

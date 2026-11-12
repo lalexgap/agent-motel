@@ -312,6 +312,16 @@ describe("a dialog that reads as an empty composer", () => {
     noSends();
   });
 
+  test("nor does a dialog without numbered options", async () => {
+    fakeSession("submit");
+    queueAppend("api", "hello");
+    const pane = ["● Here is the summary.", RULE, "", RULE, " Name the branch", " > ", " Enter to submit · Esc to cancel"];
+    expect(parsedInputBoxText(pane)).toBe("");
+    writeFileSync(join(home, "pane"), pane.join("\n") + "\n");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unavailable" });
+    noSends();
+  });
+
   test("a dialog that comes up after typing is not retried with Enter or counted as submitted", async () => {
     fakeSession("swallow");
     const id = queueAppend("api", "hello");
