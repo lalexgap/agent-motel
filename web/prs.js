@@ -115,7 +115,6 @@ window.agentPrs = (() => {
     return parts.join(" ");
   }
 
-  // --- DOM -------------------------------------------------------------------
   // data:    { report, loading, error, includeOlder, now? }
   // actions: openAgent(key), openUrl(url), nudge(key, text), refresh(), setIncludeOlder(bool)
   const views = new WeakMap();
