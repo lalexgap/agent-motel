@@ -3,6 +3,7 @@ import {
   AGENT_MENU_GROUPS,
   allowDefaultMenu,
   copyNameText,
+  itemRunnable,
   menuSections,
   placeMenu,
   pointInRects,
@@ -62,6 +63,15 @@ describe("agent menu items", () => {
     const stopped = menuSections(items, row({ status: "exited" }), "home/harbor-lights");
     expect(stopped[0]!.entries.map(({ item: entry, enabled }) => [entry.id, enabled])).toEqual([["resume", true], ["stop", false]]);
     expect(seen).toEqual(["home/harbor-lights", "home/harbor-lights"]);
+  });
+
+  test("an item runs only while visible and enabled for the current row", () => {
+    const stop = item("stop", "lifecycle", { enabled: (agent) => agent.status !== "exited" });
+    const resume = item("resume", "lifecycle", { visible: (agent) => agent.status === "exited" });
+    expect(itemRunnable(stop, row(), "home/x")).toBe(true);
+    expect(itemRunnable(stop, row({ status: "exited" }), "home/x")).toBe(false);
+    expect(itemRunnable(resume, row(), "home/x")).toBe(false);
+    expect(itemRunnable(item("open", "open"), row(), "home/x")).toBe(true);
   });
 
   test("no visible items, no sections", () => {

@@ -54,6 +54,9 @@ export function registerAgentMenuItem(item: AgentMenuItem): void {
   agentItems.push(item);
 }
 
+export const itemRunnable = (item: AgentMenuItem, row: AgentRow, key: string): boolean =>
+  (item.visible?.(row, key) ?? true) && (item.enabled?.(row, key) ?? true);
+
 export interface MenuSection {
   group: AgentMenuGroup;
   entries: { item: AgentMenuItem; enabled: boolean }[];
@@ -165,7 +168,8 @@ function ensureMenu(): HTMLElement {
     const { key } = current;
     const row = findRow(key);
     closeAgentMenu(true);
-    if (item && row) item.run(key, row);
+    // The fleet may have changed since the menu opened.
+    if (item && row && itemRunnable(item, row, key)) item.run(key, row);
   });
   document.body.append(menu);
   return menu;
