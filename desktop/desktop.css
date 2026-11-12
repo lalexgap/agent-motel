@@ -1343,6 +1343,7 @@ body.am-resizing {
 }
 .am-sb-flash {
   color: var(--success-text);
+}
 /* The search page. The form, summary, results and highlights reuse the browser
    UI's search rules from web/style.css. */
 .am-search {
