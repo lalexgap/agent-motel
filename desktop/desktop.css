@@ -1304,6 +1304,56 @@ body.am-resizing {
   .usage-dash-kpis { grid-template-columns: minmax(0, 1fr); }
   .usage-toolbar { padding: 10px; }
 }
+/* Pull requests: web/prs.js renders the browser UI's page into #prs-page,
+   under the same header as the usage page. Like the usage page, its
+   breakpoints become container queries on the main area. */
+#am-prs {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 0;
+  container: am-prs / inline-size;
+  -webkit-user-select: text;
+  user-select: text;
+}
+#am-prs[hidden] {
+  display: none;
+}
+/* The browser UI's 1250/1000/700px viewport steps, as widths of the page's
+   content (its sidebar and padding taken off); the table becomes cards a
+   little earlier, where its fixed columns would no longer fit. */
+@container am-prs (max-width: 1040px) {
+  .prs-actions { display: grid; grid-template-columns: repeat(2, auto); }
+}
+@container am-prs (max-width: 900px) {
+  .prs-table .prs-col-stack, .prs-table .prs-col-activity { display: none; }
+}
+@container am-prs (max-width: 760px) {
+  .prs-list { background: none; border: 0; overflow: visible; }
+  .prs-table, .prs-table tbody, .prs-table tr, .prs-table td { display: block; }
+  .prs-table thead { display: none; }
+  .prs-table tr.prs-row {
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .prs-table td, .prs-table tbody tr:last-child td { padding: 0; border: 0; min-width: 0; }
+  .prs-table td + td { margin-top: 8px; }
+  .prs-table .prs-col-stack:empty { display: none; }
+  .prs-table .prs-col-stack, .prs-table .prs-col-activity { display: block; font-size: 12px; }
+  .prs-table .prs-col-activity::before { content: "Last activity "; color: var(--fg-subtle); }
+  .prs-table .prs-col-stack:not(:empty)::before { content: "Stack "; color: var(--fg-subtle); font-size: 12px; }
+  .prs-table td.actions-col { width: auto; text-align: left; }
+  .prs-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; }
+  .prs-chain-up, .prs-chain-down { box-shadow: inset 2px 0 var(--accent); }
+  .prs-chain-up td:first-child, .prs-chain-down td:first-child { box-shadow: none; padding-left: 0; }
+  .prs-table tr.prs-chain-down { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .prs-table tr.prs-chain-up { margin-left: 14px; border-top-left-radius: 0; border-top-right-radius: 0; }
+  .prs-table tr.prs-decision-row { margin: -8px 0 8px; padding: 10px 12px; border-radius: 0 0 var(--radius) var(--radius); background: var(--warning-soft); }
+  .prs-table tr.prs-decision-row td { background: none; }
+}
 /* Running built-in subagents nested under their parent's row. */
 .am-subcount {
   flex: none;

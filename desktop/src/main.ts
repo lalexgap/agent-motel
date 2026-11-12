@@ -8,6 +8,7 @@ import { initConnections, openSetup } from "./connections";
 import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
 import { initOverview, tickOverview } from "./overview";
+import { initPrs } from "./prsView";
 import { parseAgentKey } from "./fleet";
 import { initInspector } from "./inspector";
 import { initKeyboard } from "./keyboard";
@@ -49,6 +50,7 @@ function wire(): void {
   initAgentActions();
   initUsage();
   initSearch();
+  initPrs();
   initRelatedSection();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {

@@ -5,6 +5,7 @@ import { checkMessageText } from "../src/policy";
 import type { QueueItem, TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, REPO, worktree, type FixtureRow } from "./data";
 import { catalogsFor, findCatalog, ROLES, seedWorkspace, selectionError, type Workspace } from "./extras";
+import { PR_STATES, prReport, type PrState } from "./prs";
 import { ulid, type FixtureState, type Message } from "./store";
 import { agentTokenReport, fleetTokenReport, quota, usageSummary } from "./usage";
 
@@ -452,6 +453,7 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
         state.prompts.delete(row);
         state.subagents.delete(row);
         state.workspaces.delete(row);
+        state.prs.delete(row);
         state.permissions = state.permissions.filter((record) => record.row !== row);
         const history = state.histories.get(row);
         if (history) {
@@ -902,6 +904,21 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     },
   ];
 
+  const prRoutes: Route[] = [
+    {
+      // Like the real route: an unknown state is a 400; all/needsMe only when "1"; repo matches owner/name or name.
+      method: "GET", path: "/api/prs", handler: (ctx) => {
+        const params = ctx.url.searchParams;
+        const state = params.get("state") ?? undefined;
+        if (state !== undefined && !PR_STATES.includes(state as PrState)) return json({ error: `unknown PR state "${state}"` }, 400);
+        return json(prReport(s().rows, s().prs, UNREACHABLE, {
+          all: params.get("all") === "1", needsMe: params.get("needsMe") === "1",
+          state: state as PrState | undefined, repo: params.get("repo")?.slice(0, 200) || undefined,
+        }));
+      },
+    },
+  ];
+
   function snippets(entries: TranscriptEntry[], needle: string) {
     const found: { kind: "user" | "assistant" | "tool"; text: string }[] = [];
     for (const entry of entries) {
@@ -946,7 +963,7 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
   }
 
   return {
-    routes: [...readRoutes, ...lifecycleRoutes, ...manageRoutes, ...agentSetupRoutes, ...promptRoutes, ...fileRoutes, ...usageRoutes, ...searchRoutes],
+    routes: [...readRoutes, ...lifecycleRoutes, ...manageRoutes, ...agentSetupRoutes, ...promptRoutes, ...fileRoutes, ...usageRoutes, ...prRoutes, ...searchRoutes],
     flipDrift,
   };
 }

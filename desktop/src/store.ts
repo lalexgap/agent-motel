@@ -101,3 +101,7 @@ export const saveUsagePrefsRaw = (raw: string): void => write(USAGE_KEY, raw);
 const INSPECTOR_KEY = "am.desktop.inspector.v1";
 export const loadInspectorPrefsRaw = (): string | null => read(INSPECTOR_KEY);
 export const saveInspectorPrefsRaw = (raw: string): void => write(INSPECTOR_KEY, raw);
+
+const PRS_KEY = "am.desktop.prs.v1";
+export const loadPrsPrefsRaw = (): string | null => read(PRS_KEY);
+export const savePrsPrefsRaw = (raw: string): void => write(PRS_KEY, raw);
