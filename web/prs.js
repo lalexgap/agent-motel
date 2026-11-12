@@ -68,7 +68,7 @@ window.agentPrs = (() => {
       (!filters.needsMe || pr.needsMe));
   }
 
-  // Relies on prReport's state-then-recency sort to keep the latest finished rows.
+  // Keeps the first finished rows in report order (merged, then closed, each newest first), as `am prs` does.
   const FINISHED_ROWS = 8;
   const isFinished = (pr) => pr.state === "merged" || pr.state === "closed";
 
@@ -249,7 +249,7 @@ window.agentPrs = (() => {
       tbody.append(prRow(root, view, pr, chains[i], now));
       if (pr.decision && view.expanded.has(pr.key)) tbody.append(decisionRow(pr, view.actions));
     });
-    if (hidden || (view.showAllFinished && matching.filter(isFinished).length > FINISHED_ROWS)) {
+    if (hidden || (view.showAllFinished && visibleRows(matching, { state: view.state }).hidden)) {
       const tr = el("tr", "prs-more-row");
       const td = el("td", "prs-more");
       td.colSpan = 6;
