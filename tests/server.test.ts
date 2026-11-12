@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApiServer, loadApiToken, createApiToken, resetModelsCacheForTests, type ApiServerHandle } from "../src/server";
 import { recordSubagentStart, recordSubagentStop } from "../src/subagents";
-import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { readAgent, updateAgentStatus, writeAgent, type AgentState } from "../src/state";
 import { queueAppend, queueDepth, queuePopId } from "../src/queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, type DeliveryResult } from "../src/deliver";
 import { markDelivered, queueTrackedMessage, readMessage } from "../src/messages";
@@ -273,6 +273,31 @@ describe("agents api", () => {
     expect(data.pane).toBeNull(); // no live session
     expect(data.statusReason).toBe("tmux session is missing");
     expect(data.statusChangedAt).toBeTruthy();
+    expect(data.statusKind).toBeNull();
+  });
+
+  test("detail and rows say when needs-attention is a provider dialog", async () => {
+    const tmux = await import("../src/tmux");
+    const alive = spyOn(tmux, "hasSession").mockReturnValue(true);
+    const pane = spyOn(tmux, "capturePane").mockReturnValue(null);
+    try {
+      const now = new Date().toISOString();
+      const state: AgentState = { name: "asks", status: "working", dir: "/tmp", tmuxSession: "agentmgr-asks", createdAt: now, updatedAt: now };
+      updateAgentStatus(state, "needs-attention", "approval requested — Bash", now, "prompt");
+      writeAgent(state);
+      const detail = (await (await fetch(url("/api/agents/asks"), auth())).json()) as any;
+      expect(detail).toMatchObject({ status: "needs-attention", statusKind: "prompt" });
+      const rows = (await (await fetch(url("/api/agents"), auth())).json()) as any;
+      expect(rows.rows.find((row: any) => row.name === "asks")).toMatchObject({ status: "needs-attention", statusKind: "prompt" });
+
+      const other = readAgent("asks")!;
+      updateAgentStatus(other, "needs-attention", "queued input is invalid");
+      writeAgent(other);
+      expect(((await (await fetch(url("/api/agents/asks"), auth())).json()) as any).statusKind).toBeNull();
+    } finally {
+      alive.mockRestore();
+      pane.mockRestore();
+    }
   });
 
   test("GET detail 404s for unknown agent", async () => {

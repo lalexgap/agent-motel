@@ -5,7 +5,7 @@ import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
 import { recordAudit, withAuditContext } from "./audit";
 import { closeSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tryAcquireFileLock } from "./filelock";
 import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir, subagentsDir } from "./paths";
 import { agentNamesAndAliases, agentProvider, agentSessionId, listAgents, matchAgent, readAgent, setStatus, updateAgentIf, updateAgentStatus, type AgentState } from "./state";
@@ -22,7 +22,8 @@ import { collectedSender, type OutboxEntry } from "./outbox";
 import { newMsgId } from "./msgid";
 import { createSseParser } from "./sse";
 import { mailboxHandoffActive } from "./mailbox";
-import { settleMessages } from "./messages";
+import { markTurnEnded, settleMessages } from "./messages";
+import { isPromptAttention, startPromptWatcher } from "./promptStatus";
 import { startCodexApprovalWatcher } from "./codexApprovals";
 import { readPermission, refreshPermissions } from "./permissions";
 import { managedServices, serviceAction, servicePid } from "./services";
@@ -251,6 +252,26 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     }
   };
 
+  // An answered dialog fires no hook; the pane shows it gone (promptStatus.ts).
+  const promptWatcher = startPromptWatcher({
+    log,
+    onSettled(agent, settled) {
+      // The state-file watcher publishes the status change itself.
+      if (settled.retired > 0) publish("permission-resolved", agent.name);
+      if (settled.status !== "idle") return;
+      if (settled.turnEnded) {
+        try {
+          markTurnEnded(agent.name, agent, new Date(), true);
+        } catch {
+          // a receipt must not hold the agent's queue
+        }
+      }
+      if (queueDepth(agent.name) > 0 || needsCodexRecovery(agent.name)) {
+        deliverNext(agent.name).catch((error) => log(`delivery to ${agent.name} failed: ${error}`));
+      }
+    },
+  });
+
   let fileEventTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleFileEvent = () => {
     if (fileEventTimer) return;
@@ -266,7 +287,14 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // changes how its idle parent is shown without touching the state file.
   mkdirSync(subagentsDir(), { recursive: true });
   const fileWatchers = [agentsDir(), queueDir(), subagentsDir()].map((dir) =>
-    watch(dir, { recursive: true }, scheduleFileEvent),
+    watch(dir, { recursive: true }, (_event, file) => {
+      scheduleFileEvent();
+      if (dir === agentsDir()) {
+        // A state write lands as `<name>.json`, by way of `<name>.json.<pid>.tmp`.
+        const name = /^(.+)\.json(?:\.\d+\.tmp)?$/.exec(basename(String(file ?? "")))?.[1];
+        if (name) promptWatcher.note(name);
+      }
+    }),
   );
 
   // Codex approvals reach the daemon's own app-server connection; it records
@@ -368,6 +396,8 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       }
       // The state-file watcher publishes the change.
       if (settleCodexStart(agent)) agent.status = "idle";
+      // One the file watcher missed, or that predates this daemon.
+      if (isPromptAttention(agent)) promptWatcher.note(agent.name);
       // A due switch whose request was lost (a daemon restart) still happens.
       if (modelSwitchOverdue(agent)) {
         performModelSwitch(agent.name).catch((error) => log(`model switch for ${agent.name} failed: ${error}`));
@@ -449,6 +479,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       clearInterval(reconciler);
       clearInterval(keepalive);
       codexApprovals.stop();
+      promptWatcher.stop();
       notificationRelay.stop();
       if (fileEventTimer) clearTimeout(fileEventTimer);
       for (const watcher of fileWatchers) watcher.close();

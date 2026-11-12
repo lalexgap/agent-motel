@@ -7,10 +7,9 @@ import { loadConfig } from "./config";
 export const HOOK_EVENTS: Record<string, string> = {
   SessionStart: "session-start",
   UserPromptSubmit: "user-prompt-submit",
-  // Tool events mark the agent working mid-turn. Crucially, PostToolUse is
-  // what un-sticks needs-attention: approving a permission prompt fires no
-  // event of its own, so without these the stale ⚠ lingers until the turn
-  // ends.
+  // Tool events mark the agent working mid-turn. Answering a permission
+  // prompt fires no event of its own, and PostToolUse only once the approved
+  // call has run, so the daemon reads the pane for that (promptStatus.ts).
   PreToolUse: "pre-tool-use",
   PostToolUse: "post-tool-use",
   Stop: "stop",

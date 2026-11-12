@@ -65,6 +65,7 @@ import { snapshotSubagentTokens } from "../tokenUsage";
 import { planIsStale, planMtimeMs, planPromptNotes } from "../plan";
 import { holdModelSwitch, triggerModelSwitch } from "./switchModel";
 import { noteWorkDir } from "../worktreeOwnership";
+import { promptStillWaiting } from "../promptStatus";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -87,6 +88,16 @@ export interface HookEffects {
   reason?: string;
   notify?: string;
   drainQueue?: boolean;
+  // needs-attention for a dialog in the pane, which also shows it answered.
+  prompt?: boolean;
+}
+
+// Whether a Claude notification announces a dialog. Its type says so; older
+// versions sent only the message.
+function announcesPrompt(payload: Record<string, unknown>, message: string): boolean {
+  const type = payload.notification_type;
+  if (typeof type === "string") return type === "permission_prompt" || type === "elicitation_dialog";
+  return /needs your (?:permission|approval)/i.test(message);
 }
 
 export function hookEffects(event: string, payload: Record<string, unknown>): HookEffects {
@@ -112,14 +123,19 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
       // isn't "needs attention" — treating it as such would make sends queue
       // forever (no turn → no Stop hook to drain them).
       if (/waiting for .*input/i.test(message)) return { status: "idle" };
-      return { status: "needs-attention", reason: message, notify: message };
+      return {
+        status: "needs-attention",
+        reason: message,
+        notify: message,
+        ...(announcesPrompt(payload, message) ? { prompt: true } : {}),
+      };
     }
     // Codex's dedicated approval event (PermissionRequest) — unlike Claude's
     // Notification, it only ever means "waiting on the user".
     case "permission-request": {
       const tool = typeof payload.tool_name === "string" ? ` — ${payload.tool_name}` : "";
       const message = `approval requested${tool}`;
-      return { status: "needs-attention", reason: message, notify: message };
+      return { status: "needs-attention", reason: message, notify: message, prompt: true };
     }
     case "session-end":
       return { status: "exited", reason: "session ended" };
@@ -667,7 +683,16 @@ export async function hookCommand(event: string): Promise<void> {
     recordSubagentEvent(event, agent, payload);
     if (provider === "claude") {
       if (event === "permission-request") {
-        await awaitPermissionDecision(agent, payload, { waitMs: loadConfig().permissionWaitSeconds * 1000 });
+        // The parent is who the operator sees, and it is what waits on them.
+        // Claude shows a subagent's dialog only once this hook returns.
+        const parent = refreshAgent();
+        if (!parent) return;
+        const asked = hookEffects(event, payload);
+        const reason = `${asked.reason} (subagent)`;
+        updateAgentStatus(parent, asked.status, reason, undefined, "prompt");
+        writeAgent(parent);
+        notify(`am: ${parent.name}`, reason, { agent: parent.name, kind: "attention" });
+        await awaitPermissionDecision(parent, payload, { waitMs: loadConfig().permissionWaitSeconds * 1000 });
       } else if (event === "post-tool-use") {
         if (retiredPermissions(event, agent, payload, hookEffects(event, payload)) > 0) {
           await notifyDaemon(name, "permission-resolved");
@@ -692,7 +717,7 @@ export async function hookCommand(event: string): Promise<void> {
       if (!current) return;
       agent = current;
       name = agent.name;
-      updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
+      if (!promptStillWaiting(agent)) updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
       writeAgent(agent);
       process.stdout.write(gate);
@@ -741,7 +766,13 @@ export async function hookCommand(event: string): Promise<void> {
       withAuditContext({ source: "provider-hook", route: "session-end" }, () => recordAudit(agent.name, "session-ended", "observed"));
     } catch { console.error("warning: lifecycle audit write failed during session end"); }
   }
-  updateAgentStatus(agent, effects.status, effects.reason, turnEndedAt?.toISOString());
+  // A hook from elsewhere in the session (another tool call, a turn ending)
+  // says nothing about a dialog still up for someone else's call: the agent
+  // waits on the operator until that is answered. The pane settles it then.
+  const stillPrompting = (effects.status === "working" || effects.status === "idle") && promptStillWaiting(agent);
+  if (!stillPrompting) {
+    updateAgentStatus(agent, effects.status, effects.reason, turnEndedAt?.toISOString(), effects.prompt ? "prompt" : undefined);
+  }
   const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
   // An inbox delivery reaches the hook inside Claude's cross-session framing;
   // key the prompt by the text am sent, so it matches the message's record.
