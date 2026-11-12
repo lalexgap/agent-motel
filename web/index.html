@@ -18,6 +18,7 @@
     <script src="/terminal.js" defer></script>
     <script src="/search.js" defer></script>
     <script src="/usage.js" defer></script>
+    <script src="/prs.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -56,6 +57,8 @@
           ><button id="search-nav" class="nav" data-short="Search">⌕ <span>Search</span></button
           ><button id="usage-nav" class="nav" data-short="Usage">
             ◔ <span>Token usage</span></button
+          ><button id="prs-nav" class="nav" data-short="PRs">
+            ⇄ <span>PRs</span><b id="prs-count" hidden>0</b></button
           ><button id="concierge-nav" class="nav" data-short="Concierge">
             ✳ <span>Concierge</span>
           </button>
@@ -110,6 +113,21 @@
             </form>
             <p id="advanced-summary" role="status"></p>
             <div id="advanced-results" class="advanced-results"></div>
+          </section>
+          <section id="prs-page" hidden aria-label="Pull requests">
+            <div class="usage-toolbar">
+              <div class="usage-filters">
+                <label>Repo<select id="prs-repo"><option value="">All</option></select></label>
+                <label>State<select id="prs-state"><option value="">All</option><option value="needs-decision">Needs decision</option><option value="merge-ready">Merge-ready</option><option value="conflict">Conflict</option><option value="ci-failing">CI failing</option><option value="shepherding">Shepherding</option><option value="waiting">Waiting</option><option value="merged">Merged</option><option value="closed">Closed</option></select></label>
+                <button id="prs-needs-me" class="prs-toggle" type="button" aria-pressed="false">Needs me</button>
+                <button id="prs-older" class="prs-toggle" type="button" aria-pressed="false">Include older merged/closed</button>
+                <button id="prs-refresh" type="button">Refresh</button>
+              </div>
+              <span id="prs-status" class="muted" role="status"></span>
+            </div>
+            <p id="prs-summary" class="prs-summary"></p>
+            <p id="prs-notice" class="prs-notice" hidden></p>
+            <div id="prs-list" class="prs-list"></div>
           </section>
           <section id="usage-page" hidden aria-label="Token usage">
             <div class="usage-toolbar">
