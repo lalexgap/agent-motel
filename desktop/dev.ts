@@ -22,6 +22,37 @@ const TYPES: Record<string, string> = {
   ".png": "image/png",
 };
 
+// /__bridge bodies are small JSON, except files.upload, which carries up to
+// 10 MiB of image as base64 (13,981,016 characters) plus the other params.
+export const BRIDGE_BODY_MAX = 1 << 20;
+export const BRIDGE_UPLOAD_BODY_MAX = 14 << 20;
+
+// Reads at most `max` bytes, refusing early on a declared or streamed overrun.
+async function readBody(req: Request, max: number): Promise<Uint8Array | null> {
+  if (Number(req.headers.get("content-length") ?? 0) > max) return null;
+  if (!req.body) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = req.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index > 0 ? process.argv[index + 1] : undefined;
@@ -39,6 +70,7 @@ export function startDevServer(options: { port: number; bridge: DevBridge; root?
     hostname: "127.0.0.1",
     port: options.port,
     idleTimeout: 0,
+    maxRequestBodySize: BRIDGE_UPLOAD_BODY_MAX,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/__bridge" || url.pathname === "/__bridge/events") {
@@ -46,8 +78,14 @@ export function startDevServer(options: { port: number; bridge: DevBridge; root?
         if (url.pathname === "/__bridge") {
           if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
           if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) return json({ error: "expected application/json" }, 415);
-          const body = (await req.json().catch(() => null)) as { method?: unknown; params?: unknown } | null;
+          const raw = await readBody(req, BRIDGE_UPLOAD_BODY_MAX);
+          if (!raw) return json({ error: "request body too large" }, 413);
+          let body: { method?: unknown; params?: unknown } | null = null;
+          try {
+            body = JSON.parse(new TextDecoder().decode(raw));
+          } catch {}
           if (!body || typeof body !== "object") return json({ error: "expected {method, params}" }, 400);
+          if (raw.length > BRIDGE_BODY_MAX && body.method !== "files.upload") return json({ error: "request body too large" }, 413);
           try {
             return json({ result: await options.bridge.handle(body.method, body.params) });
           } catch (error) {

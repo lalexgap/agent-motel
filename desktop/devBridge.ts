@@ -1,17 +1,24 @@
 // The dev server's stand-in for the native bridge: same methods, same
 // validation, connections held in memory. Tokens never leave this module.
 import {
+  AGENT_GONE,
+  buildAction,
   checkAgent,
   checkMessageId,
   checkMessageText,
   checkMode,
   externalUrlAllowed,
+  isActionMethod,
+  isConfirmMethod,
   messagesPath,
   normalizeServerUrl,
+  precheckFailed,
+  precheckStatus,
   validateApiPath,
+  type ActionRequest,
   type Checked,
 } from "./src/policy";
-import type { BridgeEventName, BridgeEvents, Connection, StreamState } from "./src/types";
+import type { BridgeEventName, BridgeEvents, Connection, DevConfirmation, StreamState } from "./src/types";
 
 interface StoredConnection {
   id: string;
@@ -24,6 +31,9 @@ type Listener = (name: BridgeEventName, payload: unknown) => void;
 const REQUEST_TIMEOUT_MS = 15_000;
 // A `now` send to an agent on a remote host goes over ssh.
 export const MUTATION_TIMEOUT_MS = 60_000;
+// How long an unanswered confirmation ticket stays redeemable.
+export const CONFIRM_TICKET_TTL_MS = 10 * 60_000;
+const MAX_TICKETS = 32;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 // SSEParser.maxLineBytes, applied to each line and to an event's accumulated data (in UTF-16 units here).
@@ -39,6 +49,13 @@ export function bridgeRequestAllowed(headers: Headers, port: number): boolean {
   const origin = headers.get("origin");
   if (origin !== null) return origin === `http://${host}`;
   return headers.get("sec-fetch-site") === "same-origin";
+}
+
+interface Ticket {
+  connection: string;
+  url: string;
+  request: ActionRequest;
+  expires: number;
 }
 
 const publicView = (conn: StoredConnection): Connection => ({ id: conn.id, name: conn.name, url: conn.url, hasToken: conn.token !== "" });
@@ -80,6 +97,7 @@ export class DevBridge {
   private streams = new Map<string, AbortController>();
   private states = new Map<string, BridgeEvents["events.state"]>();
   private listeners = new Set<Listener>();
+  private tickets = new Map<string, Ticket>();
 
   constructor(private readonly info: { version: string; build: string }, private readonly fetchImpl: typeof fetch = fetch) {}
 
@@ -147,12 +165,19 @@ export class DevBridge {
       case "events.stop":
         this.stopStream(text(params.connection, "connection"));
         return {};
+      case "dev.confirm":
+        return this.redeem(params.ticket, params.accept);
       case "open.external":
         if (!externalUrlAllowed(params.url)) throw new Error("Only http and https links without credentials can be opened");
         // The browser opens the tab itself; the native app hands it to the default browser.
         return {};
-      default:
-        throw new Error(`unknown method: ${typeof method === "string" ? method : String(method)}`);
+      default: {
+        if (!isActionMethod(method)) throw new Error(`unknown method: ${typeof method === "string" ? method : String(method)}`);
+        const conn = this.connection(text(params.connection, "connection"));
+        const request = checked(buildAction(method, params));
+        if (!isConfirmMethod(method)) return this.send(conn, request);
+        return { confirm: await this.prepareConfirmation(conn, request) };
+      }
     }
   }
 
@@ -242,6 +267,65 @@ export class DevBridge {
       ...(body === undefined ? {} : { body }),
       redirect: "manual",
       signal: AbortSignal.timeout(MUTATION_TIMEOUT_MS),
+    });
+    return { status: response.status, body: await readJson(response) };
+  }
+
+  // The dev server cannot raise a native alert, so a confirmed action is split
+  // in two: this pre-check returns the text and a one-time ticket bound to the
+  // already-validated request, and only `dev.confirm` with that ticket sends it.
+  // bridge.ts asks window.confirm in between.
+  private async prepareConfirmation(conn: StoredConnection, request: ActionRequest): Promise<DevConfirmation> {
+    const status = precheckStatus(await this.precheck(conn, request));
+    const now = Date.now();
+    for (const [id, ticket] of this.tickets) if (ticket.expires <= now) this.tickets.delete(id);
+    if (this.tickets.size >= MAX_TICKETS) this.tickets.delete(this.tickets.keys().next().value!);
+    const ticket = crypto.randomUUID();
+    this.tickets.set(ticket, { connection: conn.id, url: conn.url, request, expires: now + CONFIRM_TICKET_TTL_MS });
+    const spec = request.confirm!;
+    return { ticket, title: spec.title, body: spec.body(status), button: spec.button, defaultIsCancel: spec.defaultIsCancel, server: conn.name, url: conn.url };
+  }
+
+  // The exact-name detail lookup, before the confirmation and again before sending.
+  private async precheck(conn: StoredConnection, request: ActionRequest): Promise<unknown> {
+    const response = await this.fetchImpl(conn.url + request.precheckPath!, {
+      method: "GET",
+      headers: { authorization: `Bearer ${conn.token}`, accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const body = await readJson(response);
+    if (response.status === 404) throw new Error(AGENT_GONE);
+    if (response.status !== 200) throw new Error(precheckFailed(response.status));
+    return body;
+  }
+
+  private async redeem(id: unknown, accept: unknown): Promise<unknown> {
+    const ticket = typeof id === "string" ? this.tickets.get(id) : undefined;
+    if (typeof id === "string") this.tickets.delete(id);
+    if (!ticket || ticket.expires <= Date.now()) throw new Error("This confirmation has expired or was already answered");
+    if (accept !== true) return { cancelled: true };
+    const conn = this.connection(ticket.connection);
+    // The pre-check and the user's answer were about the server it was issued for.
+    if (conn.url !== ticket.url) throw new Error("The connection changed; try again");
+    // The agent may have gone while the user was answering; its name could then resolve to another one.
+    await this.precheck(conn, ticket.request);
+    return this.send(conn, ticket.request);
+  }
+
+  // Never retried: after a network failure or timeout the server may or may not have acted.
+  private async send(conn: StoredConnection, request: ActionRequest): Promise<{ status: number; body: unknown }> {
+    const body = request.body === undefined ? undefined : request.body instanceof Uint8Array ? request.body : JSON.stringify(request.body);
+    const response = await this.fetchImpl(conn.url + request.path, {
+      method: request.method,
+      headers: {
+        authorization: `Bearer ${conn.token}`,
+        accept: "application/json",
+        ...(request.contentType === undefined ? {} : { "content-type": request.contentType }),
+      },
+      ...(body === undefined ? {} : { body }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(request.timeoutMs),
     });
     return { status: response.status, body: await readJson(response) };
   }

@@ -6,7 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private(set) var window: NSWindow!
     private(set) var webView: WKWebView!
     let store = ConnectionStore()
-    private(set) lazy var bridge = Bridge(store: store)
+    private(set) lazy var bridge = Bridge(store: store, confirmation: Confirmation(
+        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.showWindow() }))
     /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
     var activatesWindow = true
     private var errorPanel: NSStackView!
@@ -71,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func applicationWillTerminate(_ notification: Notification) {
         bridge.stopAllStreams()
+        bridge.cancelRequests()
     }
 
     private func makeMenus() {
