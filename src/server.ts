@@ -149,6 +149,8 @@ export function agentDetail(name: string) {
         ? "tmux session is missing"
         : presence.reason ?? null,
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
+    // "prompt": needs-attention for a provider dialog, not another reason.
+    statusKind: status === "needs-attention" ? agent.statusKind ?? null : null,
     provider: agentProvider(agent),
     capabilities: {
       remoteControl: nativeControls, quota: nativeControls,
