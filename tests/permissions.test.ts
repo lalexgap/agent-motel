@@ -373,7 +373,7 @@ describe("the PermissionRequest hook", () => {
     expect(readPermission(held.id)).toMatchObject({ state: "expired" });
 
     const main = startHook();
-    const full = (await pending());
+    const full = await pending();
     expect(full.claude?.agentId).toBeUndefined();
     expect(window(full)).toBeGreaterThan(50_000);
     main.kill();

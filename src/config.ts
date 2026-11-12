@@ -240,7 +240,6 @@ export function shouldNotifyIdle(opts: {
   return opts.workedSeconds >= opts.config.idleNotifyMinSeconds;
 }
 
-// How long the relay holds a subagent's permission request, in seconds.
 export function subagentPermissionWait(config: Pick<Config, "permissionWaitSeconds" | "subagentPermissionWaitSeconds">): number {
   const wait = Math.min(config.permissionWaitSeconds, config.subagentPermissionWaitSeconds);
   return wait > 0 ? wait : 0;
