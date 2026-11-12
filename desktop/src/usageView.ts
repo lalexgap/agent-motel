@@ -143,7 +143,6 @@ async function refreshSummary({ periodic = false, refresh = false } = {}): Promi
     setStatus(summaryStatus(view.summary));
   } catch (error) {
     if (seq !== summarySeq || conn !== connection) return;
-    // The last data stays on screen; the status line says why it is not current.
     setStatus(error instanceof Error ? error.message : String(error));
   }
 }
@@ -364,7 +363,6 @@ function buildPage(): void {
   navButton.addEventListener("click", () => showUsage());
   navStrip().append(navButton);
 
-  // The page hides when another main view shows: drop the tooltip and the active mark.
   new MutationObserver(() => {
     const shown = !page.hidden;
     navButton.classList.toggle("active", shown);

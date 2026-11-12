@@ -14,12 +14,10 @@ export const SUMMARY_INTERVAL_MS = 30_000;
 export interface UsagePrefs {
   range: UsageRange;
   unit: UsageUnit;
-  // Summary filters ("" = all).
+  // Filters: "" = all.
   repo: string;
   provider: string;
-  // The detailed breakdown's provider filter ("" = all).
   breakdownProvider: string;
-  // Connection id the page last showed.
   connection: string | null;
 }
 
@@ -59,7 +57,6 @@ export function summaryPath(options: { range: UsageRange; repo: string; provider
   return "/api/usage/summary?" + params.toString();
 }
 
-// GET /api/usage for the detailed breakdown: never quota, optionally one local agent or provider.
 export function breakdownPath(options: { agent: string; provider: string }): string {
   const params = new URLSearchParams({ quota: "0" });
   if (options.agent) params.set("agent", options.agent);
@@ -73,7 +70,6 @@ export function periodicDue(options: { pageVisible: boolean; documentHidden: boo
   return options.pageVisible && !options.documentHidden && options.now - options.fetchedAt >= SUMMARY_INTERVAL_MS;
 }
 
-// The status line under the toolbar after a summary loads.
 export function summaryStatus(summary: { generatedAt?: string; indexing?: { pendingFiles?: number } } | null | undefined, now = Date.now()): string {
   const pending = summary?.indexing?.pendingFiles || 0;
   if (pending > 0) return `Indexing history… ${pending} file${pending === 1 ? "" : "s"} left`;
