@@ -5,12 +5,19 @@ import AppKit
 /// restyle it, and there is no other way to answer it than its buttons. One at a time: a caller
 /// reserves the slot before its pre-check, so a second confirmed call rejects instead of queueing.
 ///
-/// An unread accept is refused natively: for `armDelay` after the sheet appears every key but Esc is
-/// swallowed, and a repeated Return, Enter or Space never counts. When the app is not active the
-/// sheet attaches without activating it, so typing in another app cannot land on it.
+/// An unread accept is refused natively: for `armDelay` after the sheet appears, and again each time
+/// it becomes key, every key but Esc is swallowed, and a repeated Return, Enter or Space never counts.
+/// When the app is not active the sheet attaches without activating it, so typing in another app
+/// cannot land on it, and switching back to the app re-arms it.
 @MainActor
 final class Confirmation {
-    static let armDelay: TimeInterval = 0.5
+    static let armDelay = ConfirmationArming.delay
+
+    /// When the sheet was last armed: when it was attached, then each time it became key.
+    @MainActor
+    private final class ArmStart {
+        var uptime = ProcessInfo.processInfo.systemUptime
+    }
 
     private let window: () -> NSWindow?
     private let reveal: () -> Void
@@ -74,10 +81,16 @@ final class Confirmation {
         cancel.keyEquivalent = text.destructive ? "\r" : "\u{1b}"
         let sheet = alert.window
         let defaultButton = text.destructive ? cancel : confirm
-        let shownAt = ProcessInfo.processInfo.systemUptime
+        let armStart = ArmStart()
+        // Key events reach the sheet only while it is key, so each time it becomes key
+        // (the user switching back to the app, say) the delay starts over.
+        let rearm = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: sheet, queue: .main) { [armStart] _ in
+            MainActor.assumeIsolated { armStart.uptime = ProcessInfo.processInfo.systemUptime }
+        }
+        defer { NotificationCenter.default.removeObserver(rearm) }
         // Esc cancels even when Return belongs to Cancel (a button holds only one key equivalent).
         // Return and Enter press the default button only once armed.
-        let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak sheet, weak cancel, weak defaultButton] event in
+        let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak sheet, weak cancel, weak defaultButton, armStart] event in
             let target = event.windowNumber
             let code = event.keyCode
             let repeated = event.isARepeat
@@ -89,7 +102,7 @@ final class Confirmation {
                     cancel.performClick(nil)
                     return true
                 }
-                let armed = typedAt >= shownAt + Self.armDelay && ProcessInfo.processInfo.systemUptime >= shownAt + Self.armDelay
+                let armed = ConfirmationArming.isArmed(typedAt: typedAt, now: ProcessInfo.processInfo.systemUptime, since: armStart.uptime)
                 let activating = code == 36 || code == 76 || code == 49
                 if !armed || (activating && repeated) { return true }
                 if code == 36 || code == 76 {

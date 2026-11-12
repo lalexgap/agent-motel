@@ -156,6 +156,17 @@ struct ConfirmationText: Equatable {
     var suppression: String? = nil
 }
 
+/// When a confirmation sheet may take a key: `delay` after it was armed (attached, or last made key).
+enum ConfirmationArming {
+    static let delay: TimeInterval = 0.5
+
+    /// A key typed at `typedAt` (event time) and handled at `now` counts only when both are at
+    /// least `delay` after `since` (all system uptime seconds).
+    static func isArmed(typedAt: TimeInterval, now: TimeInterval, since: TimeInterval) -> Bool {
+        typedAt >= since + delay && now >= since + delay
+    }
+}
+
 struct ActionPlan {
     /// A confirmed action first reads `precheck` (the exact-name detail route), then asks.
     struct Confirm: Equatable {

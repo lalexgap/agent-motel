@@ -209,3 +209,8 @@ export function keyToRelease(method: string, held: ReadonlySet<string>): string 
   if (!isConfirmMethod(method)) return null;
   return ACTIVATION_KEYS.find((key) => held.has(key)) ?? null;
 }
+// Whether a keydown counts as a held activation key. Not with ⌘ down (macOS sends no
+// keyup for it), and not inside the terminal: keys typed there cannot activate an
+// app action, and a lost keyup would stall the next confirmed one.
+export const recordsHeldKey = (key: string, metaKey: boolean, isolated: boolean): boolean =>
+  !metaKey && !isolated && (ACTIVATION_KEYS as readonly string[]).includes(key);

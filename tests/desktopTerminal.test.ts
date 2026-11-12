@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { shortcutFor, type Shortcut } from "../desktop/src/keyboard";
+import { selectionAfterRemove } from "../desktop/src/actions";
+import { isIsolated, shortcutFor, type Shortcut } from "../desktop/src/keyboard";
 import {
   BridgeSocket,
   clientClose,
@@ -17,6 +18,7 @@ import {
   planSignature,
   REAUTH_WINDOW_MS,
   retryControl,
+  STOPPED_STATUSES,
   STOPPED_TEXT,
   terminalPlan,
   TerminalOpens,
@@ -51,6 +53,14 @@ describe("terminal plan", () => {
     expect(terminalPlan({ ...base, status: "exited" }).kind).toBe("stopped");
     expect(terminalPlan({ ...base, status: "dead" }).kind).toBe("stopped");
     expect(terminalPlan({ ...base, status: "working" }).kind).toBe("open");
+    for (const status of STOPPED_STATUSES) expect(terminalPlan({ ...base, status })).toEqual({ kind: "stopped", key: base.selected, status });
+  });
+  test("removing the open agent clears the selection, which closes the terminal", () => {
+    const selected = selectionAfterRemove(base.selected, base.selected);
+    expect(selected).toBeNull();
+    expect(terminalPlan({ ...base, selected: selected ?? null, mainView: "overview" })).toEqual({ kind: "closed" });
+    expect(selectionAfterRemove(base.selected, "c1/other")).toBeUndefined();
+    expect(terminalPlan(base).kind).toBe("open");
   });
   test("signatures change with the agent and stopped state, not the live status", () => {
     const idle = planSignature(terminalPlan(base));
@@ -132,6 +142,21 @@ describe("keyboard", () => {
         expect(shortcutFor(shortcuts, key({ key: name, shiftKey }), { screen: "fleet", typing: true, isolated: true })).toBeNull();
     }
     expect(ran).toEqual([]);
+  });
+  test("isolation is any element inside a data-keyboard-isolated one", () => {
+    const saved = (globalThis as { Element?: unknown }).Element;
+    class Element {
+      constructor(private readonly inside: boolean) {}
+      closest(selector: string) { return selector === "[data-keyboard-isolated]" && this.inside ? this : null; }
+    }
+    (globalThis as { Element?: unknown }).Element = Element;
+    try {
+      expect(isIsolated(new Element(true) as unknown as EventTarget)).toBe(true);
+      expect(isIsolated(new Element(false) as unknown as EventTarget)).toBe(false);
+      expect(isIsolated(null)).toBe(false);
+    } finally {
+      (globalThis as { Element?: unknown }).Element = saved;
+    }
   });
   test("outside it the usual rules still apply", () => {
     expect(shortcutFor(shortcuts, key({ key: "Escape" }), { screen: "fleet", typing: true, isolated: false })).toBe(shortcuts[0]!);
@@ -343,6 +368,37 @@ describe("bridge socket with the shared client", () => {
     h.pendingOpens[1]!.resolve({ id: ID2 });
     await tick();
     expect(h.router.has(ID2) && !h.router.has(ID)).toBe(true);
+  });
+
+  test("closing is idempotent: the bridge closes the terminal exactly once", async () => {
+    const h = harness();
+    h.controller.open("c1/keeper-log", "idle");
+    await tick();
+    h.pendingOpens[0]!.resolve({ id: ID });
+    await tick();
+    h.controller.close();
+    h.controller.close();
+    h.sockets[0]!.close();
+    await tick();
+    expect(h.methods("close")).toEqual([[ID]]);
+  });
+
+  test("stopping the live agent closes its terminal once and shows the notice", async () => {
+    const h = harness();
+    h.controller.open("c1/keeper-log", "idle");
+    await tick();
+    h.pendingOpens[0]!.resolve({ id: ID });
+    await tick();
+    h.controller.open("c1/keeper-log", "exited");
+    await tick();
+    expect(h.methods("close")).toEqual([[ID]]);
+    expect(h.status.textContent).toBe(STOPPED_TEXT);
+    // Removing it afterwards (selection cleared) closes nothing more.
+    h.controller.close();
+    await tick();
+    expect(h.methods("close")).toEqual([[ID]]);
+    expect(h.methods("open")).toEqual([["c1", "keeper-log"]]);
+    expect(h.router.size).toBe(0);
   });
 
   test("a stopped agent gets the notice and no open", async () => {

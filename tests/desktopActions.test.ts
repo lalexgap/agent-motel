@@ -21,6 +21,7 @@ import {
   moveHostOptions,
   nameProblem,
   pickCatalog,
+  recordsHeldKey,
   rejectionOutcome,
   resultOutcome,
   selectionAfterRemove,
@@ -311,5 +312,21 @@ describe("held activation keys", () => {
     }
     for (const method of ["agents.resume", "agents.rename", "agents.handoff", "messages.send", "api.get"])
       expect(keyToRelease(method, new Set(["Enter", " "]))).toBeNull();
+  });
+  test("Enter and Space are recorded outside the terminal only, and never with ⌘ down", () => {
+    for (const key of ACTIVATION_KEYS) {
+      expect(recordsHeldKey(key, false, false)).toBe(true);
+      expect(recordsHeldKey(key, false, true)).toBe(false);
+      expect(recordsHeldKey(key, true, false)).toBe(false);
+      expect(recordsHeldKey(key, true, true)).toBe(false);
+    }
+    for (const key of ["a", "Escape", "Tab", "Shift", "Meta"]) expect(recordsHeldKey(key, false, false)).toBe(false);
+  });
+  test("keys typed in the terminal leave a confirmed method nothing to wait for", () => {
+    const held = new Set<string>();
+    for (const key of ["Enter", " "]) if (recordsHeldKey(key, false, true)) held.add(key);
+    for (const method of CONFIRM_METHODS) expect(keyToRelease(method, held)).toBeNull();
+    if (recordsHeldKey("Enter", false, false)) held.add("Enter");
+    for (const method of CONFIRM_METHODS) expect(keyToRelease(method, held)).toBe("Enter");
   });
 });

@@ -723,3 +723,13 @@ while let chunk = ordered.take() {
 check(drained == expectedBytes, "order preserved across chunks")
 print("PASS terminal policy (base/https, /auth unreachable via api.get, cookie parsing and redaction, request shape, ids, input, resize, "
       + "frames, error mapping, control frames, consent text, output coalescing and 4 MiB cap)")
+
+let armedAt: TimeInterval = 1_000
+check(!ConfirmationArming.isArmed(typedAt: armedAt + 0.49, now: armedAt + 0.6, since: armedAt), "typed before the delay")
+check(!ConfirmationArming.isArmed(typedAt: armedAt + 0.6, now: armedAt + 0.49, since: armedAt), "handled before the delay")
+check(ConfirmationArming.isArmed(typedAt: armedAt + 0.5, now: armedAt + 0.5, since: armedAt), "exactly at the delay")
+let rearmedAt = armedAt + 30
+check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1, since: armedAt), "armed long ago")
+check(!ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1, since: rearmedAt), "re-armed when the sheet became key")
+check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.5, now: rearmedAt + 0.5, since: rearmedAt), "armed again after the delay")
+print("PASS confirmation arming (both the key's time and now past the delay, re-armed from when the sheet became key)")
