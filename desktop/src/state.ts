@@ -4,6 +4,7 @@ import { parseDrafts, parseModePreference, type PendingMessage } from "./compose
 import { agentKey, fleetRows, isConciergeKey, parseAgentKey, type ConnectionFleet, type TreeModel } from "./fleet";
 import { loadDraftsRaw, loadPrefs, loadSendModeRaw, savePrefs } from "./store";
 import type { AgentDetail, AgentRow, AppInfo, Connection, StreamState, Transcript } from "./types";
+import { Unread } from "./unread";
 
 export interface ConnState {
   conn: Connection;
@@ -59,7 +60,16 @@ export const state = {
   filter: "",
   collapsed: new Set(prefs.collapsed),
   showStopped: prefs.showStopped,
+  sidebarGroup: prefs.sidebarGroup,
+  sidebarSort: prefs.sidebarSort,
+  sidebarReverse: prefs.sidebarReverse,
+  overviewFilter: prefs.overviewFilter,
+  overviewSort: prefs.overviewSort,
+  overviewReverse: prefs.overviewReverse,
+  overviewQuery: "",
   selected: prefs.selected,
+  // The last entry read in the open agent when it was opened: where "New since your last visit" goes.
+  readBoundary: null as number | null,
   sidebarWidth: prefs.sidebarWidth,
   cursor: null as string | null,
   tree: { items: [], hiddenStopped: 0, shown: 0, total: 0 } as TreeModel,
@@ -75,8 +85,14 @@ export const state = {
   ready: false,
 };
 
+export const unread = new Unread();
+
 export const persist = () =>
-  savePrefs({ selected: state.selected, sidebarWidth: state.sidebarWidth, collapsed: [...state.collapsed], showStopped: state.showStopped });
+  savePrefs({
+    selected: state.selected, sidebarWidth: state.sidebarWidth, collapsed: [...state.collapsed], showStopped: state.showStopped,
+    sidebarGroup: state.sidebarGroup, sidebarSort: state.sidebarSort, sidebarReverse: state.sidebarReverse,
+    overviewFilter: state.overviewFilter, overviewSort: state.overviewSort, overviewReverse: state.overviewReverse,
+  });
 
 // What changed, so the views that show it re-render. Listeners run in the
 // order they subscribed, synchronously.
@@ -84,8 +100,9 @@ export const persist = () =>
 //   status      only connection health (stream state, errors, token, app info)
 //   agent       the open agent's header data: selection, detail, a fresher row
 //   transcript  the open agent's transcript was fetched (or found missing)
-export type Change = "fleet" | "status" | "agent" | "transcript";
-const listeners: Record<Change, (() => void)[]> = { fleet: [], status: [], agent: [], transcript: [] };
+//   seen        the selection or what has been read changed ("New" badges)
+export type Change = "fleet" | "status" | "agent" | "transcript" | "seen";
+const listeners: Record<Change, (() => void)[]> = { fleet: [], status: [], agent: [], transcript: [], seen: [] };
 export function subscribe(change: Change, listener: () => void): void {
   listeners[change].push(listener);
 }

@@ -1,15 +1,39 @@
 // UI preferences in localStorage. Storage can be missing or throw (private
 // mode, a custom-scheme origin without storage), so every access is guarded.
+import {
+  OVERVIEW_FILTERS,
+  OVERVIEW_SORTS,
+  SIDEBAR_GROUPS,
+  SIDEBAR_SORTS,
+  type OverviewFilter,
+  type OverviewSort,
+  type SidebarGroup,
+  type SidebarSort,
+} from "./ordering";
 
 export interface UiPrefs {
   selected: string | null;
   sidebarWidth: number;
   collapsed: string[];
   showStopped: boolean;
+  sidebarGroup: SidebarGroup;
+  sidebarSort: SidebarSort;
+  sidebarReverse: boolean;
+  overviewFilter: OverviewFilter;
+  overviewSort: OverviewSort;
+  overviewReverse: boolean;
 }
 
 const KEY = "am.desktop.ui.v1";
-export const DEFAULT_PREFS: UiPrefs = { selected: null, sidebarWidth: 280, collapsed: [], showStopped: false };
+export const DEFAULT_PREFS: UiPrefs = {
+  selected: null, sidebarWidth: 280, collapsed: [], showStopped: false,
+  sidebarGroup: "tree", sidebarSort: "status", sidebarReverse: false,
+  overviewFilter: "live", overviewSort: "status", overviewReverse: false,
+};
+
+function oneOf<T extends string>(value: unknown, options: readonly { id: T }[], fallback: T): T {
+  return options.find((option) => option.id === value)?.id ?? fallback;
+}
 
 export function parsePrefs(raw: string | null): UiPrefs {
   if (!raw) return { ...DEFAULT_PREFS, collapsed: [] };
@@ -20,6 +44,12 @@ export function parsePrefs(raw: string | null): UiPrefs {
       sidebarWidth: typeof data.sidebarWidth === "number" && Number.isFinite(data.sidebarWidth) ? data.sidebarWidth : DEFAULT_PREFS.sidebarWidth,
       collapsed: Array.isArray(data.collapsed) ? data.collapsed.filter((id): id is string => typeof id === "string").slice(0, 500) : [],
       showStopped: data.showStopped === true,
+      sidebarGroup: oneOf(data.sidebarGroup, SIDEBAR_GROUPS, DEFAULT_PREFS.sidebarGroup),
+      sidebarSort: oneOf(data.sidebarSort, SIDEBAR_SORTS, DEFAULT_PREFS.sidebarSort),
+      sidebarReverse: data.sidebarReverse === true,
+      overviewFilter: oneOf(data.overviewFilter, OVERVIEW_FILTERS, DEFAULT_PREFS.overviewFilter),
+      overviewSort: oneOf(data.overviewSort, OVERVIEW_SORTS, DEFAULT_PREFS.overviewSort),
+      overviewReverse: data.overviewReverse === true,
     };
   } catch {
     return { ...DEFAULT_PREFS, collapsed: [] };

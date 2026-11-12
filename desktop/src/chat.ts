@@ -6,7 +6,7 @@ import { $, badge, composerInput, h } from "./dom";
 import { showDraft, stashDraft } from "./drafts";
 import { BUSY, parseAgentKey } from "./fleet";
 import { duration, firstLine } from "./format";
-import { agentComposer, agentSource, changed, composer, isConcierge, persist, state, subscribe } from "./state";
+import { agentComposer, agentSource, changed, composer, isConcierge, persist, state, subscribe, unread } from "./state";
 import { registerMainView, showMainView } from "./views";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
@@ -40,16 +40,18 @@ export function selectAgent(key: string | null, focusTranscript = false): void {
     state.detail = key ? { key, detail: null, transcript: null, notFound: false } : null;
     state.taskExpanded = false;
     state.detailFetchedAt = 0;
+    // Captured now, as the browser UI does, so reading this visit doesn't move the divider.
+    state.readBoundary = key ? unread.boundary(key) : null;
     const view = $("transcript");
     view.replaceChildren();
-    delete view.dataset.content;
-    delete view.dataset.agent;
+    for (const field of ["content", "agent", "lastIndex", "updatedAt"]) delete view.dataset[field];
     persist();
+    changed("seen");
   }
   for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-agent-key]"))
     node.setAttribute("aria-selected", String(node.dataset.agentKey === key));
   if (!key) {
-    showMainView("empty");
+    showMainView("overview");
     return;
   }
   showMainView("chat");
@@ -131,8 +133,16 @@ export function renderTranscript(pin = false): void {
   const bubbleFingerprint = JSON.stringify(list.map((bubble) => [bubble.key, bubble.state, bubble.cancelId && composer.cancelling.has(bubble.cancelId)]));
   const firstRender = view.dataset.agent !== detailState.key;
   const entriesChanged = firstRender || view.dataset.content !== fingerprint;
+  const snapshot = () => {
+    const last = entries.at(-1);
+    if (last) view.dataset.lastIndex = String(last.index);
+    else delete view.dataset.lastIndex;
+    view.dataset.updatedAt = detailState.detail?.updatedAt ?? "";
+  };
   if (!entriesChanged && view.dataset.bubbles === bubbleFingerprint) {
     if (pin) view.scrollTop = view.scrollHeight;
+    snapshot();
+    updateJump();
     return;
   }
   const restore = firstRender ? null : window.agentTranscript.preserveConversationScroll(view, 90);
@@ -142,8 +152,9 @@ export function renderTranscript(pin = false): void {
     view.dataset.content = fingerprint;
     view.dataset.agent = detailState.key;
     if (!entries.length) view.append(h("p", "am-transcript-note", "No messages yet."));
-    else window.agentTranscript.renderEntries(view, entries, { agentName: detailState.detail?.name ?? "", readBoundary: null });
+    else window.agentTranscript.renderEntries(view, entries, { agentName: detailState.detail?.name ?? "", readBoundary: state.readBoundary });
   }
+  snapshot();
   let box = view.querySelector<HTMLElement>(":scope > .am-outbox");
   if (!box) box = h("div", "am-outbox");
   box.replaceChildren(...list.map((bubble) => bubbleNode(bubble, detailState.detail?.name ?? "")));
@@ -193,7 +204,18 @@ function trackTranscriptPin(): void {
 
 function updateJump(): void {
   const view = $("transcript");
-  $("am-jump-latest").hidden = !state.selected || view.scrollHeight - view.scrollTop - view.clientHeight < 100;
+  const atLatest = view.scrollHeight - view.scrollTop - view.clientHeight < 100;
+  $("am-jump-latest").hidden = !state.selected || atLatest;
+  if (atLatest) markSeen(view);
+}
+
+// Reading to the bottom of the conversation marks it seen ("New" badges) and
+// read up to its last entry (the next visit's divider), as in the browser UI.
+function markSeen(view: HTMLElement): void {
+  const key = state.selected;
+  if (!key || view.dataset.agent !== key || $("am-chat").hidden) return;
+  if (view.dataset.lastIndex) unread.markRead(key, Number(view.dataset.lastIndex));
+  if (unread.markSeen(key, view.dataset.updatedAt)) changed("seen");
 }
 
 function updateWorking(status: string, since: string | undefined): void {

@@ -1,5 +1,6 @@
 // Pure sidebar model: agent keys, sorting, filtering and the grouped tree the
 // sidebar renders and the keyboard walks. No DOM here so it is unit-testable.
+import { compareSidebar, repoName, type SidebarGroup, type SidebarSort } from "./ordering";
 import type { AgentRow, AgentStatus } from "./types";
 
 // `host:name` for remote agents, plain `name` on the server's own machine.
@@ -14,15 +15,6 @@ export const agentPath = (id: string): string => "/api/agents/" + encodeURICompo
 
 export const STOPPED: ReadonlySet<string> = new Set(["exited", "dead"]);
 export const BUSY: ReadonlySet<string> = new Set(["working", "starting", "waiting"]);
-const RANK: Record<string, number> = { "needs-attention": 0, working: 1, waiting: 2, starting: 3, idle: 4, exited: 5, dead: 5 };
-export const statusRank = (status: string): number => RANK[status] ?? 6;
-
-export function compareRows(a: AgentRow, b: AgentRow): number {
-  return statusRank(a.status) - statusRank(b.status) ||
-    (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) ||
-    a.name.localeCompare(b.name);
-}
-
 export const STATUS_LABEL: Record<AgentStatus, string> = {
   working: "Working",
   idle: "Idle",
@@ -111,6 +103,11 @@ export interface TreeOptions {
   filter: string;
   showStopped: boolean;
   collapsed: ReadonlySet<string>;
+  // How rows are grouped and ordered; the default is the nested layout sorted by status.
+  group?: SidebarGroup;
+  sort?: SidebarSort;
+  reverse?: boolean;
+  now?: number;
 }
 
 export interface GroupItem {
@@ -147,6 +144,8 @@ export interface TreeModel {
 }
 
 export const ATTENTION_GROUP = "attention";
+// The parent of every row in the flat Status list, which has no group rows.
+export const LIST_GROUP = "list";
 export const CONCIERGE_SECTION = "concierge";
 export const isPinnedConcierge = (item: TreeItem): item is AgentItem => item.kind === "agent" && !!item.concierge;
 
@@ -190,12 +189,45 @@ export function buildTree(fleets: ConnectionFleet[], options: TreeOptions): Tree
     hostLabel: row.host || fleet.local,
   });
 
-  const attention = visible.filter(({ row }) => row.status === "needs-attention")
-    .sort((a, b) => compareRows(a.row, b.row));
+  const group = options.group ?? "tree";
+  const order = { sort: options.sort ?? "status", reverse: options.reverse ?? false, now: options.now ?? Date.now() } as const;
+  const byOrder = (a: { row: AgentRow }, b: { row: AgentRow }) => compareSidebar(a.row, b.row, order);
+
+  // The flat Status list already puts agents that need you first, so it has no separate section.
+  const attention = group === "status" ? [] : visible.filter(({ row }) => row.status === "needs-attention").sort(byOrder);
   if (attention.length) {
     const collapsed = isCollapsed(ATTENTION_GROUP);
     items.push({ kind: "group", id: ATTENTION_GROUP, label: "Needs attention", depth: 0, count: attention.length, collapsed, parent: null, tone: "attention" });
     if (!collapsed) for (const { fleet, row } of attention) items.push(agentItem(fleet, row, ATTENTION_GROUP, 1));
+  }
+
+  if (group === "status") {
+    for (const { fleet, row } of [...visible].sort(byOrder)) items.push(agentItem(fleet, row, LIST_GROUP, 0));
+    return { items, hiddenStopped, shown: visible.length, total };
+  }
+  if (group === "repo" || group === "host") {
+    // One level of groups ordered by label, as in the browser UI's sidebar.
+    type Bucket = { label: string; tone: "repo" | "host"; marker?: string; entries: typeof visible };
+    const buckets = new Map<string, Bucket>();
+    const bucket = (id: string, label: string, tone: Bucket["tone"], marker?: string): Bucket => {
+      let entry = buckets.get(id);
+      if (!entry) buckets.set(id, entry = { label, tone, marker, entries: [] });
+      return entry;
+    };
+    const hostLabel = (fleet: ConnectionFleet, host: string) => (host || fleet.local || "This server") + (multi ? ` · ${fleet.name}` : "");
+    const hostBucket = (fleet: ConnectionFleet, host: string) =>
+      bucket(`g:host:${fleet.id}:${host}`, hostLabel(fleet, host), "host", host && fleet.unreachable.includes(host) ? "unreachable" : undefined);
+    if (group === "host" && !filtering) for (const fleet of fleets) for (const host of fleet.unreachable) hostBucket(fleet, host);
+    for (const entry of visible) {
+      const target = group === "repo" ? bucket(`g:repo:${repoName(entry.row)}`, repoName(entry.row), "repo") : hostBucket(entry.fleet, entry.row.host || "");
+      target.entries.push(entry);
+    }
+    for (const [id, entry] of [...buckets].sort(([, a], [, b]) => a.label.localeCompare(b.label))) {
+      const collapsed = isCollapsed(id);
+      items.push({ kind: "group", id, label: entry.label, depth: 0, count: entry.entries.length, collapsed, parent: null, tone: entry.tone, marker: entry.marker });
+      if (!collapsed) for (const { fleet, row } of entry.entries.sort(byOrder)) items.push(agentItem(fleet, row, id, 1));
+    }
+    return { items, hiddenStopped, shown: visible.length, total };
   }
 
   for (const fleet of fleets) {
@@ -233,7 +265,7 @@ export function buildTree(fleets: ConnectionFleet[], options: TreeOptions): Tree
       const labels = [...repos.keys()].sort((a, b) =>
         Number(a === NO_REPO) - Number(b === NO_REPO) || a.localeCompare(b));
       for (const label of labels) {
-        const repoRows = (repos.get(label) || []).sort(compareRows);
+        const repoRows = (repos.get(label) || []).sort((a, b) => compareSidebar(a, b, order));
         const repoId = `r:${fleet.id}:${host}:${label}`;
         const repoCollapsed = isCollapsed(repoId);
         items.push({ kind: "group", id: repoId, label, depth: base + 1, count: repoRows.length, collapsed: repoCollapsed, parent: hostId, tone: "repo" });

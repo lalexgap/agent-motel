@@ -6,7 +6,7 @@ import { initComposer } from "./composerView";
 import { initConnections, openSetup } from "./connections";
 import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
-import { initEmptyView } from "./emptyView";
+import { initOverview, tickOverview } from "./overview";
 import { parseAgentKey } from "./fleet";
 import { initKeyboard } from "./keyboard";
 import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sidebar";
@@ -31,7 +31,7 @@ function wire(): void {
   initContextMenu();
   initStatusbar();
   initConnections();
-  initEmptyView();
+  initOverview();
   initChat();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {
@@ -57,6 +57,7 @@ function tick(): void {
   const now = Date.now();
   tickTimes(now);
   tickWorking();
+  tickOverview(now);
   if (document.hidden) return;
   poll(now);
 }

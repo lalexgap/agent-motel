@@ -4,6 +4,7 @@ import { selectAgent } from "./chat";
 import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
 import { $, composerInput, copyText, dot, h } from "./dom";
 import {
+  ATTENTION_GROUP,
   buildTree,
   conciergeTarget,
   isPinnedConcierge,
@@ -18,7 +19,16 @@ import {
 } from "./fleet";
 import { relativeTime } from "./format";
 import { registerShortcut } from "./keyboard";
-import { fleets, loadProblem, persist, state, subscribe } from "./state";
+import {
+  elapsed,
+  providerLabel,
+  SIDEBAR_GROUPS,
+  SIDEBAR_SORTS,
+  sidebarMeta,
+  type SidebarGroup,
+  type SidebarSort,
+} from "./ordering";
+import { fleets, loadProblem, persist, state, subscribe, unread } from "./state";
 import { flashStatus } from "./statusbar";
 
 const SIDEBAR_MIN = 200;
@@ -45,7 +55,12 @@ function groupNode(item: GroupItem): HTMLElement {
   return node;
 }
 
-function agentNode(item: AgentItem): HTMLElement {
+const newBadge = (): HTMLElement => h("span", "unread-badge am-new", "New");
+const isNew = (item: AgentItem): boolean => unread.isNew(item.key, item.row.updatedAt, state.selected);
+
+// The browser UI's row: name, "New", provider; then status · detail · queued ·
+// age · pull requests on one line that truncates at the reason first.
+function agentNode(item: AgentItem, now: number): HTMLElement {
   const { row } = item;
   const node = h("div", `am-row am-agent${STOPPED.has(row.status) ? " stopped" : ""}`);
   node.setAttribute("role", "treeitem");
@@ -57,18 +72,28 @@ function agentNode(item: AgentItem): HTMLElement {
   node.style.setProperty("--depth", String(item.depth));
   const text = h("div", "am-agent-text");
   const line = h("div", "am-agent-line");
-  const time = h("span", "am-agent-time", relativeTime(row.statusChangedAt));
-  time.dataset.since = row.statusChangedAt || "";
-  time.title = `${statusLabel(row.status)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
-  line.append(h("span", "am-agent-name", row.name), time);
+  line.append(h("span", "am-agent-name", row.name));
+  if (isNew(item)) line.append(newBadge());
+  line.append(h("span", "am-agent-provider", providerLabel(row.provider)));
+  const parts = sidebarMeta(row, now);
   const meta = h("div", "am-agent-meta");
-  meta.append(h("span", "", row.provider));
-  if (row.status !== "idle") meta.append(h("span", `am-status-text s-${row.status}`, statusShort(row.status)));
-  if ((row.queued ?? 0) > 0) meta.append(h("span", "am-queued", `${row.queued} queued`));
-  if (item.parent === "attention") meta.append(h("span", "am-agent-context", `${repoLabel(row)} · ${item.hostLabel}`));
+  // The rest is one run of inline text so it ends in a single ellipsis, as in the browser UI.
+  const rest = h("span", "am-agent-rest");
+  const add = (node: HTMLElement) => rest.append(document.createTextNode(" · "), node);
+  if (item.parent === ATTENTION_GROUP) add(h("span", "am-agent-context", `${repoLabel(row)} · ${item.hostLabel}`));
+  if (parts.reason) add(h("span", "am-agent-reason", parts.reason));
+  if (parts.queued) add(h("span", "am-queued", parts.queued));
+  if (parts.age) {
+    const age = h("span", "am-agent-age", parts.age);
+    age.dataset.updated = row.updatedAt;
+    add(age);
+  }
+  if (parts.prs) add(h("span", "am-agent-prs", parts.prs));
+  meta.append(h("span", `am-status-text s-${row.status}`, parts.status), rest);
   text.append(line, meta);
   node.append(dot(row.status), text);
-  node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${statusLabel(row.status)}${row.statusReason ? ` — ${row.statusReason}` : ""}`;
+  const summary = [parts.status, parts.reason, parts.queued, parts.age, parts.prs].filter(Boolean).join(" · ");
+  node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${providerLabel(row.provider)}\n${summary}`;
   return node;
 }
 
@@ -91,7 +116,9 @@ function conciergeNode(item: AgentItem): HTMLElement {
   const time = h("span", "am-agent-time", relativeTime(row.statusChangedAt));
   time.dataset.since = row.statusChangedAt || "";
   time.title = `${statusLabel(row.status)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
-  line.append(label, time);
+  line.append(label);
+  if (isNew(item)) line.append(newBadge());
+  line.append(time);
   const meta = h("div", "am-agent-meta");
   meta.append(h("span", "", row.provider));
   if (stopped) meta.append(h("span", "am-status-text s-stopped", `stopped · ${statusShort(row.status)}`));
@@ -104,10 +131,22 @@ function conciergeNode(item: AgentItem): HTMLElement {
   return node;
 }
 
+export function fillOptions(select: HTMLElement, options: readonly { id: string; label: string }[]): void {
+  select.replaceChildren(...options.map(({ id, label }) => {
+    const option = h("option", "", label);
+    option.value = id;
+    return option;
+  }));
+}
+
 function renderTree(): void {
   const tree = $("am-tree");
   const hadFocus = tree.contains(document.activeElement);
-  state.tree = buildTree(fleets(), { filter: state.filter, showStopped: state.showStopped, collapsed: state.collapsed });
+  const now = Date.now();
+  state.tree = buildTree(fleets(), {
+    filter: state.filter, showStopped: state.showStopped, collapsed: state.collapsed,
+    group: state.sidebarGroup, sort: state.sidebarSort, reverse: state.sidebarReverse, now,
+  });
   const { items } = state.tree;
   if (state.cursor && !items.some((item) => item.id === state.cursor)) {
     // Keep the cursor on the same agent if it moved groups, else fall back.
@@ -119,7 +158,7 @@ function renderTree(): void {
   const nodes: HTMLElement[] = [];
   let pinned: HTMLElement | null = null;
   for (const item of items) {
-    const node = item.kind === "group" ? groupNode(item) : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item);
+    const node = item.kind === "group" ? groupNode(item) : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item, now);
     if (item.id === state.cursor) node.tabIndex = 0;
     if (isPinnedConcierge(item)) {
       if (!pinned) {
@@ -146,6 +185,11 @@ function renderTree(): void {
   summary.textContent = state.filter ? `${shown} of ${total - hiddenStopped} match` : hiddenStopped ? `${hiddenStopped} stopped hidden` : `${total} agent${total === 1 ? "" : "s"}`;
   const toggle = $("am-show-stopped");
   toggle.setAttribute("aria-pressed", String(state.showStopped));
+  $<HTMLSelectElement>("am-sidebar-group").value = state.sidebarGroup;
+  $<HTMLSelectElement>("am-sidebar-sort").value = state.sidebarSort;
+  const direction = $("am-sidebar-direction");
+  direction.textContent = state.sidebarReverse ? "↓" : "↑";
+  direction.setAttribute("aria-pressed", String(state.sidebarReverse));
 }
 
 export function focusCursor(scroll = true): void {
@@ -179,8 +223,9 @@ function activateItem(item: TreeItem): void {
   else selectAgent(item.key);
 }
 
-function openConcierge(): void {
-  const key = conciergeTarget(fleets(), state.selected);
+// Opens the concierge and puts the cursor in the message box: `key`, else the
+// one `c` picks (the open agent's connection first).
+export function openConcierge(key = conciergeTarget(fleets(), state.selected)): void {
   if (!key) return;
   const item = state.tree.items.find((candidate) => isPinnedConcierge(candidate) && candidate.key === key);
   if (item) state.cursor = item.id;
@@ -200,6 +245,11 @@ export function focusFilter(): void {
 export function tickTimes(now: number): void {
   for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-since]")) {
     const text = relativeTime(node.dataset.since, now);
+    if (node.textContent !== text) node.textContent = text;
+  }
+  for (const node of document.querySelectorAll<HTMLElement>("#am-tree [data-updated]")) {
+    const updated = Date.parse(node.dataset.updated || "");
+    const text = Number.isFinite(updated) ? `${elapsed(Math.max(0, now - updated))} ago` : "";
     if (node.textContent !== text) node.textContent = text;
   }
 }
@@ -261,7 +311,7 @@ function registerShortcuts(): void {
   registerShortcut({ keys: ["/"], run: focusFilter });
   registerShortcut({ keys: ["Escape"], run: () => focusCursor() });
   // Prevented before focus moves to the message box, or the c would be typed into it.
-  registerShortcut({ keys: ["c"], run: openConcierge });
+  registerShortcut({ keys: ["c"], run: () => openConcierge() });
 
   // Arrow keys belong to whatever has focus (the transcript scrolls with them);
   // the list takes them when it, or nothing in particular, is focused.
@@ -371,5 +421,23 @@ export function initSidebar(): void {
     persist();
     renderTree();
   });
+  fillOptions($("am-sidebar-group"), SIDEBAR_GROUPS);
+  fillOptions($("am-sidebar-sort"), SIDEBAR_SORTS);
+  $("am-sidebar-group").addEventListener("change", (event) => {
+    state.sidebarGroup = (event.target as HTMLSelectElement).value as SidebarGroup;
+    persist();
+    renderTree();
+  });
+  $("am-sidebar-sort").addEventListener("change", (event) => {
+    state.sidebarSort = (event.target as HTMLSelectElement).value as SidebarSort;
+    persist();
+    renderTree();
+  });
+  $("am-sidebar-direction").addEventListener("click", () => {
+    state.sidebarReverse = !state.sidebarReverse;
+    persist();
+    renderTree();
+  });
+  subscribe("seen", renderTree);
   wireDivider();
 }

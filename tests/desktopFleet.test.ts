@@ -5,7 +5,6 @@ import {
   agentPath,
   ATTENTION_GROUP,
   buildTree,
-  compareRows,
   conciergeId,
   conciergeTarget,
   countStatuses,
@@ -21,7 +20,7 @@ import {
   type TreeItem,
 } from "../desktop/src/fleet";
 import { duration, relativeTime } from "../desktop/src/format";
-import { parsePrefs } from "../desktop/src/store";
+import { DEFAULT_PREFS, parsePrefs } from "../desktop/src/store";
 import type { AgentRow } from "../desktop/src/types";
 
 const T0 = Date.parse("2026-01-01T12:00:00Z");
@@ -75,7 +74,7 @@ describe("repository labels", () => {
 });
 
 describe("sorting", () => {
-  test("status order then most recently updated", () => {
+  test("each repository group is sorted by the sidebar sort: status rank, then name", () => {
     const rows = [
       row("idle-old", { status: "idle", updatedAt: new Date(T0 - 5000).toISOString() }),
       row("stopped", { status: "exited" }),
@@ -83,10 +82,13 @@ describe("sorting", () => {
       row("waiting", { status: "waiting" }),
       row("idle-new", { status: "idle", updatedAt: new Date(T0).toISOString() }),
       row("working", { status: "working" }),
-      row("attention", { status: "needs-attention" }),
       row("dead", { status: "dead" }),
     ];
-    expect(rows.sort(compareRows).map((r) => r.name)).toEqual(["attention", "working", "waiting", "starting", "idle-new", "idle-old", "dead", "stopped"]);
+    const names = (extra: object) => buildTree([fleet(rows)], { ...opts({ showStopped: true }), ...extra }).items
+      .filter((item) => item.kind === "agent").map((item) => (item.kind === "agent" ? item.row.name : ""));
+    expect(names({})).toEqual(["waiting", "working", "starting", "idle-new", "idle-old", "dead", "stopped"]);
+    expect(names({ sort: "recent", now: T0 })).toEqual(["dead", "idle-new", "starting", "stopped", "waiting", "working", "idle-old"]);
+    expect(names({ sort: "name", reverse: true })).toEqual(["working", "waiting", "stopped", "starting", "idle-old", "idle-new", "dead"]);
   });
 });
 
@@ -266,9 +268,16 @@ describe("formatting and prefs", () => {
     expect(duration(3_900_000)).toBe("1h 5m");
   });
   test("prefs tolerate missing or corrupt storage", () => {
-    expect(parsePrefs(null)).toEqual({ selected: null, sidebarWidth: 280, collapsed: [], showStopped: false });
-    expect(parsePrefs("{not json")).toEqual({ selected: null, sidebarWidth: 280, collapsed: [], showStopped: false });
+    expect(parsePrefs(null)).toEqual(DEFAULT_PREFS);
+    expect(parsePrefs("{not json")).toEqual(DEFAULT_PREFS);
+    expect(DEFAULT_PREFS).toMatchObject({ selected: null, sidebarWidth: 280, collapsed: [], showStopped: false, sidebarGroup: "tree", sidebarSort: "status", overviewFilter: "live", overviewSort: "status" });
     expect(parsePrefs(JSON.stringify({ selected: "c/a", sidebarWidth: 320, collapsed: ["x", 3], showStopped: true })))
-      .toEqual({ selected: "c/a", sidebarWidth: 320, collapsed: ["x"], showStopped: true });
+      .toEqual({ ...DEFAULT_PREFS, selected: "c/a", sidebarWidth: 320, collapsed: ["x"], showStopped: true });
+  });
+  test("grouping, sorting and the overview filter persist; unknown values fall back", () => {
+    const saved = { sidebarGroup: "repo", sidebarSort: "runtime", sidebarReverse: true, overviewFilter: "attention", overviewSort: "recent", overviewReverse: true };
+    expect(parsePrefs(JSON.stringify(saved))).toMatchObject(saved);
+    expect(parsePrefs(JSON.stringify({ sidebarGroup: "planet", sidebarSort: 3, overviewFilter: "x", overviewSort: null, overviewReverse: "yes" })))
+      .toMatchObject({ sidebarGroup: "tree", sidebarSort: "status", overviewFilter: "live", overviewSort: "status", overviewReverse: false });
   });
 });

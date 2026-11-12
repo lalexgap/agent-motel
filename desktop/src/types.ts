@@ -33,6 +33,14 @@ export interface AgentRow {
   updatedAt: string;
   workingSince?: string;
   spawnedBy?: string;
+  prMonitor?: { pullRequests?: { number: number; state: string }[] };
+  subagents?: { running?: RunningSubagent[] };
+}
+
+export interface RunningSubagent {
+  id: string;
+  type?: string;
+  description?: string;
 }
 
 export interface QueueItem {
