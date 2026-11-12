@@ -975,3 +975,49 @@ body.am-resizing {
     transition: none;
   }
 }
+
+/* Hover moves focus, so only :focus highlights. */
+.am-context-menu {
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 16px));
+  font-size: 13px;
+  outline: none;
+}
+.am-context-menu button {
+  border-radius: 3px;
+  padding: 5px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: none;
+}
+.am-context-menu button:hover {
+  background: transparent;
+}
+.am-context-menu button:focus,
+.am-context-menu button:focus-visible {
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+  outline: none;
+}
+.am-context-menu button.danger {
+  color: var(--danger-text);
+}
+.am-context-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.am-copy-buffer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.am-sb-flash {
+  color: var(--success-text);
+}
