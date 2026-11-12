@@ -247,6 +247,19 @@ describe("agents api", () => {
     expect(((await (await fetch(url("/api/summary"), auth())).json()) as any).prs.needsMe[0]).toMatchObject({ key: "owner/repo#1", agent: "gone" });
   });
 
+  test("GET /api/prs reuses the rows a fleet request just built", async () => {
+    const now = new Date().toISOString();
+    const owner = (name: string, number: number) => writeAgent({ name, status: "exited", dir: "/tmp", tmuxSession: `agentmgr-${name}`, createdAt: now, updatedAt: now,
+      prMonitor: { pullRequests: [{ repository: "owner/repo", number, url: `https://github.com/owner/repo/pull/${number}`, state: "OPEN", updatedAt: now }] } });
+    const numbers = async () => ((await (await fetch(url("/api/prs"), auth())).json()) as any).prs.map((pr: any) => pr.number).sort();
+    owner("first", 1);
+    await fetch(url("/api/agents"), auth());
+    owner("second", 2);
+    expect(await numbers()).toEqual([1]);
+    await fetch(url("/api/agents"), auth());
+    expect(await numbers()).toEqual([1, 2]);
+  });
+
   test("GET /api/agents/:name returns detail + queue", async () => {
     const now = new Date().toISOString();
     writeAgent({ name: "beta", role: "reviewer", status: "idle", dir: "/tmp", tmuxSession: "agentmgr-beta", createdAt: now, updatedAt: now });
