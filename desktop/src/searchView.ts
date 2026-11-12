@@ -1,8 +1,5 @@
-// The search page, the browser UI's search in the main area: every agent on
-// every connection matched by its details, and on submit (never per keystroke)
-// by its conversations through `search.query`, one call per connection.
-// Query, filters and results live in this page's elements and module state, so
-// leaving for an agent and coming back finds them as they were.
+// Conversation search runs on submit only, never per keystroke. Query, filters and
+// results live in this module, so leaving for an agent and coming back keeps them.
 import { call } from "./bridge";
 import { selectAgent } from "./chat";
 import { $, badge, composerInput, h } from "./dom";
@@ -119,7 +116,7 @@ function build(): Controls {
   section.append(heading, form, summary, results);
   $("am-main").append(section);
 
-  // The sidebar's page strip; other pages add their own controls to it.
+  // Other pages add their own controls to this strip.
   let strip = document.getElementById("am-nav");
   if (!strip) {
     strip = h("nav");
@@ -228,7 +225,6 @@ async function runConversationSearch(): Promise<void> {
   const connections = [...state.conns.values()].map(({ conn }) => ({ id: conn.id, name: conn.name }));
   search = beginSearch(query, seq, connections);
   render();
-  // In parallel; each connection's answer (or failure) shows as it arrives.
   await Promise.all(connections.map(async ({ id, name }) => {
     let result;
     try {
@@ -303,7 +299,7 @@ export function initSearch(): void {
     // A click with no pointer behind it is Enter or Space on the focused result.
     if (node?.dataset.agentKey) openResult(node.dataset.agentKey, event.detail === 0);
   });
-  // The page's control shows whether the page is open, however it was left.
+  // views.ts has no view-change event.
   const mark = () => {
     if (ui.section.hidden) ui.nav.removeAttribute("aria-current");
     else ui.nav.setAttribute("aria-current", "page");

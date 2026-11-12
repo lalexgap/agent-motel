@@ -1,9 +1,5 @@
-// The search page's logic, without the DOM glue: the browser UI's rules from
-// web/search.js (term matching, filters, sorts, excerpts, highlighting), the
-// conversation search's per-connection results and their sequence numbers, and
-// the summary text. web/search.js reads app.js globals and wires its form when
-// it loads, so it cannot be shared as a script; tests/desktopSearch.test.ts
-// runs it in a vm and checks that searchExcerpt and highlightInto here agree.
+// web/search.js reads app.js globals and wires its form on load, so its rules are
+// reimplemented here; tests/desktopSearch.test.ts checks the shared ones agree.
 import type { AgentRow, ApiResponse } from "./types";
 
 export const SNIPPETS_PER_AGENT = 3;
@@ -22,7 +18,6 @@ export interface SearchFilters {
 }
 export const DEFAULT_FILTERS: SearchFilters = { repository: "", host: "", provider: "", status: "", sort: "recent" };
 
-// One agent on one connection, the unit the page lists.
 export interface SearchRow {
   key: string;
   connection: string;
@@ -35,7 +30,7 @@ export interface Snippet {
   text: string;
 }
 
-// --- shared with web/search.js (kept equal by tests/desktopSearch.test.ts) ---
+// Kept equal to web/search.js by tests/desktopSearch.test.ts.
 
 export function searchExcerpt(text: unknown, terms: string[], length = 220): string {
   const flat = String(text || "").replace(/\*\*|`|(^|\s)#{1,6}(?=\s)/g, "$1").replace(/\s+/g, " ").trim();
@@ -62,12 +57,10 @@ export function highlightInto<T extends Node>(node: T, text: string, terms: stri
   return node;
 }
 
-// --- app.js helpers the search page uses (repoPath, runtime, elapsed) ---
-
 export const repoPath = (row: Pick<AgentRow, "repoRoot" | "dir">): string => row.repoRoot || row.dir || "";
 export const hostOf = (row: Pick<AgentRow, "host">): string => row.host || "local";
 
-// How long a working or waiting agent has been at it; -1 for everyone else.
+// -1 unless working or waiting.
 export function runtime(row: Pick<AgentRow, "status" | "statusChangedAt">, now = Date.now()): number {
   if (row.status !== "working" && row.status !== "waiting") return -1;
   const start = Date.parse(row.statusChangedAt || "");
@@ -82,8 +75,6 @@ export function elapsed(ms: number): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
-
-// --- matching, filtering, sorting ---
 
 export const queryTerms = (query: string): string[] => query.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
@@ -119,8 +110,7 @@ export function sortRows(rows: SearchRow[], sort: SortKey, now = Date.now()): Se
   });
 }
 
-// A select's values: sorted and unique, keeping the current choice even after
-// its last agent is gone so a filter never silently resets.
+// Keeps the current choice after its last agent is gone, so a filter never silently resets.
 export function optionValues(values: string[], previous: string): string[] {
   const entries = [...new Set(values)].sort();
   if (previous && !entries.includes(previous)) entries.push(previous);
@@ -128,8 +118,6 @@ export function optionValues(values: string[], previous: string): string[] {
 }
 
 export const validConversationQuery = (query: string): boolean => query.length >= 2 && query.length <= 256;
-
-// --- conversation search ---
 
 export interface ConnectionResult {
   connection: string;
@@ -148,13 +136,11 @@ export interface ConversationSearch {
   results: Map<string, ConnectionResult>;
 }
 
-// One search across the given connections; `seq` is what later responses must match.
 export function beginSearch(query: string, seq: number, connections: { id: string; name: string }[]): ConversationSearch {
   return { query, seq, results: new Map(connections.map(({ id, name }) => [id, { connection: id, name, pending: true }])) };
 }
 
-// Applies one connection's outcome to the current search; a response for an
-// older search (or a connection the search did not include) is dropped.
+// Drops responses for an older search or a connection the search did not include.
 export function applyResult(search: ConversationSearch | null, seq: number, result: ConnectionResult): boolean {
   if (!search || search.seq !== seq || !search.results.has(result.connection)) return false;
   search.results.set(result.connection, { ...result, pending: false });
@@ -166,7 +152,6 @@ const errorText = (body: unknown): string | null => {
   return typeof error === "string" && error ? error : null;
 };
 
-// Snippets as the page shows them: known shape only, at most three.
 function shapeSnippets(value: unknown): Snippet[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -175,7 +160,6 @@ function shapeSnippets(value: unknown): Snippet[] {
     .map(({ kind, text }) => ({ kind, text }));
 }
 
-// What a connection's `search.query` response means for the page.
 export function readResponse(connection: string, name: string, response: ApiResponse): ConnectionResult {
   const base = { connection, name, pending: false };
   if (response.status === 429) return { ...base, error: BUSY_MESSAGE };
@@ -192,7 +176,6 @@ export function readResponse(connection: string, name: string, response: ApiResp
   return { ...base, matches, partial: body.partial === true, unavailable };
 }
 
-// A rejected bridge call (validation, network, timeout) shown as it came.
 export function failure(connection: string, name: string, error: unknown): ConnectionResult {
   return { connection, name, pending: false, error: error instanceof Error ? error.message : String(error) };
 }
@@ -205,7 +188,6 @@ export function snippetsFor(search: ConversationSearch | null, key: string): Sni
 
 export const snippetLabel = (kind: string): string => (kind === "user" ? "You" : kind === "assistant" ? "Agent" : kind);
 
-// "N of M agents · …" plus, in conversation mode, where the search stands.
 export function summaryText(shown: number, total: number, mode: SearchMode, search: ConversationSearch | null): string {
   let text = `${shown} of ${total} agents · includes child and finished agents`;
   if (mode !== "conversations") return text;
