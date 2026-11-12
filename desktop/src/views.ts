@@ -20,7 +20,12 @@ export interface MainView {
   onShow?: () => void;
 }
 const views: MainView[] = [];
+const listeners: (() => void)[] = [];
 let active: string | null = null;
+
+export function onMainViewChange(listener: () => void): void {
+  listeners.push(listener);
+}
 
 export function registerMainView(view: MainView): void {
   views.push(view);
@@ -31,6 +36,7 @@ export function showMainView(id: string): void {
   active = id;
   $("am-main").dataset.mainView = id;
   views.find((view) => view.id === id)?.onShow?.();
+  for (const listener of listeners) listener();
 }
 
 export const mainView = (): string | null => active;

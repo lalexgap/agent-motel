@@ -20,7 +20,7 @@ import {
 import { fillOptions, openConcierge } from "./sidebar";
 import { fleets, loadProblem, persist, state, subscribe, unread } from "./state";
 import type { AgentRow } from "./types";
-import { mainView, registerMainView } from "./views";
+import { mainView, onMainViewChange, registerMainView } from "./views";
 
 interface Entry {
   fleet: ConnectionFleet;
@@ -100,7 +100,10 @@ function renderOverview(): void {
     const row = conciergeRow(fleet);
     return row ? [conciergeNode(fleet, row, multi)] : [];
   });
-  $("am-overview-concierge").replaceChildren(...concierges);
+  const conciergeBox = $("am-overview-concierge");
+  const focusedConcierge = conciergeBox.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.conciergeKey : undefined;
+  conciergeBox.replaceChildren(...concierges);
+  if (focusedConcierge) concierges.find((node) => node.dataset.conciergeKey === focusedConcierge)?.focus({ preventScroll: true });
 
   const counts = overviewCounts(rows);
   const filters = $("am-overview-filters");
@@ -229,7 +232,8 @@ function updateNav(button: HTMLElement): void {
 
 export function initOverview(): void {
   const nav = navControl();
-  registerMainView({ id: "overview", element: $("am-overview"), onShow: () => { renderOverview(); updateNav(nav); } });
+  registerMainView({ id: "overview", element: $("am-overview"), onShow: renderOverview });
+  onMainViewChange(() => updateNav(nav));
   subscribe("fleet", () => {
     updateNav(nav);
     if (showing()) renderOverview();
