@@ -75,10 +75,11 @@ export function decisionsReport(): WebDecisionsReport {
   if (config.decisions === false) return { groups: [], remoteHosts, enabled: false, complete: true };
   const groups: WebDecisionGroup[] = [];
   const result = readDecisionStoreTextsResult();
+  let complete = result?.complete === true;
   for (const [agent, source] of result?.texts ?? []) {
     if (!validDecisionsAgent(agent)) continue;
     const store = parseDecisionStore(source);
-    if (!store) continue;
+    if (!store) { complete = false; continue; }
     const decisions = sortOpen(store.decisions).map(webDecision);
     if (decisions.length) groups.push({ agent, decisions });
   }
@@ -89,7 +90,7 @@ export function decisionsReport(): WebDecisionsReport {
     const bOldest = b.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
     return Number(bBlocking) - Number(aBlocking) || aOldest.localeCompare(bOldest) || a.agent.localeCompare(b.agent);
   });
-  return { groups, remoteHosts, enabled: true, complete: result?.complete === true };
+  return { groups, remoteHosts, enabled: true, complete };
 }
 
 // The store's file-name rule, within drop's own `--agent` limit.
