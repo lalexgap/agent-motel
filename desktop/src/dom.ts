@@ -31,9 +31,7 @@ export const composerInput = () => $<HTMLTextAreaElement>("composer-input");
 export const isTyping = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 
-// Copies text to the clipboard and resolves to whether it worked. The synchronous
-// copy command goes first: it only works inside the click that asked for it, and
-// awaiting the async clipboard API first would let that window close.
+// execCommand first: it only works synchronously inside the user's click.
 export async function copyText(text: string): Promise<boolean> {
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const area = h("textarea", "am-copy-buffer");

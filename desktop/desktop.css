@@ -976,8 +976,7 @@ body.am-resizing {
   }
 }
 
-/* Agent context menu: the browser UI's .agent-context-menu look, plus one
-   highlight that follows focus (pointer hover moves focus onto the item). */
+/* Hover moves focus, so only :focus highlights. */
 .am-context-menu {
   min-width: 180px;
   max-width: min(320px, calc(100vw - 16px));

@@ -1,13 +1,9 @@
-// Context menus. The web view's own menu (whose only item is Reload) is kept
-// away except where it helps: in text fields and on a text selection, so Copy
-// and Look Up still work. Sidebar agents get an agent menu whose items other
-// modules register; groups render in a fixed order, separated by dividers.
+// The web view's own menu (only "Reload") is suppressed except in text fields
+// and on a text selection, where Copy and Look Up still belong.
 import { h } from "./dom";
 import { parseAgentKey } from "./fleet";
 import { findRow, subscribe } from "./state";
 import type { AgentRow } from "./types";
-
-// --- Pure parts -------------------------------------------------------------
 
 export interface Rect {
   left: number;
@@ -20,11 +16,9 @@ export const pointInRects = (x: number, y: number, rects: Iterable<Rect>): boole
   return false;
 };
 
-// Whether the web view may show its own menu for a right-click.
 export const allowDefaultMenu = (target: { editable: boolean; inSelection: boolean }): boolean =>
   target.editable || target.inSelection;
 
-// Where a menu of `size` opened at `point` goes so it stays `margin` inside the viewport.
 export function placeMenu(
   point: { x: number; y: number },
   size: { width: number; height: number },
@@ -37,7 +31,7 @@ export function placeMenu(
   };
 }
 
-// What Copy name copies: the agent id from its key, `name` or `host:name` for a remote agent.
+// `name`, or `host:name` for a remote agent.
 export const copyNameText = (key: string): string => parseAgentKey(key)?.id ?? key;
 
 export const AGENT_MENU_GROUPS = ["open", "manage", "lifecycle", "copy", "danger"] as const;
@@ -47,9 +41,8 @@ export interface AgentMenuItem {
   id: string;
   label: string;
   group: AgentMenuGroup;
-  // Shown for this agent; default always.
   visible?: (row: AgentRow, key: string) => boolean;
-  // Shown but greyed out when false; default enabled.
+  // Shown greyed out when false.
   enabled?: (row: AgentRow, key: string) => boolean;
   danger?: boolean;
   run: (key: string, row: AgentRow) => void;
@@ -65,7 +58,6 @@ export interface MenuSection {
   group: AgentMenuGroup;
   entries: { item: AgentMenuItem; enabled: boolean }[];
 }
-// The visible items for an agent, by group in menu order, registration order within a group.
 export function menuSections(items: readonly AgentMenuItem[], row: AgentRow, key: string): MenuSection[] {
   const sections: MenuSection[] = [];
   for (const group of AGENT_MENU_GROUPS) {
@@ -76,8 +68,6 @@ export function menuSections(items: readonly AgentMenuItem[], row: AgentRow, key
   }
   return sections;
 }
-
-// --- Default menu suppression ---------------------------------------------------
 
 const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
 
@@ -95,11 +85,9 @@ function onDefaultMenu(event: MouseEvent): void {
   if (!allowDefaultMenu({ editable, inSelection: inSelection(event.clientX, event.clientY) })) event.preventDefault();
 }
 
-// --- The agent menu -------------------------------------------------------------
-
 interface OpenMenu {
   key: string;
-  // The sidebar row it was opened from (its data-item-id), to close when it goes away.
+  // The row's data-item-id; the menu closes when that row goes away.
   itemId: string;
   onClose: (restoreFocus: boolean) => void;
 }
@@ -113,8 +101,7 @@ function menuButtons(): HTMLButtonElement[] {
   return menu ? [...menu.querySelectorAll<HTMLButtonElement>("button[role='menuitem']:not(:disabled)")] : [];
 }
 
-// Focus goes back to the row on Esc, Tab or an item, and whenever the menu
-// had it (so closing on a scroll or a fleet update does not drop it).
+// Focus returns to the row whenever the menu held it, so no close path drops it.
 export function closeAgentMenu(restoreFocus = false): void {
   if (!current || !menu) return;
   if (menu.contains(document.activeElement)) restoreFocus = true;
@@ -126,7 +113,6 @@ export function closeAgentMenu(restoreFocus = false): void {
 }
 
 function onMenuKeydown(event: KeyboardEvent): void {
-  // The menu owns the keyboard while focused: no list or window shortcuts.
   event.stopPropagation();
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.key === "Escape" || event.key === "Tab") {
@@ -142,7 +128,7 @@ function onMenuKeydown(event: KeyboardEvent): void {
     return;
   }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-    // Letters must not reach the list (j/k, c, /) through the document either.
+    // Keep letters away from the list shortcuts (j/k, c, /).
     if (event.key.length === 1) event.preventDefault();
     return;
   }
@@ -166,8 +152,7 @@ function ensureMenu(): HTMLElement {
   // Keep focus on the highlighted item while clicking, so nothing blurs mid-click.
   menu.addEventListener("pointerdown", (event) => event.preventDefault());
   menu.addEventListener("contextmenu", (event) => event.preventDefault());
-  // One highlight, as in a native menu: the item under the pointer takes focus,
-  // and leaving the items hands focus back to the menu itself.
+  // One highlight, as in a native menu: hover moves focus.
   menu.addEventListener("pointermove", (event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("button[role='menuitem']");
     if (button && !button.disabled && document.activeElement !== button) button.focus({ preventScroll: true });
@@ -186,10 +171,7 @@ function ensureMenu(): HTMLElement {
   return menu;
 }
 
-// Opens the agent menu for `key` at a viewport point (the pointer, or a spot on
-// the row for the keyboard). From the keyboard the first item takes focus; from
-// the pointer the menu itself does, so nothing is highlighted until the pointer
-// or an arrow key picks an item. False when the agent has no row or no item applies.
+// False when the agent has no row or no item applies.
 export function openAgentMenu(options: OpenMenu & { x: number; y: number; focusFirst: boolean }): boolean {
   closeAgentMenu();
   const row = findRow(options.key);
@@ -231,14 +213,12 @@ export function initContextMenu(): void {
   document.addEventListener("pointerdown", (event) => {
     if (current && !(event.target instanceof Node && menu?.contains(event.target))) closeAgentMenu();
   }, true);
-  // A key pressed with focus somewhere else (the menu lost it) closes the menu first.
   document.addEventListener("keydown", (event) => {
     if (current && !(event.target instanceof Node && menu?.contains(event.target))) closeAgentMenu();
   }, true);
   document.addEventListener("scroll", () => { if (!settling) closeAgentMenu(); }, true);
   window.addEventListener("resize", () => closeAgentMenu());
   window.addEventListener("blur", () => closeAgentMenu());
-  // After the sidebar re-renders: close when the row it was opened from is gone.
   subscribe("fleet", () => {
     if (!current) return;
     const stillThere = document.querySelector(`#am-tree [data-item-id="${CSS.escape(current.itemId)}"]`) && findRow(current.key);

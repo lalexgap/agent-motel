@@ -204,8 +204,7 @@ export function tickTimes(now: number): void {
   }
 }
 
-// The agent menu for a row: the cursor moves to it (the agent does not open)
-// and Esc, Tab or an item hands focus back to it.
+// Moves the cursor to the row without opening the agent.
 function openRowMenu(node: HTMLElement, point?: { x: number; y: number }): void {
   const { itemId, agentKey: key } = node.dataset;
   if (!itemId || !key) return;
