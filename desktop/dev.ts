@@ -2,10 +2,9 @@
 // over HTTP so the frontend runs in a plain browser.
 //   bun desktop/dev.ts [--port 5199] [--fixture] [--fixture-url http://127.0.0.1:8791] [--watch]
 // /__bridge has no secret: its Host/Origin checks stop browsers, not other local
-// processes, which can drive it and use any saved token (including terminal.open, which
-// types into an agent's pane). Run it on a single-user machine with fixture or throwaway
-// tokens, never a production token on a shared host. Closing the page's /__bridge/events
-// stream (a reload) closes every terminal the bridge holds.
+// processes, which can drive it and use any saved token, including terminal.open, which
+// types into an agent's pane. Run it on a single-user machine with fixture or throwaway
+// tokens, never a production token on a shared host.
 import { watch } from "node:fs";
 import { join, normalize, resolve, sep } from "node:path";
 import { build, desktopDir, distDir } from "./build";
@@ -62,7 +61,6 @@ function arg(name: string): string | undefined {
 
 export function startDevServer(options: { port: number; bridge: DevBridge; root?: string }) {
   const root = resolve(options.root ?? distDir);
-  // Each page's event stream: write(text) queues a chunk and resolves once the stream has handed it on.
   const sse = new Set<(text: string) => Promise<void>>();
   const encoder = new TextEncoder();
   const json = (body: unknown, status = 200) =>
@@ -108,7 +106,6 @@ export function startDevServer(options: { port: number; bridge: DevBridge; root?
             queue.push({ bytes: encoder.encode(text), delivered });
             wake?.();
           });
-        // The page reloaded or closed: the terminals it opened are unreachable now.
         const finish = () => {
           if (closed) return;
           closed = true;

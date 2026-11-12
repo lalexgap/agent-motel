@@ -89,8 +89,7 @@ export const state = {
   // The subagent the subagent view shows (`<agent key>#<id>`); its parent stays `selected`.
   subagent: null as string | null,
   taskExpanded: false,
-  // Chat or Terminal: the saved choice, and an override for this visit only (a
-  // search hit or a write-to-it flow shows chat without changing the choice).
+  // `agentViewVisit` overrides the saved Chat/Terminal choice for this visit only.
   agentView: parseAgentViewMode(loadAgentViewRaw()),
   agentViewVisit: null as AgentViewMode | null,
   editing: null as string | null,

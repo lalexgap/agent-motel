@@ -45,7 +45,7 @@ export interface Fx {
   deliverMs: number;
   replyMs: number;
   transitionMs: number;
-  // The agent's tmux session ended (stopped, moved away, removed): attached terminals exit.
+  // The agent's tmux session ended: attached terminals exit.
   detachTerminals?(row: FixtureRow): void;
 }
 
@@ -985,9 +985,7 @@ export function buildRoutes(fx: Fx): {
     drain(row);
   }
 
-  // GET /api/agents/:key/terminal target resolution: terminalTarget / remoteTerminalTarget
-  // in src/webTerminal.ts, after parseTarget. A remote "dead" counts as stopped; a local one
-  // has no tmux session.
+  // Mirrors terminalTarget / remoteTerminalTarget in src/webTerminal.ts.
   function terminalTarget(raw: string): { row: FixtureRow; transport: "local" | "ssh" } | Response {
     const target = parseTarget(raw);
     if (target instanceof Response) return target;

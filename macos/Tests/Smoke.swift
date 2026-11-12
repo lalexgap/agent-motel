@@ -122,7 +122,6 @@ final class SmokeRunner {
         transcript.append(canonical(value))
     }
 
-    /// Keeps every native event the page receives in window.__smokeEvents, still passing it on.
     func installRecorder() async throws {
         _ = try await js("""
             window.__smokeEvents = [];
@@ -297,7 +296,7 @@ final class SmokeRunner {
 
     enum Answer { case accept, cancel, escape, returnKey }
 
-    /// A key press posted to this app's own event queue for the sheet's window: the same path a key press takes.
+    /// Posted to this app's own event queue: the same path a real key press takes.
     func postKey(_ characters: String, keyCode: UInt16, to sheet: NSWindow, isARepeat: Bool = false) throws {
         guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                            windowNumber: sheet.windowNumber, context: nil, characters: characters,

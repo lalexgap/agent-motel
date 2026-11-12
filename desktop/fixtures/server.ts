@@ -1,16 +1,11 @@
 // Fixture am server: the HTTP API the browser UI uses, over synthetic data
 // held in memory, for the desktop dev server, screenshots and tests.
 //   bun desktop/fixtures/server.ts [--port 8791]
-// Routes live in routes.ts, state in store.ts, the browser sign-in and the
-// interactive terminal in terminal.ts. Test hooks, all bearer-gated:
-//   GET  /__fixture/requests  every authorised non-GET request, in order, plus every
-//                             /auth/* request (never the token), terminal preflight
-//                             (GET), upgrade (UPGRADE, status 101 when it opened) and
-//                             terminal message or close (WS, per terminal id); the
-//                             x-fixture-open-terminals header counts open terminals
+// Test hooks, all bearer-gated:
+//   GET  /__fixture/requests  authorised non-GET, /auth/* (never the token) and terminal
+//                             GET/UPGRADE/WS entries; x-fixture-open-terminals counts open terminals
 //   GET  /__fixture/terminals {open: [{terminal, agent, cols, rows}], sessions}
-//   POST /__fixture/reset     back to the seeded state (also clears the log); like a
-//                             restart, terminals close with 1001 and sessions are forgotten
+//   POST /__fixture/reset     seeded state, empty log; terminals close with 1001, sessions forgotten
 //   POST /__fixture/terminal/expire  revokes every session: terminals close with 4001
 //   POST /__fixture/terminal/flood   the next terminal to attach sends 8 MiB of output
 import type { Server } from "bun";
@@ -33,7 +28,7 @@ export interface FixtureRequest {
   method: string;
   path: string;
   body: unknown;
-  // /auth/* and terminal entries: the response status, and the terminal it concerns.
+  // Set for /auth/* and terminal entries.
   status?: number;
   terminal?: string;
 }
@@ -43,7 +38,6 @@ export interface FixtureServer {
   port: number;
   rows: FixtureRow[];
   requests: FixtureRequest[];
-  // Terminals still open on the server side.
   openTerminals(): { terminal: string; agent: string; cols: number; rows: number }[];
   reset(): void;
   stop(): void;

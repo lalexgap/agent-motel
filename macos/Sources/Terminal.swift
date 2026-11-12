@@ -1,8 +1,7 @@
 import Foundation
 
-/// Sends the terminal login and preflight. An ephemeral session that neither stores nor sends
-/// cookies on its own and refuses redirects, so neither the token nor the session cookie is
-/// replayed anywhere else. Nothing is retried here.
+/// Ephemeral, without automatic cookies and refusing redirects, so neither the token nor the
+/// session cookie is replayed anywhere else.
 @MainActor
 final class TerminalHTTP {
     struct Response: Sendable {
@@ -37,7 +36,6 @@ final class TerminalHTTP {
         session = nil
     }
 
-    /// Reads at most `maxResponseBytes` of the body; the answers are a few bytes of JSON.
     private nonisolated static func fetch(_ session: URLSession, _ request: URLRequest) async throws -> Response {
         do {
             let (bytes, response) = try await session.bytes(for: request)
@@ -57,9 +55,8 @@ final class TerminalHTTP {
     }
 }
 
-/// The terminal consent: approvals for this app run (in memory) and "Don't ask again for this
-/// server" (in UserDefaults), both keyed by connection id AND URL. Only the native sheet grants
-/// it; there is no bridge method, flag or environment variable that can.
+/// Keyed by connection id AND URL. Only the native sheet grants consent; no bridge method, flag
+/// or environment variable can.
 @MainActor
 final class TerminalConsent {
     static let defaultsKey = "terminalConsent"
@@ -99,7 +96,6 @@ final class TerminalConsent {
         defaults.set(all, forKey: Self.defaultsKey)
     }
 
-    /// Drops remembered consent for connections that no longer exist or now point elsewhere.
     func prune(keeping connections: [Connection]) {
         let current = Dictionary(connections.map { ($0.id, $0.url) }, uniquingKeysWith: { first, _ in first })
         let all = stored
@@ -108,8 +104,7 @@ final class TerminalConsent {
     }
 }
 
-/// The bridge's `terminal.*` methods. Holds the per-connection session cookies (memory only, never
-/// persisted, returned or logged), the open terminals, and the consent gate.
+/// Session cookies live in memory only: never persisted, returned or logged.
 @MainActor
 final class TerminalManager {
     private let store: ConnectionStore
@@ -122,8 +117,7 @@ final class TerminalManager {
     private var opening = 0
     private var sessions: [String: (url: String, cookie: SessionCookie)] = [:]
     private var logins: [String: (url: String, task: Task<SessionCookie, Error>)] = [:]
-    /// The consent sheet being shown for a connection (keyed by id and URL): a second open for the
-    /// same connection waits for its answer instead of being refused.
+    /// A second open for the same connection waits for the sheet's answer instead of being refused.
     private var consents: [String: Task<(accepted: Bool, suppressed: Bool), Error>] = [:]
     /// Bumped when the page navigates: opens that started before it are abandoned.
     private var generation = 0
@@ -174,7 +168,6 @@ final class TerminalManager {
 
     // MARK: Open
 
-    /// Consent gate, then session, preflight and upgrade; resolves once the socket is open.
     private func open(_ params: [String: Any]) async throws -> [String: Any] {
         guard let id = params["connection"] as? String, ConnectionStore.isValidID(id), let connection = store.get(id) else {
             throw PolicyError("unknown connection: \(MessagePolicy.describe(params["connection"]))")
@@ -238,8 +231,7 @@ final class TerminalManager {
         return ["id": terminal.id, "transport": transport]
     }
 
-    /// Shows the consent sheet under the one-confirmation-at-a-time rule, or joins the one already
-    /// open for this connection.
+    /// Under the one-confirmation-at-a-time rule, or joins the sheet already open for this connection.
     private func ask(_ connection: Connection) async throws -> (accepted: Bool, suppressed: Bool) {
         let key = connection.id + "\n" + connection.url
         if let pending = consents[key] { return try await pending.value }
@@ -262,7 +254,7 @@ final class TerminalManager {
         }
     }
 
-    /// One login per connection at a time: concurrent opens share it.
+    /// Concurrent opens share one login.
     private func login(_ connection: Connection, token: String) async throws -> SessionCookie {
         if let pending = logins[connection.id], pending.url == connection.url { return try await pending.task.value }
         let request = try TerminalPolicy.login(base: connection.url, token: token)
@@ -285,7 +277,6 @@ final class TerminalManager {
         return try result.get()
     }
 
-    /// After a 401: the server forgot the session (restart, expiry, revocation); log in once more.
     private func relogin(_ connection: Connection, token: String, stale: SessionCookie) async throws -> SessionCookie {
         if sessions[connection.id]?.cookie == stale { sessions[connection.id] = nil }
         if let current = sessions[connection.id], current.url == connection.url { return current.cookie }
@@ -297,7 +288,7 @@ final class TerminalManager {
         return TerminalPolicy.preflightOutcome(status: response.status, body: response.body)
     }
 
-    /// nil when the server answered 401 (log in again); throws for every other refusal.
+    /// nil on a 401 (log in again); throws for every other refusal.
     private func upgrade(_ connection: Connection, _ agent: String, _ cookie: SessionCookie) async throws -> TerminalConnection? {
         let request = try TerminalPolicy.upgrade(base: connection.url, agent: agent, cookie: cookie)
         var id = TerminalPolicy.newID()
@@ -321,7 +312,7 @@ final class TerminalManager {
     private func finished(_ terminal: TerminalConnection, code: Int) {
         if terminals[terminal.id] === terminal { terminals[terminal.id] = nil }
         connecting[ObjectIdentifier(terminal)] = nil
-        // The server revoked or expired the session: the next open logs in afresh. No reconnect here.
+        // The server revoked or expired the session: the next open logs in afresh.
         if code == 4001, sessions[terminal.connectionID]?.cookie == terminal.cookie {
             sessions[terminal.connectionID] = nil
         }
@@ -329,14 +320,12 @@ final class TerminalManager {
 
     // MARK: Lifecycle
 
-    /// The page navigated or its process ended: its ids are gone, so every terminal closes without events.
+    /// The page's ids are gone, so every terminal closes without events.
     func pageChanged() {
         generation += 1
         closeAll(reason: TerminalPolicy.pageChanged, notify: false)
     }
 
-    /// A connection was removed, re-pointed or given a new token. The session goes in every case;
-    /// a removal or new URL also closes its terminals and forgets the consent.
     func connectionChanged(_ id: String, urlChanged: Bool, removed: Bool) {
         sessions[id] = nil
         logins[id] = nil
@@ -347,7 +336,6 @@ final class TerminalManager {
         }
     }
 
-    /// At quit: everything closes, no events, sessions dropped.
     func shutDown() {
         closeAll(reason: TerminalPolicy.closedReason, notify: false)
         sessions.removeAll()

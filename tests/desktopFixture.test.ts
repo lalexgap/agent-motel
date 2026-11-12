@@ -1304,7 +1304,7 @@ describe("fixture terminal", () => {
     for (let i = 0; i < FLOOD_BYTES / 64; i++) expected += floodLine(i);
     expect(client.output === expected).toBe(true);
     expect(floodLine(7)).toBe("flood 00000007 " + ".".repeat(47) + "\r\n");
-    // Only the next one.
+    // The flood applies to the next terminal only.
     const calm = await attach("keeper-log", id);
     expect(calm.output).toBe(PROMPT);
   });

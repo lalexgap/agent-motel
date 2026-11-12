@@ -1,7 +1,3 @@
-// The terminal's pure parts: which view the open agent shows, whether its
-// terminal should be open, and the mapping between the shared browser client's
-// WebSocket-shaped protocol and the bridge's terminal methods and events.
-
 export type AgentViewMode = "chat" | "terminal";
 export const parseAgentViewMode = (raw: string | null): AgentViewMode => (raw === "terminal" ? "terminal" : "chat");
 
@@ -9,8 +5,6 @@ export const STOPPED_STATUSES: ReadonlySet<string> = new Set(["exited", "dead"])
 
 export type TerminalPlan = { kind: "closed" } | { kind: "open" | "stopped"; key: string; status: string };
 
-// The terminal is open only while the fleet screen shows the open agent's chat
-// view in Terminal mode; anything else closes it.
 export function terminalPlan(input: {
   screen: string;
   mainView: string | null;
@@ -27,8 +21,6 @@ export function terminalPlan(input: {
 }
 export const planSignature = (plan: TerminalPlan): string => (plan.kind === "closed" ? "closed" : `${plan.kind}:${plan.key}`);
 
-// What the shared client sends through its socket, checked before it becomes a
-// bridge call. Sizes are clamped to the bridge's limits (the client caps the top).
 export type ClientMessage = { type: "input"; data: string } | { type: "resize"; cols: number; rows: number };
 export function parseClientMessage(raw: string): ClientMessage | null {
   let message: unknown;
@@ -50,16 +42,14 @@ export const CONSENT_DECLINED_TEXT = "Terminal access was not allowed";
 export const SESSION_EXPIRED_TEXT = "Session expired · Reconnect to sign in again";
 export const STOPPED_TEXT = "Agent stopped · Resume to open its terminal";
 
-// The close the client sees. 1008 is the client's "show the reason, don't
-// retry" code: a refused open and the shell's output cap use it, so neither a
-// declined consent nor a flood turns into an automatic reconnect loop.
+// 1008 is the client's "show the reason, don't retry" code, so neither a declined
+// consent nor an output flood turns into an automatic reconnect loop.
 export function clientClose(code: number, reason: string): { code: number; reason: string } {
   if (code === 1013) return { code: 1008, reason: OUTPUT_LIMIT_TEXT };
   return { code, reason };
 }
 export const refusedOpen = (message: string): { code: number; reason: string } => ({ code: 1008, reason: message || "Terminal unavailable" });
 
-// Output arrives as base64; decode straight into the buffer xterm writes.
 export function decodeBase64(data: string): ArrayBuffer {
   const fromBase64 = (Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array }).fromBase64;
   if (fromBase64) {
@@ -74,26 +64,22 @@ export function decodeBase64(data: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-// ⌃⇧` moves focus between the terminal and the sidebar list. By physical key,
-// so the shifted character (~ on US layouts) doesn't matter.
+// By physical key, so the shifted character (~ on US layouts) doesn't matter.
 export const isFocusChord = (event: { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; metaKey: boolean; altKey: boolean }): boolean =>
   event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey && (event.code === "Backquote" || event.key === "`" || event.key === "~");
 
-// A 4001 close (the server forgot the session) reopens the terminal once on
-// its own; a second one within this window waits for the Reconnect button.
+// A 4001 close (the server forgot the session) reopens once on its own; a second
+// one within this window waits for the Reconnect button.
 export const REAUTH_WINDOW_MS = 30_000;
 export const mayReopen = (lastReopen: number, now: number): boolean => now - lastReopen >= REAUTH_WINDOW_MS;
 
-// The status line's button: hidden while live, connecting or for a stopped agent.
 export function retryControl(status: string, declined: boolean): { hidden: boolean; label: string } {
   const busy = status.startsWith("●") || status === "Connecting…" || status === "Reconnecting…" || status === STOPPED_TEXT || !status;
   return { hidden: busy, label: declined && status === CONSENT_DECLINED_TEXT ? "Ask again" : "Reconnect" };
 }
 
-// Input and resizes go out one bridge call at a time so they arrive in the
-// order typed (the dev bridge's HTTP calls could otherwise overtake each
-// other). Input typed while a call is in flight joins the next queued input,
-// up to MERGE_LIMIT UTF-16 units (at most 12 KiB of UTF-8, under the bridge's 16 KiB).
+// One bridge call at a time, or the dev bridge's HTTP calls could overtake each other.
+// MERGE_LIMIT UTF-16 units is at most 12 KiB of UTF-8, under the bridge's 16 KiB.
 export const MERGE_LIMIT = 4096;
 export class OrderedSender {
   private queue: ClientMessage[] = [];
@@ -136,21 +122,17 @@ export class OrderedSender {
   }
 }
 
-// What the socket needs from the bridge (terminal.open/input/resize/close).
 export interface TerminalBridge {
   open(connection: string, agent: string): Promise<{ id?: unknown; cancelled?: unknown }>;
   input(id: string, data: string): Promise<unknown>;
   resize(id: string, cols: number, rows: number): Promise<unknown>;
   close(id: string): Promise<unknown>;
   warn(message: string, error: unknown): void;
-  // The open came back with consent declined.
   declined(): void;
 }
 
-// The WebSocket-shaped object web/terminal.js drives, backed by the bridge.
-// `terminal.open` stands in for the handshake (consent, sign-in, preflight and
-// upgrade happen in the bridge); the bridge's events arrive through the
-// router, keyed by terminal id.
+// The WebSocket-shaped object web/terminal.js drives. `terminal.open` stands in for
+// the handshake (consent, sign-in, preflight and upgrade happen in the bridge).
 export class BridgeSocket {
   readyState = 0;
   onopen: (() => void) | null = null;
@@ -158,7 +140,6 @@ export class BridgeSocket {
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
   private id: string | null = null;
   private done = false;
-  // The id this socket's own close() closed.
   closedId: string | null = null;
   private readonly sender: OrderedSender;
 
@@ -170,8 +151,6 @@ export class BridgeSocket {
     opens.request(this, connection, agent);
   }
 
-  // The open this socket owns settled (TerminalOpens calls it only for the
-  // owner, which is never a socket the client already closed).
   settle(outcome: OpenOutcome): boolean {
     if (this.done) return false;
     if ("error" in outcome) {
@@ -186,7 +165,7 @@ export class BridgeSocket {
     this.id = outcome.id;
     this.readyState = 1;
     this.onopen?.();
-    // The client may have closed it from onopen; then the id is closed instead.
+    // The client may have closed it from onopen.
     return !this.done;
   }
 
@@ -196,9 +175,8 @@ export class BridgeSocket {
     if (message) this.sender.push(message);
   }
 
-  // The client's close: no onclose follows (the client has already let go).
-  // An open still in flight is handed back to TerminalOpens, for the client's
-  // next socket for the same agent or, if none comes, to be closed when it lands.
+  // No onclose follows: the client has already let go. An open still in flight is
+  // handed back to TerminalOpens for the client's next socket for the same agent.
   close(): void {
     if (this.done) return;
     this.done = true;
@@ -219,7 +197,6 @@ export class BridgeSocket {
   control(message: unknown): void {
     if (!this.done) this.onmessage?.({ data: JSON.stringify(message) });
   }
-  // The bridge closed it; the id is dead.
   closed(code: number, reason: string): void {
     if (!this.done) this.finish(clientClose(code, reason));
   }
@@ -238,11 +215,8 @@ export type TerminalEvent =
   | { name: "control"; id: string; message: unknown }
   | { name: "closed"; id: string; code: number; reason: string };
 
-// Routes the bridge's terminal events to live sockets. An event for an id not
-// known yet is held while any open is in flight (its reply may still be on the
-// way) and replayed in order when that open attaches the id; held events no
-// open claims are dropped once no open is in flight. Events for any other id
-// (a closed terminal, one from before a reload) are ignored.
+// An event for an unknown id is held while any open is in flight (its reply may
+// still be on the way) and replayed when that open attaches the id.
 export class TerminalRouter {
   private readonly live = new Map<string, BridgeSocket>();
   private held = new Map<string, TerminalEvent[]>();
@@ -260,8 +234,7 @@ export class TerminalRouter {
     return count;
   }
 
-  // Call when an open starts; the returned function ends it, attaching `socket`
-  // to `id` (replaying held events) or, with null, discarding what `id` held.
+  // The returned function attaches `socket` to `id` and replays held events; null discards them.
   opening(): (socket: BridgeSocket | null, id?: string) => void {
     this.inFlight++;
     let ended = false;
@@ -309,12 +282,9 @@ interface PendingOpen {
   owner: BridgeSocket | null;
 }
 
-// terminal.open calls in flight, one per agent at most. A socket the client
-// closes while its open is pending gives the open up instead of leaving it to
-// be closed on arrival: the client's next socket for the same agent (a
-// reconnect, a Chat → Terminal → Chat → Terminal flick, a re-render) takes it
-// over, so a visit costs one consent, one sign-in check and one upgrade. An
-// open nobody takes over is closed as soon as it resolves.
+// One terminal.open in flight per agent. A socket closed while its open is pending
+// hands it to the client's next socket for the same agent (reconnect, Chat/Terminal
+// flick, re-render), so a visit costs one consent, sign-in and upgrade.
 export class TerminalOpens {
   private readonly pending = new Map<string, PendingOpen>();
   constructor(private readonly bridge: TerminalBridge, readonly router: TerminalRouter) {}

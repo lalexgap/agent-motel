@@ -153,7 +153,6 @@ struct ConfirmationText: Equatable {
     let button: String
     /// Cancel becomes the default button and the confirm button is styled as destructive.
     let destructive: Bool
-    /// The title of the alert's suppression checkbox, when it has one.
     var suppression: String? = nil
 }
 

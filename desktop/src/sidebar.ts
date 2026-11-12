@@ -280,7 +280,6 @@ export function openConcierge(key = conciergeTarget(fleets(), state.selected)): 
   if (!key) return;
   const item = state.tree.items.find((candidate) => isPinnedConcierge(candidate) && candidate.key === key);
   if (item) state.cursor = item.id;
-  // Opening it to write: chat for this visit, whatever the saved Chat/Terminal choice.
   selectAgent(key, false, "chat");
   focusCursor();
   if (!composerInput().disabled) composerInput().focus();

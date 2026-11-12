@@ -784,8 +784,6 @@ body.am-resizing {
   padding: 0;
   font-size: 12px;
 }
-/* Chat or Terminal: the transcript and composer, or the agent's terminal,
-   fill the space under the header. */
 #am-chat-pane,
 #am-terminal-panel {
   flex: 1;

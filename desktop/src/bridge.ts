@@ -86,9 +86,8 @@ async function devConfirmed(method: string, params: unknown): Promise<unknown> {
   return devCall("dev.confirm", { ticket, accept: true });
 }
 
-// The dev bridge has no consent gate of its own; this asks the native sheet's question once
-// per connection per page load, after the same checks the native shell makes before its sheet
-// (connection, agent, https, the terminal cap), so the flow and a cancel are exercised in the browser.
+// The dev bridge has no consent gate; this asks once per connection per page load, after the
+// same checks the native shell makes before its sheet.
 const terminalConsented = new Set<string>();
 
 async function devTerminalOpen(params: unknown): Promise<unknown> {

@@ -1,12 +1,9 @@
 import Foundation
 
-/// One interactive terminal: a WebSocket to `/api/agents/:key/terminal`, opened with a request
-/// only `TerminalPolicy` can build. Output is coalesced into `terminal.output` events (at most
-/// 16 ms or 64 KiB each, in order), server text frames become `terminal.control`, and
 /// `terminal.closed` is emitted exactly once, after which nothing more is emitted for the id.
 @MainActor
 final class TerminalConnection: NSObject {
-    /// The upgrade did not open; `status` is the HTTP status of the refusal, 0 without one.
+    /// `status` is 0 when there was no HTTP refusal.
     struct UpgradeFailure: Error {
         let status: Int
     }
@@ -24,9 +21,8 @@ final class TerminalConnection: NSObject {
     }
 
     private var state = State.connecting
-    /// Set once the page has the id (the open reply was sent); events wait for it.
+    /// Set once the page has the id; events wait for it.
     private var started = false
-    /// A close that happened after the socket opened but before `start`, reported by `start`.
     private var deferredClose: (code: Int, reason: String)?
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -49,8 +45,6 @@ final class TerminalConnection: NSObject {
 
     var isClosed: Bool { state == .closed }
 
-    /// Opens the socket; returns once it is open. Throws `UpgradeFailure` when the server refuses
-    /// or cannot be reached within the upgrade timeout.
     func connect(_ request: TerminalRequest) async throws {
         guard request.kind == .upgrade, state == .connecting, task == nil else { throw UpgradeFailure(status: 0) }
         let configuration = APIClient.sessionConfiguration(requestTimeout: TerminalPolicy.upgradeTimeout)
@@ -76,8 +70,7 @@ final class TerminalConnection: NSObject {
         }
     }
 
-    /// Called once the page has received the id: delivers a close that already happened, or
-    /// starts reading output and pinging.
+    /// Called once the page has received the id.
     func start() {
         guard !started else { return }
         started = true
@@ -115,8 +108,7 @@ final class TerminalConnection: NSObject {
         }
     }
 
-    /// Sends one text frame after every frame sent before it; never merged or retried. Throws
-    /// once the terminal is closed (its id is then dead).
+    /// In order; never merged or retried.
     func send(_ frame: String) async throws {
         guard state == .open, let task else { throw PolicyError(TerminalPolicy.unknownTerminal) }
         let size = frame.utf8.count
@@ -144,8 +136,8 @@ final class TerminalConnection: NSObject {
         }
     }
 
-    /// Closes the socket (once). `notify` false is for a page that is gone: no event is sent.
-    /// While still connecting, the pending `connect` throws `reason`.
+    /// `notify` false is for a page that is gone. While still connecting, the pending `connect`
+    /// throws `reason`.
     func finish(code: Int, reason: String, notify: Bool = true) {
         guard state != .closed else { return }
         let wasOpen = state == .open
@@ -216,8 +208,7 @@ final class TerminalConnection: NSObject {
                reason: code == 0 ? TerminalPolicy.lostReason : TerminalPolicy.closeReason(socket?.closeReason))
     }
 
-    /// `receive` failed: the close frame's code if there was one, otherwise the task's completion
-    /// (which always follows) reports it.
+    /// Without a close frame code, the task's completion (which always follows) reports it.
     private func receiveEnded(_ task: URLSessionWebSocketTask) {
         guard task === self.task, state == .open, task.closeCode.rawValue != 0 else { return }
         finish(code: task.closeCode.rawValue, reason: TerminalPolicy.closeReason(task.closeReason))
@@ -250,8 +241,7 @@ final class TerminalConnection: NSObject {
         }
     }
 
-    /// Sends everything buffered as events of at most 64 KiB each. Each event stays counted
-    /// against the 4 MiB limit until the page has handled it.
+    /// Each event stays counted against the pending-output limit until the page has handled it.
     private func flush() {
         flushTimer?.cancel()
         flushTimer = nil

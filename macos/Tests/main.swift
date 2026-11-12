@@ -573,7 +573,7 @@ try? FileManager.default.removeItem(at: root)
 try? FileManager.default.removeItem(at: outside)
 print("PASS bundle resource resolution")
 
-// MARK: Terminal policy
+// Terminal policy.
 
 for path in ["/auth/login", "/auth/logout", "/api/../auth/login", "/api/%2e%2e/auth/login", "/auth"] {
     check((try? ConnectionPolicy.apiURL(base: base, path: path)) == nil, "api.get reached \(path)")

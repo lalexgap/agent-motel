@@ -1,8 +1,5 @@
-// The open agent's interactive terminal: the Chat / Terminal switch in the
-// agent header, and the shared browser client (web/terminal.js) driven over the
-// bridge instead of a WebSocket. At most one terminal is open: the one for the
-// agent whose chat view shows in Terminal mode. Anything else closes it, and
-// nothing reconnects in the background.
+// Drives the shared browser client (web/terminal.js) over the bridge instead of a WebSocket.
+// At most one terminal is open, and nothing reconnects in the background.
 import { call, on } from "./bridge";
 import { selectAgent } from "./chat";
 import { $, composerInput } from "./dom";
@@ -59,7 +56,6 @@ let controller: TerminalController;
 let statusLine: HTMLElement;
 let retryButton: HTMLButtonElement;
 let shownPlan = "closed";
-// The last open came back with consent declined: the button asks again.
 let declined = false;
 let lastReopen = -Infinity;
 
@@ -80,7 +76,6 @@ function onUnauthorized(): void {
 
 const terminalShown = (): boolean => !$("am-terminal-panel").hidden && !$("am-chat").hidden;
 
-// Applies the mode to the switch and the panes, then opens or closes the terminal.
 function render(): void {
   const mode = agentViewMode();
   const terminal = mode === "terminal";
@@ -110,7 +105,6 @@ function render(): void {
   } else controller.open(plan.key, plan.kind === "stopped" ? "exited" : plan.status);
 }
 
-// Puts the keyboard where the open agent takes input: the terminal or the message box.
 export function focusAgentInput(): void {
   if (agentViewMode() === "terminal") {
     if (terminalShown()) controller.focus();
@@ -129,8 +123,6 @@ function switchTo(mode: AgentViewMode): void {
   }
 }
 
-// View → Show Chat / Show Terminal: the saved choice, shown for the open agent
-// (back from its subagent's transcript), with the keyboard in it.
 export function showAgentView(mode: AgentViewMode): void {
   switchTo(mode);
   if (!state.selected || screen() !== "fleet") return;
@@ -144,7 +136,6 @@ function wireStatus(): void {
     const control = retryControl(statusLine.textContent ?? "", declined);
     retryButton.hidden = control.hidden;
     retryButton.textContent = control.label;
-    // The way out by keyboard matters only while there is a terminal to be in.
     hint.hidden = !(statusLine.textContent ?? "").startsWith("●");
   };
   new MutationObserver(update).observe(statusLine, { childList: true, characterData: true, subtree: true });

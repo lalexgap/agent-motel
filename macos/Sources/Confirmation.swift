@@ -5,11 +5,9 @@ import AppKit
 /// restyle it, and there is no other way to answer it than its buttons. One at a time: a caller
 /// reserves the slot before its pre-check, so a second confirmed call rejects instead of queueing.
 ///
-/// An unread accept is refused natively, whatever the page does: for `armDelay` after the sheet
-/// appears every key but Esc is swallowed, and a repeated Return, Enter or Space never counts, so a
-/// Return already in flight or a held Enter cannot answer it. Clicks are unaffected. When the app is
-/// not active the sheet is attached without activating it and the Dock icon asks for attention
-/// instead, so typing in another app cannot land on it.
+/// An unread accept is refused natively: for `armDelay` after the sheet appears every key but Esc is
+/// swallowed, and a repeated Return, Enter or Space never counts. When the app is not active the
+/// sheet attaches without activating it, so typing in another app cannot land on it.
 @MainActor
 final class Confirmation {
     static let armDelay: TimeInterval = 0.5
@@ -40,8 +38,7 @@ final class Confirmation {
         try await answer(text).accepted
     }
 
-    /// Needs a reservation. `suppressed` is the state of the suppression checkbox (shown only when
-    /// `text.suppression` is set) when the sheet was answered.
+    /// Needs a reservation.
     func answer(_ text: ConfirmationText) async throws -> (accepted: Bool, suppressed: Bool) {
         guard let window = window() else { throw PolicyError("The app window is not available") }
         var attention: Int?
@@ -78,10 +75,8 @@ final class Confirmation {
         let sheet = alert.window
         let defaultButton = text.destructive ? cancel : confirm
         let shownAt = ProcessInfo.processInfo.systemUptime
-        // Every key press for the sheet passes through here before AppKit's own key equivalents.
-        // Esc cancels at once, even when Return belongs to Cancel (a button holds only one key
-        // equivalent). Return and Enter press the default button only once armed; Space keeps
-        // its usual meaning once armed.
+        // Esc cancels even when Return belongs to Cancel (a button holds only one key equivalent).
+        // Return and Enter press the default button only once armed.
         let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak sheet, weak cancel, weak defaultButton] event in
             let target = event.windowNumber
             let code = event.keyCode

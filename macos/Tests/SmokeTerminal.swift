@@ -13,8 +13,6 @@ extension SmokeRunner {
         case login, preflight, upgrade, input(String), resize(Int, Int), other
     }
 
-    /// Classifies a fixture log entry. The fixture logs logins (without the token), preflights,
-    /// upgrades and each terminal message alongside the write log.
     func classify(_ entry: [String: Any]) -> TerminalEntry {
         let path = entry["path"] as? String ?? ""
         let method = (entry["method"] as? String ?? "").uppercased()
@@ -76,7 +74,6 @@ extension SmokeRunner {
         return closed[0]
     }
 
-    /// A bridge call's outcome without throwing: the result, or the rejection message.
     func outcome(_ method: String, _ params: [String: Any]) async throws -> (result: [String: Any]?, error: String?) {
         let value = try await js("""
             try { return { result: await window.webkit.messageHandlers.am.postMessage({method, params}) }; }
@@ -115,7 +112,6 @@ extension SmokeRunner {
 
     enum ConsentAnswer { case allow, allowRemembering, cancel }
 
-    /// Calls terminal.open, checks the native consent sheet and answers it by clicking.
     func openWithConsent(_ connection: String, name: String, answer: ConsentAnswer) async throws -> (result: [String: Any]?, error: String?) {
         let call = Task { @MainActor () throws -> Data in
             let (result, error) = try await self.outcome("terminal.open", ["connection": connection, "agent": "keeper-log"])
@@ -387,8 +383,7 @@ extension SmokeRunner {
         try await waitFor("document.querySelector('#am-view-terminal')", "the Terminal toggle #am-view-terminal")
         _ = try await js("document.querySelector('#am-view-terminal').click(); return true;")
         try await waitFor("document.querySelector('#am-main')?.dataset.agentView === 'terminal'", "#am-main[data-agent-view=terminal]")
-        // The page's connection is the main smoke connection, which has not been allowed yet: the
-        // real consent sheet appears and is answered by clicking Allow.
+        // The main smoke connection has not been allowed yet, so the real consent sheet appears.
         let sheet = try await waitForSheet()
         try expect(!NSApp.isActive, "the consent sheet activated the app")
         let shown = views(sheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
@@ -415,8 +410,8 @@ extension SmokeRunner {
             return true;
             """) as? Bool ?? false
         try expect(typed, "no xterm input element in #am-terminal")
-        // The echo, delivered to the terminal the page kept (xterm draws in animation frames, which
-        // WebKit pauses for a window in the background, so its screen may not be painted yet).
+        // xterm draws in animation frames, which WebKit pauses for a background window, so its
+        // screen may not be painted yet.
         let kept = """
             const closed = new Set(window.__smokeEvents.filter((e) => e.name === 'terminal.closed').map((e) => e.payload.id));
             const live = [...new Set(window.__smokeEvents.filter((e) => e.name === 'terminal.control').map((e) => e.payload.id))]

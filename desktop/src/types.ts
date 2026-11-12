@@ -191,10 +191,8 @@ export interface BridgeMethods {
   "events.start": { params: { connection: string }; result: Record<string, never> };
   "events.stop": { params: { connection: string }; result: Record<string, never> };
   "open.external": { params: { url: string }; result: Record<string, never> };
-  // Interactive terminal: consent (native sheet, window.confirm in browser dev mode), browser session,
-  // preflight and WebSocket upgrade, all inside the bridge. Resolves once the socket is open.
+  // Consent, sign-in, preflight and upgrade all happen inside the bridge. Resolves once the socket is open.
   "terminal.open": { params: { connection: string; agent: string }; result: TerminalOpened | Cancelled };
-  // `data`: 1 to 16,384 UTF-8 bytes, any characters (control keys are the point).
   "terminal.input": { params: { id: string; data: string }; result: Record<string, never> };
   "terminal.resize": { params: { id: string; cols: number; rows: number }; result: Record<string, never> };
   // Idempotent: an unknown id is a no-op.
@@ -203,12 +201,10 @@ export interface BridgeMethods {
 export type BridgeMethod = keyof BridgeMethods;
 
 export type TerminalTransport = "local" | "ssh";
-// `id` is an opaque bridge-generated token (32 lowercase hex characters).
 export interface TerminalOpened {
   id: string;
   transport: TerminalTransport;
 }
-// A server TEXT frame; anything else the server sends as text is dropped.
 export type TerminalControl = { type: "ready" } | { type: "exit"; code: number } | { type: "error"; message: string };
 
 // What the dev bridge returns for a confirmed action instead of sending it: the
@@ -229,10 +225,10 @@ export interface BridgeEvents {
   "events.state": { connection: string; state: StreamState; error?: string };
   "events.message": { connection: string; event: string; data: unknown };
   "menu.command": { command: "connections" | "find" | "reload" | "chat" | "terminal" };
-  // `data` is base64 of raw output bytes, in order, at most 64 KiB decoded per event.
+  // `data` is base64 of raw output bytes, at most 64 KiB decoded per event.
   "terminal.output": { id: string; data: string };
   "terminal.control": { id: string; message: TerminalControl };
-  // Exactly once per opened terminal; the id is dead afterwards. Local failures use code 1006.
+  // Exactly once per opened terminal. Local failures use code 1006.
   "terminal.closed": { id: string; code: number; reason: string };
 }
 export type BridgeEventName = keyof BridgeEvents;

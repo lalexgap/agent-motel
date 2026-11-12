@@ -734,8 +734,7 @@ describe("action policy: Swift test vectors", () => {
   });
 });
 
-// The Swift TerminalPolicy (macos/Sources/TerminalPolicy.swift, tested in macos/Tests/main.swift)
-// must give the same answers for every vector below.
+// macos/Tests/main.swift checks the Swift TerminalPolicy against the same vectors.
 describe("terminal policy", () => {
   const ORIGIN_REJECTED = "This server only allows terminals from its own web address. Connect the app to that address to use terminals.";
 

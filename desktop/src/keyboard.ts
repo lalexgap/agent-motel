@@ -3,10 +3,8 @@
 // and nothing while typing in a field unless the shortcut asks for it. The first
 // matching shortcut wins and its default action is prevented.
 //
-// Inside an element marked data-keyboard-isolated (the terminal) every key
-// belongs to that element: no shortcut runs, even one that works while typing.
-// Chords are the exception: they run first, in the capture phase, wherever
-// focus is, and the key goes nowhere else.
+// Inside a data-keyboard-isolated element (the terminal) no shortcut runs, even
+// one that works while typing. Chords still run first, in the capture phase.
 import { isTyping } from "./dom";
 import { screen, type Screen } from "./views";
 
@@ -48,7 +46,6 @@ export interface KeyContext {
 }
 type KeyFacts = Pick<KeyboardEvent, "key" | "defaultPrevented" | "metaKey" | "ctrlKey" | "altKey">;
 
-// The shortcut a key runs, if any.
 export function shortcutFor<E extends KeyFacts>(list: readonly Shortcut[], event: E, context: KeyContext): Shortcut | null {
   if (context.isolated || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return null;
   for (const shortcut of list) {

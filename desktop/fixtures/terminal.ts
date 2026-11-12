@@ -1,11 +1,8 @@
-// The fixture's browser sign-in and interactive terminal, mirroring src/webAuth.ts,
-// src/webTerminal.ts and the terminal gate in src/server.ts: the same checks in the
-// same order, statuses, error bodies, frames, limits and close codes. The fixture's
-// webOrigin is its own origin (http://127.0.0.1:<port>).
+// Mirrors src/webAuth.ts, src/webTerminal.ts and the terminal gate in src/server.ts: same
+// checks in the same order, statuses, error bodies, frames, limits and close codes.
 //
-// Behind each agent's terminal is a tiny deterministic fake shell, shared by every
-// terminal attached to that agent (like a tmux pane): a prompt, echo of typed
-// characters, `echo <text>`, `size` (prints "rows cols"), `clear`, `exit`, Ctrl-C,
+// Each agent's terminal is a deterministic fake shell shared by every attached terminal
+// (like a tmux pane): `echo <text>`, `size` (prints "rows cols"), `clear`, `exit`, Ctrl-C,
 // Ctrl-D on an empty line, Ctrl-L, Backspace, and "<cmd>: command not found".
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -21,10 +18,8 @@ const MAX_FRAME = MAX_INPUT * 6 + 128;
 const INPUT_SLICE = 4096;
 const INPUT_TICK_MS = 10;
 const MAX_SOCKETS = 32;
-// POST /__fixture/terminal/flood: the next terminal to attach sends this much output.
 export const FLOOD_BYTES = 8 * 1024 * 1024;
 export const FLOOD_LINE_BYTES = 64;
-// Line i of the flood, exactly FLOOD_LINE_BYTES bytes: "flood 00000000 ....\r\n".
 export const floodLine = (i: number): string => `flood ${String(i).padStart(8, "0")} `.padEnd(FLOOD_LINE_BYTES - 2, ".") + "\r\n";
 
 export interface TerminalLogEntry {
@@ -41,7 +36,7 @@ export function terminalPrompt(row: Pick<FixtureRow, "host" | "dir" | "repoRoot"
   return `keeper@${row.host ?? FIXTURE_LOCAL_HOST}:${home}$ `;
 }
 
-// src/webAuth.ts: sessions in memory, fixed TTL, revocation callbacks, a global login limit.
+// Mirrors src/webAuth.ts.
 export class FixtureWebAuth {
   private sessions = new Map<string, number>();
   private subscribers = new Map<string, Set<() => void>>();
@@ -82,7 +77,7 @@ export class FixtureWebAuth {
   revokeAll(): void {
     for (const id of [...this.sessions.keys()]) this.revoke(id);
   }
-  // Like a restart: sessions and the login limit are forgotten (callers close the sockets).
+  // Callers close the sockets.
   reset(): void {
     this.sessions.clear();
     this.subscribers.clear();
@@ -116,7 +111,7 @@ export class FixtureWebAuth {
     return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${age}`;
   }
 
-  // POST /auth/login and /auth/logout. The bearer header plays no part here.
+  // The bearer header plays no part here.
   async route(req: Request, path: string): Promise<Response | null> {
     if (path !== "/auth/login" && path !== "/auth/logout") return null;
     const reply = (response: Response) => {
@@ -157,8 +152,7 @@ export class FixtureWebAuth {
 
 type Socket = Pick<ServerWebSocket<unknown>, "send" | "close" | "getBufferedAmount">;
 
-// One agent's pane. Input is a character stream (it may arrive split anywhere, or
-// carry several commands at once); output goes to every attached terminal.
+// Input may arrive split anywhere or carry several commands at once.
 export class FakeShell {
   private line = "";
   // 0: plain, 1: after ESC, 2: inside a CSI/SS3 sequence.
@@ -238,7 +232,6 @@ export class FakeShell {
         this.line += char;
         out += char;
       }
-      // Tab and other control characters do nothing.
     }
     flush();
   }
@@ -338,7 +331,6 @@ export class TerminalSession {
     if (this.socket.send(bytes) === 0) this.close(1013, "Terminal output unavailable");
   }
 
-  // The attach process ended (exit, Ctrl-D, the agent stopped or went away).
   exit(code: number): void {
     if (this.stopped) return;
     if (this.auth.isValid()) this.socket.send(JSON.stringify({ type: "exit", code }));
@@ -401,7 +393,6 @@ export class TerminalSession {
     } catch {}
   }
 
-  // The client closed the socket: nothing is sent back.
   closedByClient(code: number, reason: string): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -425,10 +416,9 @@ export interface TerminalData {
 export interface TerminalHost {
   websocket: WebSocketHandler<TerminalData>;
   auth: FixtureWebAuth;
-  // The terminal route (preflight or upgrade). `undefined` after a successful upgrade.
+  // `undefined` after a successful upgrade.
   handle(req: Request, server: Server<TerminalData>, url: URL, bearerValid: boolean): Response | undefined;
   open(): { terminal: string; agent: string; cols: number; rows: number }[];
-  // The agent stopped, moved or was removed: its attach clients exit.
   detach(row: FixtureRow): void;
   floodNext(): void;
   expire(): void;
@@ -502,7 +492,6 @@ export function createTerminalHost(options: {
       options.log({ method: kind, path, body: null, status: response.status });
       return response;
     };
-    // The general /api gate first: a bearer or a session.
     if (!bearerValid && !auth.valid(req)) return reply(json({ error: "unauthorized" }, 401));
     if (!bearerValid && req.method !== "GET" && req.method !== "HEAD" && !auth.sameOrigin(req)) return reply(json({ error: "origin rejected" }, 403));
     if (upgrading || req.headers.has("origin") ? !auth.sameOrigin(req) : req.headers.get("sec-fetch-site") !== "same-origin")
@@ -546,11 +535,9 @@ export function createTerminalHost(options: {
       flood = true;
     },
     expire() {
-      // Revocation closes every terminal with 4001 through its subscription.
       auth.revokeAll();
     },
     reset() {
-      // Like a restart: sockets close with 1001, sessions and the login limit are forgotten.
       closeAll(1001, "Server stopping");
       auth.reset();
       shells = new Map();

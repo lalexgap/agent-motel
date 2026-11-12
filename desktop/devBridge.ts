@@ -1,11 +1,8 @@
 // The dev server's stand-in for the native bridge: same methods, same
 // validation, connections held in memory. Tokens never leave this module.
 //
-// Terminals: the same flow as the native shell (browser sign-in, preflight,
-// WebSocket upgrade) against the connection's server, with the same limits,
-// coalescing and errors. The session cookie stays in this process: no method
-// result or event carries it. There is NO consent gate here (a dev-only tool);
-// bridge.ts asks window.confirm once per connection per page load instead.
+// Terminals follow the native shell's flow and limits. The session cookie never leaves
+// this process. There is no consent gate here; bridge.ts asks window.confirm instead.
 import {
   AGENT_GONE,
   buildAction,
@@ -60,8 +57,8 @@ interface StoredConnection {
   url: string;
   token: string;
 }
-// A listener may return a promise that settles once the event has reached the page;
-// terminal output still undelivered counts against the terminal's backlog cap.
+// The returned promise settles once the event reached the page; undelivered terminal
+// output counts against the backlog cap.
 type Listener = (name: BridgeEventName, payload: unknown) => void | Promise<unknown>;
 
 interface Session {
@@ -78,15 +75,13 @@ interface Terminal {
   // The session it was opened with: a 4001 drops it if it is still the connection's.
   cookie: string;
   socket: WebSocket;
-  // Until terminal.open has returned the id: what arrived, in order (null once released).
+  // What arrived before terminal.open returned the id (null once released).
   held: Held[] | null;
   heldBytes: number;
-  // terminal.closed, waiting for the release when the terminal ended while held.
+  // terminal.closed, deferred when the terminal ended while held.
   report?: () => void;
-  // Output received but not yet emitted.
   chunks: Uint8Array[];
   buffered: number;
-  // Emitted to a listener that has not delivered it yet.
   undelivered: number;
   timer?: ReturnType<typeof setTimeout>;
   ping?: ReturnType<typeof setInterval>;
@@ -289,8 +284,7 @@ export class DevBridge {
     this.closeAllTerminals();
   }
 
-  // The page went away (its event stream closed): its terminal ids died with it, so they
-  // close without events, and an open in progress fails.
+  // The page went away: its terminals close without events and an open in progress fails.
   closeAllTerminals(): void {
     this.page++;
     for (const terminal of [...this.terminals.values()]) this.closeTerminal(terminal, TERMINAL_CLOSE.closed, false);
@@ -446,15 +440,13 @@ export class DevBridge {
     return { status: response.status, body: await readJson(response) };
   }
 
-  // ---- Terminals -------------------------------------------------------------
-
   private liveTerminal(id: unknown): Terminal {
     const terminal = checkTerminalId(id) ? this.terminals.get(id) : undefined;
     if (!terminal || terminal.closed) throw new Error(TERMINAL_UNKNOWN);
     return terminal;
   }
 
-  // Input and resize frames go out in order, never merged, reordered or retried.
+  // Never merged, reordered or retried.
   private sendFrame(terminal: Terminal, frame: string): void {
     if (terminal.socket.readyState !== WebSocket.OPEN) {
       this.closeTerminal(terminal, TERMINAL_CLOSE.lost);
@@ -481,13 +473,12 @@ export class DevBridge {
     for (const terminal of [...this.terminals.values()]) if (terminal.connection === connection) this.closeTerminal(terminal, TERMINAL_CLOSE.removed);
   }
 
-  // The page reloaded, or the connection was removed or re-pointed, while an open was in progress.
   private stillWanted(conn: StoredConnection, bound: { url: string; page: number }): void {
     if (this.page !== bound.page) throw new Error(TERMINAL_PAGE_CHANGED);
     if (this.connections.get(conn.id) !== conn || conn.url !== bound.url) throw new Error(`unknown connection: ${conn.id}`);
   }
 
-  // The checks that come before the consent question, in order.
+  // Runs before the consent question.
   private terminalChecks(params: Record<string, unknown>): StoredConnection {
     const conn = this.connection(text(params.connection, "connection"));
     checked(checkAgent(params.agent));
@@ -496,8 +487,6 @@ export class DevBridge {
     return conn;
   }
 
-  // Order: connection, agent, https, the 4-terminal cap; then sign-in (reused per connection),
-  // preflight and upgrade. A 401 from either step signs in once more and retries that step once.
   private async openTerminal(params: Record<string, unknown>): Promise<TerminalOpened> {
     const conn = this.terminalChecks(params);
     const agent = params.agent as string;
@@ -544,7 +533,7 @@ export class DevBridge {
     }
   }
 
-  // The connection's session, signing in when there is none; concurrent opens share one sign-in.
+  // Concurrent opens share one sign-in.
   private async session(conn: StoredConnection): Promise<string> {
     const current = this.sessions.get(conn.id);
     if (current && current.url === conn.url && current.token === conn.token) return current.cookie;
@@ -716,7 +705,6 @@ export class DevBridge {
     else terminal.timer ??= setTimeout(() => this.flushOutput(terminal), TERMINAL_OUTPUT_EVENT_MS);
   }
 
-  // Emits the buffered output in order, at most 64 KiB per event.
   private flushOutput(terminal: Terminal): void {
     clearTimeout(terminal.timer);
     terminal.timer = undefined;
@@ -742,8 +730,7 @@ export class DevBridge {
     }
   }
 
-  // The server closed it (its output is delivered first), or the connection failed:
-  // Bun reports 1006 without a close frame.
+  // Bun reports a failed connection as 1006 without a close frame.
   private serverClosed(terminal: Terminal, code: number, reason: string): void {
     if (terminal.closed) return;
     const close = code === 0 || code === TERMINAL_CLOSE.lost.code ? TERMINAL_CLOSE.lost : { code, reason: terminalCloseReason(reason) };
@@ -755,8 +742,7 @@ export class DevBridge {
     this.end(terminal, close);
   }
 
-  // Closed from this side. Output already received still goes first, except after an overflow
-  // or when the page is gone (notify false: no events at all).
+  // Received output still goes first, except after an overflow or when the page is gone.
   private closeTerminal(terminal: Terminal, close: { code: number; reason: string }, notify = true): void {
     if (terminal.closed) return;
     try {
@@ -766,11 +752,10 @@ export class DevBridge {
     this.end(terminal, close, notify);
   }
 
-  // terminal.closed, exactly once; after it the id is dead.
   private end(terminal: Terminal, close: { code: number; reason: string }, notify = true): void {
     if (terminal.closed) return;
     terminal.closed = true;
-    // The server revoked or expired the session: the next open signs in afresh. No reconnect here.
+    // The server revoked or expired the session: the next open signs in afresh.
     if (close.code === 4001 && this.sessions.get(terminal.connection)?.cookie === terminal.cookie) this.sessions.delete(terminal.connection);
     clearTimeout(terminal.timer);
     clearInterval(terminal.ping);

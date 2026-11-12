@@ -1,8 +1,7 @@
 import Foundation
 
-/// A terminal session cookie (`__Host-am_session`). Its value is private to this file: the only
-/// code that reads it builds the terminal requests below, so nothing else in the app can log it,
-/// return it to the page, put it in an event or send it anywhere else.
+/// The value is private to this file, so nothing else in the app can log it, return it to the
+/// page or send it anywhere else.
 struct SessionCookie: Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     fileprivate let value: String
 
@@ -14,11 +13,8 @@ struct SessionCookie: Equatable, CustomStringConvertible, CustomDebugStringConve
     func occurs(in text: String) -> Bool { text.contains(value) }
 }
 
-/// One of the three requests that carry the access token or the session cookie: the login, the
-/// terminal preflight and the WebSocket upgrade. The initialiser is private to this file, so every
-/// instance comes from `TerminalPolicy`, which builds it from the saved connection URL and a
-/// validated agent. `APIClient` cannot send these (it only takes a URL or a `WriteRequest`), and
-/// `api.get` cannot reach `/auth/*` (its paths must start with `/api/`).
+/// Carries the access token or the session cookie. The initialiser is private to this file, so
+/// every instance is built by `TerminalPolicy` from the saved connection URL and a validated agent.
 struct TerminalRequest {
     enum Kind: Equatable {
         case login, preflight, upgrade
@@ -33,8 +29,7 @@ struct TerminalRequest {
     }
 }
 
-/// Validation, request building and response mapping for the interactive terminal. The same rules
-/// and strings are in desktop/src/policy.ts.
+/// The same rules and strings are in desktop/src/policy.ts.
 enum TerminalPolicy {
     static let methods: Set<String> = ["terminal.open", "terminal.input", "terminal.resize", "terminal.close"]
     static let maxTerminals = 4
@@ -55,7 +50,7 @@ enum TerminalPolicy {
     static let maxResponseBytes = 64 * 1024
     static let cookieName = "__Host-am_session"
 
-    // MARK: Messages (the same strings in desktop/src/policy.ts)
+    // MARK: Messages
 
     static let rejectedToken = "The server rejected the access token"
     static let noWebSignIn = "This server has no web sign-in, so terminals are unavailable"
@@ -68,21 +63,17 @@ enum TerminalPolicy {
     static let invalidData = "invalid data"
     static let invalidCols = "invalid cols"
     static let invalidRows = "invalid rows"
-    /// A 401 from the preflight or upgrade right after a fresh login.
     static let sessionRejected = "The server rejected the terminal session"
-    /// A 200 login without a usable `__Host-am_session` cookie.
     static let noSession = "The server did not start a terminal session"
     static let unexpected = "This server did not answer like Agent Motel"
     static let pageChanged = "The page changed while the terminal was opening"
     static func httpStatus(_ status: Int) -> String { "The server returned HTTP \(status)" }
-    /// The server's web origin is not known to the app (no route reports it), so it is left out
-    /// unless given.
     static func originRejected(_ webOrigin: String? = nil) -> String {
         let address = webOrigin.map { " (\($0))" } ?? ""
         return "This server only allows terminals from its own web address\(address). Connect the app to that address to use terminals."
     }
 
-    // MARK: Close codes and reasons for closes made by the app
+    // MARK: Close codes
 
     static let closedCode = 1000
     static let closedReason = "Terminal closed"
@@ -106,7 +97,6 @@ enum TerminalPolicy {
 
     // MARK: Params
 
-    /// `^[a-f0-9]{32}$`; anything else cannot name a terminal.
     static func terminalID(_ value: Any?) throws -> String {
         guard let text = value as? String, text.utf8.count == 32,
               text.utf8.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }) else {
@@ -115,7 +105,7 @@ enum TerminalPolicy {
         return text
     }
 
-    /// 1 to 16384 UTF-8 bytes of anything: control keys are the point of a terminal.
+    /// Any bytes are allowed: control keys are the point of a terminal.
     static func input(_ value: Any?) throws -> String {
         guard let text = value as? String, (1...maxInputBytes).contains(text.utf8.count) else { throw PolicyError(invalidData) }
         return text
@@ -135,7 +125,6 @@ enum TerminalPolicy {
         return Int(double)
     }
 
-    /// A fresh opaque id: 16 random bytes as lowercase hex.
     static func newID() -> String {
         var generator = SystemRandomNumberGenerator()
         return (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &generator)) }.joined()
@@ -143,9 +132,8 @@ enum TerminalPolicy {
 
     // MARK: Requests
 
-    /// The connection's base (`scheme://host[:port]`, already normalised by `ConnectionPolicy`),
-    /// accepted only over https or plain http to a loopback address: the session cookie must never
-    /// travel in clear text over a network.
+    /// Only https or plain http to loopback: the session cookie must never travel in clear text
+    /// over a network.
     static func base(_ url: String) throws -> String {
         guard let parts = URLComponents(string: url), let scheme = parts.scheme?.lowercased(),
               var host = parts.host?.lowercased(), parts.user == nil, parts.password == nil,
@@ -194,15 +182,13 @@ enum TerminalPolicy {
         return TerminalRequest(kind: .upgrade, request: request)
     }
 
-    /// `<base>/api/agents/<percent-encoded agent>/terminal`, with no query.
     static func terminalURL(base rawBase: String, agent rawAgent: Any?) throws -> URL {
         let base = try self.base(rawBase)
         let agent = try MessagePolicy.agent(rawAgent)
         return try ConnectionPolicy.apiURL(base: base, path: "/api/agents/\(MessagePolicy.encodedAgent(agent))/terminal")
     }
 
-    /// No bearer token, no cookie handling by Foundation, and `Origin` exactly the connection's
-    /// base, which the server compares with its web origin.
+    /// `Origin` must be exactly the connection's base: the server compares it with its web origin.
     private static func plain(_ url: URL, base: String, timeout: TimeInterval) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
         request.httpShouldHandleCookies = false
@@ -213,9 +199,8 @@ enum TerminalPolicy {
 
     // MARK: Responses
 
-    /// The `__Host-am_session` value from a response's `Set-Cookie` header (Foundation joins
-    /// repeated headers with commas). Other cookies are ignored; a value that is not 16 to 512
-    /// base64url characters is refused, so it can never inject anything into a header.
+    /// Foundation joins repeated `Set-Cookie` headers with commas. The value must be base64url so
+    /// it can never inject anything into a header.
     static func sessionCookie(fromSetCookie header: String?) -> SessionCookie? {
         guard let header else { return nil }
         for piece in header.split(separator: ",") {
@@ -240,7 +225,6 @@ enum TerminalPolicy {
         }
     }
 
-    /// nil for a successful login (the cookie is checked separately).
     static func loginError(status: Int) -> String? {
         switch status {
         case 200: return nil
@@ -254,7 +238,7 @@ enum TerminalPolicy {
 
     enum Outcome: Equatable {
         case ok(transport: String)
-        /// No session, or one the server forgot: log in once more and retry the step once.
+        /// Log in once more and retry the step once.
         case unauthorized
         case failed(String)
     }
@@ -276,7 +260,7 @@ enum TerminalPolicy {
         }
     }
 
-    /// A failed upgrade has no readable body; status 0 means it never got an HTTP answer.
+    /// A failed upgrade has no readable body; status 0 means no HTTP answer at all.
     static func upgradeOutcome(status: Int) -> Outcome {
         switch status {
         case 0: return .failed(unreachable)
@@ -287,7 +271,6 @@ enum TerminalPolicy {
         }
     }
 
-    /// A server text frame, reduced to the three known messages; anything else is dropped.
     static func control(_ text: String) -> [String: Any]? {
         guard text.utf8.count <= maxResponseBytes, let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -306,7 +289,6 @@ enum TerminalPolicy {
         }
     }
 
-    /// Server-supplied text shown to the person: invisible characters dropped, at most 300 scalars.
     static func serverText(_ raw: String) -> String {
         let kept = raw.unicodeScalars.filter {
             ![.control, .format, .lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory)
@@ -356,7 +338,7 @@ struct OutputBuffer {
         return true
     }
 
-    /// The next event's bytes, in order, at most `max` of them; they count as in flight until `delivered`.
+    /// The bytes count as in flight until `delivered`.
     mutating func take(max: Int = TerminalPolicy.flushBytes) -> Data? {
         guard buffered > 0 else { return nil }
         var chunk = Data()

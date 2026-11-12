@@ -1068,7 +1068,6 @@ describe("dev bridge terminals", () => {
   });
 
   test("more than 4 MiB the page has not taken closes with 1013, once, and detaches from the server", async () => {
-    // A page that never takes its events.
     bridge.subscribe(() => new Promise(() => {}));
     await fetch(fixture.url + "/__fixture/terminal/flood", { method: "POST", headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } });
     const { id } = await open();
