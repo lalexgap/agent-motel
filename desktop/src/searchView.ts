@@ -40,6 +40,7 @@ import { mainView, registerMainView, screen, showMainView } from "./views";
 const VIEW = "search";
 let search: ConversationSearch | null = null;
 let requestSeq = 0;
+let searchedConnections = "";
 
 interface Controls {
   section: HTMLElement;
@@ -206,6 +207,8 @@ export function render(): void {
   if (focused) ui.results.querySelector<HTMLElement>(`[data-agent-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
+const connectionSignature = (): string => JSON.stringify([...state.conns.values()].map(({ conn }) => [conn.id, conn.url]));
+
 function clearConversationSearch(): void {
   search = null;
   requestSeq++;
@@ -224,6 +227,7 @@ async function runConversationSearch(): Promise<void> {
   const seq = ++requestSeq;
   const connections = [...state.conns.values()].map(({ conn }) => ({ id: conn.id, name: conn.name }));
   search = beginSearch(query, seq, connections);
+  searchedConnections = connectionSignature();
   render();
   await Promise.all(connections.map(async ({ id, name }) => {
     let result;
@@ -306,6 +310,7 @@ export function initSearch(): void {
   };
   new MutationObserver(mark).observe(ui.section, { attributes: true, attributeFilter: ["hidden"] });
   subscribe("fleet", () => {
+    if (search && searchedConnections !== connectionSignature()) clearConversationSearch();
     if (mainView() === VIEW) render();
   });
 }

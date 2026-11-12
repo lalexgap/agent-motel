@@ -1,10 +1,11 @@
 // web/search.js reads app.js globals and wires its form on load, so its rules are
 // reimplemented here; tests/desktopSearch.test.ts checks the shared ones agree.
+import { buildAction } from "./policy";
 import type { AgentRow, ApiResponse } from "./types";
 
 export const SNIPPETS_PER_AGENT = 3;
 export const BUSY_MESSAGE = "Search is busy. Try again shortly.";
-export const QUERY_HINT = "Enter 2–256 characters to search conversations.";
+export const QUERY_HINT = "Enter at least 2 characters (256 bytes at most) to search conversations.";
 export const NO_MATCHES = "No matches. Try fewer words or clear a filter.";
 
 export type SortKey = "recent" | "runtime" | "repo" | "status" | "name";
@@ -117,7 +118,7 @@ export function optionValues(values: string[], previous: string): string[] {
   return entries;
 }
 
-export const validConversationQuery = (query: string): boolean => query.length >= 2 && query.length <= 256;
+export const validConversationQuery = (query: string): boolean => buildAction("search.query", { query }).ok;
 
 export interface ConnectionResult {
   connection: string;

@@ -99,11 +99,17 @@ describe("term matching", () => {
     // Filters still apply to conversation hits.
     expect(names(filterRows(rows, ["zebra"], filters({ status: "finished" }), (key) => key === "c1/b"))).toEqual([]);
   });
-  test("conversation queries are 2–256 characters after trimming", () => {
+  test("conversation queries follow the bridge's rule: 2 code points, 256 UTF-8 bytes, no control characters", () => {
     expect(validConversationQuery("a")).toBe(false);
     expect(validConversationQuery("ab")).toBe(true);
+    expect(validConversationQuery("  ab  ")).toBe(true);
     expect(validConversationQuery("x".repeat(256))).toBe(true);
     expect(validConversationQuery("x".repeat(257))).toBe(false);
+    expect(validConversationQuery("é".repeat(128))).toBe(true);
+    expect(validConversationQuery("é".repeat(129))).toBe(false);
+    expect(validConversationQuery("🙂")).toBe(false);
+    expect(validConversationQuery("🙂🙂")).toBe(true);
+    expect(validConversationQuery("a\u0007b")).toBe(false);
   });
 });
 
