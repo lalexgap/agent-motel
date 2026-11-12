@@ -1343,4 +1343,75 @@ body.am-resizing {
 }
 .am-sb-flash {
   color: var(--success-text);
+/* The search page. The form, summary, results and highlights reuse the browser
+   UI's search rules from web/style.css. */
+.am-search {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 32px;
+}
+.am-search[hidden] {
+  display: none;
+}
+.am-search-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.am-search,
+.am-search .search-result {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* The desktop's denser type: the browser UI's form and cards at app scale. */
+.am-search .advanced-search-form {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+}
+.am-search .advanced-search-form label {
+  margin: 0;
+  gap: 4px;
+  font-size: 12px;
+}
+.am-search .advanced-search-form input,
+.am-search .advanced-search-form select,
+.am-search .advanced-search-form button {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.am-search .search-filters {
+  gap: 10px;
+  margin-top: 10px;
+}
+.am-search #advanced-summary {
+  margin: 12px 0 8px;
+  font-size: 12.5px;
+}
+.am-search .search-result {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+.am-search .search-result p {
+  margin: 6px 0;
+}
+.am-search .search-result .search-task {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.am-search .search-snippet {
+  font-size: 13px;
+}
+.am-search .search-result {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+.am-search .search-result:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.am-search-conn {
+  font-size: 11.5px;
+  color: var(--fg-subtle);
 }
