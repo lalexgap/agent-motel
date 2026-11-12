@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { FIXTURE_IDS, FIXTURE_TOKEN, startFixtureServer, type FixtureServer } from "../desktop/fixtures/server";
 
 let fixture: FixtureServer;
@@ -252,6 +252,46 @@ describe("fixture parity routes", () => {
     }
   };
   const statusIs = (name: string, status: string, host?: string) => until(async () => (await row(name, host))?.status === status);
+  // Transient states (starting, a spawn's working turn) last transitionMs, so they are checked on the event
+  // stream, which records every step, rather than by a GET that has to land inside the window.
+  const watchers = new Set<AbortController>();
+  afterEach(() => {
+    for (const controller of watchers) controller.abort();
+    watchers.clear();
+  });
+  const watchFleet = async () => {
+    const controller = new AbortController();
+    watchers.add(controller);
+    const stream = await fetch(server.url + "/api/events", { headers: { authorization: `Bearer ${FIXTURE_TOKEN}` }, signal: controller.signal });
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    const events: any[] = [];
+    let buffer = "";
+    let ready = false;
+    const pump = async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (let cut = buffer.indexOf("\n\n"); cut >= 0; cut = buffer.indexOf("\n\n")) {
+          const [head, data] = buffer.slice(0, cut).split("\n");
+          buffer = buffer.slice(cut + 2);
+          if (head === "event: ready") ready = true;
+          else if (head === "event: fleet") events.push(JSON.parse(data!.slice("data: ".length)));
+        }
+      }
+    };
+    pump().catch(() => {});
+    await until(async () => ready);
+    const statuses = (name: string, host?: string) =>
+      events.filter((event) => event.type === "status" && event.agent === name && event.host === host).map((event) => event.status as string);
+    // Every status the agent has emitted since the watch began, in order.
+    const sawStatuses = async (name: string, expected: string[], host?: string) => {
+      await until(async () => statuses(name, host).length >= expected.length);
+      expect(statuses(name, host)).toEqual(expected);
+    };
+    return { sawStatuses };
+  };
   const enc = encodeURIComponent;
 
   test("reset is bearer-gated, restores the seeded fleet and clears the request log", async () => {
@@ -310,20 +350,10 @@ describe("fixture parity routes", () => {
   });
 
   test("resume: stopped → starting → idle with fleet events; live is a no-op; a missing directory is a 409", async () => {
-    const controller = new AbortController();
-    const stream = await fetch(server.url + "/api/events", { headers: { authorization: `Bearer ${FIXTURE_TOKEN}` }, signal: controller.signal });
-    const reader = stream.body!.getReader();
-    await reader.read();
+    const fleet = await watchFleet();
     await expectReply(call("POST", "/api/agents/old-lens/resume", {}), 200, { ok: true });
-    expect((await row("old-lens")).status).toBe("starting");
+    await fleet.sawStatuses("old-lens", ["starting", "idle"]);
     await statusIs("old-lens", "idle");
-    let text = "";
-    const decoder = new TextDecoder();
-    const deadline = Date.now() + 3000;
-    while (!text.includes('"status":"idle"') && Date.now() < deadline) text += decoder.decode((await reader.read()).value);
-    controller.abort();
-    expect(text).toContain('"agent":"old-lens","status":"starting"');
-    expect(text).toContain('"agent":"old-lens","status":"idle"');
     await expectReply(call("POST", "/api/agents/keeper-log/resume", {}), 200, { ok: true });
     expect((await row("keeper-log")).status).toBe("idle");
     await expectReply(call("POST", "/api/agents/ghost-pier/resume", {}), 409, { error: "agent directory no longer exists: /home/keeper/.agent-manager/worktrees/lighthouse/ghost-pier" });
@@ -334,8 +364,9 @@ describe("fixture parity routes", () => {
     await expectReply(call("POST", "/api/agents/keeper-log/restart", { ifIdle: true }), 400, { error: "ifIdle is not supported; use `am stop --if-idle`" });
     await expectReply(call("POST", "/api/agents/keeper-log/restart", { model: "x" }), 400, { error: "model is not supported" });
     await expectReply(call("POST", "/api/agents/slipway/restart", {}), 409, { error: 'agent "slipway" is being stopped, removed, renamed, or restarted — retry restart' });
+    const fleet = await watchFleet();
     await expectReply(call("POST", "/api/agents/keeper-log/restart", {}), 200, { ok: true });
-    expect((await row("keeper-log")).status).toBe("starting");
+    await fleet.sawStatuses("keeper-log", ["starting", "idle"]);
     await statusIs("keeper-log", "idle");
     await expectReply(call("POST", "/api/agents/harbor-lights/restart", {}), 200, { ok: true });
     await statusIs("harbor-lights", "working");
@@ -409,10 +440,12 @@ describe("fixture parity routes", () => {
     await expectReply(move("nobody", { host: "annex" }), 404, { error: "agent not found" });
     await expectReply(move("slipway", { host: "annex" }), 409);
     expect((await expectReply(move("keeper-log", { host: "lantern" }), 409)).error).toStartWith("ssh lantern:");
+    const fleet = await watchFleet();
     const moved = await expectReply(move("keeper-log", { host: "annex", dir: "/srv/lighthouse" }), 200, { ok: true, key: "annex:keeper-log" });
     expect(typeof moved.message).toBe("string");
     expect(await row("keeper-log")).toBeUndefined();
-    expect(await row("keeper-log", "annex")).toMatchObject({ dir: "/srv/lighthouse", status: "starting" });
+    expect(await row("keeper-log", "annex")).toMatchObject({ dir: "/srv/lighthouse" });
+    await fleet.sawStatuses("keeper-log", ["starting", "idle"], "annex");
     await statusIs("keeper-log", "idle", "annex");
     expect((await read("/api/agents/" + enc("annex:keeper-log") + "/transcript")).entries.length).toBeGreaterThan(0);
     await expectReply(move("annex:keeper-log", { host: "motel" }), 200, { ok: true, key: "keeper-log" });
@@ -439,8 +472,10 @@ describe("fixture parity routes", () => {
     await expectReply(model({ ...base, model: "gpt-5.2-codex", effort: "ultra" }), 400);
     const locked = await read("/api/agents/slipway");
     await expectReply(model({ createdAt: locked.createdAt, status: locked.status, model: null }, "slipway"), 409);
+    const fleet = await watchFleet();
     await expectReply(model({ ...base, model: "gpt-5.2", effort: "low" }), 200, { ok: true, model: "gpt-5.2", effort: "low" });
-    expect(await row("fold-line")).toMatchObject({ model: "gpt-5.2", effort: "low", status: "starting" });
+    expect(await row("fold-line")).toMatchObject({ model: "gpt-5.2", effort: "low" });
+    await fleet.sawStatuses("fold-line", ["starting", "idle"]);
     await statusIs("fold-line", "idle");
     // Claude's catalog is not exhaustive: an unlisted model is accepted; omitting effort keeps it.
     const keeper = await read("/api/agents/harbor-lights");
@@ -516,12 +551,13 @@ describe("fixture parity routes", () => {
     await expectReply(create({ name: "a", host: "annex", dir: "/srv/x" }), 400, { error: "dir /srv/x is not under /home/keeper — pass remoteDir for annex" });
     expect((await expectReply(create({ name: "a", host: "lantern", dir: "/home/keeper" }), 502)).error).toStartWith("ssh lantern:");
 
+    const fleet = await watchFleet();
     await expectReply(create({ name: "chart-room", task: "Draw the harbour chart legend", provider: "claude", dir: "/home/keeper/code/lighthouse", role: "reviewer", model: "claude-opus-4-5", effort: "high" }), 201, { ok: true, name: "chart-room" });
     expect(await row("chart-room")).toMatchObject({
-      status: "starting", provider: "claude", dir: "/home/keeper/.agent-manager/worktrees/lighthouse/chart-room", repoRoot: "/home/keeper/code/lighthouse",
+      provider: "claude", dir: "/home/keeper/.agent-manager/worktrees/lighthouse/chart-room", repoRoot: "/home/keeper/code/lighthouse",
       worktreeBranch: "am/chart-room", role: "reviewer", model: "claude-opus-4-5", effort: "high",
     });
-    await statusIs("chart-room", "working");
+    await fleet.sawStatuses("chart-room", ["starting", "working", "idle"]);
     await statusIs("chart-room", "idle");
     const entries = (await read("/api/agents/chart-room/transcript")).entries;
     expect(entries.map((entry: { kind: string; text: string }) => [entry.kind, entry.kind === "user" ? entry.text : "reply"])).toEqual([["user", "Draw the harbour chart legend"], ["assistant", "reply"]]);
@@ -537,8 +573,10 @@ describe("fixture parity routes", () => {
   test("concierge ensure: returns the key, recreates a removed concierge", async () => {
     await expectReply(call("POST", "/api/concierge", {}), 200, { key: "concierge" });
     await expectReply(call("DELETE", "/api/agents/concierge"), 200);
+    const fleet = await watchFleet();
     await expectReply(call("POST", "/api/concierge", {}), 200, { key: "concierge" });
-    expect(await row("concierge")).toMatchObject({ role: "concierge", status: "starting" });
+    expect(await row("concierge")).toMatchObject({ role: "concierge" });
+    await fleet.sawStatuses("concierge", ["starting", "idle"]);
     await statusIs("concierge", "idle");
   });
 
