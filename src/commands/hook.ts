@@ -717,7 +717,7 @@ export async function hookCommand(event: string): Promise<void> {
       if (!current) return;
       agent = current;
       name = agent.name;
-      updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
+      if (!promptStillWaiting(agent)) updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
       writeAgent(agent);
       process.stdout.write(gate);

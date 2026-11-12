@@ -43,7 +43,7 @@ export interface AgentState {
   // Set with the status and dropped by any later transition without one.
   statusKind?: StatusKind;
   // Unlike updatedAt (which changes for session metadata and other writes),
-  // this only changes when status or its reason changes.
+  // this only changes when status or its reason changes, or a prompt is raised again.
   statusChangedAt?: string;
   dir: string;
   tmuxSession: string;
@@ -272,7 +272,8 @@ export function updateAgentStatus(
 ): void {
   statusUpdates.set(state, { status, reason, now, kind });
   const statusReason = reason?.trim() || undefined;
-  if (state.status !== status || state.statusReason !== statusReason) {
+  // A prompt raised again is a new one, even with the same reason.
+  if (state.status !== status || state.statusReason !== statusReason || (kind === "prompt" && status === "needs-attention")) {
     state.statusChangedAt = now;
   } else if (!state.statusChangedAt) {
     // Old state files predate transition timestamps. Preserve the best

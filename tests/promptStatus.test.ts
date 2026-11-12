@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureDirs } from "../src/paths";
+import { queueAppend, queueDepth } from "../src/queue";
 import { createPermission, readPermission, resolvePending } from "../src/permissions";
 import {
   PROMPT_ACTIVITY_TTL_MS,
@@ -398,6 +399,16 @@ describe("prompt state", () => {
     expect(readAgent("api")).toMatchObject({ status: "needs-attention", statusReason: "approval requested — Edit" });
   });
 
+  test("settlePrompt leaves a prompt raised again with the same reason", () => {
+    const seen = atPrompt();
+    const again = readAgent("api")!;
+    updateAgentStatus(again, "needs-attention", "approval requested — Bash", "2026-01-01T00:01:00.000Z", "prompt");
+    writeAgent(again);
+    expect(readAgent("api")!.statusChangedAt).toBe("2026-01-01T00:01:00.000Z");
+    expect(settlePrompt(seen, "idle")).toBeNull();
+    expect(readAgent("api")).toMatchObject({ status: "needs-attention", statusKind: "prompt" });
+  });
+
   describe("watcher", () => {
     const watcher = (pane: () => string[] | null, clock: { now: number }, settled: string[] = []) =>
       startPromptWatcher({
@@ -570,6 +581,15 @@ describe("prompt state", () => {
       showing(CLAUDE_RUNNING);
       hook("user-prompt-submit", { prompt: "go on" });
       expect(readAgent("api")!.status).toBe("working");
+    }, 30_000);
+
+    test("a Stop that feeds queued mail back in leaves a dialog that is still up", () => {
+      atPrompt({ workingSince: "2026-01-01T00:00:00.000Z" });
+      showing(CLAUDE_SUBAGENT_DIALOG);
+      queueAppend("api", "hello");
+      hook("stop", {});
+      expect(queueDepth("api")).toBe(0);
+      expect(readAgent("api")).toMatchObject({ status: "needs-attention", statusKind: "prompt" });
     }, 30_000);
 
     test("a session ending is never held by a prompt", () => {
