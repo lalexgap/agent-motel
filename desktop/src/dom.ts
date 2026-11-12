@@ -72,7 +72,6 @@ export function badge(status: string): HTMLElement {
   node.append(dot(status), document.createTextNode(statusLabel(status)));
   return node;
 }
-// The open-decisions count on a row; null when there are none.
 export function decisionsBadge(row: AgentRow, now = Date.now()): HTMLElement | null {
   const open = openDecisions(row);
   if (!open) return null;

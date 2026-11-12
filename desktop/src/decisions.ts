@@ -20,7 +20,6 @@ export function decisionsLabel(open: number, blocking: number): string {
 export const rowDecisionsLabel = (row: DecisionFields): string =>
   openDecisions(row) ? decisionsLabel(openDecisions(row), blockingDecisions(row)) : "";
 
-// The sidebar badge: the count, its accessible name and its tooltip.
 export const decisionsWaiting = (row: DecisionFields): string =>
   openDecisions(row) ? `${noun(openDecisions(row))} waiting on you` : "";
 export function decisionsName(row: DecisionFields): string {
@@ -35,7 +34,6 @@ export function decisionsTitle(row: DecisionFields, now = Date.now()): string {
   return [decisionsWaiting(row), (row.firstDecision || "").trim(), when].filter(Boolean).join("\n");
 }
 
-// The overview's fleet-level line: how many agents have a decision open.
 export function agentsWaitingOnDecisions(rows: Iterable<DecisionFields>): string {
   let agents = 0;
   for (const row of rows) if (openDecisions(row)) agents++;
