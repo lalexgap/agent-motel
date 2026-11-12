@@ -1,8 +1,9 @@
 import { antigravityRequest } from "../antigravity";
 import { hostname } from "node:os";
-import { agentProvider, isExactNamesOnly, matchAgent, noteHandoff, readAgent, resolveAgent } from "../state";
+import { agentProvider, isExactNamesOnly, matchAgent, noteHandoff, readAgent, resolveAgent, type AgentState } from "../state";
 import { queueAppendForAgent, queueDepth } from "../queue";
-import { hasSession, sendText } from "../tmux";
+import { capturePane, hasSession, sendText } from "../tmux";
+import { paneView } from "../promptStatus";
 import { acquireDeliverLock, deliverNext, endAbortedTurn, enterDelayMs, escapeTurn, noteTypedAfterEscape, releaseDeliverLock } from "../deliver";
 import { attribute, bareName, recordComms, resolveSender } from "../comms";
 import { loadConfig } from "../config";
@@ -67,6 +68,18 @@ function rateLimited(from: string, to: string): SendOutcome {
   return "dropped";
 }
 
+// Typing into a dialog answers it and Enter confirms the selection. Claude's
+// composer shows through a turn, so only it takes typing; Codex's is hard to
+// recognise mid-turn, so only its dialog refuses. Callers hold the delivery lock.
+export function paneTakesTyping(agent: AgentState): boolean {
+  const provider = agentProvider(agent);
+  if (provider === "antigravity") return true;
+  const pane = capturePane(agent.tmuxSession);
+  if (!pane) return false;
+  const view = paneView(pane, provider);
+  return provider === "claude" ? view === "composer" : view !== "dialog";
+}
+
 // quiet: in-UI callers report the returned outcome themselves.
 export async function sendCommand(
   prefix: string,
@@ -95,17 +108,24 @@ export async function sendCommand(
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
     // Inject immediately; the TUI's native mid-turn steering handles the rest.
     let id: string | null = null;
+    let steered = false;
     try {
       if (!readAgent(agent.name)) throw new Error(`agent "${agent.name}" no longer exists — retry the message`);
-      const mark = track ? immediateMark(agent) : null;
-      noteHandoff(agent.name);
-      sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
-      if (mark) id = recordImmediateDelivery(agent.name, mark, body);
-      if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
+      if (paneTakesTyping(agent)) {
+        const mark = track ? immediateMark(agent) : null;
+        noteHandoff(agent.name);
+        sendText(agent.tmuxSession, body, { enterDelayMs: enterDelayMs(agent, body) });
+        if (mark) id = recordImmediateDelivery(agent.name, mark, body);
+        if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind, body: message });
+        steered = true;
+      }
     }
     finally { releaseDeliverLock(agent.name); }
-    say(opts, `sent to "${agent.name}" (steering current turn)`);
-    return printResult(opts, { id, outcome: "steered" });
+    if (steered) {
+      say(opts, `sent to "${agent.name}" (steering current turn)`);
+      return printResult(opts, { id, outcome: "steered" });
+    }
+    say(opts, `"${agent.name}" is not at its composer (a dialog may be waiting) — not steering`);
   }
 
   const trackedId = track ? queueTrackedMessage(agent.name, body, att.provenance) : null;
@@ -142,18 +162,34 @@ export async function interruptCommand(
 
   if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
   let id: string | null = null;
+  let typed = false;
+  const escAt = Date.now();
   try {
     escapeTurn(agent);
     await Bun.sleep(400);
-    const mark = opts.track || opts.json ? immediateMark(agent) : null;
-    noteTypedAfterEscape(agent.name, att.body);
-    noteHandoff(agent.name);
-    sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
-    if (mark) id = recordImmediateDelivery(agent.name, mark, att.body);
+    // The Esc closes a dialog that was up; one still there is not typed into.
+    if (paneTakesTyping(agent)) {
+      const mark = opts.track || opts.json ? immediateMark(agent) : null;
+      noteTypedAfterEscape(agent.name, att.body);
+      noteHandoff(agent.name);
+      sendText(agent.tmuxSession, att.body, { enterDelayMs: enterDelayMs(agent, att.body) });
+      if (mark) id = recordImmediateDelivery(agent.name, mark, att.body);
+      typed = true;
+    } else {
+      const tracked = opts.track || opts.json ? queueTrackedMessage(agent.name, att.body, att.provenance) : null;
+      if (tracked) id = tracked;
+      else queueAppendForAgent(agent.name, att.body, undefined, att.provenance);
+    }
     if (att.attributed) recordComms({ at: new Date().toISOString(), from: from!, to: agent.name, kind: "interrupt", body: message });
   } finally { releaseDeliverLock(agent.name); }
-  say(opts, `interrupted "${agent.name}" with new message`);
-  return printResult(opts, { id, outcome: "steered" });
+  if (typed) {
+    say(opts, `interrupted "${agent.name}" with new message`);
+    return printResult(opts, { id, outcome: "steered" });
+  }
+  say(opts, `interrupted "${agent.name}"; it is not at its composer (a dialog may be waiting), so the message is queued`);
+  // No prompt followed the Esc, so the turn it aborted ends as an Esc-only one does.
+  await endAbortedTurn(agent.name, escAt);
+  return printResult(opts, { id, outcome: "queued" });
 }
 
 export async function abortTurn(name: string): Promise<void> {
