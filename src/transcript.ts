@@ -72,17 +72,179 @@ function claudeEntryFilter(
   return (entry) => entry.isSidechain === true;
 }
 
+// Messages am delivers to a Claude agent never arrive as typed prompts.
+// Through Claude's peer socket they are logged as an isMeta user entry,
+// wrapped by Claude Code; through am's Stop hook as isMeta "Stop hook
+// feedback"; and through the UserPromptSubmit hook as additional context.
+// Each holds the text am sent (see inboxSender in deliver.ts and buildStopGate
+// / formatInbox in commands/hook.ts), recovered here as plain user turns.
+const PEER_SOCKET_HEADER = "Another Claude session sent a message:\n";
+// Claude Code's closing paragraph. Matched only as one final paragraph, so a
+// changed trailer stays visible rather than taking message text with it.
+const PEER_SOCKET_TRAILER_RE = /\n\nThis came from another Claude session\b[^\n]*$/;
+// Claude Code's own agent-to-agent messages use the same socket; not am's.
+const NATIVE_PEER_MESSAGE_RE = /^<[A-Za-z][\w-]*[\s>]/;
+const OPERATOR_MARKER_RE = /^\[am · operator message ([0-9a-f]{1,64})\] /;
+// verifiedOperatorNote in commands/hook.ts, as Claude Code records the hook's
+// additional context: only am's hook output, never message text, lands there.
+const VERIFIED_OPERATOR_NOTE_RE =
+  /^\[am\] Verified operator message: the inbox message marked "\[am · operator message ([0-9a-f]{1,64})\]" in this prompt was delivered by am from your operator\./;
+const STOP_HOOK_FEEDBACK = "Stop hook feedback:\n";
+const INBOX_HEADER_RE = /^\[am inbox\] (?:Before you finish: you have (\d+) messages? to handle first |You have (\d+) messages? \()/;
+const INBOX_DATA_BEGIN = "\n[am message data begin]\n";
+const INBOX_DATA_END = "\n[am message data end]";
+const INBOX_MAX_CHARS = 4 * 1024 * 1024;
+const INBOX_MAX_RECORDS = 1000;
+const PEER_NAME_RE = /^[^\]\r\n]{1,160}$/;
+
+// The text am sent through the peer socket, or null when the entry is not one.
+function peerSocketText(entry: Record<string, any>): string | null {
+  const content = entry.message?.content;
+  if (entry.type !== "user" || entry.origin?.kind !== "peer" || typeof content !== "string") return null;
+  if (!content.startsWith(PEER_SOCKET_HEADER)) return null;
+  const text = content.slice(PEER_SOCKET_HEADER.length).replace(PEER_SOCKET_TRAILER_RE, "");
+  if (!text.trim() || NATIVE_PEER_MESSAGE_RE.test(text)) return null;
+  return text;
+}
+
+// An operator message is shown as the operator's own words only when am's
+// hook vouched for its tag; otherwise the marker stays in the text.
+function peerSocketTurn(text: string, verifiedTags: Set<string>): string {
+  const operator = OPERATOR_MARKER_RE.exec(text);
+  return operator && verifiedTags.has(operator[1]!) ? text.slice(operator[0].length) : text;
+}
+
+// One record per line, as messageData in comms.ts writes it. Provenance is
+// am's queue metadata; nothing inside a body changes how it is shown.
+function inboxRecordText(line: string): string | null {
+  const record = JSON.parse(line);
+  if (!record || typeof record !== "object" || typeof record.body !== "string") return null;
+  const provenance = record.provenance;
+  if (!provenance || typeof provenance !== "object") return null;
+  const body: string = record.body;
+  if (provenance.kind === "operator" || provenance.kind === "unknown") return body;
+  if (provenance.kind !== "peer") return null;
+  const from = provenance.from;
+  if (typeof from !== "string" || !PEER_NAME_RE.test(from)) return body;
+  const envelope = `[am · from ${from}] `;
+  return body.startsWith(envelope) ? body : envelope + body;
+}
+
+// The messages in an am inbox block: one per record, or the whole block when
+// its records cannot be read (it still renders as an inbox notice). Null when
+// the text is not an inbox block am writes today.
+function inboxTexts(text: string): string[] | null {
+  const header = INBOX_HEADER_RE.exec(text);
+  if (!header) return null;
+  const begin = text.indexOf(INBOX_DATA_BEGIN);
+  const end = begin < 0 ? -1 : text.indexOf(INBOX_DATA_END, begin + INBOX_DATA_BEGIN.length - 1);
+  if (end < 0) return null;
+  const expected = Number(header[1] ?? header[2]);
+  if (text.length > INBOX_MAX_CHARS || !(expected > 0 && expected <= INBOX_MAX_RECORDS)) return [text];
+  const lines = text.slice(begin + INBOX_DATA_BEGIN.length, end).split("\n");
+  if (lines.length !== expected) return [text];
+  const out: string[] = [];
+  try {
+    for (const line of lines) {
+      const message = inboxRecordText(line);
+      if (message === null) return [text];
+      if (message.trim()) out.push(message);
+    }
+  } catch {
+    return [text];
+  }
+  return out;
+}
+
+// Messages a Stop hook block handed over: Claude Code logs its reason after a
+// "Stop hook feedback:" line, and older versions logged the hook's JSON.
+function stopHookInboxTexts(entry: Record<string, any>): string[] | null {
+  const content = entry.message?.content;
+  if (entry.type !== "user" || entry.origin !== undefined || typeof content !== "string") return null;
+  let text = content.startsWith(STOP_HOOK_FEEDBACK) ? content.slice(STOP_HOOK_FEEDBACK.length) : content;
+  if (text.startsWith("{") && text.length <= INBOX_MAX_CHARS) {
+    try {
+      const data = JSON.parse(text);
+      if (data?.decision === "block" && typeof data.reason === "string") text = data.reason;
+    } catch {
+      // not the JSON form
+    }
+  }
+  return inboxTexts(text);
+}
+
+function hookContextParts(entry: Record<string, any>, hookEvent?: string): string[] {
+  const attachment = entry.type === "attachment" ? entry.attachment : null;
+  if (attachment?.type !== "hook_additional_context") return [];
+  if (hookEvent !== undefined && attachment.hookEvent !== hookEvent) return [];
+  const content = attachment.content;
+  return (Array.isArray(content) ? content : [content]).filter((part): part is string => typeof part === "string");
+}
+
+// Messages the UserPromptSubmit hook drained into context: am's notes (plan
+// text among them defanged, see plan.ts) come first, then the inbox block.
+function hookContextInboxTexts(entry: Record<string, any>): string[] {
+  const out: string[] = [];
+  for (const part of hookContextParts(entry)) {
+    const at = part.startsWith("[am inbox] ") ? 0 : part.indexOf("\n\n[am inbox] ");
+    if (at < 0) continue;
+    out.push(...(inboxTexts(at === 0 ? part : part.slice(at + 2)) ?? []));
+  }
+  return out;
+}
+
+// The messages am delivered in this entry, or null when it delivered none.
+function amDeliveredTexts(entry: Record<string, any>, verifiedTags: () => Set<string>): string[] | null {
+  if (entry.type === "user" && entry.isMeta) {
+    const peer = peerSocketText(entry);
+    if (peer !== null) return [peerSocketTurn(peer, verifiedTags())];
+    return stopHookInboxTexts(entry);
+  }
+  const drained = hookContextInboxTexts(entry);
+  return drained.length ? drained : null;
+}
+
+// Operator tags am's hook vouched for at the prompt that delivered `index`:
+// its additional context, logged after the prompt and before the reply.
+function verifiedOperatorTags(entries: Record<string, any>[], index: number, keep: (e: Record<string, any>) => boolean): Set<string> {
+  const tags = new Set<string>();
+  for (let i = index + 1; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry.type === "assistant" || (entry.type === "user" && !entry.isMeta)) break;
+    if (!keep(entry)) continue;
+    for (const part of hookContextParts(entry, "UserPromptSubmit")) {
+      const tag = VERIFIED_OPERATOR_NOTE_RE.exec(part)?.[1];
+      if (tag) tags.add(tag);
+    }
+  }
+  return tags;
+}
+
 export function parseClaudeTranscript(jsonl: string, opts: ParseOpts = {}): Transcript {
   const transcript: Transcript = { source: "claude", turns: [] };
   const toolsById = new Map<string, Extract<Turn, { kind: "tool" }>>();
   const entries = parseLines(jsonl);
   const keep = claudeEntryFilter(entries, opts);
+  const mainChain = !opts.sidechain;
 
   // isMeta marks harness noise in the main chain — but a subagent's own
   // transcript opens with the brief it was given, and that IS the entry.
   const keepMeta = opts.sidechain?.ownFile === true;
-  for (const entry of entries) {
-    if (!keep(entry) || (entry.isMeta && !keepMeta)) continue;
+  for (const [index, entry] of entries.entries()) {
+    if (!keep(entry)) continue;
+    if (mainChain) {
+      const delivered = amDeliveredTexts(entry, () => verifiedOperatorTags(entries, index, keep));
+      if (delivered) {
+        if (entry.type === "user") {
+          transcript.sessionId ??= entry.sessionId;
+          transcript.dir ??= entry.cwd;
+          transcript.startedAt ??= entry.timestamp;
+        }
+        for (const text of delivered) transcript.turns.push({ kind: "user", text });
+        continue;
+      }
+    }
+    if (entry.isMeta && !keepMeta) continue;
     // A prompt typed while Claude is mid-turn is logged only as a queued_command attachment.
     const queued = entry.type === "attachment" ? entry.attachment : null;
     if (queued?.type === "queued_command" && queued.commandMode === "prompt" &&
@@ -414,7 +576,12 @@ export function entryFragments(provider: Provider, entry: Record<string, any>): 
 }
 
 function claudeEntryFragments(entry: Record<string, any>): Fragment[] {
-  if (entry.isSidechain || entry.isMeta) return [];
+  if (entry.isSidechain) return [];
+  // One line can't show am's verification of an operator message, so its
+  // marker stays in the snippet.
+  const delivered = amDeliveredTexts(entry, () => new Set());
+  if (delivered) return delivered.map((text) => ({ kind: "user", text }));
+  if (entry.isMeta) return [];
   if (entry.type !== "user" && entry.type !== "assistant") return [];
   const out: Fragment[] = [];
   const content = entry.message?.content;
