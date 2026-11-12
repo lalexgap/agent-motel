@@ -27,7 +27,7 @@ final class Confirmation {
         open = false
     }
 
-    /// Shows the sheet and returns whether the confirm button was clicked. Needs a reservation.
+    /// Needs a reservation.
     func ask(_ text: ConfirmationText) async throws -> Bool {
         reveal()
         guard let window = window() else { throw PolicyError("The app window is not available") }

@@ -185,7 +185,7 @@ describe("message policy", () => {
   });
 });
 
-// Milestone 3 agent actions. Every table below is mirrored by the Swift
+// Agent actions. Every table below is mirrored by the Swift
 // ActionPolicy tests in macos/Tests/main.swift: same inputs, same verdicts,
 // same error strings.
 const ULID = "01JABCDEFGHJKMNPQRSTVWXYZ0";

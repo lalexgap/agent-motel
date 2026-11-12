@@ -285,7 +285,7 @@ describe("dev server", () => {
   });
 });
 
-// Milestone 3 actions, against an in-test stub am server on loopback that
+// Agent actions, against an in-test stub am server on loopback that
 // records every request exactly as it arrives.
 interface Seen {
   method: string;

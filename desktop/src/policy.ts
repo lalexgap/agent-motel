@@ -130,7 +130,7 @@ export function checkMessageId(value: unknown): Checked<string> {
 export const messagesPath = (agent: string, id?: string): string =>
   `/api/agents/${encodeURIComponent(agent)}/messages${id === undefined ? "" : `/${encodeURIComponent(id)}`}`;
 
-// Agent actions (milestone 3). Same principle as messages: the page passes
+// Agent actions. Same principle as messages: the page passes
 // values, and the request is built here from validated values only. The Swift
 // ActionPolicy applies the same rules, vectors and error strings.
 export interface ConfirmSpec {

@@ -59,10 +59,8 @@ async function devCall(method: string, params: unknown): Promise<unknown> {
   return data.result;
 }
 
-// Browser dev mode stands in for the native alert. The dev bridge never sends a
-// confirmed action on the first call: it runs the existence pre-check and
-// returns the text plus a one-time ticket, and only `dev.confirm` with that
-// ticket (which this module alone sends, after window.confirm) releases it.
+// Browser dev mode stands in for the native alert: only `dev.confirm` with the
+// one-time ticket, which this module alone sends after window.confirm, releases it.
 let confirmOwner: object | null = null;
 
 async function devConfirmed(method: string, params: unknown): Promise<unknown> {

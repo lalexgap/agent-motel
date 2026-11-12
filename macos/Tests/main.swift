@@ -178,7 +178,7 @@ for (agent, id) in [("a/b", "x"), ("harbor-lights", "../x"), ("harbor-lights", "
 check((try? MessagePolicy.send(base: base, agent: "harbor-lights", text: "hi", mode: "interrupt")) == nil, "interrupt send")
 print("PASS message policy (agent, mode, text bytes, id, paths, request shape)")
 
-// Write surface (milestone 3): same vectors as tests/desktopPolicy.test.ts.
+// Write surface: same vectors as tests/desktopPolicy.test.ts.
 func plan(_ method: String, _ params: [String: Any]) throws -> ActionPlan {
     try ActionPolicy.plan(method, base: base, params: params)
 }

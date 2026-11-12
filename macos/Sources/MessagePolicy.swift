@@ -144,7 +144,6 @@ enum MessagePolicy {
     }
 }
 
-/// What a confirmed action shows in its native sheet.
 struct ConfirmationText: Equatable {
     let title: String
     let message: String
