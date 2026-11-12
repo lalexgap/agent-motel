@@ -17,7 +17,6 @@ export const screen = (): Screen => (document.body.dataset.view === "setup" ? "s
 export interface MainView {
   id: string;
   element: HTMLElement;
-  // Runs after the view is shown, to fill it.
   onShow?: () => void;
 }
 const views: MainView[] = [];
