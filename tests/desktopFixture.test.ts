@@ -783,7 +783,7 @@ describe("fixture parity routes", () => {
     const week = await read("/api/usage/summary");
     expect(strip(await read("/api/usage/summary?range=7"))).toEqual(strip(week));
     const { summary } = week;
-    expect(Object.keys(summary).sort()).toEqual(["agents", "byModel", "byRepo", "classes", "days", "filters", "generatedAt", "host", "indexing", "totals", "unattributed"]);
+    expect(Object.keys(summary).sort()).toEqual(["agents", "byEffort", "byModel", "byRepo", "byType", "classes", "days", "filters", "generatedAt", "host", "indexing", "totals", "unattributed"]);
     expect(summary.days).toHaveLength(30);
     expect(summary.days.every((day: string) => /^\d{4}-\d\d-\d\d$/.test(day))).toBe(true);
     expect(Object.keys(summary.classes).sort()).toEqual(["cacheRead", "cacheWrite1h", "cacheWrite5m", "input", "output"]);
@@ -793,6 +793,13 @@ describe("fixture parity routes", () => {
     expect(summary.totals.last30.costUSD).toBeGreaterThan(summary.totals.last7.costUSD);
     expect(summary.byModel.some((item: { priced: boolean }) => !item.priced)).toBe(true);
     expect(summary.byModel.length).toBeGreaterThanOrEqual(4);
+    expect(summary.byType).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "main", kind: "main", runs: expect.any(Number), agents: expect.any(Number) }),
+    ]));
+    expect(summary.byEffort).toEqual(expect.arrayContaining([
+      expect.objectContaining({ effort: "high", calls: expect.any(Number) }),
+      expect.objectContaining({ effort: "unrecorded", calls: expect.any(Number) }),
+    ]));
     expect(summary.filters.repos).toEqual(expect.arrayContaining(["lighthouse", "paper-crane", "tide-tables", "~"]));
     expect(summary.filters.providers).toEqual(["antigravity", "claude", "codex"]);
     const agent = summary.agents.find((item: { name: string }) => item.name === "harbor-lights");
