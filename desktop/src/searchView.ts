@@ -35,7 +35,7 @@ import {
 } from "./search";
 import { focusCursor } from "./sidebar";
 import { state, subscribe } from "./state";
-import { mainView, registerMainView, screen, showMainView } from "./views";
+import { mainView, onMainViewChange, registerMainView, screen, showMainView } from "./views";
 
 const VIEW = "search";
 let search: ConversationSearch | null = null;
@@ -303,12 +303,10 @@ export function initSearch(): void {
     // A click with no pointer behind it is Enter or Space on the focused result.
     if (node?.dataset.agentKey) openResult(node.dataset.agentKey, event.detail === 0);
   });
-  // views.ts has no view-change event.
-  const mark = () => {
+  onMainViewChange(() => {
     if (ui.section.hidden) ui.nav.removeAttribute("aria-current");
     else ui.nav.setAttribute("aria-current", "page");
-  };
-  new MutationObserver(mark).observe(ui.section, { attributes: true, attributeFilter: ["hidden"] });
+  });
   subscribe("fleet", () => {
     if (search && searchedConnections !== connectionSignature()) clearConversationSearch();
     if (mainView() === VIEW) render();

@@ -18,11 +18,15 @@ export interface MainView {
   id: string;
   element: HTMLElement;
   onShow?: () => void;
+  // Runs before the view is hidden for another one (not when shown again).
+  onHide?: () => void;
 }
 const views: MainView[] = [];
 const listeners: (() => void)[] = [];
 let active: string | null = null;
 
+// The one view-change hook: runs after every showMainView, for nav marks and
+// anything else that depends on which view is up.
 export function onMainViewChange(listener: () => void): void {
   listeners.push(listener);
 }
@@ -32,6 +36,8 @@ export function registerMainView(view: MainView): void {
 }
 
 export function showMainView(id: string): void {
+  const previous = active;
+  if (previous !== id) views.find((view) => view.id === previous)?.onHide?.();
   for (const view of views) view.element.hidden = view.id !== id;
   active = id;
   $("am-main").dataset.mainView = id;

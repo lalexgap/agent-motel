@@ -672,6 +672,13 @@ describe("fixture parity routes", () => {
     await expectReply(call("GET", "/api/agents/harbor-lights/transcript?subagent=bad%20id"), 400, { error: "invalid subagent id" });
     await expectReply(call("GET", "/api/agents/harbor-lights/transcript?subagent=nosuch"), 409);
     expect(await read("/api/agents/keeper-log/subagents")).toEqual({ records: [] });
+    // A running Codex subagent has no transcript yet: 409, as am answers.
+    const codex = (await read("/api/agents/fold-line/subagents")).records;
+    expect(codex).toEqual([expect.objectContaining({ id: FIXTURE_IDS.subagents.baselines, type: "explorer" })]);
+    expect((await row("fold-line")).subagents).toMatchObject({ active: 1, running: [{ id: FIXTURE_IDS.subagents.baselines }] });
+    const pending = await call("GET", `/api/agents/fold-line/transcript?subagent=${FIXTURE_IDS.subagents.baselines}`);
+    expect(pending.status).toBe(409);
+    expect((await pending.json()).error).toContain("has no transcript of its own (it is still running)");
     await call("POST", "/api/agents/harbor-lights/stop", {});
     const stale = (await read("/api/agents/harbor-lights/subagents")).records;
     expect(stale.filter((record: { stale?: boolean }) => record.stale)).toHaveLength(2);
@@ -689,6 +696,8 @@ describe("fixture parity routes", () => {
     expect(report.subagents).toHaveLength(3);
     expect(report.subagents.map((item: { status: string }) => item.status).sort()).toEqual(["finished", "running", "running"]);
     expect(report.anomalies[0]).toMatchObject({ kind: "cache-bust", agent: "harbor-lights" });
+    // A subagent anomaly, for the usage page's subagent links.
+    expect(report.anomalies[1]).toMatchObject({ kind: "bloated-tool", agent: "harbor-lights", subagentId: FIXTURE_IDS.subagents.audit, subagentLabel: "Audit SyncWorker callers" });
     // Unpriced model: no costUSD.
     expect((await read("/api/agents/night-watch/usage")).combined.costUSD).toBeUndefined();
     expect((await read("/api/agents/" + enc("annex:kelp-forest") + "/usage")).name).toBe("kelp-forest");
