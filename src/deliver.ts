@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { agentProvider, agentSessionId, noteHandoff, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked, type QueueHead } from "./queue";
 import { capturePane, hasSession, sendClearLine, sendEnter, sendEscape, sendText, stripFaint, stripSgr, tmux } from "./tmux";
+import { claudePaneView } from "./paneViews";
 import { cliEntrypoint } from "./settings";
 import { baseDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, queueDir } from "./paths";
 import { withFileLock } from "./filelock";
@@ -333,6 +334,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     const before = capturePane(agent.tmuxSession, { colors: true });
     if (sessionIncarnation(readAgent(name) ?? agent) !== incarnation) return { status: "queued", reason: "unverified" };
     if (!before || parsedInputBoxText(before, provider) === null) return { status: "queued", reason: "unavailable" };
+    // Rules in the transcript or in a dialog's own text can frame nothing,
+    // which reads as an empty composer; typing there would answer the dialog.
+    if (provider === "claude" && claudePaneView(before) === "dialog") return { status: "queued", reason: "unavailable" };
     if (provider === "antigravity" && turnRunning(before, provider)) return { status: "queued", reason: "unavailable" };
     let mark = pending?.id === head.id ? pending.mark : undefined;
     const submitStartedAt = new Date().toISOString();
@@ -382,6 +386,8 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
       const current = readAgent(name);
       if (!current || sessionIncarnation(current) !== incarnation) return { status: "queued", reason: "unverified" };
       if (!pane || parsedInputBoxText(pane, provider) === null) return { status: "queued", reason: "unverified" };
+      // A dialog that came up since: neither a submitted prompt nor one to retry Enter on.
+      if (provider === "claude" && claudePaneView(pane) === "dialog") return { status: "queued", reason: "unverified" };
       if (parsedInputBoxText(pane, provider) === "") {
         recordSubmitted();
         return { status: "submitted", id: head.id };

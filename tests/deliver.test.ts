@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireDeliverLock, beginDeliveryHandoff, deliverNext, endDeliveryHandoff, releaseDeliverLock, __lockPath } from "../src/deliver";
+import { acquireDeliverLock, beginDeliveryHandoff, deliverNext, endDeliveryHandoff, parsedInputBoxText, releaseDeliverLock, __lockPath } from "../src/deliver";
 import { ensureDirs } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readAgent, setExactNamesOnly, writeAgent } from "../src/state";
@@ -45,6 +45,7 @@ case "$1" in
   capture-pane)
     [ "$(cat "$AGENTMGR_HOME/mode")" = unavailable ] && exit 1
     [ "$(cat "$AGENTMGR_HOME/mode")" = unknown ] && { echo 'unrecognized screen'; exit 0; }
+    [ -f "$AGENTMGR_HOME/pane" ] && { cat "$AGENTMGR_HOME/pane"; exit 0; }
     if [ "$(cat "$AGENTMGR_HOME/provider")" = codex ]; then
       printf '› '
       if [ "$(cat "$AGENTMGR_HOME/mode")" = retry-scrolled ] && [ -s "$AGENTMGR_HOME/input" ]; then
@@ -270,6 +271,68 @@ describe("delivery verification", () => {
     finally { console.log = log; }
     expect(outcome).toBe("queued");
     expect(messages).toEqual([]);
+  });
+});
+
+describe("a dialog that reads as an empty composer", () => {
+  const RULE = "─".repeat(40);
+  const dialog = (above: string[]) => [
+    ...above,
+    RULE,
+    " Bash command",
+    ' printf "%s\\n" one',
+    " This command requires approval",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and don’t ask again for: printf *",
+    "   3. No",
+    " Esc to cancel · Tab to amend",
+  ];
+  const noSends = () => expect(existsSync(join(home, "sends"))).toBe(false);
+
+  test("a rule in the transcript right above the dialog does not get it typed into", async () => {
+    fakeSession("submit");
+    queueAppend("api", "pick option 2 please");
+    const pane = dialog(["● Here is the summary.", RULE, ""]);
+    expect(parsedInputBoxText(pane)).toBe("");
+    writeFileSync(join(home, "pane"), pane.join("\n") + "\n");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unavailable" });
+    noSends();
+    expect(queueDepth("api")).toBe(1);
+  });
+
+  test("nor do rules inside the dialog's own text", async () => {
+    fakeSession("submit");
+    queueAppend("api", "hello");
+    const pane = dialog([]);
+    pane.splice(3, 0, ` ${RULE}`, ` ${RULE}`);
+    expect(parsedInputBoxText(pane)).toBe("");
+    writeFileSync(join(home, "pane"), pane.join("\n") + "\n");
+    expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unavailable" });
+    noSends();
+  });
+
+  test("a dialog that comes up after typing is not retried with Enter or counted as submitted", async () => {
+    fakeSession("swallow");
+    const id = queueAppend("api", "hello");
+    const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
+      writeFileSync(join(home, "pane"), dialog(["● Working on it.", RULE, ""]).join("\n") + "\n");
+    }) as typeof Bun.sleep);
+    try {
+      expect(await deliverNext("api")).toEqual({ status: "queued", reason: "unverified" });
+      expect(readFileSync(join(home, "sends"), "utf8").trim().split("\n")).toEqual(["text", "enter"]);
+      expect(queueDepth("api")).toBe(1);
+      expect(id).toBeTruthy();
+    } finally { sleep.mockRestore(); }
+  });
+
+  test("the composer itself still takes the message", async () => {
+    fakeSession("submit");
+    const id = queueAppend("api", "hello");
+    const sleep = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+    try {
+      expect(await deliverNext("api")).toEqual({ status: "submitted", id });
+    } finally { sleep.mockRestore(); }
   });
 });
 

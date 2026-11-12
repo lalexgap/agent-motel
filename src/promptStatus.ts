@@ -9,41 +9,17 @@ import {
   type AgentState,
   type Provider,
 } from "./state";
-import { capturePane, hasSession, stripSgr } from "./tmux";
+import { capturePane, hasSession } from "./tmux";
+import { claudePaneView, plainLines, type PaneView } from "./paneViews";
+
+export { claudePaneView, type PaneView };
 
 // Answering a provider's dialog fires no hook: an approved call reports only
 // once it has run, a denied one never, and a subagent's hooks don't speak for
 // its parent. The pane does show it, so the dialog's absence there is what
 // ends a "needs-attention" that a prompt started.
 
-export type PaneView = "dialog" | "composer" | "unknown";
-
-const RULE_RE = /─{8,}/;
-const CLAUDE_SELECTED_RE = /^\s*❯\s*\d+\.\s+\S/;
-const CLAUDE_FOOTER_RE = /^\s*(?:Esc to cancel|Enter to (?:select|confirm))\b/i;
 const CODEX_FOOTER_RE = /^\s*Press enter to confirm or esc to cancel\b/i;
-// Rows under the composer: the mode line, plus one per background subagent.
-const CLAUDE_STATUS_ROWS = 40;
-
-function plainLines(pane: string[]): string[] {
-  const lines = pane.map((line) => stripSgr(line).trimEnd());
-  while (lines.length && !lines.at(-1)) lines.pop();
-  return lines;
-}
-
-// Claude draws a dialog in place of its composer, under the last rule. Only
-// what is under that rule is read, so transcript text can't pass for either.
-export function claudePaneView(pane: string[]): PaneView {
-  const lines = plainLines(pane);
-  const rules: number[] = [];
-  for (let i = 0; i < lines.length; i++) if (RULE_RE.test(lines[i]!)) rules.push(i);
-  const last = rules.at(-1) ?? -1;
-  const below = lines.slice(last + 1);
-  if (below.some((line) => CLAUDE_SELECTED_RE.test(line) || CLAUDE_FOOTER_RE.test(line))) return "dialog";
-  if (rules.length < 2 || below.length > CLAUDE_STATUS_ROWS) return "unknown";
-  const box = lines.slice(rules.at(-2)! + 1, last);
-  return box.length > 0 && /^\s*❯/.test(box[0]!) ? "composer" : "unknown";
-}
 
 // Codex's approval and question overlays end in the same hint, with no
 // composer or status line under them.
