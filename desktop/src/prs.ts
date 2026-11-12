@@ -57,6 +57,12 @@ export function prAgentKey(connection: string, rows: readonly Pick<AgentRow, "na
   return row ? agentKey(connection, row) : null;
 }
 
+// A PR row by repository and number; null when the title has no number.
+export function prRowId(repo: string, title: string): string | null {
+  const number = /^#(\d+)/.exec(title.trim())?.[1];
+  return number ? `${repo.trim()}#${number}` : null;
+}
+
 export function mergeNudge(draft: string, text: string): string {
   const kept = draft.replace(/\s+$/, "");
   if (!kept.trim()) return text;

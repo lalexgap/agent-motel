@@ -3,7 +3,7 @@
 // one connection at a time, refreshes, the nav badge, and the row actions.
 // Shown with `p` or the sidebar's PRs control.
 import { apiGet } from "./api";
-import { call } from "./bridge";
+import { call, isNative } from "./bridge";
 import { selectAgent } from "./chat";
 import { $, composerInput, h } from "./dom";
 import { saveDrafts, onComposerInput } from "./drafts";
@@ -16,6 +16,7 @@ import {
   parsePrsPrefs,
   periodicDue,
   prAgentKey,
+  prRowId,
   prsPath,
   serializePrsPrefs,
 } from "./prs";
@@ -86,25 +87,38 @@ function render(): void {
 }
 
 // The module rebuilds the list on every render, and a background refetch must
-// not drop keyboard focus: the focused row control is found again by what it is.
+// not drop keyboard focus: the focused control is found again by its row's PR and by what it is.
 interface FocusMark {
+  row: string;
   tag: string;
   label: string | null;
   title: string | null;
   href: string | null;
   text: string | null;
 }
+function rowOf(node: Element): string | null {
+  const tr = node.closest("tr");
+  if (!tr) return null;
+  if (tr.classList.contains("prs-decision-row")) {
+    const owner = tr.previousElementSibling;
+    return owner ? `${rowOf(owner)} decision` : null;
+  }
+  if (!tr.classList.contains("prs-row")) return null;
+  return prRowId(tr.querySelector(".prs-repo")?.textContent ?? "", tr.querySelector(".prs-title")?.textContent ?? "");
+}
 function focusMark(): FocusMark | null {
   const active = document.activeElement as HTMLElement | null;
   const list = root.querySelector("#prs-list");
   if (!active || !list?.contains(active)) return null;
-  return { tag: active.tagName, label: active.getAttribute("aria-label"), title: active.getAttribute("title"), href: active.getAttribute("href"), text: active.textContent };
+  const row = rowOf(active);
+  if (!row) return null;
+  return { row, tag: active.tagName, label: active.getAttribute("aria-label"), title: active.getAttribute("title"), href: active.getAttribute("href"), text: active.textContent };
 }
 function restoreFocus(mark: FocusMark): void {
   if (root.querySelector("#prs-list")?.contains(document.activeElement)) return;
   const same = [...root.querySelectorAll<HTMLElement>("#prs-list button, #prs-list a[href]")].find((node) =>
     node.tagName === mark.tag && node.getAttribute("aria-label") === mark.label && node.getAttribute("title") === mark.title &&
-    node.getAttribute("href") === mark.href && node.textContent === mark.text);
+    node.getAttribute("href") === mark.href && node.textContent === mark.text && rowOf(node) === mark.row);
   same?.focus({ preventScroll: true });
 }
 
@@ -171,7 +185,9 @@ const actions: PrsActions = {
     else notInFleet(key);
   },
   openUrl(url) {
-    call("open.external", { url }).catch((failure: unknown) => console.warn("open.external failed", failure));
+    call("open.external", { url })
+      .then(() => { if (!isNative()) window.open(url, "_blank", "noopener"); })
+      .catch((failure: unknown) => console.warn("open.external failed", failure));
   },
   // Opens the agent with the text in its message box, after any draft; never sends.
   nudge(key, text) {

@@ -8,6 +8,7 @@ import {
   parsePrsPrefs,
   periodicDue,
   prAgentKey,
+  prRowId,
   PRS_BACKGROUND_MS,
   PRS_INTERVAL_MS,
   prsPath,
@@ -95,5 +96,16 @@ describe("prefs", () => {
     for (const raw of [null, "", "not json", "null", "[]", "42"]) expect(parsePrsPrefs(raw)).toEqual(DEFAULT_PRS_PREFS);
     expect(parsePrsPrefs(JSON.stringify({ includeOlder: "yes", connection: 7 }))).toEqual(DEFAULT_PRS_PREFS);
     expect(parsePrsPrefs(JSON.stringify({ includeOlder: true, connection: "" }))).toEqual({ includeOlder: true, connection: null });
+  });
+});
+
+describe("prRowId", () => {
+  test("names a row by repository and PR number, so equal PR numbers in two repos differ", () => {
+    expect(prRowId("example/lighthouse", "#131 Add the beacon")).toBe("example/lighthouse#131");
+    expect(prRowId("example/paper-crane", "#131 Fold")).toBe("example/paper-crane#131");
+    expect(prRowId(" example/a ", "  #7")).toBe("example/a#7");
+  });
+  test("no number, no identity", () => {
+    expect(prRowId("example/a", "Untitled")).toBeNull();
   });
 });
