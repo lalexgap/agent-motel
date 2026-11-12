@@ -190,12 +190,16 @@ export function decisionSummary(name: string): DecisionSummary {
 // Every store's text in one directory read: `am ls` lists hundreds of agents
 // every second and most have no store. Look one up with decisionStoreTextFor.
 export function readDecisionStoreTexts(): Map<string, string> {
+  return readDecisionStoreTextsIfAvailable() ?? new Map();
+}
+
+export function readDecisionStoreTextsIfAvailable(): Map<string, string> | null {
   const out = new Map<string, string>();
   let files: string[];
   try {
     files = readdirSync(decisionsHome());
   } catch {
-    return out;
+    return null;
   }
   for (const file of files) {
     if (file.startsWith(".") || !file.endsWith(".json")) continue;

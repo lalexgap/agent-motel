@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
-import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTexts } from "./decisions";
+import { decisionStoreTextFor, parseDecisionStore, readDecisionStoreTextsIfAvailable } from "./decisions";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { notify } from "./notify";
 import { baseDir } from "./paths";
@@ -97,7 +97,7 @@ export interface RunDecisionFreshnessOptions {
   now?: Date;
   config?: FreshnessConfig;
   agents?: AgentState[];
-  stores?: Map<string, string>;
+  stores?: Map<string, string> | null;
   stateFile?: string;
   notify?: (title: string, message: string) => void;
 }
@@ -113,7 +113,9 @@ export function runDecisionFreshness(options: RunDecisionFreshnessOptions = {}):
   const stateFile = options.stateFile ?? decisionFreshnessStateFile();
   if (!decisionFreshnessDue(now, config, readState(stateFile))) return { status: "not-due" };
 
-  const summary = scanDecisionFreshness(now, options.agents, options.stores);
+  const stores = options.stores === undefined ? readDecisionStoreTextsIfAvailable() : options.stores;
+  if (stores === null) return { status: "not-due" };
+  const summary = scanDecisionFreshness(now, options.agents, stores);
   writeJsonAtomic(stateFile, { version: STATE_VERSION, lastRunDay: localDay(now), lastRunAt: now.toISOString() }, { durable: true });
   if (summary.attentionDecisions > 0) {
     const publish = options.notify ?? ((title: string, message: string) => notify(title, message, { kind: "attention" }));

@@ -140,6 +140,14 @@ describe("nightly decision freshness run", () => {
     expect(messages).toHaveLength(1);
   });
 
+  test("does not mark the day complete when the store directory is unavailable", () => {
+    const stateFile = join(home, "freshness.json");
+    const result = runDecisionFreshness({ now, config, stores: null, stateFile, notify: () => {} });
+
+    expect(result).toEqual({ status: "not-due" });
+    expect(existsSync(stateFile)).toBe(false);
+  });
+
   test("waits until the configured hour and runs again on the next local day", () => {
     writeStore("gone", [decision("young")]);
     const stateFile = join(home, "freshness.json");
