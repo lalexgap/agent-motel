@@ -425,7 +425,7 @@ describe("dev bridge actions", () => {
       json("POST", "/api/agents/harbor-lights/model", { model: null, effort: "high", createdAt: "2026-11-01T09:00:00.000Z", status: "working" }), 120_000],
   ];
 
-  test("confirmed methods: pre-check only, then the stored request once per accepted ticket", async () => {
+  test("confirmed methods: pre-check only, then a re-check and the stored request once per accepted ticket", async () => {
     for (const [method, params, title, body, defaultIsCancel, expected, timeout] of CONFIRMED) {
       const before = stub.requests.length;
       const timeouts = recordTimeouts();
@@ -433,17 +433,36 @@ describe("dev bridge actions", () => {
         const pending = (await bridge.handle(method, { connection: id, ...params })) as { confirm: { ticket: string } };
         expect(pending as unknown).toEqual({ confirm: { ticket: expect.any(String), title, body, button: expect.any(String), defaultIsCancel, server: "Stub motel" } });
         const key = expected.path.split("/")[3];
+        const lookup = { method: "GET", path: `/api/agents/${key}`, authorization: "Bearer stub-token", contentType: null, body: null, bytes: null };
         // Nothing but the exact-name detail GET until the ticket is redeemed.
-        expect(since(before)).toEqual([{ method: "GET", path: `/api/agents/${key}`, authorization: "Bearer stub-token", contentType: null, body: null, bytes: null }]);
+        expect(since(before)).toEqual([lookup]);
         expect(await bridge.handle("dev.confirm", { ticket: pending.confirm.ticket, accept: true })).toEqual({ status: 200, body: { ok: true, echo: expected.method } });
-        expect(since(before + 1)).toEqual([expected]);
+        expect(since(before + 1)).toEqual([lookup, expected]);
         await expect(bridge.handle("dev.confirm", { ticket: pending.confirm.ticket, accept: true })).rejects.toThrow("This confirmation has expired or was already answered");
-        expect(stub.requests.length).toBe(before + 2);
+        expect(stub.requests.length).toBe(before + 3);
       } finally {
         timeouts.restore();
       }
-      expect(timeouts.seen).toEqual([15_000, timeout]);
+      expect(timeouts.seen).toEqual([15_000, 15_000, timeout]);
     }
+  });
+
+  test("an agent removed between the confirmation and the answer is not acted on", async () => {
+    for (const method of ["agents.restart", "agents.interrupt", "agents.stop", "agents.remove"]) {
+      stub.detail.delete("fading-cove");
+      const pending = (await bridge.handle(method, { connection: id, agent: "fading-cove" })) as { confirm: { ticket: string } };
+      stub.detail.set("fading-cove", new Response(JSON.stringify({ error: "not found" }), { status: 404 }));
+      const before = stub.requests.length;
+      await expect(bridge.handle("dev.confirm", { ticket: pending.confirm.ticket, accept: true })).rejects.toThrow("This agent no longer exists");
+      expect(since(before).map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/agents/fading-cove"]);
+    }
+    const pending = (await bridge.handle("agents.stop", { connection: id, agent: "ailing-cove" })) as { confirm: { ticket: string } };
+    stub.detail.set("ailing-cove", new Response(JSON.stringify({ error: "request failed" }), { status: 500 }));
+    const before = stub.requests.length;
+    await expect(bridge.handle("dev.confirm", { ticket: pending.confirm.ticket, accept: true })).rejects.toThrow("Couldn't check the agent (HTTP 500)");
+    expect(since(before).every((r) => r.method === "GET")).toBe(true);
+    stub.detail.delete("fading-cove");
+    stub.detail.delete("ailing-cove");
   });
 
   test("the pre-check reports the agent's current status", async () => {
@@ -644,7 +663,7 @@ describe("page bridge in browser dev mode", () => {
     const before = stub.requests.length;
     expect(await call("agents.stop", { connection, agent: "harbor-lights" })).toEqual({ status: 200, body: { ok: true, echo: "POST" } });
     expect(prompts).toEqual(["Stop harbor-lights?\n\nThis interrupts its current work and ends its session. It can be resumed later. Status: working.\n\nServer: Stub motel"]);
-    expect(stub.requests.slice(before).map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/agents/harbor-lights", "POST /api/agents/harbor-lights/stop"]);
+    expect(stub.requests.slice(before).map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/agents/harbor-lights", "GET /api/agents/harbor-lights", "POST /api/agents/harbor-lights/stop"]);
   });
 
   test("cancel resolves {cancelled: true} and sends nothing", async () => {

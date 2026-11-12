@@ -276,6 +276,18 @@ export class DevBridge {
   // already-validated request, and only `dev.confirm` with that ticket sends it.
   // bridge.ts asks window.confirm in between.
   private async prepareConfirmation(conn: StoredConnection, request: ActionRequest): Promise<DevConfirmation> {
+    const status = precheckStatus(await this.precheck(conn, request));
+    const now = Date.now();
+    for (const [id, ticket] of this.tickets) if (ticket.expires <= now) this.tickets.delete(id);
+    if (this.tickets.size >= MAX_TICKETS) this.tickets.delete(this.tickets.keys().next().value!);
+    const ticket = crypto.randomUUID();
+    this.tickets.set(ticket, { connection: conn.id, url: conn.url, request, expires: now + CONFIRM_TICKET_TTL_MS });
+    const spec = request.confirm!;
+    return { ticket, title: spec.title, body: spec.body(status), button: spec.button, defaultIsCancel: spec.defaultIsCancel, server: conn.name };
+  }
+
+  // The exact-name detail lookup, before the confirmation and again before sending.
+  private async precheck(conn: StoredConnection, request: ActionRequest): Promise<unknown> {
     const response = await this.fetchImpl(conn.url + request.precheckPath!, {
       method: "GET",
       headers: { authorization: `Bearer ${conn.token}`, accept: "application/json" },
@@ -285,14 +297,7 @@ export class DevBridge {
     const body = await readJson(response);
     if (response.status === 404) throw new Error(AGENT_GONE);
     if (response.status !== 200) throw new Error(precheckFailed(response.status));
-    const status = precheckStatus(body);
-    const now = Date.now();
-    for (const [id, ticket] of this.tickets) if (ticket.expires <= now) this.tickets.delete(id);
-    if (this.tickets.size >= MAX_TICKETS) this.tickets.delete(this.tickets.keys().next().value!);
-    const ticket = crypto.randomUUID();
-    this.tickets.set(ticket, { connection: conn.id, url: conn.url, request, expires: now + CONFIRM_TICKET_TTL_MS });
-    const spec = request.confirm!;
-    return { ticket, title: spec.title, body: spec.body(status), button: spec.button, defaultIsCancel: spec.defaultIsCancel, server: conn.name };
+    return body;
   }
 
   private async redeem(id: unknown, accept: unknown): Promise<unknown> {
@@ -303,6 +308,8 @@ export class DevBridge {
     const conn = this.connection(ticket.connection);
     // The pre-check and the user's answer were about the server it was issued for.
     if (conn.url !== ticket.url) throw new Error("The connection changed; try again");
+    // The agent may have gone while the user was answering; its name could then resolve to another one.
+    await this.precheck(conn, ticket.request);
     return this.send(conn, ticket.request);
   }
 

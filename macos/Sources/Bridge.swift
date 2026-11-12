@@ -210,19 +210,26 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         guard let confirm = plan.confirm else { return try await write(plan.request, connection: connection) }
         guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
         try confirmation.reserve()
-        defer { confirmation.release() }
-        let detail = try await api.get(confirm.precheck, token: token)
-        switch detail.status {
-        case 200: break
-        case 404: throw PolicyError(ActionPolicy.missingAgent)
-        default: throw PolicyError(ActionPolicy.precheckFailed(detail.status))
+        let accepted: Bool
+        do {
+            let detail = try await api.get(confirm.precheck, token: token)
+            try ActionPolicy.checkPrecheck(detail.status)
+            accepted = try await confirmation.ask(confirm.text(status: ActionPolicy.status(fromDetail: detail.body), server: connection.name))
+        } catch {
+            confirmation.release()
+            throw error
         }
-        let text = confirm.text(status: ActionPolicy.status(fromDetail: detail.body), server: connection.name)
-        guard try await confirmation.ask(text) else { return ["cancelled": true] }
+        // Released once the sheet is answered, so a long move or model change does not hold up other calls.
+        confirmation.release()
+        guard accepted else { return ["cancelled": true] }
         // The page keeps running behind the sheet; it may have removed or re-pointed the connection.
         guard let current = store.get(connection.id), current.url == connection.url else {
             throw PolicyError("unknown connection: \(connection.id)")
         }
+        guard let currentToken = store.token(for: current.id) else { throw PolicyError("This connection has no saved token") }
+        // The agent may have gone while the sheet was open; its name could then resolve to another one.
+        let recheck = try await api.get(confirm.precheck, token: currentToken)
+        try ActionPolicy.checkPrecheck(recheck.status)
         return try await write(plan.request, connection: current)
     }
 

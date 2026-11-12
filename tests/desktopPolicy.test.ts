@@ -8,6 +8,7 @@ import {
   checkMode,
   CONFIRM_METHODS,
   confirmMessage,
+  displayText,
   externalUrlAllowed,
   MESSAGE_CONTROL,
   messagesPath,
@@ -222,7 +223,8 @@ const request = (method: string, overrides: Record<string, unknown> = {}): Actio
 const bodyOf = (method: string, overrides: Record<string, unknown> = {}) => request(method, overrides).body;
 
 const CONTROLS = ["\u0000", "\u0001", "\u0003", "\u0004", "\u0008", "\u000b", "\u000c", "\u000e", "\u001a", "\u001b", "\u001f", "\u007f", "\u0080", "\u0085", "\u009b", "\u009f"];
-const describeValue = (value: unknown) => (value === undefined || value === null ? "null" : String(value));
+const describeValue = (value: unknown) =>
+  value === undefined || value === null ? "null" : typeof value === "object" ? "[object]" : String(value);
 
 // One row per rule: the method and param it is exercised through, accepted
 // inputs with the value that lands in the body (key absent when `sentAs` is
@@ -246,7 +248,7 @@ const RULES: Rule[] = [
     method: "agents.rename",
     param: "name",
     accepted: same("a", "harbor-beacon", "A_b-9", "a".repeat(64), "Concierge", "concierge2", "_x", "-x"),
-    rejected: ["", "concierge", "a b", "a:b", "a/b", "a.b", "a".repeat(65), "é", " a", 7, true, null, undefined],
+    rejected: ["", "concierge", "a b", "a:b", "a/b", "a.b", "a".repeat(65), "é", " a", 7, true, null, undefined, { name: "a" }, ["a"]],
     error: (input) => `invalid name: ${describeValue(input)}`,
   },
   {
@@ -262,7 +264,7 @@ const RULES: Rule[] = [
     method: "agents.move",
     param: "host",
     accepted: same("local", "annex", "annex.example.com", "h_1", "a.b-c", "h".repeat(255), "h.", "_h"),
-    rejected: ["", ".annex", "-annex", "an..nex", "a..", "a b", "a:b", "a/b", "h".repeat(256), "é", 7, null, undefined],
+    rejected: ["", ".annex", "-annex", "an..nex", "a..", "a b", "a:b", "a/b", "h".repeat(256), "é", 7, null, undefined, {}, ["annex"]],
     error: (input) => `invalid host: ${describeValue(input)}`,
   },
   {
@@ -569,6 +571,19 @@ describe("action policy: confirmation text", () => {
   test("window.confirm text joins title, body and server line with blank lines", () => {
     expect(confirmMessage("Stop harbor-lights?", "Body. Status: idle.", "Fixture motel")).toBe("Stop harbor-lights?\n\nBody. Status: idle.\n\nServer: Fixture motel");
   });
+  test("the server line is cleaned like the status", () => {
+    const SERVER: [name: string, shown: string][] = [
+      ["Fixture motel", "Fixture motel"],
+      ["Fixture\n\nStop everything?", "FixtureStop everything?"],
+      ["Fix\rture\u001b[31m", "Fixture[31m"],
+      ["\u202eletom erutxiF", "letom erutxiF"],
+      ["a\u202ab\u202bc\u202cd\u202de\u2066f\u2067g\u2068h\u2069i\u200ej\u200fk", "abcdefghijk"],
+      ["\u200f \u2069", "unknown"],
+      ["m".repeat(80), "m".repeat(64)],
+    ];
+    for (const [name, shown] of SERVER) expect(confirmMessage("T", "B", name)).toBe(`T\n\nB\n\nServer: ${shown}`);
+    for (const [name, shown] of SERVER) expect(displayText(name)).toBe(shown);
+  });
 });
 
 describe("action policy: files.upload data", () => {
@@ -608,6 +623,7 @@ describe("action policy: pre-check status", () => {
     [{ status: "  idle \n" }, "idle"],
     [{ status: "wor\u001bking\r\n" }, "working"],
     [{ status: "a\u0085b\u009fc\u007fd" }, "abcd"],
+    [{ status: "\u202eidle\u202c\u200e" }, "idle"],
     [{ status: "s".repeat(80) }, "s".repeat(64)],
     [{ status: "é".repeat(70) }, "é".repeat(64)],
     [{ status: "e\u0301".repeat(70) }, "e\u0301".repeat(64)],
@@ -650,5 +666,12 @@ describe("action policy: Swift test vectors", () => {
     expect(build("search.query", { query: "a\u0000b" })).toEqual({ ok: false, error: "invalid query" });
     expect(build("agents.create", { task: " \n\t " })).toEqual({ ok: false, error: "invalid task" });
     expect(precheckStatus({ status: "wo\u001brking\n" })).toBe("working");
+    expect(build("agents.rename", { name: { name: "a" } })).toEqual({ ok: false, error: "invalid name: [object]" });
+    expect(build("agents.rename", { name: ["a", "b"] })).toEqual({ ok: false, error: "invalid name: [object]" });
+    expect(build("agents.move", { host: { host: "annex" } })).toEqual({ ok: false, error: "invalid host: [object]" });
+    expect(build("agents.stop", { agent: ["harbor-lights"] })).toEqual({ ok: false, error: "invalid agent: [object]" });
+    expect(build("agents.rename", { name: 1.5 })).toEqual({ ok: false, error: "invalid name: 1.5" });
+    expect(precheckStatus({ status: "id\u202ele\u2066\u200f" })).toBe("idle");
+    expect(confirmMessage("T", "B", "Fixture\u202e\nStatus: idle")).toBe("T\n\nB\n\nServer: FixtureStatus: idle");
   });
 });

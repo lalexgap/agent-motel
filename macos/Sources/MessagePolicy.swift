@@ -133,15 +133,18 @@ enum MessagePolicy {
         }
     }
 
-    /// Matches JavaScript's `String(value)` for the values a bridge message can carry.
+    /// Matches JavaScript's `String(value)` for strings, numbers and booleans; anything else is a fixed placeholder.
     static func describe(_ value: Any?) -> String {
         switch value {
         case nil, is NSNull: return "null"
         case let text as String: return text
         case let number as NSNumber where CFGetTypeID(number) == CFBooleanGetTypeID(): return number.boolValue ? "true" : "false"
-        case let other?: return String(describing: other)
+        case let number as NSNumber: return String(describing: number)
+        case _?: return objectPlaceholder
         }
     }
+
+    static let objectPlaceholder = "[object]"
 }
 
 struct ConfirmationText: Equatable {
@@ -161,9 +164,10 @@ struct ActionPlan {
         let button: String
         let destructive: Bool
 
+        /// `server` is the page-settable connection name, so it is cleaned like the status.
         func text(status: String, server: String) -> ConfirmationText {
-            ConfirmationText(title: title, message: "\(lead) Status: \(status).\nServer: \(server)", button: button,
-                             destructive: destructive)
+            ConfirmationText(title: title, message: "\(lead) Status: \(status).\nServer: \(ActionPolicy.displayText(server))",
+                             button: button, destructive: destructive)
         }
     }
 
@@ -184,6 +188,15 @@ enum ActionPolicy {
     static let missingAgent = "This agent no longer exists"
     static let anotherConfirmation = "another confirmation is open"
     static func precheckFailed(_ status: Int) -> String { "Couldn't check the agent (HTTP \(status))" }
+
+    /// The verdict on an exact-name detail lookup, made before the sheet and again before sending.
+    static func checkPrecheck(_ status: Int) throws {
+        switch status {
+        case 200: return
+        case 404: throw PolicyError(missingAgent)
+        default: throw PolicyError(precheckFailed(status))
+        }
+    }
 
     static let maxUploadBytes = 10 << 20
     /// Base64 of `maxUploadBytes`, so an oversized upload is refused before it is decoded.
@@ -438,8 +451,17 @@ enum ActionPolicy {
     static func status(fromDetail body: Data) -> String {
         guard let detail = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let raw = detail["status"] as? String else { return "unknown" }
-        let clean = String(String.UnicodeScalarView(raw.unicodeScalars.filter { !MessagePolicy.hasControl(String($0), allowLineBreaks: false) }))
-            .trimmingCharacters(in: trimmed)
+        return displayText(raw)
+    }
+
+    /// Bidirectional marks, embeddings, overrides and isolates, which could reorder the sheet's text.
+    private static let bidiControls: Set<UInt32> = [0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069]
+
+    /// Text from outside the app shown in the sheet: control characters, line breaks and bidi
+    /// controls dropped, trimmed, at most 64 characters, "unknown" when nothing is left.
+    static func displayText(_ raw: String) -> String {
+        let kept = raw.unicodeScalars.filter { !MessagePolicy.hasControl(String($0), allowLineBreaks: false) && !bidiControls.contains($0.value) }
+        let clean = String(String.UnicodeScalarView(kept)).trimmingCharacters(in: trimmed)
         return clean.isEmpty ? "unknown" : String(clean.prefix(64))
     }
 

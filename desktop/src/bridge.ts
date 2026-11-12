@@ -59,8 +59,8 @@ async function devCall(method: string, params: unknown): Promise<unknown> {
   return data.result;
 }
 
-// Browser dev mode stands in for the native alert: only `dev.confirm` with the
-// one-time ticket, which this module alone sends after window.confirm, releases it.
+// Browser dev mode stands in for the native alert: only `dev.confirm` with the one-time ticket sends the write.
+// Same-origin page code could call it directly; a dev-only boundary (/__bridge is loopback, same-origin, fixture tokens only).
 let confirmOwner: object | null = null;
 
 async function devConfirmed(method: string, params: unknown): Promise<unknown> {

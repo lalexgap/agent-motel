@@ -448,6 +448,34 @@ for detail in [#"{}"#, #"{"status":7}"#, "not json", #"{"status":"  "}"#] {
     check(ActionPolicy.status(fromDetail: Data(detail.utf8)) == "unknown", "detail \(detail)")
 }
 check(ActionPolicy.status(fromDetail: Data("{\"status\":\"\(String(repeating: "s", count: 100))\"}".utf8)).count == 64, "status capped")
+check(ActionPolicy.status(fromDetail: Data(#"{"status":"‮idle‬‎"}"#.utf8)) == "idle", "status bidi controls stripped")
+// The page sets the connection name, so the sheet's server line is cleaned like the status.
+let servers: [(String, String)] = [
+    ("Fixture motel", "Fixture motel"),
+    ("Fixture\n\nStop everything?", "FixtureStop everything?"),
+    ("Fix\rture\u{1b}[31m", "Fixture[31m"),
+    ("\u{202e}letom erutxiF", "letom erutxiF"),
+    ("a\u{202a}b\u{202b}c\u{202c}d\u{202d}e\u{2066}f\u{2067}g\u{2068}h\u{2069}i\u{200e}j\u{200f}k", "abcdefghijk"),
+    ("\u{200f} \u{2069}", "unknown"),
+    (String(repeating: "m", count: 80), String(repeating: "m", count: 64)),
+]
+let stopConfirm = try! plan("agents.stop", ["agent": "tide-pilot"]).confirm!
+for (name, shown) in servers {
+    check(ActionPolicy.displayText(name) == shown, "server \(name.debugDescription)")
+    check(stopConfirm.text(status: "idle", server: name).message.hasSuffix(" Status: idle.\nServer: \(shown)"), "server line \(name.debugDescription)")
+}
+// The exact-name lookup's verdict, before the sheet and again before sending.
+check(rejection { try ActionPolicy.checkPrecheck(200); return 0 } == nil, "lookup 200")
+check(rejection { try ActionPolicy.checkPrecheck(404); return 0 } == "This agent no longer exists", "lookup 404")
+for status in [204, 302, 500] {
+    check(rejection { try ActionPolicy.checkPrecheck(status); return 0 } == "Couldn't check the agent (HTTP \(status))", "lookup \(status)")
+}
+// Values that are not a string, number or boolean are shown as one placeholder, as in policy.ts.
+check(planError("agents.rename", ["agent": "crease-check", "name": ["name": "a"]]) == "invalid name: [object]", "object name")
+check(planError("agents.rename", ["agent": "crease-check", "name": ["a", "b"]]) == "invalid name: [object]", "array name")
+check(planError("agents.move", ["agent": "ebb-report", "host": ["host": "annex"]]) == "invalid host: [object]", "object host")
+check(planError("agents.stop", ["agent": ["harbor-lights"]]) == "invalid agent: [object]", "array agent")
+check(planError("agents.rename", ["agent": "crease-check", "name": NSNumber(value: 1.5)]) == "invalid name: 1.5", "number name")
 
 let removal = APIClient.request(try! plan("agents.remove", ["agent": "errand-runner"]).request, token: "fixture-token")
 check(removal.httpMethod == "DELETE" && removal.httpBody == nil && removal.value(forHTTPHeaderField: "Content-Type") == nil

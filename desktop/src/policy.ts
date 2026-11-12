@@ -90,7 +90,14 @@ const MESSAGE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
 
-const describe = (value: unknown): string => (value === undefined || value === null ? "null" : String(value));
+// Objects and arrays get a fixed placeholder, as in the Swift MessagePolicy.describe.
+export const OBJECT_PLACEHOLDER = "[object]";
+const describe = (value: unknown): string =>
+  value === undefined || value === null
+    ? "null"
+    : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : OBJECT_PLACEHOLDER;
 
 const validHost = (host: string): boolean => HOST_RE.test(host) && !host.includes("..");
 
@@ -176,16 +183,24 @@ export const AGENT_GONE = "This agent no longer exists";
 export const precheckFailed = (status: number): string => `Couldn't check the agent (HTTP ${status})`;
 export const CONFIRM_OPEN = "another confirmation is open";
 
-// The status from the pre-check's detail body, made safe to show in the alert:
-// control characters and line breaks dropped, trimmed, at most 64 characters
-// (grapheme clusters, as Swift counts them), "unknown" when missing or empty.
-export function precheckStatus(body: unknown): string {
-  const raw = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as { status?: unknown }).status : undefined;
-  if (typeof raw !== "string") return "unknown";
-  const clean = [...raw].filter((char) => !CONTROL_RE.test(char) && !LINE_BREAK_RE.test(char)).join("").trim();
+// Bidi marks, embeddings, overrides and isolates could reorder the alert's text.
+const BIDI_RE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+// Text from outside the app shown in the alert (the pre-check status, the
+// connection name): control characters, line breaks and bidi controls dropped,
+// trimmed, at most 64 characters (grapheme clusters, as Swift counts them),
+// "unknown" when nothing is left. ActionPolicy.displayText does the same.
+export function displayText(raw: string): string {
+  const clean = [...raw].filter((char) => !CONTROL_RE.test(char) && !LINE_BREAK_RE.test(char) && !BIDI_RE.test(char)).join("").trim();
   if (!clean) return "unknown";
   const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)].map((part) => part.segment);
   return graphemes.slice(0, 64).join("");
+}
+
+// The status from the pre-check's detail body, made safe to show in the alert.
+export function precheckStatus(body: unknown): string {
+  const raw = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as { status?: unknown }).status : undefined;
+  return typeof raw === "string" ? displayText(raw) : "unknown";
 }
 export const PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export const RUNNING_STATUSES = ["starting", "idle", "waiting", "working", "needs-attention"] as const;
@@ -272,7 +287,7 @@ function confirm(title: string, text: string, button: string, defaultIsCancel = 
 
 // The text the browser dev mode shows in window.confirm; the native alert shows
 // the same three parts.
-export const confirmMessage = (title: string, body: string, server: string): string => `${title}\n\n${body}\n\nServer: ${server}`;
+export const confirmMessage = (title: string, body: string, server: string): string => `${title}\n\n${body}\n\nServer: ${displayText(server)}`;
 
 function lifecycle(agent: string, action: string, timeoutMs: number, confirmSpec?: ConfirmSpec): ActionRequest {
   return {
