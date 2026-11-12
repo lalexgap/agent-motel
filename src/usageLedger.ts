@@ -1004,12 +1004,13 @@ export function usageSummary(opts: {
             acc.writeCost += breakdown.cacheWrite5m + breakdown.cacheWrite1h;
           }
           const type = owner!.kind === "main" ? MAIN_TYPE : owner!.subagentType?.trim() || UNKNOWN_TYPE;
-          const typeRow = byType.get(type) ?? { type, kind: owner!.kind, costUSD: 0, activeTokens: 0, runs: new Set<string>(), agents: new Set<string>() };
+          const typeKey = `${owner!.kind}\u0000${type}`;
+          const typeRow = byType.get(typeKey) ?? { type, kind: owner!.kind, costUSD: 0, activeTokens: 0, runs: new Set<string>(), agents: new Set<string>() };
           typeRow.costUSD += cost ?? 0;
           typeRow.activeTokens += active;
           if ((counts[COUNT_CALLS] ?? 0) > 0) typeRow.runs.add(path);
           typeRow.agents.add(`${acc.name}\u0000${acc.createdAt ?? ""}`);
-          byType.set(type, typeRow);
+          byType.set(typeKey, typeRow);
           if (acc.repo) {
             const repoRow = byRepo.get(acc.repo) ?? { repo: acc.repo, costUSD: 0, activeTokens: 0, agents: new Set<string>() };
             repoRow.costUSD += cost ?? 0;
@@ -1097,7 +1098,7 @@ export function usageSummary(opts: {
     byType: [...byType.values()]
       .filter((t) => t.activeTokens > 0 || t.costUSD > 0)
       .map((t) => ({ type: t.type, kind: t.kind, costUSD: round4(t.costUSD), activeTokens: t.activeTokens, runs: t.runs.size, agents: t.agents.size }))
-      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.type.localeCompare(b.type)),
+      .sort((a, b) => b.costUSD - a.costUSD || b.activeTokens - a.activeTokens || a.type.localeCompare(b.type) || a.kind.localeCompare(b.kind)),
     byEffort: [...byEffort.values()]
       .filter((e) => e.activeTokens > 0 || e.costUSD > 0)
       .map((e) => ({ ...e, costUSD: round4(e.costUSD) }))

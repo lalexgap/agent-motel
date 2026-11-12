@@ -301,6 +301,23 @@ describe("usage ledger ingestion", () => {
     expect(usageSummary({ range: 7, now: new Date(NOW.getTime() + 40 * 86_400_000) }).byType).toEqual([]);
   });
 
+  test("keeps a subagent typed main apart from the main session", () => {
+    const dir = projectDir();
+    const main = join(dir, "sess-m.jsonl");
+    writeTranscript(main, [assistant("m_main", "2026-11-10T08:00:00.000Z", { input: 100_000, output: 10_000 })]);
+    const subDir = join(dir, "sess-m", "subagents");
+    mkdirSync(subDir, { recursive: true });
+    writeTranscript(join(subDir, "agent-m1.jsonl"), [assistant("m_sub", "2026-11-10T08:01:00.000Z", { input: 40_000, output: 4_000 }, { sidechain: true })]);
+    writeFileSync(join(subDir, "agent-m1.meta.json"), JSON.stringify({ agentType: "main" }));
+    claudeAgent("alpha", main, { repoRoot: join(home, "code", "one") });
+    refreshAll();
+
+    expect(usageSummary({ range: 7, now: NOW }).byType.map((row) => [row.type, row.kind, row.activeTokens])).toEqual([
+      ["main", "main", 110_000],
+      ["main", "subagent", 44_000],
+    ]);
+  });
+
   test("buckets each call by the reasoning effort its transcript records", () => {
     const main = join(projectDir(), "sess-e.jsonl");
     writeTranscript(main, [
