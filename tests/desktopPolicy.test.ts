@@ -3,12 +3,15 @@ import {
   ACTION_METHODS,
   buildAction,
   checkAgent,
+  checkDecisionId,
+  checkDecisionsAgent,
   checkMessageId,
   checkMessageText,
   checkMode,
   CONFIRM_METHODS,
   confirmMessage,
   displayText,
+  decisionsPageUrl,
   serverHost,
   externalUrlAllowed,
   MESSAGE_CONTROL,
@@ -148,6 +151,24 @@ describe("open.external", () => {
     expect(externalUrlAllowed("file:///etc/passwd")).toBe(false);
     expect(externalUrlAllowed("javascript:alert(1)")).toBe(false);
     expect(externalUrlAllowed(7)).toBe(false);
+  });
+});
+
+describe("decisions.open", () => {
+  test("accepts local store names and optional safe ids, never host:name", () => {
+    for (const agent of ["api", "api_2.x", "archived-design", "a".repeat(100)]) expect(checkDecisionsAgent(agent).ok).toBe(true);
+    for (const agent of ["host:name", "../x", "-api", "api-", "", "a".repeat(101), null]) expect(checkDecisionsAgent(agent).ok).toBe(false);
+    expect(checkDecisionId(undefined)).toEqual({ ok: true, value: undefined });
+    expect(checkDecisionId("d-1")).toEqual({ ok: true, value: "d-1" });
+    for (const id of ["", "x\n", "a".repeat(201), 7]) expect(checkDecisionId(id).ok).toBe(false);
+  });
+
+  test("accepts only credential-free HTTPS and adds the decision anchor", () => {
+    const result = decisionsPageUrl({ url: "https://drop.example.test/q/SECRET?x=1" }, "api", "d 1");
+    expect(result.ok && result.value.href).toBe("https://drop.example.test/q/SECRET?x=1#api-d%201");
+    for (const url of ["http://drop.example.test/q/SECRET", "file:///tmp/SECRET", "https://u:p@drop.example.test/q/SECRET", "javascript:alert(1)"]) {
+      expect(decisionsPageUrl({ url }, "api", "d-1")).toEqual({ ok: false, error: "The server returned an invalid decisions page link" });
+    }
   });
 });
 

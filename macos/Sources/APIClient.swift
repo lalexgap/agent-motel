@@ -1,7 +1,7 @@
 import Foundation
 
 /// HTTP client for am servers. It sends GETs, plus the writes a `WriteRequest` can describe, which
-/// only `MessagePolicy` and `ActionPolicy` can build; there is no way to give it any other method,
+/// only the named write policies can build; there is no way to give it any other method,
 /// path shape or body. Redirects are refused so the bearer token is never replayed to another origin;
 /// the 3xx response is returned as-is. Nothing is retried.
 @MainActor

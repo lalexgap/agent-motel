@@ -7,6 +7,8 @@ import {
   AGENT_GONE,
   buildAction,
   checkAgent,
+  checkDecisionId,
+  checkDecisionsAgent,
   checkMessageId,
   checkMessageText,
   checkMode,
@@ -14,6 +16,7 @@ import {
   checkTerminalInput,
   checkTerminalSize,
   externalUrlAllowed,
+  decisionsPageUrl,
   isActionMethod,
   isConfirmMethod,
   MAX_TERMINALS,
@@ -56,6 +59,7 @@ interface StoredConnection {
   name: string;
   url: string;
   token: string;
+  revision: number;
 }
 // The returned promise settles once the event reached the page; undelivered terminal
 // output counts against the backlog cap.
@@ -194,7 +198,7 @@ export class DevBridge {
   addConnection(name: string, url: string, token: string): Connection {
     const normalized = normalizeServerUrl(url);
     if (!normalized.ok) throw new Error(normalized.error);
-    const conn = { id: crypto.randomUUID(), name, url: normalized.url, token };
+    const conn = { id: crypto.randomUUID(), name, url: normalized.url, token, revision: 0 };
     this.connections.set(conn.id, conn);
     return publicView(conn);
   }
@@ -220,6 +224,8 @@ export class DevBridge {
       }
       case "api.get":
         return this.apiGet(text(params.connection, "connection"), params.path);
+      case "decisions.open":
+        return this.openDecisions(params);
       case "messages.send": {
         const conn = this.connection(text(params.connection, "connection"));
         const agent = checked(checkAgent(params.agent));
@@ -340,6 +346,7 @@ export class DevBridge {
       existing.name = name;
       existing.url = url.url;
       if (token) existing.token = token;
+      if (changed) existing.revision++;
       if (changed && this.streams.has(existing.id)) {
         this.stopStream(existing.id);
         this.startStream(existing);
@@ -347,7 +354,7 @@ export class DevBridge {
       return publicView(existing);
     }
     if (!token) throw new Error("Enter the access token");
-    const conn = { id: crypto.randomUUID(), name, url: url.url, token };
+    const conn = { id: crypto.randomUUID(), name, url: url.url, token, revision: 0 };
     this.connections.set(conn.id, conn);
     return publicView(conn);
   }
@@ -363,6 +370,33 @@ export class DevBridge {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     return { status: response.status, body: await readJson(response) };
+  }
+
+  private async openDecisions(params: Record<string, unknown>): Promise<Record<string, never>> {
+    const conn = this.connection(text(params.connection, "connection"));
+    const agent = checked(checkDecisionsAgent(params.agent));
+    const decisionId = checked(checkDecisionId(params.decisionId));
+    const revision = conn.revision;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(conn.url + "/api/decisions/link", {
+        method: "POST",
+        headers: { authorization: `Bearer ${conn.token}`, accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ agent }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error("Could not reach the server to open the decisions page");
+    }
+    const body = await readJson(response);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(response.status === 404 ? "The decisions page is not set up on this server" : `Could not open the decisions page (HTTP ${response.status})`);
+    }
+    checked(decisionsPageUrl(body, agent, decisionId));
+    if (this.connections.get(conn.id) !== conn || conn.revision !== revision) throw new Error("The connection changed; try again");
+    // Native hands the validated URL to NSWorkspace. Browser dev mode deliberately performs no external open.
+    return {};
   }
 
   // Never retried: after a network failure the server may or may not have acted.

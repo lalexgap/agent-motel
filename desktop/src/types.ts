@@ -162,6 +162,8 @@ export interface BridgeMethods {
   "connections.save": { params: { id?: string; name: string; url: string; token?: string }; result: Connection };
   "connections.remove": { params: { id: string }; result: Record<string, never> };
   "api.get": { params: { connection: string; path: string }; result: ApiResponse };
+  // Fetches the secret capability URL natively and opens it without returning it to the page.
+  "decisions.open": { params: AgentParams & { decisionId?: string }; result: Record<string, never> };
   // Mutations take values; the bridge builds each path and body itself.
   "messages.send": { params: { connection: string; agent: string; text: string; mode: SendMode }; result: ApiResponse };
   "messages.cancel": { params: { connection: string; agent: string; id: string }; result: ApiResponse };

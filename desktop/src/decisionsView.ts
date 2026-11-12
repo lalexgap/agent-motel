@@ -1,5 +1,6 @@
 import { apiGet, ApiError } from "./api";
 import { selectAgent } from "./chat";
+import { decisionOpener } from "./decisionOpen";
 import { DecisionsInbox, type DecisionsReport } from "./decisionsInbox";
 import { $, h } from "./dom";
 import { agentKey } from "./fleet";
@@ -13,6 +14,7 @@ interface DecisionsActions {
   setQuery(query: string): void;
   setBlockingOnly(blocking: boolean): void;
   openAgent(name: string): void;
+  onAnswer?(decision: { id: string }, agent: string): Promise<void>;
 }
 declare global {
   interface Window {
@@ -34,6 +36,7 @@ let badge: HTMLElement;
 let query = "";
 let blockingOnly = false;
 let notice = "";
+let actionSequence = 0;
 let seenAgents = 0;
 const visible = () => !!page && !page.hidden && screen() === "fleet";
 const inbox = new DecisionsInbox(async (connection) => {
@@ -78,10 +81,29 @@ const actions: DecisionsActions = {
     if (conn && row) selectAgent(agentKey(conn.conn.id, row), false, "chat");
     else { notice = `${name} is no longer in this server's fleet. Its open decisions are still shown here.`; render(); }
   },
+  async onAnswer(decision, agent) {
+    const connection = inbox.connection;
+    if (!connection) throw new Error("Select a server to answer this decision.");
+    const request = ++actionSequence;
+    try {
+      await decisionOpener.open({ connection, agent, decisionId: decision.id });
+      if (request === actionSequence && inbox.connection === connection && notice) {
+        notice = "";
+        render();
+      }
+    } catch (cause) {
+      if (request === actionSequence && inbox.connection === connection) {
+        notice = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+        render();
+      }
+      throw cause;
+    }
+  },
 };
 
 function setConnection(connection: string | null): void {
   if (connection === inbox.connection) return;
+  actionSequence++;
   inbox.select(connection);
   notice = "";
   query = "";

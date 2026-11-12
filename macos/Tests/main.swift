@@ -178,6 +178,31 @@ for (agent, id) in [("a/b", "x"), ("harbor-lights", "../x"), ("harbor-lights", "
 check((try? MessagePolicy.send(base: base, agent: "harbor-lights", text: "hi", mode: "interrupt")) == nil, "interrupt send")
 print("PASS message policy (agent, mode, text bytes, id, paths, request shape)")
 
+do {
+    let request = try DecisionsPolicy.request(base: base, agent: "archived.design")
+    check(request.method == .post && request.url.absoluteString == base + "/api/decisions/link", "decisions request path")
+    let requestBody = request.body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+    check(request.timeout == 30 && requestBody["agent"] as? String == "archived.design" && requestBody.count == 1,
+          "decisions request body")
+    let secret = #"{"url":"https://drop.example.test/q/SECRET?x=1"}"#.data(using: .utf8)!
+    let url = try DecisionsPolicy.pageURL(body: secret, agent: "archived.design", decisionID: "d 1")
+    let fragment = URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment
+    check(url.scheme == "https" && url.host == "drop.example.test" && fragment == "archived.design-d 1", "decisions link and anchor")
+    for raw in ["http://drop.example.test/q/SECRET", "file:///tmp/SECRET", "https://user:pass@drop.example.test/q/SECRET", "javascript:alert(1)"] {
+        let data = try JSONSerialization.data(withJSONObject: ["url": raw])
+        check(rejection { try DecisionsPolicy.pageURL(body: data, agent: "api", decisionID: nil) } == DecisionsPolicy.invalidLink,
+              "accepted decisions URL scheme or credentials")
+    }
+    for agent in ["host:name", "../x", "-api", "api-", "", String(repeating: "a", count: 101)] {
+        check(rejection { try DecisionsPolicy.agent(agent) } == "invalid decisions agent: \(agent)", "accepted decisions agent \(agent)")
+    }
+    check((try? DecisionsPolicy.decisionID(nil)) == nil && (try? DecisionsPolicy.decisionID("d-1")) == "d-1", "decision id optional")
+    check(rejection { try DecisionsPolicy.decisionID(7) } == "invalid decision id", "decision id type")
+} catch {
+    check(false, "decisions policy: \(error)")
+}
+print("PASS decisions policy (fixed POST, local agent, optional anchor, HTTPS credential-free response)")
+
 // Write surface: same vectors as tests/desktopPolicy.test.ts.
 func plan(_ method: String, _ params: [String: Any]) throws -> ActionPlan {
     try ActionPolicy.plan(method, base: base, params: params)

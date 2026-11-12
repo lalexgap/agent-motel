@@ -1,5 +1,6 @@
 import { apiGet } from "./api";
 import { registerCard } from "./chat";
+import { decisionOpener } from "./decisionOpen";
 import type { InboxDecision } from "./decisionsInbox";
 import { showDecisionsForAgent } from "./decisionsView";
 import { h } from "./dom";
@@ -10,7 +11,10 @@ import { onMainViewChange } from "./views";
 declare global {
   interface Window {
     agentDecisions: {
-      renderDecisionCard(decisions: InboxDecision[], options: { agent: string; showAnswer: boolean }): HTMLElement | null;
+      renderDecisionCard(decisions: InboxDecision[], options: {
+        agent: string;
+        onAnswer?: (decision: InboxDecision, agent: string) => Promise<void>;
+      }): HTMLElement | null;
     };
   }
 }
@@ -18,10 +22,13 @@ declare global {
 let selected: string | null = null;
 let signature = "";
 let sequence = 0;
+let cardGeneration = 0;
+let actionSequence = 0;
 let fetchedAt = 0;
 let loading = false;
 let entries: InboxDecision[] = [];
 let error = "";
+let actionError = "";
 let node: HTMLElement | null = null;
 let content = "";
 
@@ -31,8 +38,9 @@ function card(key: string): HTMLElement | null {
   if (selected !== key) {
     selected = key;
     sequence++;
+    cardGeneration++;
     entries = [];
-    error = signature = content = "";
+    error = actionError = signature = content = "";
     node = null;
     fetchedAt = 0;
     loading = false;
@@ -40,9 +48,10 @@ function card(key: string): HTMLElement | null {
   if (!parsed || !row || row.host || !row.openDecisions) {
     if (entries.length || loading || signature) {
       sequence++;
+      cardGeneration++;
       loading = false;
       entries = [];
-      signature = content = "";
+      actionError = signature = content = "";
       fetchedAt = 0;
       node = null;
     }
@@ -71,15 +80,35 @@ function card(key: string): HTMLElement | null {
         }
       });
   }
-  const nextContent = JSON.stringify([key, entries, error, !entries.length && loading]);
+  const nextContent = JSON.stringify([key, entries, error, actionError, !entries.length && loading]);
   if (content === nextContent) return node;
   content = nextContent;
   node = h("section", "am-agent-decisions-card");
   node.setAttribute("aria-label", "Agent decisions");
-  const rendered = window.agentDecisions.renderDecisionCard(entries, { agent: row.name, showAnswer: false });
+  const rendered = window.agentDecisions.renderDecisionCard(entries, {
+    agent: row.name,
+    onAnswer: async (decision) => {
+      const generation = cardGeneration;
+      const request = ++actionSequence;
+      try {
+        await decisionOpener.open({ connection: parsed.connection, agent: row.name, decisionId: decision.id });
+        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key && actionError) {
+          actionError = "";
+          changed("agent");
+        }
+      } catch (cause) {
+        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key) {
+          actionError = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+          changed("agent");
+        }
+        throw cause;
+      }
+    },
+  });
   if (rendered) node.append(rendered);
   else if (loading) node.append(h("p", "", "Loading open decisions…"));
   if (error) node.append(h("p", "decisions-note", error));
+  if (actionError) node.append(h("p", "decisions-note decisions-error", actionError));
   const open = h("button", "", "View in Decisions");
   open.type = "button";
   open.onclick = () => showDecisionsForAgent(parsed.connection, row.name);
@@ -93,6 +122,7 @@ export function initDecisionsCard(): void {
     if (selected && selected !== state.selected) {
       selected = null;
       sequence++;
+      cardGeneration++;
       loading = false;
     }
   });

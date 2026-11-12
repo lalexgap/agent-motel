@@ -156,6 +156,77 @@ describe("dev bridge methods", () => {
   });
 });
 
+describe("dev bridge decisions.open", () => {
+  test("posts the fixed body and returns no capability URL", async () => {
+    const seen: { input: string; init?: RequestInit }[] = [];
+    const secret = "https://drop.example.test/q/SECRET-token";
+    const fetcher = (async (input: string, init?: RequestInit) => {
+      seen.push({ input, init });
+      return Response.json({ url: secret });
+    }) as typeof fetch;
+    const bridge = new DevBridge({ version: "t", build: "t" }, fetcher);
+    const connection = bridge.addConnection("Motel", "https://am.example.test", "stored-token");
+    expect(await bridge.handle("decisions.open", { connection: connection.id, agent: "api_2.x", decisionId: "d-1" })).toEqual({});
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.input).toBe("https://am.example.test/api/decisions/link");
+    expect(seen[0]!.init).toMatchObject({ method: "POST", redirect: "manual", body: JSON.stringify({ agent: "api_2.x" }) });
+    expect(new Headers(seen[0]!.init!.headers).get("authorization")).toBe("Bearer stored-token");
+    expect(JSON.stringify(await bridge.handle("app.info", {}))).not.toContain(secret);
+  });
+
+  test("rejects invalid targets before dispatch and never leaks response or transport text", async () => {
+    let calls = 0;
+    let response = Response.json({ url: "http://drop.example.test/q/SECRET-response" });
+    const fetcher = (async () => { calls++; return response.clone(); }) as unknown as typeof fetch;
+    const bridge = new DevBridge({ version: "t", build: "t" }, fetcher);
+    const connection = bridge.addConnection("Motel", "https://am.example.test", "stored-token");
+    for (const params of [
+      { agent: "api" },
+      { connection: "missing", agent: "api" },
+      { connection: connection.id },
+      { connection: connection.id, agent: "host:api" },
+      { connection: connection.id, agent: 7 },
+    ]) await expect(bridge.handle("decisions.open", params)).rejects.toThrow();
+    expect(calls).toBe(0);
+    await expect(bridge.handle("decisions.open", { connection: connection.id, agent: "api" }))
+      .rejects.toThrow("The server returned an invalid decisions page link");
+    expect(calls).toBe(1);
+
+    response = Response.json({ url: "https://drop.example.test/q/SECRET-error" }, { status: 503 });
+    const httpError = await bridge.handle("decisions.open", { connection: connection.id, agent: "api" }).catch((error) => String(error));
+    expect(httpError).toContain("HTTP 503");
+    expect(httpError).not.toContain("SECRET");
+
+    const failing = new DevBridge({ version: "t", build: "t" }, (async () => { throw new Error("https://drop.example/q/SECRET-transport"); }) as typeof fetch);
+    const failedConnection = failing.addConnection("Motel", "https://am.example.test", "stored-token");
+    const transportError = await failing.handle("decisions.open", { connection: failedConnection.id, agent: "api" }).catch((error) => String(error));
+    expect(transportError).toContain("Could not reach the server");
+    expect(transportError).not.toContain("SECRET");
+  });
+
+  test("binds a response to the exact connection mutation while allowing a rename", async () => {
+    let release!: (response: Response) => void;
+    const fetcher = (() => new Promise<Response>((resolve) => { release = resolve; })) as unknown as typeof fetch;
+    const bridge = new DevBridge({ version: "t", build: "t" }, fetcher);
+    const connection = bridge.addConnection("Motel", "https://am.example.test", "stored-token");
+    const open = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(open).resolves.toEqual({});
+
+    const changedToken = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url, token: "replacement-token" });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(changedToken).rejects.toThrow("The connection changed; try again");
+
+    const roundTrip = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: "https://other.example.test", token: "other-token" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url, token: "replacement-token" });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(roundTrip).rejects.toThrow("The connection changed; try again");
+  });
+});
+
 describe("dev bridge messages", () => {
   let fixture: FixtureServer;
   let bridge: DevBridge;
