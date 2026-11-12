@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import {
   pretrustClaudeDir,
   readClaudeTrustLedger,
 } from "../src/claudeTrust";
-import { displayStatusReason } from "../src/commands/ls";
+import { agentPresence } from "../src/commands/ls";
 import { claudeResumeTrust } from "../src/commands/resume";
 import { applyGc, planGc } from "../src/gc";
 import { type AgentState } from "../src/state";
@@ -244,9 +244,21 @@ describe("trust prompt status", () => {
     expect(paneShowsClaudeTrustPrompt(["❯ ", "  ⏵⏵ bypass permissions on"])).toBe(false);
   });
 
-  test("a starting agent shown as needs-attention gets the trust reason", () => {
-    const agent = claudeAgent("a", { status: "starting", statusReason: "launching" });
-    expect(displayStatusReason(agent, "needs-attention")).toBe("Claude is asking to trust this folder");
-    expect(displayStatusReason(agent, "starting")).toBe("launching");
+  test("a starting agent at the prompt is shown as needs-attention, with the trust reason", () => {
+    let pane = PANE;
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation((argv: any) => ({
+      exitCode: 0,
+      stdout: Buffer.from(argv.includes("capture-pane") ? pane.join("\n") : ""),
+      stderr: Buffer.from(""),
+    }) as any);
+    try {
+      const shown = agentPresence(claudeAgent("a", { status: "starting", statusReason: "launching" }));
+      expect(shown).toMatchObject({ status: "needs-attention", rawStatus: "starting", reason: "Claude is asking to trust this folder" });
+      pane = ["❯ ", "  ⏵⏵ bypass permissions on"];
+      const launching = agentPresence(claudeAgent("b", { status: "starting", statusReason: "launching" }));
+      expect(launching).toMatchObject({ status: "starting", rawStatus: "starting", reason: "launching" });
+    } finally {
+      spawn.mockRestore();
+    }
   });
 });

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { apiTokenFile, ensureDirs, inboxDir } from "./paths";
 import { type Provider, isProvider, agentNamesAndAliases, agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
-import { displayStatus, displayStatusReason, waitingInfo } from "./commands/ls";
+import { agentPresence, displayStatus, waitingInfo } from "./commands/ls";
 import { buildFleetSummary } from "./summary";
 import { gcSummaryLine } from "./autoGc";
 import { queueList } from "./queue";
@@ -131,16 +131,21 @@ You can uninstall this icon.</p>
 export function agentDetail(name: string) {
   const agent = readAgent(name);
   if (!agent) return null;
-  const status = displayStatus(agent);
+  const presence = agentPresence(agent);
+  const status = presence.status;
   const nativeControls = agentProvider(agent) !== "antigravity";
   return {
     name: agent.name,
     status,
+    // The stored status: `status` is how the agent is shown (an idle agent
+    // with live subagents is working), this is what delivery acts on.
+    rawStatus: presence.rawStatus,
+    busyWith: presence.busyWith ?? null,
     statusReason: status === "waiting"
       ? waitingInfo(agent).detail ?? null
       : status === "dead"
         ? "tmux session is missing"
-        : displayStatusReason(agent, status) ?? null,
+        : presence.reason ?? null,
     statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
     capabilities: {

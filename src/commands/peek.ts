@@ -1,7 +1,7 @@
 import { agentProvider, readAgent, resolveAgent, type AgentState } from "../state";
 import { capturePane, hasSession, stripSgr } from "../tmux";
 import { readSnapshot } from "../snapshots";
-import { displayStatus } from "./ls";
+import { agentPresence, displayStatus } from "./ls";
 import { readSubagents, subagentLabel, subagentNoOutputNote, subagentScreen, type SubagentRecord } from "../subagents";
 import { matchSubagent } from "./transcript";
 import { ageOf } from "./subagents";
@@ -93,6 +93,10 @@ export async function peekCommand(
   // one place that strips, so live panes and snapshots clean identically.
   const live = hasSession(agent.tmuxSession) ? capturePane(agent.tmuxSession, { colors: true }) : null;
   if (live) {
+    // The pane shows an empty prompt while the agent waits on its subagents
+    // (or one stalled): say so, on stderr like the snapshot note below.
+    const presence = agentPresence(agent);
+    if (presence.busyWith?.subagents || presence.stalled) console.error(`(${presence.status} — ${presence.reason})`);
     console.log(formatPeek(live, { lines: opts.lines, colors }));
     return;
   }

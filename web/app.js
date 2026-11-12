@@ -759,24 +759,29 @@ function duration(ms) {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
-function workingLabel(status) {
+// An agent idle at its prompt with live subagents is shown as working; say
+// what it is actually doing.
+function workingLabel(status, subagents = 0) {
+  if (status === "working" && subagents > 0) return `Waiting on ${subagents} subagent${subagents === 1 ? "" : "s"}`;
   return { starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working";
 }
 function tickWorking(box) {
   const start = Number(box.dataset.since);
-  box.querySelector(".working-text").textContent = workingLabel(box.dataset.status) +
+  box.querySelector(".working-text").textContent = workingLabel(box.dataset.status, Number(box.dataset.subagents) || 0) +
     (Number.isFinite(start) && box.dataset.since !== "" ? " for " + duration(Math.max(0, Date.now() - start)) : "");
 }
-function showWorking(id, status, since) {
+function showWorking(id, status, since, busyWith) {
   const box = $(id), busy = ["working", "starting", "waiting"].includes(status);
   box.hidden = !busy;
   if (!busy) return;
   const start = Date.parse(since || "");
+  const subagents = busyWith?.subagents || 0;
   box.dataset.status = status;
+  box.dataset.subagents = String(subagents);
   box.dataset.since = Number.isFinite(start) ? String(start) : "";
   // The ticking text is hidden from screen readers; only a status change is announced.
   const announced = box.querySelector("[role=status]");
-  if (announced.textContent !== workingLabel(status)) announced.textContent = workingLabel(status);
+  if (announced.textContent !== workingLabel(status, subagents)) announced.textContent = workingLabel(status, subagents);
   tickWorking(box);
 }
 setInterval(() => {
@@ -980,7 +985,7 @@ async function refreshDetail() {
     openTerminal: () => { setDetailMode("terminal"); updateAgentView(); },
     onError: notice,
   });
-  showWorking("chat-working", detail.status, detail.statusChangedAt);
+  showWorking("chat-working", detail.status, detail.statusChangedAt, detail.busyWith);
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;
   if (rerender) {
@@ -1729,7 +1734,7 @@ async function refreshDock() {
   )
     return;
   const row = state.rows.find((row) => key(row) === name);
-  showWorking("dock-working", row?.status, row?.statusChangedAt);
+  showWorking("dock-working", row?.status, row?.statusChangedAt, row?.busyWith);
   const view = $("dock-transcript");
   const entries = transcript.entries
     .filter((entry) => entry.kind !== "tool")

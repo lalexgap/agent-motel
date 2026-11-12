@@ -59,6 +59,10 @@ export interface SubagentRecord {
   // Token summary snapshotted when the subagent stopped, so token attribution
   // survives after the provider cleans up the sidecar transcript file.
   tokens?: SubagentTokenSummary;
+  // How it closed: its own stop was reported ("stop"), or its parent's turn
+  // boundary swept it up ("turn"). Only a reported stop is news the parent
+  // was owed.
+  endedBy?: "stop" | "turn";
 }
 
 type LedgerEvent =
@@ -72,6 +76,8 @@ type LedgerEvent =
       msg?: string;
       transcript?: string;
       tokens?: SubagentTokenSummary;
+      // Compaction's rewrite of a record a turn boundary closed.
+      turn?: boolean;
     }
   // A turn boundary closes the subagents still open, except the ones named in
   // `except` — forked/background subagents outlive the turn that spawned them
@@ -172,7 +178,10 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
   for (const event of events) {
     if (event.ev === "turn-end") {
       for (const record of byId.values()) {
-        if (!record.endedAt && !event.except?.includes(record.id)) record.endedAt = event.at;
+        if (!record.endedAt && !event.except?.includes(record.id)) {
+          record.endedAt = event.at;
+          record.endedBy = "turn";
+        }
       }
       continue;
     }
@@ -189,11 +198,13 @@ export function foldEvents(events: LedgerEvent[]): SubagentRecord[] {
       record.startedAt = event.at;
       record.description = event.desc;
       record.endedAt = undefined;
+      record.endedBy = undefined;
       record.message = undefined;
       record.transcriptPath = undefined;
       record.tokens = undefined;
     } else {
       record.endedAt = event.at;
+      record.endedBy = event.turn ? "turn" : "stop";
       // The sidecar lands after the start hook has fired, so the stop is
       // where the description usually reaches the ledger.
       if (event.desc && !record.description) record.description = event.desc;
@@ -249,6 +260,7 @@ function compactIfLarge(name: string): void {
           msg: record.message,
           transcript: record.transcriptPath,
           tokens: record.tokens,
+          turn: record.endedBy === "turn" ? true : undefined,
         }),
       );
     }
@@ -758,7 +770,9 @@ export function reconcileOpenSubagents(agent: AgentState): number {
     const file = notificationFile(agent, record.id);
     const ended = (file && completionAfter(linesOf(file), record.id, record.startedAt)) || diedMidTurn(agent, record.id);
     if (!ended) continue;
-    recordSubagentStop(agent.name, { id: record.id, type: record.type, message: ended.summary });
+    // A notification is stamped with when it arrived, not when this look
+    // found it: the parent may have long since answered it.
+    recordSubagentStop(agent.name, { id: record.id, type: record.type, message: ended.summary, at: "at" in ended ? ended.at : undefined });
     closed++;
   }
   return closed;
@@ -800,7 +814,11 @@ function newLines(file: string): string[] {
 // subagent resumes under the same id, and every earlier run's notification
 // stays in the transcript. A line with no timestamp (cut by the window) is
 // ignored rather than trusted. Pure.
-export function completionAfter(lines: string[], id: string, startedAt: string): { status: string; summary?: string } | null {
+export function completionAfter(
+  lines: string[],
+  id: string,
+  startedAt: string,
+): { status: string; summary?: string; at: string } | null {
   const tag = `<task-id>${id}</task-id>`;
   const since = Date.parse(startedAt);
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -809,7 +827,7 @@ export function completionAfter(lines: string[], id: string, startedAt: string):
     const at = entryTimestamp(line);
     if (at === null || at <= since) continue;
     const ended = completionIn(line, id);
-    if (ended) return ended;
+    if (ended) return { ...ended, at: new Date(at).toISOString() };
   }
   return null;
 }
@@ -895,4 +913,108 @@ function unescapeJson(fragment: string): string {
   } catch {
     return fragment;
   }
+}
+
+// ── What an agent idle at its prompt is still waiting on ──
+//
+// A background subagent outlives the turn that spawned it, so its parent sits
+// at the prompt (stored status: idle) while it runs. Whether the ledger's open
+// records are really running decides what the parent is shown as — and an open
+// record alone is not proof: the hook that would close it can go missing.
+
+// A running subagent writes its transcript every few seconds; its longest
+// silence is one tool call (capped at ten minutes) or a rate-limit backoff.
+// Past this it no longer counts as work in progress.
+export const QUIET_AFTER_MS = 30 * 60 * 1000;
+
+export interface SubagentLiveness {
+  // Open and showing signs of life, oldest first.
+  live: SubagentRecord[];
+  // Open in the ledger, but silent past QUIET_AFTER_MS with nothing live
+  // under them.
+  quiet: SubagentRecord[];
+  // When the most recently active quiet one last wrote.
+  quietSince?: number;
+}
+
+// A record is live while it wrote within the window, or a subagent under it
+// did (a shepherd waiting on its reviewers writes nothing meanwhile). Pure.
+export function splitLive<T extends { id: string; parentId?: string; lastActivity: number }>(
+  open: T[],
+  now: number,
+  quietAfterMs = QUIET_AFTER_MS,
+): { live: T[]; quiet: T[] } {
+  const byId = new Map(open.map((sub) => [sub.id, sub]));
+  const fresh = new Set(open.filter((sub) => now - sub.lastActivity < quietAfterMs).map((sub) => sub.id));
+  for (const id of [...fresh]) {
+    let parent = byId.get(id)?.parentId;
+    for (let depth = 0; parent && byId.has(parent) && !fresh.has(parent) && depth < 16; depth++) {
+      fresh.add(parent);
+      parent = byId.get(parent)?.parentId;
+    }
+  }
+  return { live: open.filter((sub) => fresh.has(sub.id)), quiet: open.filter((sub) => !fresh.has(sub.id)) };
+}
+
+// When a subagent last showed life: its transcript's last write, and never
+// earlier than its start (the file appears a beat after the start hook).
+function lastActivity(agent: AgentState, record: SubagentRecord): number {
+  const started = Date.parse(record.startedAt) || 0;
+  const file = agentProvider(agent) === "claude" ? subagentTranscriptFile(agent, record.id) : null;
+  if (!file) return started;
+  try {
+    return Math.max(started, statSync(file).mtimeMs);
+  } catch {
+    return started;
+  }
+}
+
+export function subagentLiveness(
+  agent: AgentState,
+  records: SubagentRecord[] = readSubagents(agent.name),
+  now = Date.now(),
+): SubagentLiveness {
+  const open = records.filter((record) => !record.endedAt);
+  if (open.length === 0) return { live: [], quiet: [] };
+  const { live, quiet } = splitLive(
+    open.map((record) => {
+      const parentId = readSubagentMeta(agent, record.id)?.parentAgentId;
+      return {
+        id: record.id,
+        record,
+        parentId: typeof parentId === "string" && parentId ? parentId : undefined,
+        lastActivity: lastActivity(agent, record),
+      };
+    }),
+    now,
+  );
+  return {
+    live: live.map((sub) => sub.record),
+    quiet: quiet.map((sub) => sub.record),
+    quietSince: quiet.length ? Math.max(...quiet.map((sub) => sub.lastActivity)) : undefined,
+  };
+}
+
+// The subagents running under an agent right now, liveness-checked: the one
+// signal for "this agent is waiting on a shepherd / reviewer / engineer".
+export function liveSubagentRecords(agent: AgentState): SubagentRecord[] {
+  try {
+    reconcileOpenSubagents(agent);
+  } catch {
+    // the ledger as it stands
+  }
+  return subagentLiveness(agent).live;
+}
+
+// The latest subagent whose own stop was reported. A stop with no start is
+// one of the provider's internal helpers (they fire after every turn), and a
+// record a turn boundary swept up never reported anything. Pure.
+export function lastReportedStop(records: SubagentRecord[]): SubagentRecord | null {
+  let last: SubagentRecord | null = null;
+  for (const record of records) {
+    if (!record.endedAt || record.endedBy !== "stop") continue;
+    if (!(Date.parse(record.endedAt) > Date.parse(record.startedAt))) continue;
+    if (!last || Date.parse(record.endedAt) > Date.parse(last.endedAt!)) last = record;
+  }
+  return last;
 }

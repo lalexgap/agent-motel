@@ -4,10 +4,10 @@ import { startUsageLedgerJob } from "./usageLedger";
 import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
 import { recordAudit, withAuditContext } from "./audit";
-import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, truncateSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tryAcquireFileLock } from "./filelock";
-import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir } from "./paths";
+import { baseDir, agentsDir, DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs, queueDir, subagentsDir } from "./paths";
 import { agentNamesAndAliases, agentProvider, agentSessionId, listAgents, matchAgent, readAgent, setStatus, updateAgentIf, updateAgentStatus, type AgentState } from "./state";
 import { queueAppendLocked, queueAppendOnceLocked, queueDepth, queueHasId, queueReceived, queueRecordReceipt } from "./queue";
 import { capturePane, hasSession, sessionName } from "./tmux";
@@ -262,7 +262,10 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // State is file-backed and may be changed by any short-lived `am` process,
   // not just hooks. Watching both trees makes the daemon a complete event hub
   // for creates/removes/status changes and queue-depth changes.
-  const fileWatchers = [agentsDir(), queueDir()].map((dir) =>
+  // The subagent ledgers too: a background subagent starting or stopping
+  // changes how its idle parent is shown without touching the state file.
+  mkdirSync(subagentsDir(), { recursive: true });
+  const fileWatchers = [agentsDir(), queueDir(), subagentsDir()].map((dir) =>
     watch(dir, { recursive: true }, scheduleFileEvent),
   );
 
