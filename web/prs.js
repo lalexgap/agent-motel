@@ -68,6 +68,18 @@ window.agentPrs = (() => {
       (!filters.needsMe || pr.needsMe));
   }
 
+  // Finished PRs are context, not work: past the latest few they wait behind a "show more" row,
+  // unless the state filter asks for them.
+  const FINISHED_ROWS = 8;
+  const isFinished = (pr) => pr.state === "merged" || pr.state === "closed";
+
+  function visibleRows(rows, options = {}) {
+    if (options.showAllFinished || options.state === "merged" || options.state === "closed") return { rows: rows || [], hidden: 0 };
+    let finished = 0;
+    const shown = (rows || []).filter((pr) => !isFinished(pr) || ++finished <= FINISHED_ROWS);
+    return { rows: shown, hidden: (rows || []).length - shown.length };
+  }
+
   function nudgeText(pr) {
     const reason = String(pr.reason || "").trim();
     return `PR #${pr.number} (${pr.url}) is ${pr.state}: ${reason}${/[.?!]$/.test(reason) ? "" : "."} What is its status, and what do you need to move it forward?`;
@@ -153,7 +165,7 @@ window.agentPrs = (() => {
   }
 
   function viewFor(root) {
-    if (!views.has(root)) views.set(root, { repo: "", state: "", needsMe: false, expanded: new Set(), data: null, actions: null });
+    if (!views.has(root)) views.set(root, { repo: "", state: "", needsMe: false, showAllFinished: false, expanded: new Set(), data: null, actions: null });
     return views.get(root);
   }
 
@@ -215,7 +227,8 @@ window.agentPrs = (() => {
       return;
     }
     const filters = { repo: view.repo, state: view.state, needsMe: view.needsMe };
-    const rows = filterPrs(report.prs, filters);
+    const matching = filterPrs(report.prs, filters);
+    const { rows, hidden } = visibleRows(matching, { showAllFinished: view.showAllFinished, state: view.state });
     if (!rows.length) {
       const empty = el("div", "empty");
       const clear = el("button", "", "Clear filters");
@@ -237,6 +250,18 @@ window.agentPrs = (() => {
       tbody.append(prRow(root, view, pr, chains[i], now));
       if (pr.decision && view.expanded.has(pr.key)) tbody.append(decisionRow(pr, view.actions));
     });
+    if (hidden || (view.showAllFinished && matching.filter(isFinished).length > FINISHED_ROWS)) {
+      const tr = el("tr", "prs-more-row");
+      const td = el("td", "prs-more");
+      td.colSpan = 6;
+      const more = el("button", "", hidden ? `Show ${hidden} more merged or closed` : "Show fewer merged or closed");
+      more.type = "button";
+      more.setAttribute("aria-expanded", String(view.showAllFinished));
+      more.onclick = () => { view.showAllFinished = !view.showAllFinished; renderList(root); };
+      td.append(more);
+      tr.append(td);
+      tbody.append(tr);
+    }
     table.append(thead, tbody);
     list.replaceChildren(table);
   }
@@ -357,6 +382,7 @@ window.agentPrs = (() => {
     safeLink,
     repoOptions,
     filterPrs,
+    visibleRows,
     nudgeText,
     agentLabel,
     stackLabel,
