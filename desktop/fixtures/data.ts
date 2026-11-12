@@ -1,19 +1,26 @@
 // Synthetic fleet for the fixture am server. Every name, path and line of
 // transcript here is invented; nothing comes from a real fleet.
-import type { AgentDetail, AgentRow, QueueItem, TranscriptEntry } from "../src/types";
+import type { AgentRow, QueueItem, TranscriptEntry } from "../src/types";
+
+// Fields real fleet rows carry that the app's AgentRow does not declare yet.
+export type FixtureRow = AgentRow & {
+  aliases?: string[];
+  subagents?: { active: number; types: string; detail: string; running: { id: string; type: string; description?: string; startedAt: string }[] };
+};
 
 export const FIXTURE_LOCAL_HOST = "motel";
+export const FIXTURE_HOME = "/home/keeper";
 export const FIXTURE_REMOTE_HOSTS = [
   { name: "annex", reachable: true },
   { name: "lantern", reachable: false },
 ];
-const HOME = "/home/keeper";
-const REPO = {
+const HOME = FIXTURE_HOME;
+export const REPO = {
   lighthouse: `${HOME}/code/lighthouse`,
   paperCrane: `${HOME}/code/paper-crane`,
   tideTables: `${HOME}/code/tide-tables`,
 };
-const worktree = (repo: string, name: string) => `${HOME}/.agent-manager/worktrees/${repo}/${name}`;
+export const worktree = (repo: string, name: string) => `${HOME}/.agent-manager/worktrees/${repo}/${name}`;
 
 interface Seed {
   name: string;
@@ -27,6 +34,7 @@ interface Seed {
   dir?: string;
   task?: string;
   statusReason?: string;
+  statusDetail?: string;
   queued?: number;
   // Minutes ago.
   changed: number;
@@ -35,7 +43,6 @@ interface Seed {
   spawnedBy?: string;
   role?: string;
   prMonitor?: AgentRow["prMonitor"];
-  subagents?: AgentRow["subagents"];
 }
 
 const SEEDS: Seed[] = [
@@ -44,7 +51,6 @@ const SEEDS: Seed[] = [
     task: "Add a retry budget to the beacon sync worker\n\nIt retries forever when the tide-tables API is down, which floods the logs and pins a CPU. Cap the retries, back off with jitter, honour Retry-After, and surface the state on /status. Keep the public SyncWorker API unchanged.",
     changed: 2.3, updated: 0.1, created: 48,
     prMonitor: { pullRequests: [{ number: 128, state: "OPEN" }] },
-    subagents: { running: [{ id: "sub-beacon-audit", type: "Explore", description: "Map every caller of SyncWorker" }] },
   },
   {
     name: "fog-signal", status: "needs-attention", provider: "codex", model: "gpt-5.2-codex", effort: "medium", repo: "lighthouse", repoName: "lighthouse",
@@ -108,13 +114,23 @@ const SEEDS: Seed[] = [
     name: "errand-runner", status: "idle", provider: "claude", model: "claude-haiku-4-5", dir: HOME,
     task: "Tidy the dotfiles and update the shell aliases", changed: 64, updated: 64, created: 900,
   },
+  // Its worktree was deleted by hand: resume fails, and its transcript is empty, so handoff fails too.
+  {
+    name: "ghost-pier", status: "exited", provider: "claude", repo: "lighthouse", repoName: "lighthouse",
+    task: "Spike: draw the beacon map with WebGL", changed: 2400, updated: 2400, created: 3000,
+  },
+  // Holds its lifecycle lock for the whole run, as if halfway through a move to annex.
+  {
+    name: "slipway", status: "working", provider: "codex", model: "gpt-5.2-codex", effort: "medium", repo: "tideTables", repoName: "tide-tables",
+    task: "Re-run the tide archive importer against the new schema", statusDetail: "moving to annex", changed: 6, updated: 0.6, created: 150,
+  },
 ];
 
 const ago = (now: number, minutes: number) => new Date(now - minutes * 60_000).toISOString();
 
-export function buildRows(now: number): AgentRow[] {
+export function buildRows(now: number): FixtureRow[] {
   return SEEDS.map((seed) => {
-    const row: AgentRow = {
+    const row: FixtureRow = {
       name: seed.name,
       status: seed.status,
       statusChangedAt: ago(now, seed.changed),
@@ -132,11 +148,11 @@ export function buildRows(now: number): AgentRow[] {
     }
     if (seed.task) row.task = seed.task;
     if (seed.statusReason) row.statusReason = seed.statusReason;
+    if (seed.statusDetail) row.statusDetail = seed.statusDetail;
     if (seed.queued) row.queued = seed.queued;
     if (seed.spawnedBy) row.spawnedBy = seed.spawnedBy;
     if (seed.role) row.role = seed.role;
     if (seed.prMonitor) row.prMonitor = seed.prMonitor;
-    if (seed.subagents) row.subagents = seed.subagents;
     if (seed.status === "working" || seed.status === "waiting") row.workingSince = row.statusChangedAt;
     return row;
   });
@@ -150,17 +166,6 @@ export function seedQueue(row: AgentRow, id: () => string, now = Date.now()): Qu
     queuedAt: new Date(now - (row.queued! - index) * 60_000).toISOString(),
     ...(index === 0 ? { msgId: id() } : {}),
   }));
-}
-
-export function buildDetail(row: AgentRow, queue: QueueItem[] = []): AgentDetail {
-  return {
-    ...row,
-    queue,
-    pane: "",
-    pendingPermissions: row.status === "needs-attention" && row.statusReason?.startsWith("Approval") ? 1 : 0,
-    capabilities: {},
-    runtime: {},
-  };
 }
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -280,7 +285,7 @@ function concierge(): TranscriptEntry[] {
   counter = 0;
   return [
     user("What's blocked right now?"),
-    tool("Bash", { command: "am ls --json", description: "List the fleet" }, "15 agents · 4 working · 1 waiting · 2 need attention · 2 stopped"),
+    tool("Bash", { command: "am ls --json", description: "List the fleet" }, "18 agents · 5 working · 1 waiting · 2 need attention · 3 stopped"),
     assistant([
       "Two agents are waiting on you:",
       "",
@@ -309,6 +314,7 @@ function generic(row: AgentRow): TranscriptEntry[] {
 }
 
 export function buildTranscript(row: AgentRow): TranscriptEntry[] {
+  if (row.name === "ghost-pier" && !row.host) return [];
   if (row.name === "harbor-lights" && !row.host) return harborLights();
   if (row.name === "kelp-forest" && row.host === "annex") return kelpForest();
   if (row.name === "concierge" && !row.host) return concierge();
