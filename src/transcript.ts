@@ -92,9 +92,15 @@ const VERIFIED_OPERATOR_NOTE_RE =
 const INBOX_HEADER_RE = /^\[am inbox\] (?:Before you finish: you have (\d+) messages? to handle first |You have (\d+) messages? \()/;
 const INBOX_DATA_BEGIN = "\n[am message data begin]\n";
 const INBOX_DATA_END = "\n[am message data end]";
+// formatInbox's closing line.
+const INBOX_CONTEXT_TAIL = `${INBOX_DATA_END} Address or act on these as appropriate, then continue.`;
 const INBOX_MAX_CHARS = 4 * 1024 * 1024;
 const INBOX_MAX_RECORDS = 1000;
 const PEER_NAME_RE = /^[^\]\r\n]{1,160}$/;
+const AM_INBOX_HOOK_EVENTS = ["UserPromptSubmit", "PostToolUse"];
+// Claude Code logs a prompt's hook context right after it; a bound keeps a
+// flood of socket entries without replies from rescanning quadratically.
+const VERIFY_WINDOW = 256;
 const PEER_ENVELOPE_RE = /^\[am · from [^\]\r\n]{1,160}\] /;
 
 function peerSocketText(entry: Record<string, any>): string | null {
@@ -175,14 +181,19 @@ function hookContextParts(entry: Record<string, any>, hookEvent?: string): strin
   return (Array.isArray(content) ? content : [content]).filter((part): part is string => typeof part === "string");
 }
 
-// Messages the UserPromptSubmit hook drained into context: am's notes (plan
-// text among them defanged, see plan.ts) come first, then the inbox block.
+// Messages am's hook drained into context: buildInboxOutput writes am's notes
+// (plan text among them defanged, see plan.ts), then the inbox block last.
+// Other hooks' context can quote anything, so only a part shaped like am's
+// whole output counts.
 function hookContextInboxTexts(entry: Record<string, any>): string[] {
   const out: string[] = [];
-  for (const part of hookContextParts(entry)) {
-    const at = part.startsWith("[am inbox] ") ? 0 : part.indexOf("\n\n[am inbox] ");
-    if (at < 0) continue;
-    out.push(...(inboxTexts(at === 0 ? part : part.slice(at + 2)) ?? []));
+  for (const event of AM_INBOX_HOOK_EVENTS) {
+    for (const part of hookContextParts(entry, event)) {
+      if (!part.startsWith("[am") || !part.endsWith(INBOX_CONTEXT_TAIL)) continue;
+      const at = part.startsWith("[am inbox] ") ? 0 : part.indexOf("\n\n[am inbox] ");
+      if (at < 0) continue;
+      out.push(...(inboxTexts(at === 0 ? part : part.slice(at + 2)) ?? []));
+    }
   }
   return out;
 }
@@ -202,7 +213,7 @@ function amDeliveredTexts(entry: Record<string, any>, verifiedTags: () => Set<st
 // its additional context, logged after the prompt and before the reply.
 function verifiedOperatorTags(entries: Record<string, any>[], index: number, keep: (e: Record<string, any>) => boolean): Set<string> {
   const tags = new Set<string>();
-  for (let i = index + 1; i < entries.length; i++) {
+  for (let i = index + 1; i < Math.min(entries.length, index + 1 + VERIFY_WINDOW); i++) {
     const entry = entries[i]!;
     if (entry.type === "assistant" || (entry.type === "user" && !entry.isMeta)) break;
     if (!keep(entry)) continue;
@@ -797,6 +808,11 @@ function truncate(text: string, chars: number, lines?: number): string {
   return result;
 }
 
+// Message text (a peer's, or an assistant's) must not open a turn of its own.
+function escapeTurnHeadings(text: string): string {
+  return text.replace(/^(?=## (?:User|Assistant)[ \t]*$)/gm, "\\");
+}
+
 export function renderTranscript(
   transcript: Transcript,
   opts: { full?: boolean; agentName?: string } = {},
@@ -811,9 +827,9 @@ export function renderTranscript(
 
   for (const turn of transcript.turns) {
     if (turn.kind === "user") {
-      lines.push("## User", "", turn.text, "");
+      lines.push("## User", "", escapeTurnHeadings(turn.text), "");
     } else if (turn.kind === "assistant") {
-      lines.push("## Assistant", "", turn.text, "");
+      lines.push("## Assistant", "", escapeTurnHeadings(turn.text), "");
     } else {
       const input = opts.full ? turn.input : truncate(turn.input.replaceAll("\n", " "), COMPACT_INPUT_CHARS);
       lines.push(`> 🔧 ${turn.name}: \`${input}\``);
