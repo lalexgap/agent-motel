@@ -36,7 +36,7 @@ function blockedReason(key: string): string | null {
   if (state.detail?.key === key && state.detail.notFound) return "This agent is not on the server any more.";
   const source = agentSource(key);
   if (source.status && STOPPED.has(source.status)) {
-    return `This agent is stopped. Resume it with am resume ${source.name ?? parseAgentKey(key)?.id ?? ""} or from the web UI to send.`;
+    return "This agent is stopped. Resume it to send a message.";
   }
   return null;
 }
@@ -58,8 +58,9 @@ function renderComposer(): void {
   const sending = composer.sending.has(key);
   const form = $("am-composer");
   form.classList.toggle("blocked", !!blocked);
-  const note = $("am-composer-blocked");
-  note.hidden = !blocked;
+  $("am-composer-blocked").hidden = !blocked;
+  // The Resume button beside the text is agentActions.ts's.
+  const note = $("am-composer-blocked-text");
   if (note.textContent !== (blocked ?? "")) note.textContent = blocked ?? "";
   if (input.disabled !== !!blocked) input.disabled = !!blocked;
   const error = agentComposer(key).error;

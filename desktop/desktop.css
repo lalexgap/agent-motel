@@ -1877,3 +1877,133 @@ button.am-rel-item:hover {
   font-size: 11.5px;
   color: var(--fg-subtle);
 }
+/* Agent actions: the chat header's buttons and "⋯" menu reuse the browser UI's
+   .actions / .more-actions rules; the dialogs reuse its dialog, label and input rules. */
+.am-agent-actions {
+  gap: 6px;
+}
+.am-agent-actions > button,
+.am-agent-actions .more-actions summary {
+  padding: 4px 10px;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+.am-agent-actions .more-actions[hidden] {
+  display: none;
+}
+.am-agent-actions .more-menu button:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+#am-action-error {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgb(235 87 87 / 35%);
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  overflow-wrap: anywhere;
+}
+#am-action-error[hidden] {
+  display: none;
+}
+#am-action-error-text {
+  flex: 1;
+  min-width: 0;
+}
+#am-action-error .text-button {
+  flex: none;
+}
+.am-sb-flash.am-sb-flash-error {
+  color: var(--danger-text);
+}
+/* One line, capped, so a long message never pushes the left-hand items; the
+   full text is in its title (and, for an open agent, under the header). */
+#statusbar .am-sb-flash {
+  display: block;
+  max-width: min(360px, 24vw);
+  height: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#am-composer-blocked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#am-composer-blocked-text {
+  flex: 1;
+  min-width: 0;
+}
+#am-composer-resume {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12.5px;
+}
+#am-composer-resume[hidden] {
+  display: none;
+}
+.am-action-dialog {
+  width: 480px;
+  max-width: min(480px, calc(100vw - 32px));
+}
+.am-action-dialog .section-header {
+  margin-bottom: 6px;
+}
+.am-action-dialog .section-header h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.am-dialog-close {
+  padding: 2px 9px;
+  font-size: 16px;
+  line-height: 1.2;
+}
+.am-dialog-source {
+  margin: 0;
+  font: 13px var(--mono);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.am-action-dialog p.am-dialog-note {
+  margin: 12px 0 0;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.am-action-dialog .model-warning {
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning-text);
+  background: var(--warning-soft);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.am-action-dialog label {
+  margin: 14px 0;
+}
+.am-action-dialog label.related-filter {
+  margin: 0 0 12px;
+}
+.am-dialog-error {
+  min-height: 1.4em;
+  margin: 8px 0 0;
+  color: var(--danger-text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.am-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.am-action-dialog .am-dialog-actions .primary {
+  width: auto;
+}

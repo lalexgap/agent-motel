@@ -1,5 +1,6 @@
 // Agent Motel desktop frontend: wires the views together and starts the app.
 // All server traffic goes through the bridge.
+import { initAgentActions, registerAgentHeader } from "./agentActions";
 import { call, isNative, on, startBridge } from "./bridge";
 import { initChat, selectAgent, tickWorking } from "./chat";
 import { initComposer } from "./composerView";
@@ -31,6 +32,8 @@ function onMenu(payload: BridgeEvents["menu.command"]): void {
 function wire(): void {
   initKeyboard();
   initComposer();
+  // The action bar's header slot comes before the inspector toggle's.
+  registerAgentHeader();
   // Before the sidebar: their Esc (close the overlay, leave a subagent) comes
   // before the sidebar's.
   initInspector();
@@ -42,6 +45,8 @@ function wire(): void {
   initConnections();
   initOverview();
   initChat();
+  // After the chat and the composer, so its Resume and error line render on the same change.
+  initAgentActions();
   initUsage();
   initSearch();
   initRelatedSection();
