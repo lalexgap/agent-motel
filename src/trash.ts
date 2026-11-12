@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { trashDir } from "./paths";
 import type { AgentState } from "./state";
+import { removeTrashedDecisionStore } from "./decisions";
 
 export type TrashedState = AgentState & { trashedAt: string };
 
@@ -33,6 +34,7 @@ export function readTrashedState(name: string): TrashedState | null {
 export function removeTrashed(name: string): void {
   rmSync(trashFile(name), { force: true });
   rmSync(join(trashDir(), `${name}.plan.md`), { force: true });
+  removeTrashedDecisionStore(name);
 }
 
 // Removed agents available to restore, newest deletion first.

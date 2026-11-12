@@ -10,6 +10,7 @@ import { removeSubagents } from "../subagents";
 import { removeSnapshot } from "../snapshots";
 import { trashState } from "../trash";
 import { trashPlan } from "../plan";
+import { trashDecisionStore } from "../decisions";
 import { hasSession, killSession } from "../tmux";
 import { CODEX_STOP_BUDGET_MS, codexDeadline, releaseCodexTrust, stopCodexDaemonWork } from "../codexDaemon";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
@@ -165,6 +166,7 @@ function destroyAgentLocked(agent: AgentState, clean: boolean): void {
   // from its branch if --clean had removed it.
   trashState(current);
   trashPlan(current.name);
+  trashDecisionStore(current.name);
 
   queueClear(current.name);
   removeSnapshot(current.name);
