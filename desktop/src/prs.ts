@@ -33,11 +33,9 @@ export function parsePrsPrefs(raw: string | null): PrsPrefs {
 
 export const serializePrsPrefs = (prefs: PrsPrefs): string => JSON.stringify(prefs);
 
-// GET /api/prs; "include older" asks for merged and closed PRs past the recent
-// window. Repo, state and needs-me filter in the page, as in the browser UI.
+// Repo, state and needs-me filter client-side, as in the browser UI.
 export const prsPath = (includeOlder: boolean): string => (includeOlder ? "/api/prs?all=1" : "/api/prs");
 
-// The periodic clock's question: fetch now?
 export function periodicDue(options: { pageVisible: boolean; documentHidden: boolean; fetchedAt: number; now: number }): boolean {
   return options.pageVisible && !options.documentHidden && options.now - options.fetchedAt >= PRS_INTERVAL_MS;
 }
@@ -59,8 +57,6 @@ export function prAgentKey(connection: string, rows: readonly Pick<AgentRow, "na
   return row ? agentKey(connection, row) : null;
 }
 
-// The nudge goes after an existing draft, separated by a blank line, and is
-// never added twice.
 export function mergeNudge(draft: string, text: string): string {
   const kept = draft.replace(/\s+$/, "");
   if (!kept.trim()) return text;
@@ -68,7 +64,6 @@ export function mergeNudge(draft: string, text: string): string {
   return `${kept}\n\n${text}`;
 }
 
-// The nav badge: the PRs that need the user, when there are any.
 export function needsMeCount(report: unknown): number {
   const value = (report as { counts?: { needsMe?: unknown } } | null)?.counts?.needsMe;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
