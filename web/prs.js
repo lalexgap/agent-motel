@@ -68,8 +68,7 @@ window.agentPrs = (() => {
       (!filters.needsMe || pr.needsMe));
   }
 
-  // Finished PRs are context, not work: past the latest few they wait behind a "show more" row,
-  // unless the state filter asks for them.
+  // Relies on prReport's state-then-recency sort to keep the latest finished rows.
   const FINISHED_ROWS = 8;
   const isFinished = (pr) => pr.state === "merged" || pr.state === "closed";
 
