@@ -504,6 +504,25 @@ describe("prompt state", () => {
       }
     });
 
+    test("Codex: a turn its dialog aborted stays flagged; one that resumes is working", () => {
+      atPrompt({ provider: "codex", workingSince: "2026-01-01T00:00:00.000Z" });
+      let pane = CODEX_COMPOSER;
+      const settled: string[] = [];
+      const w = watcher(() => pane, { now: T0 + 10_000 }, settled);
+      try {
+        w.note("api");
+        for (let i = 0; i < 6; i++) w.tick();
+        expect(readAgent("api")).toMatchObject({ status: "needs-attention", workingSince: "2026-01-01T00:00:00.000Z" });
+        expect(settled).toEqual([]);
+        pane = ["• Working (3s • esc to interrupt)", "", ...CODEX_COMPOSER.slice(3)];
+        w.tick();
+        w.tick();
+        expect(readAgent("api")!.status).toBe("working");
+      } finally {
+        w.stop();
+      }
+    });
+
     test("Codex: the approval overlay keeps the prompt, the composer ends it", () => {
       atPrompt({ provider: "codex" });
       let pane = CODEX_DIALOG;

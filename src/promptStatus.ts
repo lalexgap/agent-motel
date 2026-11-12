@@ -255,6 +255,10 @@ export function startPromptWatcher(opts: PromptWatcherOptions = {}): PromptWatch
           provider,
         });
         if (verdict === "keep") continue;
+        // Codex holds its own queue after an aborted turn, and only the Esc
+        // path knows how to take that back (endAbortedTurn). Leave a turn its
+        // dialog aborted flagged, as it was, rather than deliver into it.
+        if (verdict === "idle" && provider === "codex" && agent.workingSince) continue;
         watching.delete(name);
         const settled = settlePrompt(agent, verdict);
         if (settled) {
