@@ -97,6 +97,20 @@ describe("filtering", () => {
     expect(P.filterPrs(undefined, {})).toEqual([]);
   });
 
+  test("finished PRs past the latest few wait behind a show-more row", () => {
+    const open = [{ number: 1, state: "waiting" }, { number: 2, state: "conflict" }];
+    const finished = Array.from({ length: 11 }, (_item, index) => ({ number: 10 + index, state: index % 2 ? "closed" : "merged" }));
+    const all = [...open, ...finished];
+    const collapsed = P.visibleRows(all);
+    expect(collapsed.hidden).toBe(3);
+    expect(collapsed.rows.map((p: any) => p.number)).toEqual([1, 2, 10, 11, 12, 13, 14, 15, 16, 17]);
+    expect(P.visibleRows(all, { showAllFinished: true })).toEqual({ rows: all, hidden: 0 });
+    expect(P.visibleRows(all, { state: "merged" }).hidden).toBe(0);
+    expect(P.visibleRows(all, { state: "waiting" }).hidden).toBe(3);
+    expect(P.visibleRows(open)).toEqual({ rows: open, hidden: 0 });
+    expect(P.visibleRows(undefined)).toEqual({ rows: [], hidden: 0 });
+  });
+
   test("repo options are distinct and sorted", () => {
     expect(P.repoOptions(prs)).toEqual(["acme/storefront", "acme/toolbox"]);
     expect(P.repoOptions(undefined)).toEqual([]);
