@@ -203,6 +203,28 @@ describe("dev bridge decisions.open", () => {
     expect(transportError).toContain("Could not reach the server");
     expect(transportError).not.toContain("SECRET");
   });
+
+  test("binds a response to the exact connection mutation while allowing a rename", async () => {
+    let release!: (response: Response) => void;
+    const fetcher = (() => new Promise<Response>((resolve) => { release = resolve; })) as unknown as typeof fetch;
+    const bridge = new DevBridge({ version: "t", build: "t" }, fetcher);
+    const connection = bridge.addConnection("Motel", "https://am.example.test", "stored-token");
+    const open = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(open).resolves.toEqual({});
+
+    const changedToken = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url, token: "replacement-token" });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(changedToken).rejects.toThrow("The connection changed; try again");
+
+    const roundTrip = bridge.handle("decisions.open", { connection: connection.id, agent: "api", decisionId: "d-1" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: "https://other.example.test", token: "other-token" });
+    await bridge.handle("connections.save", { id: connection.id, name: "Renamed", url: connection.url, token: "replacement-token" });
+    release(Response.json({ url: "https://drop.example.test/q/capability" }));
+    await expect(roundTrip).rejects.toThrow("The connection changed; try again");
+  });
 });
 
 describe("dev bridge messages", () => {

@@ -1,6 +1,6 @@
 import { apiGet } from "./api";
-import { call } from "./bridge";
 import { registerCard } from "./chat";
+import { decisionOpener } from "./decisionOpen";
 import type { InboxDecision } from "./decisionsInbox";
 import { showDecisionsForAgent } from "./decisionsView";
 import { h } from "./dom";
@@ -22,6 +22,8 @@ declare global {
 let selected: string | null = null;
 let signature = "";
 let sequence = 0;
+let cardGeneration = 0;
+let actionSequence = 0;
 let fetchedAt = 0;
 let loading = false;
 let entries: InboxDecision[] = [];
@@ -36,6 +38,7 @@ function card(key: string): HTMLElement | null {
   if (selected !== key) {
     selected = key;
     sequence++;
+    cardGeneration++;
     entries = [];
     error = actionError = signature = content = "";
     node = null;
@@ -45,6 +48,7 @@ function card(key: string): HTMLElement | null {
   if (!parsed || !row || row.host || !row.openDecisions) {
     if (entries.length || loading || signature) {
       sequence++;
+      cardGeneration++;
       loading = false;
       entries = [];
       actionError = signature = content = "";
@@ -84,14 +88,16 @@ function card(key: string): HTMLElement | null {
   const rendered = window.agentDecisions.renderDecisionCard(entries, {
     agent: row.name,
     onAnswer: async (decision) => {
+      const generation = cardGeneration;
+      const request = ++actionSequence;
       try {
-        await call("decisions.open", { connection: parsed.connection, agent: row.name, decisionId: decision.id });
-        if (selected === key && state.selected === key && actionError) {
+        await decisionOpener.open({ connection: parsed.connection, agent: row.name, decisionId: decision.id });
+        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key && actionError) {
           actionError = "";
           changed("agent");
         }
       } catch (cause) {
-        if (selected === key && state.selected === key) {
+        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key) {
           actionError = cause instanceof Error ? cause.message : "Could not open the decisions page.";
           changed("agent");
         }
@@ -116,6 +122,7 @@ export function initDecisionsCard(): void {
     if (selected && selected !== state.selected) {
       selected = null;
       sequence++;
+      cardGeneration++;
       loading = false;
     }
   });

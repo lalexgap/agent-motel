@@ -1,6 +1,6 @@
 import { apiGet, ApiError } from "./api";
-import { call } from "./bridge";
 import { selectAgent } from "./chat";
+import { decisionOpener } from "./decisionOpen";
 import { DecisionsInbox, type DecisionsReport } from "./decisionsInbox";
 import { $, h } from "./dom";
 import { agentKey } from "./fleet";
@@ -36,6 +36,7 @@ let badge: HTMLElement;
 let query = "";
 let blockingOnly = false;
 let notice = "";
+let actionSequence = 0;
 let seenAgents = 0;
 const visible = () => !!page && !page.hidden && screen() === "fleet";
 const inbox = new DecisionsInbox(async (connection) => {
@@ -83,10 +84,15 @@ const actions: DecisionsActions = {
   async onAnswer(decision, agent) {
     const connection = inbox.connection;
     if (!connection) throw new Error("Select a server to answer this decision.");
+    const request = ++actionSequence;
     try {
-      await call("decisions.open", { connection, agent, decisionId: decision.id });
+      await decisionOpener.open({ connection, agent, decisionId: decision.id });
+      if (request === actionSequence && inbox.connection === connection && notice) {
+        notice = "";
+        render();
+      }
     } catch (cause) {
-      if (inbox.connection === connection) {
+      if (request === actionSequence && inbox.connection === connection) {
         notice = cause instanceof Error ? cause.message : "Could not open the decisions page.";
         render();
       }
@@ -97,6 +103,7 @@ const actions: DecisionsActions = {
 
 function setConnection(connection: string | null): void {
   if (connection === inbox.connection) return;
+  actionSequence++;
   inbox.select(connection);
   notice = "";
   query = "";

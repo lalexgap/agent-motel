@@ -15,6 +15,7 @@ final class ConnectionStore {
     private static let defaultsKey = "connections"
     private let defaults: UserDefaults
     private let service: String
+    private var revisions: [String: UInt64] = [:]
 
     init(defaults: UserDefaults = .standard, service: String = Bundle.main.bundleIdentifier ?? "ca.alexgap.agent-motel") {
         self.defaults = defaults
@@ -40,9 +41,14 @@ final class ConnectionStore {
         list().first { $0.id == id }
     }
 
+    func revision(for id: String) -> UInt64 {
+        revisions[id, default: 0]
+    }
+
     /// Writes metadata and, when given, the token. The token is stored first so a keychain
     /// failure leaves no connection without one.
     func save(_ connection: Connection, token: String?) throws {
+        let existing = get(connection.id)
         if let token { try setToken(token, for: connection.id, label: connection.name) }
         var all = list()
         if let index = all.firstIndex(where: { $0.id == connection.id }) {
@@ -51,6 +57,9 @@ final class ConnectionStore {
             all.append(connection)
         }
         write(all)
+        if let existing, existing.url != connection.url || token != nil {
+            revisions[connection.id, default: 0] &+= 1
+        }
     }
 
     /// Deletes the token first so a Keychain failure leaves the connection listed for a retry.

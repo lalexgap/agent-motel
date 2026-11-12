@@ -59,6 +59,7 @@ interface StoredConnection {
   name: string;
   url: string;
   token: string;
+  revision: number;
 }
 // The returned promise settles once the event reached the page; undelivered terminal
 // output counts against the backlog cap.
@@ -197,7 +198,7 @@ export class DevBridge {
   addConnection(name: string, url: string, token: string): Connection {
     const normalized = normalizeServerUrl(url);
     if (!normalized.ok) throw new Error(normalized.error);
-    const conn = { id: crypto.randomUUID(), name, url: normalized.url, token };
+    const conn = { id: crypto.randomUUID(), name, url: normalized.url, token, revision: 0 };
     this.connections.set(conn.id, conn);
     return publicView(conn);
   }
@@ -345,6 +346,7 @@ export class DevBridge {
       existing.name = name;
       existing.url = url.url;
       if (token) existing.token = token;
+      if (changed) existing.revision++;
       if (changed && this.streams.has(existing.id)) {
         this.stopStream(existing.id);
         this.startStream(existing);
@@ -352,7 +354,7 @@ export class DevBridge {
       return publicView(existing);
     }
     if (!token) throw new Error("Enter the access token");
-    const conn = { id: crypto.randomUUID(), name, url: url.url, token };
+    const conn = { id: crypto.randomUUID(), name, url: url.url, token, revision: 0 };
     this.connections.set(conn.id, conn);
     return publicView(conn);
   }
@@ -374,6 +376,7 @@ export class DevBridge {
     const conn = this.connection(text(params.connection, "connection"));
     const agent = checked(checkDecisionsAgent(params.agent));
     const decisionId = checked(checkDecisionId(params.decisionId));
+    const revision = conn.revision;
     let response: Response;
     try {
       response = await this.fetchImpl(conn.url + "/api/decisions/link", {
@@ -391,6 +394,7 @@ export class DevBridge {
       throw new Error(response.status === 404 ? "The decisions page is not set up on this server" : `Could not open the decisions page (HTTP ${response.status})`);
     }
     checked(decisionsPageUrl(body, agent, decisionId));
+    if (this.connections.get(conn.id) !== conn || conn.revision !== revision) throw new Error("The connection changed; try again");
     // Native hands the validated URL to NSWorkspace. Browser dev mode deliberately performs no external open.
     return {};
   }

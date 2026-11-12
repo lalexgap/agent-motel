@@ -222,6 +222,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         let decisionID = try DecisionsPolicy.decisionID(params["decisionId"])
         let request = try DecisionsPolicy.request(base: connection.url, agent: agent)
         guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
+        let revision = store.revision(for: connection.id)
         let response: APIClient.Response
         do {
             response = try await api.send(request, token: token)
@@ -235,8 +236,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             throw PolicyError("Could not open the decisions page (HTTP \(response.status))")
         }
         let url = try DecisionsPolicy.pageURL(body: response.body, agent: agent, decisionID: decisionID)
-        guard let current = store.get(connection.id), current.url == connection.url else {
-            throw PolicyError("unknown connection: \(connection.id)")
+        guard let current = store.get(connection.id), current.url == connection.url,
+              store.revision(for: connection.id) == revision else {
+            throw PolicyError("The connection changed; try again")
         }
         guard decisionsOpener(url) else { throw PolicyError("The default browser could not open the decisions page") }
         return [:]
