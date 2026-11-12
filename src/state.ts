@@ -13,6 +13,10 @@ export type AgentStatus =
   | "needs-attention"
   | "exited";
 
+// What a needs-attention status waits on. "prompt": a provider dialog in the
+// pane (a permission request, a question), which the pane also shows gone.
+export type StatusKind = "prompt";
+
 export type Provider = "claude" | "codex" | "antigravity";
 
 export function isProvider(value: unknown): value is Provider {
@@ -36,6 +40,8 @@ export interface AgentState {
   // needs-attention (for example, the permission/tool that is blocked).
   // Cleared whenever a later transition has no reason.
   statusReason?: string;
+  // Set with the status and dropped by any later transition without one.
+  statusKind?: StatusKind;
   // Unlike updatedAt (which changes for session metadata and other writes),
   // this only changes when status or its reason changes.
   statusChangedAt?: string;
@@ -154,7 +160,7 @@ function stateFile(name: string): string {
 }
 
 const readSnapshots = new WeakMap<AgentState, AgentState>();
-const statusUpdates = new WeakMap<AgentState, { status: AgentStatus; reason?: string; now: string }>();
+const statusUpdates = new WeakMap<AgentState, { status: AgentStatus; reason?: string; now: string; kind?: StatusKind }>();
 
 function stateLock(name: string): string {
   return join(baseDir(), "locks", `state-${name}.lock`);
@@ -211,7 +217,7 @@ export function writeAgent(state: AgentState, opts: { ownershipSource?: Ownershi
         next.status = readSnapshots.get(current)!.status;
         next.statusReason = readSnapshots.get(current)!.statusReason;
         next.statusChangedAt = readSnapshots.get(current)!.statusChangedAt;
-        updateAgentStatus(next, transition.status, transition.reason, transition.now);
+        updateAgentStatus(next, transition.status, transition.reason, transition.now, transition.kind);
       }
     }
     next.updatedAt = new Date().toISOString();
@@ -262,8 +268,9 @@ export function updateAgentStatus(
   status: AgentStatus,
   reason?: string,
   now: string = new Date().toISOString(),
+  kind?: StatusKind,
 ): void {
-  statusUpdates.set(state, { status, reason, now });
+  statusUpdates.set(state, { status, reason, now, kind });
   const statusReason = reason?.trim() || undefined;
   if (state.status !== status || state.statusReason !== statusReason) {
     state.statusChangedAt = now;
@@ -274,6 +281,8 @@ export function updateAgentStatus(
   }
   state.status = status;
   state.statusReason = statusReason;
+  if (kind && status === "needs-attention") state.statusKind = kind;
+  else delete state.statusKind;
   // A switch requested by a session that has ended must never fire later.
   if (status === "exited") delete state.pendingModelSwitch;
 }
