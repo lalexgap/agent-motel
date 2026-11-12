@@ -1,5 +1,6 @@
 import { antigravityTranscriptPath, nativeAntigravityTranscriptPath, reconcileAntigravityAgent } from "./antigravity";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { agentProvider, agentSessionId, type AgentState, type Provider } from "./state";
@@ -808,11 +809,6 @@ function truncate(text: string, chars: number, lines?: number): string {
   return result;
 }
 
-// Message text (a peer's, or an assistant's) must not open a turn of its own.
-function escapeTurnHeadings(text: string): string {
-  return text.replace(/^(?=[ \t]{0,3}(?:#{1,6}[ \t]*(?:User|Assistant)\b|(?:User|Assistant)[ \t]*$))/gim, "\\");
-}
-
 export function renderTranscript(
   transcript: Transcript,
   opts: { full?: boolean; agentName?: string } = {},
@@ -823,20 +819,27 @@ export function renderTranscript(
   if (transcript.sessionId) lines.push(`session_id: ${transcript.sessionId}`);
   if (transcript.dir) lines.push(`dir: ${transcript.dir}`);
   if (transcript.startedAt) lines.push(`started: ${transcript.startedAt}`);
-  lines.push(`exported: ${new Date().toISOString()}`, `mode: ${opts.full ? "full" : "compact"}`, "---", "");
+  // Turn text (a peer's message, an assistant's reply) can hold any heading,
+  // so real turn headings carry a per-render marker, as planContext does.
+  const marker = randomBytes(4).toString("hex");
+  lines.push(
+    `exported: ${new Date().toISOString()}`, `mode: ${opts.full ? "full" : "compact"}`,
+    `turn_marker: ${marker} (only headings ending in [${marker}] start a turn)`, "---", "",
+  );
+  const body = (text: string) => text.replaceAll(marker, "");
 
   for (const turn of transcript.turns) {
     if (turn.kind === "user") {
-      lines.push("## User", "", escapeTurnHeadings(turn.text), "");
+      lines.push(`## User [${marker}]`, "", body(turn.text), "");
     } else if (turn.kind === "assistant") {
-      lines.push("## Assistant", "", escapeTurnHeadings(turn.text), "");
+      lines.push(`## Assistant [${marker}]`, "", body(turn.text), "");
     } else {
-      const input = opts.full ? turn.input : truncate(turn.input.replaceAll("\n", " "), COMPACT_INPUT_CHARS);
+      const input = body(opts.full ? turn.input : truncate(turn.input.replaceAll("\n", " "), COMPACT_INPUT_CHARS));
       lines.push(`> 🔧 ${turn.name}: \`${input}\``);
       if (turn.output?.trim()) {
-        const output = opts.full
+        const output = body(opts.full
           ? turn.output
-          : truncate(turn.output, COMPACT_OUTPUT_CHARS, COMPACT_OUTPUT_LINES);
+          : truncate(turn.output, COMPACT_OUTPUT_CHARS, COMPACT_OUTPUT_LINES));
         lines.push(">", ...output.split("\n").map((l) => `> ${l}`));
       }
       lines.push("");
