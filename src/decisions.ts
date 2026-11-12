@@ -213,7 +213,7 @@ export function readDecisionStoreTextsResult(relevantNames?: string[]): { texts:
       const text = readStoreFile(join(decisionsHome(), file));
       const name = file.slice(0, -".json".length);
       if (text !== undefined) out.set(name, text);
-      else if (ownsStore(name)) complete = false;
+      else if (ownsStore(name) && (relevantSlugs === null || relevantSlugs.has(name))) complete = false;
     } catch {
       if (relevantSlugs === null || relevantSlugs.has(file.slice(0, -".json".length))) complete = false;
     }
