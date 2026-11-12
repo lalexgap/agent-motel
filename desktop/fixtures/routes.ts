@@ -27,7 +27,7 @@ export interface Ctx {
   req: Request;
   url: URL;
   params: Record<string, string>;
-  // Parsed JSON, or null when absent or not JSON (like `req.json().catch(() => null)`).
+  // null when absent or not JSON (like `req.json().catch(() => null)`).
   body: unknown;
   bytes?: Uint8Array;
 }
@@ -54,9 +54,6 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
 export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
   const s = () => fx.state();
 
-  // --- agents, hosts and state transitions -----------------------------------
-
-  // `local` or this machine's name → null (local); a configured remote → its name.
   const resolveHost = (host: string): string | null | undefined =>
     host === "local" || host === FIXTURE_LOCAL_HOST ? null : FIXTURE_REMOTE_HOSTS.some((item) => item.name === host) ? host : undefined;
   const sshDown = (host: string) => `ssh ${host}: connect to host ${host} port 22: Operation timed out`;
@@ -189,8 +186,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     return row;
   }
 
-  // --- messages (unchanged fixture behaviour) ---------------------------------
-
   const queueOf = (row: FixtureRow) => s().queues.get(row) ?? [];
   // Like am, only `queue` messages are listed; a `now` message goes straight to the pane.
   const listedOf = (row: FixtureRow) => queueOf(row).filter((item) => item.mode === "queue");
@@ -248,7 +243,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     syncQueued(row);
     row.updatedAt = new Date().toISOString();
     fx.broadcast("fleet", { type: "message", agent: row.name, host: row.host, id: message.id, state: "queued" });
-    // `now` steers the current turn; `queue` waits until the agent is free.
     drain(row);
     return json({ ok: true, mode: data.mode, id: message.id });
   }
@@ -279,13 +273,10 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
   }
   const findByKey = (key: string | null) => (key === null ? undefined : s().rows.find((row) => keyOf(row) === key));
 
-  // Wraps a /api/agents/:key handler with the real parseTarget.
   const withTarget = (handler: (ctx: Ctx, target: Target) => Response | Promise<Response>) => (ctx: Ctx) => {
     const target = parseTarget(ctx.params.key!);
     return target instanceof Response ? target : handler(ctx, target);
   };
-
-  // --- read routes: detail, transcript ------------------------------------------
 
   function detail(row: FixtureRow) {
     const native = row.provider !== "antigravity";
@@ -351,8 +342,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     { method: "POST", path: "/api/agents/:key/messages", handler: postMessage },
     { method: "DELETE", path: "/api/agents/:key/messages/:id", handler: cancelMessage },
   ];
-
-  // --- lifecycle: resume, restart, interrupt, stop, remove ----------------------
 
   // `refuseFields`: conditional stops and restarts are CLI-only.
   const refuse = (body: unknown, fields: string[]) => {
@@ -470,8 +459,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     },
   ];
 
-  // --- rename and move ---------------------------------------------------------
-
   const ownerOf = (host: string | null, name: string) => hostRows(host).find((row) => row.name === name || row.aliases?.includes(name));
 
   const manageRoutes: Route[] = [
@@ -533,8 +520,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
       }),
     },
   ];
-
-  // --- models, roles, handoff, create, concierge -------------------------------
 
   function modelBody(value: unknown): { model: string | null; effort?: string | null; createdAt: string; status: string } | Response {
     const body = value as Record<string, unknown> | null;
@@ -600,7 +585,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
         if (body.effort === null) delete row.effort;
         else if (body.effort !== undefined) row.effort = body.effort;
         boot(row);
-        // Local: the values applied. Remote: the request echoed back.
         return json(target.host
           ? { ok: true, model: body.model, ...(body.effort !== undefined ? { effort: body.effort } : {}) }
           : { ok: true, model: row.model ?? null, effort: row.effort ?? null });
@@ -718,8 +702,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     return null;
   }
 
-  // --- permissions and pane prompts --------------------------------------------
-
   const PERMISSION_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
   const promptRoutes: Route[] = [
     {
@@ -791,8 +773,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
       }),
     },
   ];
-
-  // --- files, subagents, workspace ---------------------------------------------
 
   const PASTE_TYPES: Record<string, { ext: string; magic: (bytes: Uint8Array) => boolean }> = {
     "image/png": { ext: "png", magic: (b) => b[0] === 0x89 && ascii(b, 1, 4) === "PNG" },
@@ -870,8 +850,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     },
   ];
 
-  // --- usage -------------------------------------------------------------------
-
   const reportOf = (row: FixtureRow) => agentTokenReport(row, s().histories.get(row), s().subagents.get(row) ?? []);
   const usageRoutes: Route[] = [
     {
@@ -918,8 +896,6 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
       },
     },
   ];
-
-  // --- search ------------------------------------------------------------------
 
   function snippets(entries: TranscriptEntry[], needle: string) {
     const found: { kind: "user" | "assistant" | "tool"; text: string }[] = [];

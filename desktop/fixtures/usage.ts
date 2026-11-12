@@ -227,8 +227,6 @@ export function quota(now: number) {
   ];
 }
 
-// --- per-agent token reports (AgentTokenReport / FleetTokenReport) -----------
-
 interface Buckets {
   steps: number; inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; outputTokens: number; thinkingTokens: number;
   activeTokens: number; totalTokens: number; budgetTokens: number; costUSD?: number;

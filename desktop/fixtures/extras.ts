@@ -1,6 +1,6 @@
 // Synthetic per-agent extras for the fixture am server: relay permissions, a
 // Claude pane prompt, built-in subagents, model catalogs, roles and git
-// workspaces. Invented like the rest of the fixture world.
+// workspaces.
 import type { TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, type FixtureRow } from "./data";
 

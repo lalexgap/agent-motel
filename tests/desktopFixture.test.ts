@@ -364,7 +364,7 @@ describe("fixture parity routes", () => {
     await expectReply(call("POST", "/api/agents/" + enc("annex:kelp") + "/stop", {}), 404, { error: 'no agent matches "kelp"' });
     await expectReply(call("POST", "/api/agents/" + enc("annex:kelp-forest") + "/stop", {}), 200, { ok: true });
     expect((await row("kelp-forest", "annex")).status).toBe("exited");
-    // Stopping twice is fine; resume brings it back.
+    // Stopping twice is fine.
     await expectReply(call("POST", "/api/agents/errand-runner/stop", {}), 200, { ok: true });
   });
 
@@ -634,7 +634,6 @@ describe("fixture parity routes", () => {
     await expectReply(call("GET", "/api/agents/harbor-lights/transcript?subagent=bad%20id"), 400, { error: "invalid subagent id" });
     await expectReply(call("GET", "/api/agents/harbor-lights/transcript?subagent=nosuch"), 409);
     expect(await read("/api/agents/keeper-log/subagents")).toEqual({ records: [] });
-    // Open records of a stopped agent are marked stale.
     await call("POST", "/api/agents/harbor-lights/stop", {});
     const stale = (await read("/api/agents/harbor-lights/subagents")).records;
     expect(stale.filter((record: { stale?: boolean }) => record.stale)).toHaveLength(2);
@@ -723,7 +722,6 @@ describe("fixture parity routes", () => {
       await expectReply(call("GET", `/api/usage/summary?range=${range}`), 400, { error: `invalid range "${range}" (expected 1, 7, or 30)` });
     }
     await expectReply(call("GET", "/api/usage/summary?provider=gemini"), 400);
-    // A removed agent stays in the ledger.
     await call("DELETE", "/api/agents/keeper-log");
     const after = (await read("/api/usage/summary?range=30&quota=0")).summary;
     expect(after.agents.find((item: { name: string }) => item.name === "keeper-log")).toMatchObject({ status: "removed", live: false });
