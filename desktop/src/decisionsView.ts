@@ -46,8 +46,8 @@ const inbox = new DecisionsInbox(async (connection) => {
 
 function render(): void {
   if (!page) return;
-  const count = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0)
-    ?? [...(state.conns.get(inbox.connection ?? "")?.rows ?? [])]
+  const reported = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0);
+  const count = visible() && reported !== undefined ? reported : [...(state.conns.get(inbox.connection ?? "")?.rows ?? [])]
       .filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0);
   badge.textContent = String(count);
   badge.hidden = !count;

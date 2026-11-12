@@ -2231,7 +2231,7 @@ const decisionsRoot = $("decisions-page");
 function updateDecisionsNavBadge() {
   const reported = decisionsInboxView.report?.groups?.reduce((sum, group) => sum + group.decisions.length, 0);
   const fleet = state.rows.filter((row) => !row.host).reduce((sum, row) => sum + (row.openDecisions || 0), 0);
-  const count = reported ?? fleet;
+  const count = !decisionsRoot.hidden && reported !== undefined ? reported : fleet;
   $("decisions-count").textContent = String(count);
   $("decisions-count").hidden = !count;
 }
