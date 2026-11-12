@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "./config";
+import { ownsStore } from "./decisions";
 import { defangAmText } from "./plan";
 import { CARETAKER_ROLE, CONCIERGE_ROLE } from "./roles";
 
@@ -37,8 +38,8 @@ export function resetDecisionBinForTests(): void {
 }
 
 // The concierge and caretaker keep no plan and ask no questions of their own.
-export function decisionsWanted(agent: { role?: string }): boolean {
-  if (agent.role === CONCIERGE_ROLE || agent.role === CARETAKER_ROLE) return false;
+export function decisionsWanted(agent: { name: string; role?: string }): boolean {
+  if (agent.role === CONCIERGE_ROLE || agent.role === CARETAKER_ROLE || !ownsStore(agent.name)) return false;
   try {
     return loadConfig().decisions !== false;
   } catch {

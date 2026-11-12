@@ -15,6 +15,7 @@ import {
   type Decision,
 } from "../src/decisions";
 import { agentRows, formatRows, type AgentRow } from "../src/commands/ls";
+import { decisionsWanted } from "../src/decisionHooks";
 import { destroyAgent } from "../src/commands/rm";
 import { renameAgent } from "../src/commands/rename";
 import { restoreCommand } from "../src/commands/restore";
@@ -268,6 +269,11 @@ describe("the whole store (ls, summary, lifecycle)", () => {
       writeAgent(agent("bar-"));
       await renameAgent("bar-", "baz");
       expect(openDecisions("foo").map((d) => d.id)).toEqual(["d-1"]);
+      writeAgent(agent("foo-"));
+      expect(agentRows().find((r) => r.name === "foo-")).toMatchObject({ openDecisions: 0 });
+      expect(decisionsWanted({ name: "foo-" })).toBe(false);
+      await expect(renameAgent("foo", "qux-")).rejects.toThrow(/cannot keep "foo"'s decisions store/);
+      expect(readAgent("foo")).not.toBeNull();
     });
 
     test("rename refuses to clobber another store", async () => {

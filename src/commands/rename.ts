@@ -12,7 +12,7 @@ import {
 } from "../state";
 import { inboxDir, planFile, sharedDir } from "../paths";
 import { renamePlan } from "../plan";
-import { decisionStoreExists, decisionStoreFile, renameDecisionStore } from "../decisions";
+import { decisionStoreExists, decisionStoreFile, ownsStore, renameDecisionStore } from "../decisions";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { acquireProducerLock, releaseProducerLock } from "../mailbox";
 import { queueAppendForAgent, queueStorageExists, renameQueue } from "../queue";
@@ -129,6 +129,9 @@ async function renameAgentLocked(
   }
   if (existsSync(planFile(newName))) {
     throw new Error(`a plan file already exists for "${newName}" (${planFile(newName)}) — remove it or choose another name`);
+  }
+  if (decisionStoreExists(oldName) && !ownsStore(newName)) {
+    throw new Error(`"${newName}" cannot keep "${oldName}"'s decisions store (${decisionStoreFile(newName)} names another agent) — choose another name`);
   }
   if (decisionStoreExists(oldName) && decisionStoreExists(newName)) {
     throw new Error(`a decisions store already exists for "${newName}" (${decisionStoreFile(newName)}) — remove it or choose another name`);

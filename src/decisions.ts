@@ -112,8 +112,9 @@ export function decisionStoreFile(name: string): string {
   return join(decisionsHome(), `${slug(name)}.json`);
 }
 
-// A name the CLI slugs to another agent's file (`foo-` → `foo.json`) does not own that store.
-function ownsStore(name: string): boolean {
+// A name the CLI slugs to another agent's file (`foo-` → `foo.json`) does not own
+// that store: it reads as having none and never moves it.
+export function ownsStore(name: string): boolean {
   return slug(name) === name;
 }
 
@@ -209,7 +210,7 @@ export function readDecisionStoreTexts(): Map<string, string> {
 }
 
 export function decisionStoreTextFor(texts: Map<string, string>, name: string): string | undefined {
-  return texts.get(slug(name));
+  return ownsStore(name) ? texts.get(slug(name)) : undefined;
 }
 
 // "2 decisions" / "1 decision (blocking)" / "3 decisions (1 blocking)". Pure.
@@ -239,7 +240,7 @@ function markerFile(name: string, kind: string): string {
 }
 
 export function decisionStoreExists(name: string): boolean {
-  return existsSync(decisionStoreFile(name));
+  return ownsStore(name) && existsSync(decisionStoreFile(name));
 }
 
 // The file is moved, never rewritten: the CLI may be writing it under its own lock,
