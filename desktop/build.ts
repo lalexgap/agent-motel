@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 export const desktopDir = join(root, "desktop");
 export const distDir = join(desktopDir, "dist");
-const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "prs.js", "terminal.js", "favicon.svg"];
+const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "prs.js", "decisions.js", "decisionsPage.js", "terminal.js", "favicon.svg"];
 // xterm.js and its addons ship with the app (the page fetches nothing from the network).
 const VENDOR: Record<string, string> = {
   "xterm.js": "node_modules/@xterm/xterm/lib/xterm.js",

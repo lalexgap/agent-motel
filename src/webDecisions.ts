@@ -2,7 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { openDecisions, ownsStore } from "./decisions";
+import { openDecisions, ownsStore, parseDecisionStore, readDecisionStoreTexts, type Decision } from "./decisions";
 
 // The decisions page URL lets its holder answer for the operator: return it
 // only to decisionsPageLink's caller; never cache, log or put it in an error.
@@ -19,6 +19,17 @@ export interface WebDecision {
   asked_at: string | null;
 }
 
+export interface WebDecisionGroup {
+  agent: string;
+  decisions: WebDecision[];
+}
+
+export interface WebDecisionsReport {
+  groups: WebDecisionGroup[];
+  remoteHosts: string[];
+  enabled: boolean;
+}
+
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null);
 
 function decisionsEnabled(): boolean {
@@ -29,11 +40,8 @@ function decisionsEnabled(): boolean {
   }
 }
 
-// Open decisions only, blocking first then oldest. A name the store CLI would
-// slug to another agent's file owns no store (see ownsStore).
-export function agentDecisions(name: string): WebDecision[] {
-  if (!decisionsEnabled() || !ownsStore(name)) return [];
-  return openDecisions(name).map((d) => ({
+function webDecision(d: Decision): WebDecision {
+  return {
     id: d.id,
     question: d.question,
     options: Array.isArray(d.options) ? d.options.filter((o): o is string => typeof o === "string") : [],
@@ -43,7 +51,43 @@ export function agentDecisions(name: string): WebDecision[] {
     link: text(d.link),
     prs: Array.isArray(d.prs) ? d.prs.filter((p): p is string => typeof p === "string") : [],
     asked_at: text(d.asked_at),
-  }));
+  };
+}
+
+function sortOpen(decisions: Decision[]): Decision[] {
+  return decisions.filter((d) => d.status === "open").sort((a, b) =>
+    Number(!!b.blocking) - Number(!!a.blocking) || (text(a.asked_at) ?? "").localeCompare(text(b.asked_at) ?? ""));
+}
+
+// Open decisions only, blocking first then oldest. A name the store CLI would
+// slug to another agent's file owns no store (see ownsStore).
+export function agentDecisions(name: string): WebDecision[] {
+  if (!decisionsEnabled() || !ownsStore(name)) return [];
+  return openDecisions(name).map(webDecision);
+}
+
+// This server's local stores only. Remote hosts are disclosed for coverage, but
+// never traversed: their inboxes require a direct connection to that server.
+export function decisionsReport(): WebDecisionsReport {
+  const config = loadConfig();
+  const remoteHosts = [...new Set(config.remotes ?? [])];
+  if (config.decisions === false) return { groups: [], remoteHosts, enabled: false };
+  const groups: WebDecisionGroup[] = [];
+  for (const [agent, source] of readDecisionStoreTexts()) {
+    if (!validDecisionsAgent(agent)) continue;
+    const store = parseDecisionStore(source);
+    if (!store) continue;
+    const decisions = sortOpen(store.decisions).map(webDecision);
+    if (decisions.length) groups.push({ agent, decisions });
+  }
+  groups.sort((a, b) => {
+    const aBlocking = a.decisions.some((d) => d.blocking);
+    const bBlocking = b.decisions.some((d) => d.blocking);
+    const aOldest = a.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
+    const bOldest = b.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
+    return Number(bBlocking) - Number(aBlocking) || aOldest.localeCompare(bOldest) || a.agent.localeCompare(b.agent);
+  });
+  return { groups, remoteHosts, enabled: true };
 }
 
 // The store's file-name rule, within drop's own `--agent` limit.

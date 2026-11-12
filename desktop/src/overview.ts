@@ -1,3 +1,4 @@
+import { showDecisions } from "./decisionsView";
 import { selectAgent } from "./chat";
 import { agentsWaitingOnDecisions, blockingDecisions, decisionsName, rowDecisionsLabel } from "./decisions";
 import { $, decisionsBadge, dot, h } from "./dom";
@@ -164,7 +165,10 @@ function renderOverview(): void {
   const waiting = agentsWaitingOnDecisions(all.flatMap((fleet) => fleet.rows));
   if (waiting && (rows.length || (loaded && !problem))) {
     if (rows.length) sub.append(document.createTextNode(" · "));
-    sub.append(h("span", "am-decisions-summary", waiting));
+    const cue = h("button", "am-decisions-summary", waiting);
+    cue.type = "button";
+    cue.onclick = showDecisions;
+    sub.append(cue);
   }
 
   const visible = entries.filter(({ row, fleet }) =>

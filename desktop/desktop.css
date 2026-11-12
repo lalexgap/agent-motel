@@ -2185,3 +2185,31 @@ button.am-rel-item:hover {
 .am-decisions-summary {
   color: var(--warning-text);
 }
+
+#am-decisions-page {
+  flex: 1;
+  min-height: 0;
+  user-select: text;
+  -webkit-user-select: text;
+  padding: 24px;
+  overflow: auto;
+  min-width: 0;
+  height: 100%;
+}
+#am-decisions-page[hidden] { display: none; }
+button.am-decisions-summary {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.am-agent-decisions-card {
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.am-agent-decisions-card .decisions-card { margin: 0 0 8px; }

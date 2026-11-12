@@ -38,6 +38,9 @@ function post(body: unknown, headers: Record<string, string> = bearer) {
     method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   });
 }
+function getInbox(headers: Record<string, string> = bearer) {
+  return fetch(`${server.url}/api/decisions`, { headers });
+}
 async function browserCookie(): Promise<string> {
   const login = await fetch(`${server.url}/auth/login`, {
     method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ token: TOKEN }),
@@ -196,6 +199,60 @@ describe("GET /api/agents/:name/decisions", () => {
   });
 });
 
+describe("GET /api/decisions", () => {
+  test("requires auth and returns all local open stores with no-store, without running drop", async () => {
+    seedAgent("stopped", "exited");
+    writeStore("stopped", [
+      { id: "d-2", status: "open", question: "Later", asked_at: "2026-02-02T00:00:00Z" },
+      { id: "d-1", status: "open", question: "Block", blocking: true, asked_at: "2026-03-01T00:00:00Z" },
+      { id: "d-3", status: "decided", question: "Secret", answer: "never expose" },
+    ]);
+    writeStore("orphan", [{ id: "d-4", status: "open", question: "Orphan?", asked_at: 42, answer: "also secret" }]);
+    fakeDrop(`echo ${SECRET}; echo called > "${join(home, "drop-called")}"`);
+    writeFileSync(join(process.env.AGENTMGR_HOME!, "config.json"), JSON.stringify({ remotes: ["laptop", "build", "laptop"] }));
+
+    expect((await getInbox({})).status).toBe(401);
+    const response = await getInbox();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      groups: [
+        { agent: "stopped", decisions: [
+          { id: "d-1", question: "Block", options: [], recommendation: null, why: null, blocking: true, link: null, prs: [], asked_at: "2026-03-01T00:00:00Z" },
+          { id: "d-2", question: "Later", options: [], recommendation: null, why: null, blocking: false, link: null, prs: [], asked_at: "2026-02-02T00:00:00Z" },
+        ] },
+        { agent: "orphan", decisions: [
+          { id: "d-4", question: "Orphan?", options: [], recommendation: null, why: null, blocking: false, link: null, prs: [], asked_at: null },
+        ] },
+      ],
+      remoteHosts: ["laptop", "build"], enabled: true,
+    });
+    expect(() => readFileSync(join(home, "drop-called"))).toThrow();
+  });
+
+  test("uses the safe filename as agent identity and skips malformed or hostile filenames", async () => {
+    writeFileSync(join(process.env.DECISIONS_HOME!, "safe.json"), JSON.stringify({
+      version: 1, agent: "<img src=x onerror=alert(1)>", host: "secret", answer: "secret",
+      decisions: [{ id: "d-1", status: "open", question: "<script>alert(1)</script>" }],
+    }));
+    writeStore("bad name", [{ id: "d-2", status: "open", question: "No" }]);
+    writeFileSync(join(process.env.DECISIONS_HOME!, "broken.json"), "{");
+    const body = await (await getInbox()).json() as { groups: unknown[] };
+    expect(body.groups).toEqual([{ agent: "safe", decisions: [{
+      id: "d-1", question: "<script>alert(1)</script>", options: [], recommendation: null, why: null,
+      blocking: false, link: null, prs: [], asked_at: null,
+    }] }]);
+    expect(JSON.stringify(body)).not.toContain("onerror");
+    expect(JSON.stringify(body)).not.toContain("secret");
+  });
+
+  test("decisions false returns the distinct disabled contract", async () => {
+    writeStore("api", [{ id: "d-1", status: "open", question: "Hidden" }]);
+    writeFileSync(join(process.env.AGENTMGR_HOME!, "config.json"), JSON.stringify({ decisions: false, remotes: ["laptop"] }));
+    expect(await (await getInbox()).json()).toEqual({ groups: [], remoteHosts: ["laptop"], enabled: false });
+  });
+});
+
 test("web fleet rows carry the decision fields, exited agents included", async () => {
   seedAgent("api", "exited");
   seedAgent("quiet");
@@ -303,11 +360,22 @@ describe("web/decisions.js", () => {
     expect(card.find("decisions-unavailable")[0]!.textContent).toBe("Not set up here.");
   });
 
+  test("the inbox opt-out removes answer controls without changing the default", () => {
+    const readonly = D.renderDecisionCard([decision()], { agent: "api", showAnswer: false }) as Node;
+    const existing = D.renderDecisionCard([decision()], { agent: "api" }) as Node;
+    expect(readonly.find("decision-answer")).toHaveLength(0);
+    expect(existing.find("decision-answer")).toHaveLength(1);
+  });
+
   test("the page loads decisions.js before app.js and the server serves it", () => {
     const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
     const serverSource = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
     expect(html).toContain('<script src="/decisions.js" defer></script>');
+    expect(html).toContain('<script src="/decisionsPage.js" defer></script>');
     expect(html.indexOf("/decisions.js")).toBeLessThan(html.indexOf("/app.js"));
+    expect(html.indexOf("/decisions.js")).toBeLessThan(html.indexOf("/decisionsPage.js"));
+    expect(html.indexOf("/decisionsPage.js")).toBeLessThan(html.indexOf("/app.js"));
     expect(serverSource).toContain('"/decisions.js": "web/decisions.js"');
+    expect(serverSource).toContain('"/decisionsPage.js": "web/decisionsPage.js"');
   });
 });

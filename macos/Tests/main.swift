@@ -69,7 +69,7 @@ do {
 print("PASS connection URL policy and normalisation")
 
 let base = "http://127.0.0.1:8790"
-for path in ["/api/health", "/api/agents", "/api/agents/annex%3Akelp-forest/transcript", "/api/agents?all=1&x=a%20b"] {
+for path in ["/api/decisions", "/api/health", "/api/agents", "/api/agents/annex%3Akelp-forest/transcript", "/api/agents?all=1&x=a%20b"] {
     do {
         let url = try ConnectionPolicy.apiURL(base: base, path: path)
         check(url.absoluteString == base + path, "\(path) -> \(url)")
