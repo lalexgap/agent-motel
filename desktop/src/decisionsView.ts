@@ -48,7 +48,7 @@ function render(): void {
   if (!page) return;
   const reported = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0);
   const rows = state.conns.get(inbox.connection ?? "")?.rows ?? [];
-  if (visible() && reported !== undefined) {
+  if (reported !== undefined) {
     badge.textContent = String(reported);
     badge.hidden = !reported;
     badge.title = `${reported} open decisions on the selected server`;
@@ -58,11 +58,7 @@ function render(): void {
     }, actions);
     return;
   }
-  const live = new Set(rows.filter((row) => !row.host).map((row) => row.name));
-  const orphaned = inbox.report?.groups
-    .filter((group) => !live.has(group.agent))
-    .reduce((total, group) => total + group.decisions.length, 0) ?? 0;
-  const count = rows.filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0) + orphaned;
+  const count = rows.filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0);
   badge.textContent = String(count);
   badge.hidden = !count;
   badge.title = `${count} open decisions on the selected server`;
@@ -166,11 +162,11 @@ export function initDecisionsPage(): void {
     const applied = state.conns.get(inbox.connection ?? "")?.agentsApplied ?? 0;
     if (applied !== seenAgents) {
       seenAgents = applied;
-      if (visible() && Date.now() - inbox.fetchedAt > 2000) void inbox.refresh();
+      if (Date.now() - inbox.fetchedAt > 2000) void inbox.refresh();
     }
     render();
   });
   setInterval(() => {
-    if (visible() && !document.hidden && Date.now() - inbox.fetchedAt >= 15000) void inbox.refresh();
+    if (!document.hidden && Date.now() - inbox.fetchedAt >= 15000) void inbox.refresh();
   }, 3000);
 }

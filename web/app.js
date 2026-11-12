@@ -1554,7 +1554,7 @@ async function refresh() {
       refreshSubagent(),
       !$("usage-page")?.hidden ? refreshUsageSummary({ periodic: true }) : Promise.resolve(),
       refreshPrs(),
-      !$("decisions-page")?.hidden ? refreshDecisionInbox() : Promise.resolve(),
+      refreshDecisionInbox(),
     ]);
     const fleet = await api("/api/agents");
     if (!state.authenticated) return;
@@ -2236,17 +2236,13 @@ function updateDecisionsNavBadge() {
     $("decisions-count").hidden = !reported;
     return;
   }
-  const live = new Set(state.rows.filter((row) => !row.host).map((row) => row.name));
-  const orphaned = decisionsInboxView.report?.groups
-    ?.filter((group) => !live.has(group.agent))
-    .reduce((sum, group) => sum + group.decisions.length, 0) ?? 0;
-  const count = fleet + orphaned;
+  const count = reported ?? fleet;
   $("decisions-count").textContent = String(count);
   $("decisions-count").hidden = !count;
 }
 
 async function refreshDecisionInbox() {
-  if (!state.authenticated || decisionsRoot.hidden) return;
+  if (!state.authenticated) return;
   const request = ++decisionsInboxRequestSeq;
   const epoch = state.sessionEpoch;
   decisionsInboxView.loading = true;
