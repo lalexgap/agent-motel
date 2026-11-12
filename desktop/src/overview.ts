@@ -161,7 +161,10 @@ function renderOverview(): void {
     : problem ?? (loaded ? "" : "Loading the fleet…");
   // The concierge's own decisions count too: they wait on the owner all the same.
   const waiting = agentsWaitingOnDecisions(all.flatMap((fleet) => fleet.rows));
-  if (waiting) sub.append(document.createTextNode(" · "), h("span", "am-decisions-summary", waiting));
+  if (waiting && (rows.length || (loaded && !problem))) {
+    if (rows.length) sub.append(document.createTextNode(" · "));
+    sub.append(h("span", "am-decisions-summary", waiting));
+  }
 
   const visible = entries.filter(({ row, fleet }) =>
     matchesOverviewFilter(row, state.overviewFilter) &&
