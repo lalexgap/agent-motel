@@ -248,7 +248,7 @@ export function showSearch(): void {
 }
 
 function openResult(key: string, fromKeyboard: boolean): void {
-  selectAgent(key);
+  selectAgent(key, false, "chat");
   if (fromKeyboard && !composerInput().disabled) composerInput().focus();
 }
 

@@ -191,8 +191,21 @@ export interface BridgeMethods {
   "events.start": { params: { connection: string }; result: Record<string, never> };
   "events.stop": { params: { connection: string }; result: Record<string, never> };
   "open.external": { params: { url: string }; result: Record<string, never> };
+  // Consent, sign-in, preflight and upgrade all happen inside the bridge. Resolves once the socket is open.
+  "terminal.open": { params: { connection: string; agent: string }; result: TerminalOpened | Cancelled };
+  "terminal.input": { params: { id: string; data: string }; result: Record<string, never> };
+  "terminal.resize": { params: { id: string; cols: number; rows: number }; result: Record<string, never> };
+  // Idempotent: an unknown id is a no-op.
+  "terminal.close": { params: { id: string }; result: Record<string, never> };
 }
 export type BridgeMethod = keyof BridgeMethods;
+
+export type TerminalTransport = "local" | "ssh";
+export interface TerminalOpened {
+  id: string;
+  transport: TerminalTransport;
+}
+export type TerminalControl = { type: "ready" } | { type: "exit"; code: number } | { type: "error"; message: string };
 
 // What the dev bridge returns for a confirmed action instead of sending it: the
 // confirmation text and a one-time ticket that alone can release the request.
@@ -211,6 +224,11 @@ export type StreamState = "connecting" | "open" | "closed";
 export interface BridgeEvents {
   "events.state": { connection: string; state: StreamState; error?: string };
   "events.message": { connection: string; event: string; data: unknown };
-  "menu.command": { command: "connections" | "find" | "reload" };
+  "menu.command": { command: "connections" | "find" | "reload" | "chat" | "terminal" };
+  // `data` is base64 of raw output bytes, at most 64 KiB decoded per event.
+  "terminal.output": { id: string; data: string };
+  "terminal.control": { id: string; message: TerminalControl };
+  // Exactly once per opened terminal. Local failures use code 1006.
+  "terminal.closed": { id: string; code: number; reason: string };
 }
 export type BridgeEventName = keyof BridgeEvents;

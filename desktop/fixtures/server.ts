@@ -1,16 +1,23 @@
 // Fixture am server: the HTTP API the browser UI uses, over synthetic data
 // held in memory, for the desktop dev server, screenshots and tests.
 //   bun desktop/fixtures/server.ts [--port 8791]
-// Routes live in routes.ts, state in store.ts. Test hooks, all bearer-gated:
-//   GET  /__fixture/requests  every authorised non-GET request, in order
-//   POST /__fixture/reset     back to the seeded state (also clears the log)
+// Test hooks, all bearer-gated:
+//   GET  /__fixture/requests  authorised non-GET, /auth/* (never the token) and terminal
+//                             GET/UPGRADE/WS entries; x-fixture-open-terminals counts open terminals
+//   GET  /__fixture/terminals {open: [{terminal, agent, cols, rows}], sessions}
+//   POST /__fixture/reset     seeded state, empty log; terminals close with 1001, sessions forgotten
+//   POST /__fixture/terminal/expire  revokes every session: terminals close with 4001
+//   POST /__fixture/terminal/flood   the next terminal to attach sends 8 MiB of output
+import type { Server } from "bun";
 import type { FixtureRow } from "./data";
 import { buildRoutes, json, PASTE_MAX_BYTES, type Ctx, type Route } from "./routes";
 import { createState, type FixtureState } from "./store";
+import { createTerminalHost, type TerminalData } from "./terminal";
 
 export { ulid } from "./store";
 export { FIXTURE_IDS } from "./extras";
 export { LOCKED_AGENT, PINNED_BUSY_AGENT } from "./routes";
+export { FLOOD_BYTES, FLOOD_LINE_BYTES, floodLine, SESSION_COOKIE, terminalPrompt } from "./terminal";
 
 export const FIXTURE_TOKEN = "fixture-token";
 export const DEFAULT_FIXTURE_PORT = 8791;
@@ -21,6 +28,9 @@ export interface FixtureRequest {
   method: string;
   path: string;
   body: unknown;
+  // Set for /auth/* and terminal entries.
+  status?: number;
+  terminal?: string;
 }
 
 export interface FixtureServer {
@@ -28,6 +38,7 @@ export interface FixtureServer {
   port: number;
   rows: FixtureRow[];
   requests: FixtureRequest[];
+  openTerminals(): { terminal: string; agent: string; cols: number; rows: number }[];
   reset(): void;
   stop(): void;
 }
@@ -39,6 +50,8 @@ export interface FixtureOptions {
   replyMs?: number;
   // Each step of resume/restart/model/move/create/handoff (starting → idle, …).
   transitionMs?: number;
+  // Browser session lifetime (the real server's is a fixed 12 h).
+  sessionTtlMs?: number;
 }
 
 export function startFixtureServer(options: FixtureOptions = {}): FixtureServer {
@@ -67,14 +80,30 @@ export function startFixtureServer(options: FixtureOptions = {}): FixtureServer 
     timers.add(timer);
   };
 
-  const { routes, flipDrift } = buildRoutes({
+  let origin = "";
+  // Built before the routes, which tell it when an agent's session ends.
+  let terminalTarget: ReturnType<typeof buildRoutes>["terminalTarget"] = () => json({ error: "not found" }, 404);
+  let keyOf: ReturnType<typeof buildRoutes>["keyOf"] = (row) => row.name;
+  const terminals = createTerminalHost({
+    origin: () => origin,
+    token: FIXTURE_TOKEN,
+    sessionTtlMs: options.sessionTtlMs,
+    log: (entry) => requests.push(entry),
+    target: (raw) => terminalTarget(raw),
+    keyOf: (row) => keyOf(row),
+  });
+  const built = buildRoutes({
     state: () => state,
     broadcast,
     later,
     deliverMs: options.deliverMs ?? 1500,
     replyMs: options.replyMs ?? 3000,
     transitionMs: options.transitionMs ?? 500,
+    detachTerminals: (row) => terminals.detach(row),
   });
+  const { routes, flipDrift } = built;
+  terminalTarget = built.terminalTarget;
+  keyOf = built.keyOf;
   const table = routes.map((route) => ({ route, parts: route.path.split("/").filter(Boolean) }));
   function match(method: string, pathname: string): { route: Route; params: Record<string, string> } | null {
     const parts = pathname.split("/").filter(Boolean);
@@ -91,6 +120,7 @@ export function startFixtureServer(options: FixtureOptions = {}): FixtureServer 
   function reset() {
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
+    terminals.reset();
     state = createState(rows);
     requests.length = 0;
     broadcast("fleet", { type: "reset", at: new Date().toISOString() });
@@ -114,15 +144,40 @@ export function startFixtureServer(options: FixtureOptions = {}): FixtureServer 
     });
   }
 
-  const server = Bun.serve({
+  const server: Server<TerminalData> = Bun.serve<TerminalData>({
     hostname: "127.0.0.1",
     port: options.port ?? DEFAULT_FIXTURE_PORT,
     idleTimeout: 0,
     maxRequestBodySize: PASTE_MAX_BYTES + 64 * 1024,
-    async fetch(req) {
+    websocket: terminals.websocket,
+    async fetch(req, server) {
       const url = new URL(req.url);
-      if (req.headers.get("authorization") !== `Bearer ${FIXTURE_TOKEN}`) return json({ error: "unauthorized" }, 401);
-      if (req.method === "GET" && url.pathname === "/__fixture/requests") return json(requests);
+      const bearerValid = req.headers.get("authorization") === `Bearer ${FIXTURE_TOKEN}`;
+      // Browser sign-in: only the Origin and the token in the body count, never the bearer header.
+      if (url.pathname === "/auth/login" || url.pathname === "/auth/logout") {
+        const length = req.headers.get("content-length");
+        if (length === null ? req.body !== null : Number(length) > JSON_MAX_BYTES) {
+          requests.push({ method: req.method, path: url.pathname, body: null, status: 413 });
+          return json({ error: "request body too large" }, 413);
+        }
+        return (await terminals.auth.route(req, url.pathname))!;
+      }
+      if (/^\/api\/agents\/[^/]+\/terminal$/.test(url.pathname)) return terminals.handle(req, server, url, bearerValid);
+      if (!bearerValid) return json({ error: "unauthorized" }, 401);
+      if (req.method === "GET" && url.pathname === "/__fixture/requests") {
+        const response = json(requests);
+        response.headers.set("x-fixture-open-terminals", String(terminals.open().length));
+        return response;
+      }
+      if (req.method === "GET" && url.pathname === "/__fixture/terminals") return json({ open: terminals.open(), sessions: terminals.auth.size });
+      if (req.method === "POST" && url.pathname === "/__fixture/terminal/expire") {
+        terminals.expire();
+        return json({ ok: true });
+      }
+      if (req.method === "POST" && url.pathname === "/__fixture/terminal/flood") {
+        terminals.floodNext();
+        return json({ ok: true });
+      }
       if (req.method === "POST" && url.pathname === "/__fixture/reset") {
         reset();
         return json({ ok: true });
@@ -161,6 +216,7 @@ export function startFixtureServer(options: FixtureOptions = {}): FixtureServer 
     },
   });
 
+  origin = `http://127.0.0.1:${server.port}`;
   const flip = setInterval(flipDrift, options.flipMs ?? 5000);
   const keepalive = setInterval(() => {
     for (const controller of streams) send(controller, ": keepalive\n\n");
@@ -171,8 +227,10 @@ export function startFixtureServer(options: FixtureOptions = {}): FixtureServer 
     port: server.port ?? 0,
     rows,
     requests,
+    openTerminals: () => terminals.open(),
     reset,
     stop() {
+      terminals.reset();
       clearInterval(flip);
       clearInterval(keepalive);
       for (const timer of timers) clearTimeout(timer);

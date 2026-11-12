@@ -97,7 +97,7 @@ export function openSubagent(agentKey: string, subagentId: string, label?: strin
 export function closeSubagent(focus: "transcript" | "composer" = "transcript"): void {
   const parent = open?.agentKey ?? state.selected;
   if (!parent) return;
-  selectAgent(parent);
+  selectAgent(parent, false, focus === "composer" ? "chat" : null);
   if (focus === "composer" && !composerInput().disabled) composerInput().focus({ preventScroll: true });
   else $("transcript").focus({ preventScroll: true });
 }

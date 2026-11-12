@@ -6,7 +6,14 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 export const desktopDir = join(root, "desktop");
 export const distDir = join(desktopDir, "dist");
-const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "prs.js", "favicon.svg"];
+const SHARED_WEB = ["style.css", "links.js", "markdown.js", "transcript.js", "usage.js", "prs.js", "terminal.js", "favicon.svg"];
+// xterm.js and its addons ship with the app (the page fetches nothing from the network).
+const VENDOR: Record<string, string> = {
+  "xterm.js": "node_modules/@xterm/xterm/lib/xterm.js",
+  "xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
+  "addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js",
+  "addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js",
+};
 
 async function mustExist(path: string): Promise<void> {
   const info = await stat(path).catch(() => null);
@@ -19,10 +26,12 @@ export async function build(outdir = distDir): Promise<void> {
     join(desktopDir, "desktop.css"),
     join(desktopDir, "src", "main.ts"),
     ...SHARED_WEB.map((file) => join(root, "web", file)),
+    ...Object.values(VENDOR).map((file) => join(root, file)),
   ];
   for (const source of sources) await mustExist(source);
   await rm(outdir, { recursive: true, force: true });
   await mkdir(join(outdir, "web"), { recursive: true });
+  await mkdir(join(outdir, "vendor"), { recursive: true });
   const result = await Bun.build({
     entrypoints: [join(desktopDir, "src", "main.ts")],
     format: "iife",
@@ -37,6 +46,7 @@ export async function build(outdir = distDir): Promise<void> {
   await copyFile(join(desktopDir, "index.html"), join(outdir, "index.html"));
   await copyFile(join(desktopDir, "desktop.css"), join(outdir, "desktop.css"));
   for (const file of SHARED_WEB) await copyFile(join(root, "web", file), join(outdir, "web", file));
+  for (const [file, source] of Object.entries(VENDOR)) await copyFile(join(root, source), join(outdir, "vendor", file));
 }
 
 if (import.meta.main) {

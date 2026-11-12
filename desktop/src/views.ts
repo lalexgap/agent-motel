@@ -7,9 +7,11 @@ import { $ } from "./dom";
 export type Screen = "setup" | "fleet";
 
 export function setScreen(screen: Screen): void {
+  const changed = document.body.dataset.view !== screen;
   document.body.dataset.view = screen;
   $("am-setup").hidden = screen !== "setup";
   $("am-shell").hidden = screen !== "fleet";
+  if (changed) for (const listener of listeners) listener();
 }
 
 export const screen = (): Screen => (document.body.dataset.view === "setup" ? "setup" : "fleet");
@@ -25,8 +27,8 @@ const views: MainView[] = [];
 const listeners: (() => void)[] = [];
 let active: string | null = null;
 
-// The one view-change hook: runs after every showMainView, for nav marks and
-// anything else that depends on which view is up.
+// The one view-change hook: runs after every showMainView and screen change,
+// for nav marks and anything else that depends on which view is up.
 export function onMainViewChange(listener: () => void): void {
   listeners.push(listener);
 }

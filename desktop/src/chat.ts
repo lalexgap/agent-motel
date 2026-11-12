@@ -8,6 +8,7 @@ import { showDraft, stashDraft } from "./drafts";
 import { BUSY, busySubagents, parseAgentKey, workingLabel } from "./fleet";
 import { duration, firstLine } from "./format";
 import { agentComposer, agentSource, changed, composer, findRow, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
+import type { AgentViewMode } from "./terminalModel";
 import { mainView, registerMainView, showMainView } from "./views";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
@@ -37,7 +38,9 @@ function fillSlot(parts: AgentPart[], id: string, place: (box: HTMLElement) => v
   box.replaceChildren(...nodes);
 }
 
-export function selectAgent(key: string | null, focusTranscript = false): void {
+// `mode` shows chat (or the terminal) for this visit without changing the saved choice.
+export function selectAgent(key: string | null, focusTranscript = false, mode: AgentViewMode | null = null): void {
+  state.agentViewVisit = key ? mode : null;
   if (key !== state.selected) {
     stashDraft();
     state.selected = key;

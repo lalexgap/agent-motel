@@ -5,6 +5,7 @@ import WebKit
 /// `api.get` only sends GETs. Every write is a named method that takes values (`messages.*` and the
 /// `ActionPolicy` methods), whose method, path and body are built by the policy from validated
 /// values. There is no generic POST or DELETE. Destructive methods are confirmed natively first.
+/// `terminal.*` speaks terminal messages, never URLs, headers or raw frames (see `TerminalManager`).
 @MainActor
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     static let handlerName = "am"
@@ -14,6 +15,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     let confirmation: Confirmation
     private let api = APIClient()
     private(set) var streams: [String: EventStream] = [:]
+    private(set) lazy var terminals = TerminalManager(store: store, confirmation: confirmation) { [weak self] name, payload, delivered in
+        guard let self else { return }
+        self.emit(name, payload, delivered: delivered)
+    }
 
     init(store: ConnectionStore, confirmation: Confirmation) {
         self.store = store
@@ -64,6 +69,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "connections.remove":
             let id = try connectionID(params, "id")
             streams.removeValue(forKey: id)?.stop()
+            terminals.connectionChanged(id, urlChanged: false, removed: true)
             try store.remove(id)
             return [String: Any]()
         case "api.get":
@@ -76,6 +82,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             let connection = try savedConnection(params)
             return try await write(MessagePolicy.cancel(base: connection.url, agent: params["agent"], id: params["id"]),
                                    connection: connection)
+        case "terminal.open":
+            _ = try connectionID(params, "connection")
+            return try await terminals.handle(method, params)
+        case _ where TerminalPolicy.methods.contains(method):
+            return try await terminals.handle(method, params)
         case _ where ActionPolicy.methods.contains(method):
             return try await action(method, params)
         case "events.start":
@@ -115,11 +126,16 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
 
     /// Delivers a native event to `window.__amNativeEvent(name, payload)`. Data is passed as
     /// call arguments, never interpolated into script source.
-    func emit(_ name: String, _ payload: [String: Any]) {
-        guard let webView, webView.url.map(NavigationPolicy.isInternal) == true else { return }
+    /// `delivered` runs once the page has handled the event (or at once when there is no page).
+    func emit(_ name: String, _ payload: [String: Any], delivered: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let webView, webView.url.map(NavigationPolicy.isInternal) == true else {
+            delivered?()
+            return
+        }
         webView.callAsyncJavaScript(
             "if (typeof window.__amNativeEvent === 'function') window.__amNativeEvent(name, payload);",
-            arguments: ["name": name, "payload": payload], in: nil, in: .page, completionHandler: nil)
+            arguments: ["name": name, "payload": payload], in: nil, in: .page,
+            completionHandler: delivered.map { done in { @MainActor @Sendable _ in done() } })
     }
 
     // MARK: Methods
@@ -167,7 +183,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             connection = Connection(id: id, name: name, url: url)
             try store.save(connection, token: token)
-            if existing.url != url || token != nil { streams[id]?.restart() }
+            if existing.url != url || token != nil {
+                streams[id]?.restart()
+                terminals.connectionChanged(id, urlChanged: existing.url != url, removed: false)
+            }
         } else {
             guard let token else { throw PolicyError("Enter the access token") }
             connection = Connection(id: UUID().uuidString.lowercased(), name: name, url: url)

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { FIXTURE_IDS, FIXTURE_TOKEN, startFixtureServer, type FixtureServer } from "../desktop/fixtures/server";
+import { FIXTURE_IDS, FIXTURE_TOKEN, FLOOD_BYTES, floodLine, SESSION_COOKIE, startFixtureServer, terminalPrompt, type FixtureServer } from "../desktop/fixtures/server";
+import { FakeShell, TerminalSession } from "../desktop/fixtures/terminal";
 
 let fixture: FixtureServer;
 beforeAll(() => {
@@ -912,5 +913,418 @@ describe("fixture parity routes", () => {
       { method: "POST", path: "/api/agents/keeper-log/rename", body: "not json" },
       { method: "DELETE", path: "/api/agents/nobody", body: null },
     ]);
+  });
+});
+
+describe("fixture terminal", () => {
+  let server: FixtureServer;
+  beforeAll(() => {
+    server = startFixtureServer({ port: 0, flipMs: 60_000, transitionMs: 60 });
+  });
+  afterAll(() => server.stop());
+  beforeEach(async () => {
+    expect((await bearer("POST", "/__fixture/reset")).status).toBe(200);
+  });
+  const PROMPT = "keeper@motel:~/code/lighthouse$ ";
+  const enc = encodeURIComponent;
+  const bearer = (method: string, path: string, init: RequestInit = {}) =>
+    fetch(server.url + path, { ...init, method, headers: { authorization: `Bearer ${FIXTURE_TOKEN}`, ...(init.headers as Record<string, string>) } });
+  const log = async (): Promise<any[]> => (await bearer("GET", "/__fixture/requests")).json();
+  const until = async (check: () => boolean | Promise<boolean>, ms = 5000) => {
+    const deadline = Date.now() + ms;
+    while (!(await check())) {
+      if (Date.now() > deadline) throw new Error("timed out");
+      await Bun.sleep(5);
+    }
+  };
+  const login = (headers: Record<string, string> = { origin: server.url }, body: unknown = { token: FIXTURE_TOKEN }, method = "POST") =>
+    fetch(server.url + "/auth/login", {
+      method,
+      headers: { "content-type": "application/json", ...headers },
+      ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
+    });
+  const session = async (): Promise<string> => {
+    const response = await login();
+    expect(response.status).toBe(200);
+    return /^__Host-am_session=([^;]+);/.exec(response.headers.get("set-cookie") ?? "")![1]!;
+  };
+  const cookie = (id: string) => `${SESSION_COOKIE}=${id}`;
+  const terminalPath = (agent: string) => `/api/agents/${enc(agent)}/terminal`;
+  const preflight = (agent: string, headers: Record<string, string>, query = "") => fetch(server.url + terminalPath(agent) + query, { headers });
+  const expectReply = async (response: Response | Promise<Response>, status: number, body?: unknown) => {
+    const resolved = await response;
+    const data = await resolved.json();
+    expect({ status: resolved.status, data }).toMatchObject({ status, ...(body === undefined ? {} : { data: body }) });
+    return data as any;
+  };
+
+  interface Client {
+    ws: WebSocket;
+    opened: boolean;
+    controls: any[];
+    // "text" and "binary", in arrival order.
+    kinds: string[];
+    output: string;
+    bytes: number;
+    closed: { code: number; reason: string } | null;
+    error: string;
+    send(message: unknown): void;
+  }
+  const sockets = new Set<WebSocket>();
+  afterEach(() => {
+    for (const ws of sockets) ws.close();
+    sockets.clear();
+  });
+  function connect(agent: string, headers: Record<string, string>): Client {
+    const ws = new WebSocket(server.url.replace("http", "ws") + terminalPath(agent), { headers } as unknown as string[]);
+    sockets.add(ws);
+    ws.binaryType = "arraybuffer";
+    const decoder = new TextDecoder();
+    const client: Client = {
+      ws, opened: false, controls: [], kinds: [], output: "", bytes: 0, closed: null, error: "",
+      send: (message) => ws.send(typeof message === "string" || message instanceof Uint8Array ? message : JSON.stringify(message)),
+    };
+    ws.onopen = () => (client.opened = true);
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        client.kinds.push("text");
+        client.controls.push(JSON.parse(event.data));
+      } else {
+        client.kinds.push("binary");
+        client.bytes += event.data.byteLength;
+        client.output += decoder.decode(event.data, { stream: true });
+      }
+    };
+    ws.onerror = (event) => (client.error = String((event as ErrorEvent).message ?? ""));
+    ws.onclose = (event) => (client.closed = { code: event.code, reason: event.reason });
+    return client;
+  }
+  const attach = async (agent = "keeper-log", id?: string): Promise<Client> => {
+    const client = connect(agent, { origin: server.url, cookie: cookie(id ?? (await session())) });
+    await until(() => client.opened && client.output.endsWith("$ "));
+    return client;
+  };
+  const closedWith = async (client: Client, code: number, reason: string) => {
+    await until(() => client.closed !== null);
+    expect(client.closed).toEqual({ code, reason });
+  };
+
+  test("login: Origin, then the 10-a-minute limit, then the token in the body; the bearer header counts for nothing", async () => {
+    await expectReply(login({ origin: server.url }, {}, "GET"), 405, { error: "method not allowed" });
+    await expectReply(login({}), 403, { error: "origin rejected" });
+    await expectReply(login({ origin: server.url.replace("127.0.0.1", "localhost") }), 403, { error: "origin rejected" });
+    await expectReply(login({ origin: server.url + "/" }), 403, { error: "origin rejected" });
+    await expectReply(login({ origin: server.url }, { token: "wrong" }), 401, { error: "Invalid access key" });
+    await expectReply(login({ origin: server.url, authorization: `Bearer ${FIXTURE_TOKEN}` }, {}), 401, { error: "Invalid access key" });
+    await expectReply(login({ origin: server.url }, "not an object"), 401, { error: "Invalid access key" });
+    const ok = await login();
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true });
+    expect(ok.headers.get("set-cookie")).toMatch(/^__Host-am_session=[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200$/);
+    const entries = await log();
+    expect(entries.map((entry) => [entry.method, entry.path, entry.status])).toEqual([
+      ["GET", "/auth/login", 405], ["POST", "/auth/login", 403], ["POST", "/auth/login", 403], ["POST", "/auth/login", 403],
+      ["POST", "/auth/login", 401], ["POST", "/auth/login", 401], ["POST", "/auth/login", 401], ["POST", "/auth/login", 200],
+    ]);
+    expect(JSON.stringify(entries)).not.toContain(FIXTURE_TOKEN);
+    // Four attempts reached the limiter (the 405 and 403s did not); six more are allowed, successes included.
+    for (let i = 0; i < 6; i++) expect((await login()).status).toBe(200);
+    const limited = await login();
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    expect(await limited.json()).toEqual({ error: "Too many attempts. Wait a minute." });
+    await expectReply(login({ origin: server.url }, { token: "wrong" }), 429);
+    // A reset is a restart: the limit is forgotten.
+    await bearer("POST", "/__fixture/reset");
+    expect((await login()).status).toBe(200);
+  });
+
+  test("login revokes the caller's previous session; logout needs the Origin and revokes", async () => {
+    const first = await session();
+    const second = await login({ origin: server.url, cookie: cookie(first) });
+    expect(second.status).toBe(200);
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie(first) }), 401, { error: "unauthorized" });
+    const id = /=([^;]+);/.exec(second.headers.get("set-cookie")!)![1]!;
+    const client = await attach("keeper-log", id);
+    await expectReply(fetch(server.url + "/auth/logout", { method: "POST", headers: { cookie: cookie(id) } }), 403, { error: "origin rejected" });
+    const out = await fetch(server.url + "/auth/logout", { method: "POST", headers: { origin: server.url, cookie: cookie(id) } });
+    expect(out.status).toBe(200);
+    expect(out.headers.get("set-cookie")).toBe("__Host-am_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+    await closedWith(client, 4001, "Session expired or revoked");
+    expect(client.controls.at(-1)).toEqual({ type: "error", message: "Session expired or revoked" });
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie(id) }), 401, { error: "unauthorized" });
+  });
+
+  test("preflight gate: bearer or session, then Origin (or same-origin fetch metadata), then a session, method, query", async () => {
+    const id = await session();
+    const auth = { authorization: `Bearer ${FIXTURE_TOKEN}` };
+    await expectReply(preflight("keeper-log", {}), 401, { error: "unauthorized" });
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie("forged") }), 401, { error: "unauthorized" });
+    // A valid bearer gets past the API gate, never into a terminal.
+    await expectReply(preflight("keeper-log", { ...auth, origin: server.url }), 401, { error: "Web terminal requires a browser session" });
+    await expectReply(preflight("keeper-log", { ...auth, "sec-fetch-site": "same-origin" }), 401, { error: "Web terminal requires a browser session" });
+    await expectReply(preflight("keeper-log", auth), 403, { error: "origin rejected" });
+    await expectReply(preflight("keeper-log", { cookie: cookie(id) }), 403, { error: "origin rejected" });
+    await expectReply(preflight("keeper-log", { cookie: cookie(id), "sec-fetch-site": "same-site" }), 403, { error: "origin rejected" });
+    await expectReply(preflight("keeper-log", { cookie: cookie(id), origin: "http://evil.example" }), 403, { error: "origin rejected" });
+    // An Origin, when present, must match even with same-origin fetch metadata.
+    await expectReply(preflight("keeper-log", { cookie: cookie(id), origin: "null", "sec-fetch-site": "same-origin" }), 403, { error: "origin rejected" });
+    await expectReply(preflight("keeper-log", { cookie: cookie(id), "sec-fetch-site": "same-origin" }), 200, { available: true, transport: "local" });
+    await expectReply(preflight("keeper-log", { cookie: cookie(id), origin: server.url }, "?x=1"), 400, { error: "Terminal URL must not contain query parameters" });
+    await expectReply(
+      fetch(server.url + terminalPath("keeper-log"), { method: "POST", headers: { cookie: cookie(id), origin: server.url } }),
+      405,
+      { error: "method not allowed" },
+    );
+    await expectReply(fetch(server.url + terminalPath("keeper-log"), { method: "POST", headers: { cookie: cookie(id) } }), 403, { error: "origin rejected" });
+    // Every other route still wants the bearer, session or not.
+    await expectReply(fetch(server.url + "/api/agents", { headers: { cookie: cookie(id), origin: server.url } }), 401, { error: "unauthorized" });
+  });
+
+  test("preflight targets: local and ssh transports, stopped, dead, missing, unreachable and malformed agents", async () => {
+    const headers = { origin: server.url, cookie: cookie(await session()) };
+    const vectors: [string, number, unknown][] = [
+      ["keeper-log", 200, { available: true, transport: "local" }],
+      ["motel:keeper-log", 200, { available: true, transport: "local" }],
+      ["local:keeper-log", 200, { available: true, transport: "local" }],
+      ["night-watch", 200, { available: true, transport: "local" }],
+      ["slipway", 200, { available: true, transport: "local" }],
+      ["origami-docs", 200, { available: true, transport: "local" }],
+      ["concierge", 200, { available: true, transport: "local" }],
+      ["annex:kelp-forest", 200, { available: true, transport: "ssh" }],
+      ["old-lens", 409, { error: "Agent is stopped; resume it before attaching" }],
+      ["ghost-pier", 409, { error: "Agent is stopped; resume it before attaching" }],
+      ["paper-trail", 409, { error: "Agent terminal is unavailable (tmux session missing)" }],
+      ["nobody", 404, { error: "Agent no longer exists under this name" }],
+      ["annex:nobody", 404, { error: 'no agent matches "nobody"' }],
+      ["elsewhere:x", 404, { error: 'unknown host "elsewhere" (not in config.remotes)' }],
+      ["bad name", 400, { error: 'invalid agent name "bad name"' }],
+    ];
+    for (const [agent, status, body] of vectors) {
+      const response = await preflight(agent, headers);
+      expect([agent, response.status, await response.json()]).toEqual([agent, status, body]);
+    }
+    const down = await expectReply(preflight("lantern:x", headers), 502);
+    expect(down.error).toStartWith("ssh lantern:");
+    expect((await log()).filter((entry) => entry.method === "GET").map((entry) => entry.status)).toEqual([...vectors.map(([, status]) => status), 502]);
+  });
+
+  test("upgrade gate: the session and an exact Origin; bearer, missing or foreign Origin are refused before the upgrade", async () => {
+    const id = await session();
+    const refused = async (headers: Record<string, string>, status: number) => {
+      const client = connect("keeper-log", headers);
+      await until(() => client.closed !== null);
+      expect(client.opened).toBe(false);
+      expect(client.error).toContain(`Expected 101 status code: ${status}`);
+    };
+    await refused({ authorization: `Bearer ${FIXTURE_TOKEN}`, origin: server.url }, 401);
+    await refused({ cookie: cookie(id) }, 403);
+    await refused({ cookie: cookie(id), "sec-fetch-site": "same-origin" }, 403);
+    await refused({ cookie: cookie(id), origin: "http://evil.example" }, 403);
+    const stopped = connect("old-lens", { cookie: cookie(id), origin: server.url });
+    await until(() => stopped.closed !== null);
+    expect(stopped.error).toContain("Expected 101 status code: 409");
+    expect((await log()).map((entry) => [entry.method, entry.status])).toEqual([
+      ["POST", 200], ["UPGRADE", 401], ["UPGRADE", 403], ["UPGRADE", 403], ["UPGRADE", 403], ["UPGRADE", 409],
+    ]);
+    expect(server.openTerminals()).toEqual([]);
+  });
+
+  test("attach: ready first, then binary output starting with the prompt; logged and listed as open", async () => {
+    const client = await attach();
+    expect(client.kinds[0]).toBe("text");
+    expect(client.controls).toEqual([{ type: "ready" }]);
+    expect(client.kinds.slice(1).every((kind) => kind === "binary")).toBe(true);
+    expect(client.output).toBe(PROMPT);
+    expect(terminalPrompt({ dir: "/home/keeper", host: "annex" })).toBe("keeper@annex:~$ ");
+    const entries = await log();
+    expect(entries.at(-1)).toEqual({ method: "UPGRADE", path: "/api/agents/keeper-log/terminal", body: null, status: 101, terminal: "t1" });
+    const listed = await bearer("GET", "/__fixture/requests");
+    expect(listed.headers.get("x-fixture-open-terminals")).toBe("1");
+    expect(await (await bearer("GET", "/__fixture/terminals")).json()).toEqual({ open: [{ terminal: "t1", agent: "keeper-log", cols: 80, rows: 24 }], sessions: 1 });
+    expect((await fetch(server.url + "/__fixture/terminals")).status).toBe(401);
+    client.ws.close(1000);
+    await until(() => server.openTerminals().length === 0);
+    expect((await log()).at(-1)).toEqual({ method: "WS", path: "/api/agents/keeper-log/terminal", body: { type: "close", code: 1000, reason: "", by: "client" }, terminal: "t1" });
+  });
+
+  test("the fake shell: echo, size, unknown commands, Ctrl-C, backspace, escape sequences, clear; input split anywhere or batched", async () => {
+    const client = await attach();
+    client.send({ type: "resize", cols: 120, rows: 40 });
+    // One command split across three messages, then several in one.
+    client.send({ type: "input", data: "ec" });
+    client.send({ type: "input", data: "ho h" });
+    client.send({ type: "input", data: "i\r" });
+    client.send({ type: "input", data: "size\rfrobnicate --now\rechx\x7fo é ok\r" });
+    client.send({ type: "input", data: "half\x03\x1b[A\x1bOB\x1b[1;5C\techo arrows\r\n" });
+    client.send({ type: "input", data: "clear\r" });
+    await until(() => client.output.endsWith("\x1b[H\x1b[2J" + PROMPT));
+    expect(client.output).toBe(
+      PROMPT + "echo hi\r\nhi\r\n" +
+      PROMPT + "size\r\n40 120\r\n" +
+      PROMPT + "frobnicate --now\r\nfrobnicate: command not found\r\n" +
+      PROMPT + "echx\b \bo é ok\r\né ok\r\n" +
+      PROMPT + "half^C\r\n" +
+      PROMPT + "echo arrows\r\narrows\r\n" +
+      PROMPT + "clear\r\n\x1b[H\x1b[2J" + PROMPT,
+    );
+    const messages = (await log()).filter((entry) => entry.method === "WS").map((entry) => [entry.terminal, entry.body]);
+    expect(messages).toEqual([
+      ["t1", { type: "resize", cols: 120, rows: 40 }],
+      ["t1", { type: "input", data: "ec" }],
+      ["t1", { type: "input", data: "ho h" }],
+      ["t1", { type: "input", data: "i\r" }],
+      ["t1", { type: "input", data: "size\rfrobnicate --now\rechx\x7fo é ok\r" }],
+      ["t1", { type: "input", data: "half\x03\x1b[A\x1bOB\x1b[1;5C\techo arrows\r\n" }],
+      ["t1", { type: "input", data: "clear\r" }],
+    ]);
+    expect(server.openTerminals()).toEqual([{ terminal: "t1", agent: "keeper-log", cols: 120, rows: 40 }]);
+  });
+
+  test("a UTF-8 character split across input slices still arrives whole", () => {
+    const shell = new FakeShell("$ ");
+    const sent: string[] = [];
+    const session = new TerminalSession("t", { send: (data: string | Uint8Array) => (sent.push(typeof data === "string" ? data : new TextDecoder().decode(data)), 1), close() {}, getBufferedAmount: () => 0 } as never,
+      { isValid: () => true, subscribe: () => () => {} }, { log() {}, closed() {} });
+    session.start(shell);
+    const decoder = new TextDecoder();
+    const bytes = new TextEncoder().encode("echo é😀\r");
+    for (const byte of bytes) shell.write(decoder.decode(new Uint8Array([byte]), { stream: true }));
+    expect(sent.join("")).toBe('{"type":"ready"}$ echo é😀\r\né😀\r\n$ ');
+    session.close();
+  });
+
+  test("exit and Ctrl-D: an exit message, then close 1000 Terminal detached; the agent keeps running", async () => {
+    const client = await attach();
+    client.send({ type: "input", data: "exit\r" });
+    await closedWith(client, 1000, "Terminal detached");
+    expect(client.controls).toEqual([{ type: "ready" }, { type: "exit", code: 0 }]);
+    const again = await attach();
+    again.send({ type: "input", data: "x\x7f\x04" });
+    await closedWith(again, 1000, "Terminal detached");
+    expect(again.controls.at(-1)).toEqual({ type: "exit", code: 0 });
+    expect((await (await bearer("GET", "/api/agents/keeper-log")).json()).status).toBe("idle");
+  });
+
+  test("invalid messages and limits close with 1008 after an error message", async () => {
+    const cases: [unknown, string][] = [
+      [{ type: "input", data: "a".repeat(16 * 1024 + 1) }, "Terminal input limit exceeded"],
+      [{ type: "input", data: "é".repeat(8193) }, "Terminal input limit exceeded"],
+      [{ type: "resize", cols: 1, rows: 24 }, "Invalid terminal message"],
+      [{ type: "resize", cols: 80, rows: 201 }, "Invalid terminal message"],
+      [{ type: "resize", cols: 80.5, rows: 24 }, "Invalid terminal message"],
+      [{ type: "input", data: 7 }, "Invalid terminal message"],
+      [{ type: "paste", data: "x" }, "Invalid terminal message"],
+      ["not json", "Invalid terminal message"],
+      [new Uint8Array([1, 2, 3]), "Invalid terminal message"],
+    ];
+    for (const [message, reason] of cases) {
+      const client = await attach();
+      client.send(message);
+      await closedWith(client, 1008, reason);
+      expect(client.controls.at(-1)).toEqual({ type: "error", message: reason });
+    }
+    // Exactly 16 KiB is fine.
+    const client = await attach();
+    client.send({ type: "input", data: "a".repeat(16 * 1024) });
+    client.send({ type: "input", data: "\x03" });
+    await until(() => client.output.endsWith("^C\r\n" + PROMPT));
+    expect(client.closed).toBeNull();
+  });
+
+  test("the 64 KiB pending input queue", () => {
+    const closes: [number, string][] = [];
+    const session = new TerminalSession("t", { send: () => 1, close: (code: number, reason: string) => closes.push([code, reason]), getBufferedAmount: () => 0 } as never,
+      { isValid: () => true, subscribe: () => () => {} }, { log() {}, closed() {} });
+    session.start(new FakeShell("$ "));
+    const chunk = JSON.stringify({ type: "input", data: "a".repeat(16 * 1024) });
+    for (let i = 0; i < 4; i++) session.message(chunk);
+    expect(closes).toEqual([]);
+    session.message(JSON.stringify({ type: "input", data: "a" }));
+    expect(closes).toEqual([[1008, "Terminal input limit exceeded"]]);
+  });
+
+  test("expire revokes every session: open terminals close with 4001 and the next preflight is a 401", async () => {
+    const id = await session();
+    const first = await attach("keeper-log", id);
+    const second = await attach("annex:kelp-forest", id);
+    expect(second.output).toBe("keeper@annex:~/code/tide-tables$ ");
+    expect((await fetch(server.url + "/__fixture/terminal/expire", { method: "POST" })).status).toBe(401);
+    expect((await bearer("POST", "/__fixture/terminal/expire")).status).toBe(200);
+    for (const client of [first, second]) {
+      await closedWith(client, 4001, "Session expired or revoked");
+      expect(client.controls.at(-1)).toEqual({ type: "error", message: "Session expired or revoked" });
+    }
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie(id) }), 401, { error: "unauthorized" });
+    expect(server.openTerminals()).toEqual([]);
+    expect(await (await bearer("GET", "/__fixture/terminals")).json()).toEqual({ open: [], sessions: 0 });
+  });
+
+  test("reset is a restart: terminals close with 1001, sessions are forgotten, the log is cleared", async () => {
+    const id = await session();
+    const client = await attach("keeper-log", id);
+    await bearer("POST", "/__fixture/reset");
+    await closedWith(client, 1001, "Server stopping");
+    expect(client.controls.at(-1)).toEqual({ type: "error", message: "Server stopping" });
+    expect(await log()).toEqual([]);
+    expect(server.openTerminals()).toEqual([]);
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie(id) }), 401, { error: "unauthorized" });
+  });
+
+  test("terminals on the same agent share its pane; stopping, moving or removing the agent detaches them", async () => {
+    const id = await session();
+    const a = await attach("keeper-log", id);
+    const b = await attach("keeper-log", id);
+    a.send({ type: "input", data: "echo shared\r" });
+    await until(() => b.output.includes("shared\r\n" + PROMPT));
+    expect(a.output).toBe(PROMPT + "echo shared\r\nshared\r\n" + PROMPT);
+    await expectReply(bearer("POST", "/api/agents/keeper-log/stop", { body: "{}", headers: { "content-type": "application/json" } }), 200);
+    for (const client of [a, b]) {
+      await closedWith(client, 1000, "Terminal detached");
+      expect(client.controls.at(-1)).toEqual({ type: "exit", code: 0 });
+    }
+    await expectReply(preflight("keeper-log", { origin: server.url, cookie: cookie(id) }), 409, { error: "Agent is stopped; resume it before attaching" });
+    const removed = await attach("crease-check", id);
+    await expectReply(bearer("DELETE", "/api/agents/crease-check"), 200);
+    await closedWith(removed, 1000, "Terminal detached");
+    const moved = await attach("ebb-report", id);
+    await expectReply(bearer("POST", "/api/agents/ebb-report/move", { body: JSON.stringify({ host: "annex" }), headers: { "content-type": "application/json" } }), 200);
+    await closedWith(moved, 1000, "Terminal detached");
+    expect(server.openTerminals()).toEqual([]);
+  });
+
+  test("flood: the next terminal gets 8 MiB of numbered lines in order, paced under the server's own 256 KiB limit", async () => {
+    expect((await bearer("POST", "/__fixture/terminal/flood")).status).toBe(200);
+    const id = await session();
+    const client = connect("keeper-log", { origin: server.url, cookie: cookie(id) });
+    await until(() => client.bytes >= FLOOD_BYTES + PROMPT.length, 20_000);
+    expect(client.closed).toBeNull();
+    expect(client.bytes).toBe(FLOOD_BYTES + PROMPT.length);
+    let expected = PROMPT;
+    for (let i = 0; i < FLOOD_BYTES / 64; i++) expected += floodLine(i);
+    expect(client.output === expected).toBe(true);
+    expect(floodLine(7)).toBe("flood 00000007 " + ".".repeat(47) + "\r\n");
+    // The flood applies to the next terminal only.
+    const calm = await attach("keeper-log", id);
+    expect(calm.output).toBe(PROMPT);
+  });
+
+  test("sessions expire after their lifetime, closing terminals with 4001", async () => {
+    const short = startFixtureServer({ port: 0, flipMs: 60_000, sessionTtlMs: 400 });
+    try {
+      const response = await fetch(short.url + "/auth/login", {
+        method: "POST", headers: { origin: short.url, "content-type": "application/json" }, body: JSON.stringify({ token: FIXTURE_TOKEN }),
+      });
+      expect(response.headers.get("set-cookie")).toEndWith("Max-Age=1");
+      const id = /=([^;]+);/.exec(response.headers.get("set-cookie")!)![1]!;
+      const ws = new WebSocket(short.url.replace("http", "ws") + "/api/agents/keeper-log/terminal", { headers: { origin: short.url, cookie: cookie(id) } } as unknown as string[]);
+      let closed: { code: number; reason: string } | null = null;
+      ws.onclose = (event) => (closed = { code: event.code, reason: event.reason });
+      await until(() => closed !== null);
+      expect(closed!).toEqual({ code: 4001, reason: "Session expired or revoked" });
+      expect(short.openTerminals()).toEqual([]);
+    } finally {
+      short.stop();
+    }
   });
 });

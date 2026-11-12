@@ -572,3 +572,164 @@ check(BundleResource.headers["Content-Security-Policy"]?.contains("connect-src '
 try? FileManager.default.removeItem(at: root)
 try? FileManager.default.removeItem(at: outside)
 print("PASS bundle resource resolution")
+
+// Terminal policy.
+
+for path in ["/auth/login", "/auth/logout", "/api/../auth/login", "/api/%2e%2e/auth/login", "/auth"] {
+    check((try? ConnectionPolicy.apiURL(base: base, path: path)) == nil, "api.get reached \(path)")
+}
+check(rejection { try TerminalPolicy.base("http://100.64.0.1:8790") } == "Terminals need an https connection", "Tailscale http")
+for url in ["http://foo.ts.net", "http://192.168.1.5", "http://am.example.com"] {
+    check(rejection { try TerminalPolicy.base(url) } == TerminalPolicy.needsHTTPS, url)
+}
+for url in ["https://am.example.com", "https://am.example.com:8443", "http://127.0.0.1:8791", "http://127.9.0.1", "http://localhost:8790",
+            "http://[::1]:8790"] {
+    check((try? TerminalPolicy.base(url)) == url, "base \(url)")
+}
+
+let fakeCookie = TerminalPolicy.sessionCookie(fromSetCookie: "__Host-am_session=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200")
+check(fakeCookie != nil, "cookie parsed")
+let cookie = fakeCookie!
+check(cookie.occurs(in: "x AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde y") && !cookie.occurs(in: "AbCdEf"), "occurs")
+check(!"\(cookie)".contains("AbCdEf") && !String(reflecting: cookie).contains("AbCdEf"), "cookie description redacted")
+var dumped = ""
+dump(cookie, to: &dumped)
+check(!dumped.contains("AbCdEf"), "cookie dump redacted: \(dumped)")
+check(TerminalPolicy.sessionCookie(fromSetCookie: "other=1; Path=/, __Host-am_session=0123456789abcdefXYZ; Path=/")
+      == TerminalPolicy.sessionCookie(fromSetCookie: "__Host-am_session=0123456789abcdefXYZ"), "second cookie in a joined header")
+for header in [nil, "", "am_session=0123456789abcdefXYZ", "__Host-am_sessionX=0123456789abcdefXYZ", "__Host-am_session=",
+               "__Host-am_session=short", "__Host-am_session=0123456789abcdef\r\nX-Evil: 1", "__Host-am_session=0123456789abcdef XYZ",
+               "__Host-am_session=0123456789abcdef+/==", "__host-am_session=0123456789abcdefXYZ",
+               "__Host-am_session=" + String(repeating: "a", count: 513)] as [String?] {
+    check(TerminalPolicy.sessionCookie(fromSetCookie: header) == nil, "accepted cookie \(header ?? "nil")")
+}
+
+func header(_ request: TerminalRequest, _ name: String) -> String? { request.request.value(forHTTPHeaderField: name) }
+let tbase = "https://am.example.com"
+let login = try! TerminalPolicy.login(base: tbase, token: "fixture-token")
+check(login.kind == .login && login.request.httpMethod == "POST" && login.request.url?.absoluteString == "https://am.example.com/auth/login",
+      "login url \(login.request)")
+check(header(login, "Origin") == tbase && header(login, "Cookie") == nil && header(login, "Authorization") == nil
+      && header(login, "Content-Type") == "application/json" && !login.request.httpShouldHandleCookies, "login headers")
+check(login.request.httpBody.flatMap { String(data: $0, encoding: .utf8) } == "{\"token\":\"fixture-token\"}", "login body")
+check(rejection { try TerminalPolicy.login(base: "http://100.64.0.1", token: "t") } == TerminalPolicy.needsHTTPS, "login over http")
+let preflight = try! TerminalPolicy.preflight(base: tbase, agent: "annex:kelp-forest", cookie: cookie)
+check(preflight.kind == .preflight && preflight.request.httpMethod == "GET"
+      && preflight.request.url?.absoluteString == "https://am.example.com/api/agents/annex%3Akelp-forest/terminal", "preflight \(preflight.request)")
+check(header(preflight, "Origin") == tbase && header(preflight, "Authorization") == nil && !preflight.request.httpShouldHandleCookies
+      && header(preflight, "Cookie") == "__Host-am_session=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde", "preflight headers")
+let upgrade = try! TerminalPolicy.upgrade(base: tbase, agent: "keeper-log", cookie: cookie)
+check(upgrade.kind == .upgrade && upgrade.request.url?.absoluteString == "wss://am.example.com/api/agents/keeper-log/terminal"
+      && header(upgrade, "Origin") == tbase && header(upgrade, "Authorization") == nil
+      && header(upgrade, "Cookie") == "__Host-am_session=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde", "upgrade \(upgrade.request)")
+let local = try! TerminalPolicy.upgrade(base: "http://127.0.0.1:8791", agent: "keeper-log", cookie: cookie)
+check(local.request.url?.absoluteString == "ws://127.0.0.1:8791/api/agents/keeper-log/terminal" && header(local, "Origin") == "http://127.0.0.1:8791",
+      "loopback upgrade \(local.request)")
+for agent in ["../x", "a/b", "a:b:c", "", "x?y", 7] as [Any] {
+    check(rejection { try TerminalPolicy.preflight(base: tbase, agent: agent, cookie: cookie) }?.hasPrefix("invalid agent") == true, "agent \(agent)")
+}
+
+let goodID = "0123456789abcdef0123456789abcdef"
+check((try? TerminalPolicy.terminalID(goodID)) == goodID, "id")
+for id in ["0123456789ABCDEF0123456789abcdef", "0123456789abcdef", "0123456789abcdef0123456789abcdeg", "", 5,
+           "0123456789abcdef0123456789abcdef0"] as [Any] {
+    check(rejection { try TerminalPolicy.terminalID(id) } == "unknown terminal", "id \(id)")
+}
+let fresh = TerminalPolicy.newID()
+check((try? TerminalPolicy.terminalID(fresh)) == fresh && fresh != TerminalPolicy.newID(), "newID \(fresh)")
+for data in ["a", "\u{3}", "\u{1b}[A", "\r", String(repeating: "x", count: 16384), String(repeating: "é", count: 8192)] {
+    check((try? TerminalPolicy.input(data)) == data, "input \(data.utf8.count) bytes")
+}
+for data in ["", String(repeating: "x", count: 16385), String(repeating: "é", count: 8193), 5, NSNull()] as [Any] {
+    check(rejection { try TerminalPolicy.input(data) } == "invalid data", "input \(data)")
+}
+check((try? TerminalPolicy.size(cols: 2, rows: 2)).map { [$0.cols, $0.rows] } == [2, 2], "min size")
+check((try? TerminalPolicy.size(cols: NSNumber(value: 500.0), rows: 200)).map { [$0.cols, $0.rows] } == [500, 200], "max size, double")
+for (cols, rows, message) in [(1, 24, "invalid cols"), (501, 24, "invalid cols"), (80, 1, "invalid rows"), (80, 201, "invalid rows"),
+                              (2.5, 24, "invalid cols"), ("80", 24, "invalid cols"), (true, 24, "invalid cols"), (80, NSNull(), "invalid rows"),
+                              (Double.nan, 24, "invalid cols")] as [(Any, Any, String)] {
+    check(rejection { try TerminalPolicy.size(cols: cols, rows: rows) } == message, "size \(cols)x\(rows)")
+}
+check(TerminalPolicy.inputFrame("ls\r\u{3}") == "{\"data\":\"ls\\r\\u0003\",\"type\":\"input\"}", "input frame \(TerminalPolicy.inputFrame("ls\r\u{3}"))")
+check(TerminalPolicy.resizeFrame(cols: 80, rows: 24) == "{\"cols\":80,\"rows\":24,\"type\":\"resize\"}", "resize frame")
+
+check(TerminalPolicy.loginError(status: 200) == nil, "login 200")
+check(TerminalPolicy.loginError(status: 401) == "The server rejected the access token", "login 401")
+check(TerminalPolicy.loginError(status: 403) == "This server only allows terminals from its own web address. Connect the app to that address to use terminals.",
+      "login 403")
+check(TerminalPolicy.originRejected("https://am.example.com")
+      == "This server only allows terminals from its own web address (https://am.example.com). Connect the app to that address to use terminals.", "origin text")
+check(TerminalPolicy.loginError(status: 404) == "This server has no web sign-in, so terminals are unavailable", "login 404")
+check(TerminalPolicy.loginError(status: 429) == "Too many sign-in attempts. Wait a minute and try again.", "login 429")
+check(TerminalPolicy.loginError(status: 500) == "The server returned HTTP 500", "login 500")
+func json(_ object: Any) -> Data { try! JSONSerialization.data(withJSONObject: object) }
+check(TerminalPolicy.preflightOutcome(status: 200, body: json(["available": true, "transport": "ssh"])) == .ok(transport: "ssh"), "preflight ok")
+check(TerminalPolicy.preflightOutcome(status: 200, body: json(["available": true, "transport": "telnet"])) == .failed(TerminalPolicy.unexpected), "transport")
+check(TerminalPolicy.preflightOutcome(status: 200, body: Data("nope".utf8)) == .failed(TerminalPolicy.unexpected), "preflight body")
+check(TerminalPolicy.preflightOutcome(status: 401, body: Data()) == .unauthorized, "preflight 401")
+check(TerminalPolicy.preflightOutcome(status: 403, body: Data()) == .failed(TerminalPolicy.originRejected()), "preflight 403")
+check(TerminalPolicy.preflightOutcome(status: 409, body: json(["error": "Agent is stopped; resume it before attaching"]))
+      == .failed("Agent is stopped; resume it before attaching"), "preflight 409")
+check(TerminalPolicy.preflightOutcome(status: 404, body: json(["error": "Agent no longer\u{202E} exists\n"])) == .failed("Agent no longer exists"), "404 text cleaned")
+check(TerminalPolicy.preflightOutcome(status: 404, body: Data()) == .failed("The server returned HTTP 404"), "404 without error")
+check(TerminalPolicy.preflightOutcome(status: 429, body: Data()) == .failed("Too many terminal connections"), "preflight 429")
+check(TerminalPolicy.preflightOutcome(status: 502, body: json(["error": "ssh failed"])) == .failed("The server returned HTTP 502"), "preflight 502")
+check(TerminalPolicy.upgradeOutcome(status: 0) == .failed("Couldn't reach the server"), "upgrade 0")
+check(TerminalPolicy.upgradeOutcome(status: 401) == .unauthorized, "upgrade 401")
+check(TerminalPolicy.upgradeOutcome(status: 403) == .failed(TerminalPolicy.originRejected()), "upgrade 403")
+check(TerminalPolicy.upgradeOutcome(status: 429) == .failed("Too many terminal connections"), "upgrade 429")
+check(TerminalPolicy.upgradeOutcome(status: 426) == .failed("The server returned HTTP 426"), "upgrade 426")
+
+func control(_ text: String) -> String? {
+    TerminalPolicy.control(text).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }.flatMap { String(data: $0, encoding: .utf8) }
+}
+check(control("{\"type\":\"ready\",\"extra\":1}") == "{\"type\":\"ready\"}", "ready")
+check(control("{\"type\":\"exit\",\"code\":0}") == "{\"code\":0,\"type\":\"exit\"}", "exit")
+check(control("{\"type\":\"error\",\"message\":\"Terminal attach failed\"}") == "{\"message\":\"Terminal attach failed\",\"type\":\"error\"}", "error")
+for text in ["{\"type\":\"exit\"}", "{\"type\":\"exit\",\"code\":true}", "{\"type\":\"error\"}", "{\"type\":\"other\"}", "[]", "nope", "",
+             "{\"type\":\"ready\"" ] {
+    check(control(text) == nil, "control \(text)")
+}
+
+let consentText = TerminalPolicy.consentText(name: "Home\u{202E} server", url: "https://am.example.com")
+check(consentText == ConfirmationText(title: "Open interactive terminals on Home server?",
+                                      message: "Keys you type in a terminal go straight to the agent's terminal on am.example.com, including Ctrl-C and shell commands.",
+                                      button: "Allow", destructive: false, suppression: "Don't ask again for this server"), "consent text \(consentText)")
+
+var buffer = OutputBuffer()
+check(buffer.append(Data(repeating: 1, count: 100)) && buffer.append(Data(repeating: 2, count: 70_000)), "append")
+let first = buffer.take()!
+check(first.count == 65_536 && first.first == 1 && first[first.startIndex + 100] == 2 && buffer.buffered == 70_100 - 65_536, "first chunk")
+let second = buffer.take()!
+check(second.count == 70_100 - 65_536 && second.allSatisfy { $0 == 2 } && buffer.take() == nil, "second chunk")
+check(buffer.pending == 70_100 && buffer.inFlight == 70_100, "in flight")
+buffer.delivered(first.count)
+check(buffer.pending == 70_100 - 65_536, "delivered")
+var capped = OutputBuffer()
+check(capped.append(Data(count: TerminalPolicy.maxPendingOutput)), "exactly 4 MiB fits")
+check(!capped.append(Data(count: 1)), "one byte over 4 MiB")
+var ordered = OutputBuffer()
+var expectedBytes = Data()
+for index in 0..<300 {
+    let piece = Data(repeating: UInt8(index % 251), count: 1 + index * 37 % 5000)
+    expectedBytes.append(piece)
+    check(ordered.append(piece), "ordered append")
+}
+var drained = Data()
+while let chunk = ordered.take() {
+    check(chunk.count <= 65_536, "chunk size")
+    drained.append(chunk)
+}
+check(drained == expectedBytes, "order preserved across chunks")
+print("PASS terminal policy (base/https, /auth unreachable via api.get, cookie parsing and redaction, request shape, ids, input, resize, "
+      + "frames, error mapping, control frames, consent text, output coalescing and 4 MiB cap)")
+
+let armedAt: TimeInterval = 1_000
+check(!ConfirmationArming.isArmed(typedAt: armedAt + 0.49, now: armedAt + 0.6, since: armedAt), "typed before the delay")
+check(!ConfirmationArming.isArmed(typedAt: armedAt + 0.6, now: armedAt + 0.49, since: armedAt), "handled before the delay")
+check(ConfirmationArming.isArmed(typedAt: armedAt + 0.5, now: armedAt + 0.5, since: armedAt), "exactly at the delay")
+let rearmedAt = armedAt + 30
+check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1, since: armedAt), "armed long ago")
+check(!ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1, since: rearmedAt), "re-armed when the sheet became key")
+check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.5, now: rearmedAt + 0.5, since: rearmedAt), "armed again after the delay")
+print("PASS confirmation arming (both the key's time and now past the delay, re-armed from when the sheet became key)")

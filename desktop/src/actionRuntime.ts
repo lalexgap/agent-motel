@@ -1,10 +1,11 @@
 // What the agent actions and their dialogs share: the agents with an action in
 // flight, the activation keys still held down, failures shown near the header,
 // and calling the bridge for an outcome.
-import { keyToRelease, rejectionOutcome, resultOutcome, type ActionOutcome } from "./actions";
+import { keyToRelease, recordsHeldKey, rejectionOutcome, resultOutcome, type ActionOutcome } from "./actions";
 import { call } from "./bridge";
 import { refreshConnection } from "./data";
 import { parseAgentKey } from "./fleet";
+import { isIsolated } from "./keyboard";
 import { flashStatus } from "./statusbar";
 import { changed, state } from "./state";
 import type { BridgeMethod, BridgeMethods } from "./types";
@@ -32,9 +33,9 @@ function giveUp(): void {
   held.clear();
 }
 export function trackActivationKeys(): void {
-  // macOS sends no keyup for a key released while ⌘ is down (⌘Enter sends a message).
+  // Only records: the terminal still receives every key.
   window.addEventListener("keydown", (event) => {
-    if ((event.key === "Enter" || event.key === " ") && !event.metaKey) held.add(event.key);
+    if (recordsHeldKey(event.key, event.metaKey, isIsolated(event.target))) held.add(event.key);
   }, true);
   window.addEventListener("keyup", (event) => {
     if (event.key === "Meta") return giveUp();

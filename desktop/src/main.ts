@@ -18,6 +18,7 @@ import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sideba
 import { changed, newConnState, state } from "./state";
 import { initStatusbar } from "./statusbar";
 import { initSubagentView, tickSubagent } from "./subagentView";
+import { initTerminal, showAgentView } from "./terminalView";
 import { initUsage } from "./usageView";
 import type { BridgeEvents, Connection } from "./types";
 import { setScreen } from "./views";
@@ -26,6 +27,7 @@ function onMenu(payload: BridgeEvents["menu.command"]): void {
   if (payload.command === "connections") openSetup();
   else if (payload.command === "find") focusFilter();
   else if (payload.command === "reload") void reloadAll();
+  else if (payload.command === "chat" || payload.command === "terminal") showAgentView(payload.command);
 }
 
 // Listeners and subscriptions run in registration order, so the order here is
@@ -48,6 +50,7 @@ function wire(): void {
   initChat();
   // After the chat and the composer, so its Resume and error line render on the same change.
   initAgentActions();
+  initTerminal();
   initUsage();
   initSearch();
   initPrs();

@@ -1,11 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_BODY_MAX, DEV_CSP, startDevServer } from "../desktop/dev";
 import { bridgeRequestAllowed, DevBridge, MUTATION_TIMEOUT_MS } from "../desktop/devBridge";
 import { call } from "../desktop/src/bridge";
-import { FIXTURE_TOKEN, startFixtureServer, type FixtureServer } from "../desktop/fixtures/server";
+import { FIXTURE_TOKEN, FLOOD_BYTES, floodLine, startFixtureServer, type FixtureServer } from "../desktop/fixtures/server";
 
 const headers = (entries: Record<string, string>) => new Headers(entries);
 
@@ -707,6 +707,31 @@ describe("page bridge in browser dev mode", () => {
     expect(prompts).toEqual([]);
   });
 
+  test("terminal.open asks window.confirm once per connection per page load; cancel sends nothing", async () => {
+    const terminalConnection = devBridge.addConnection("Stub\u202e motel", stub.url, "stub-token").id;
+    answers = [false];
+    prompts = [];
+    const before = stub.requests.length;
+    expect(await call("terminal.open", { connection: terminalConnection, agent: "keeper-log" })).toEqual({ cancelled: true });
+    expect(prompts).toEqual([
+      `Open interactive terminals on Stub motel?\n\nKeys you type in a terminal go straight to the agent's terminal on ${stub.url.slice("http://".length)}, including Ctrl-C and shell commands.`,
+    ]);
+    expect(stub.requests.length).toBe(before);
+    // Asked again after a cancel; once allowed, not again. The stub answers sign-in without a session.
+    answers = [true];
+    await expect(call("terminal.open", { connection: terminalConnection, agent: "keeper-log" })).rejects.toThrow("The server did not start a terminal session");
+    await expect(call("terminal.open", { connection: terminalConnection, agent: "keeper-log" })).rejects.toThrow("The server did not start a terminal session");
+    expect(prompts).toHaveLength(2);
+    expect(stub.requests.slice(before).map((r) => `${r.method} ${r.path} ${r.authorization}`)).toEqual(["POST /auth/login null", "POST /auth/login null"]);
+    // The checks the native shell makes before its sheet come first; other terminal methods never ask.
+    const other = devBridge.addConnection("Other", stub.url, "stub-token").id;
+    await expect(call("terminal.open", { connection: "missing", agent: "keeper-log" })).rejects.toThrow("unknown connection: missing");
+    await expect(call("terminal.open", { connection: other, agent: "bad name" })).rejects.toThrow("invalid agent: bad name");
+    await expect(call("terminal.input", { id: "0123456789abcdef0123456789abcdef", data: "x" })).rejects.toThrow("unknown terminal");
+    expect(await call("terminal.close", { id: "0123456789abcdef0123456789abcdef" })).toEqual({});
+    expect(prompts).toHaveLength(2);
+  });
+
   test("native mode forwards to the shell, which owns the pre-check and alert", async () => {
     const posted: unknown[] = [];
     const win = (globalThis as unknown as { window: Record<string, unknown> }).window;
@@ -719,5 +744,421 @@ describe("page bridge in browser dev mode", () => {
     }
     expect(posted).toEqual([{ method: "agents.stop", params: { connection, agent: "harbor-lights" } }]);
     expect(prompts).toEqual([]);
+  });
+
+  test("native mode: terminal.open goes straight to the shell, which owns the consent sheet", async () => {
+    const posted: unknown[] = [];
+    const win = (globalThis as unknown as { window: Record<string, unknown> }).window;
+    win.webkit = { messageHandlers: { am: { postMessage: async (message: unknown) => (posted.push(message), { cancelled: true }) } } };
+    prompts = [];
+    try {
+      expect(await call("terminal.open", { connection: "native-connection", agent: "keeper-log" })).toEqual({ cancelled: true });
+    } finally {
+      delete win.webkit;
+    }
+    expect(posted).toEqual([{ method: "terminal.open", params: { connection: "native-connection", agent: "keeper-log" } }]);
+    expect(prompts).toEqual([]);
+  });
+});
+
+describe("dev bridge terminals", () => {
+  let fixture: FixtureServer;
+  let bridge: DevBridge;
+  let connection: string;
+  let events: [string, any][];
+  // Every result and event, to prove the session cookie never reaches the page.
+  let seen: unknown[];
+  const PROMPT = "keeper@motel:~/code/lighthouse$ ";
+  beforeAll(() => {
+    fixture = startFixtureServer({ port: 0, flipMs: 60_000, transitionMs: 60 });
+  });
+  afterAll(() => fixture.stop());
+  beforeEach(async () => {
+    fixture.reset();
+    bridge = new DevBridge({ version: "t", build: "t" });
+    events = [];
+    seen = [];
+    bridge.subscribe((name, payload) => {
+      events.push([name, payload]);
+      seen.push(payload);
+    });
+    connection = bridge.addConnection("Fixture motel", fixture.url, FIXTURE_TOKEN).id;
+  });
+  afterEach(() => {
+    bridge.stopAll();
+    const cookies = [...((bridge as unknown as { sessions: Map<string, { cookie: string }> }).sessions.values())].map((session) => session.cookie);
+    for (const cookie of cookies) expect(JSON.stringify(seen)).not.toContain(cookie);
+    expect(JSON.stringify(seen)).not.toContain("__Host-am_session");
+  });
+  const handle = async (method: string, params: Record<string, unknown>) => {
+    const result = await bridge.handle(method, params);
+    seen.push(result);
+    return result as any;
+  };
+  const open = (agent = "keeper-log", conn = connection) => handle("terminal.open", { connection: conn, agent });
+  const until = async (check: () => boolean, ms = 5000) => {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error("timed out");
+      await Bun.sleep(5);
+    }
+  };
+  const output = (id: string) =>
+    Buffer.concat(events.filter(([name, payload]) => name === "terminal.output" && payload.id === id).map(([, payload]) => Buffer.from(payload.data, "base64"))).toString();
+  const closed = (id: string) => events.filter(([name, payload]) => name === "terminal.closed" && payload.id === id).map(([, payload]) => payload);
+  const controls = (id: string) => events.filter(([name, payload]) => name === "terminal.control" && payload.id === id).map(([, payload]) => payload.message);
+  const logged = () => fixture.requests.filter((entry) => entry.path.startsWith("/auth") || entry.path.endsWith("/terminal")).map((entry) => `${entry.method} ${entry.status ?? ""}`.trim());
+  const ready = async (id: string) => until(() => output(id).endsWith("$ "));
+
+  test("open signs in, preflights and upgrades once; input, resize and output flow in order", async () => {
+    const opened = await open();
+    expect(opened).toEqual({ id: expect.stringMatching(/^[a-f0-9]{32}$/), transport: "local" });
+    await ready(opened.id);
+    expect(controls(opened.id)).toEqual([{ type: "ready" }]);
+    expect(output(opened.id)).toBe(PROMPT);
+    expect(await handle("terminal.resize", { id: opened.id, cols: 132, rows: 43 })).toEqual({});
+    for (const data of ["ec", "ho hi\r", "si", "ze\rnope\r"]) expect(await handle("terminal.input", { id: opened.id, data })).toEqual({});
+    await until(() => output(opened.id).endsWith("nope: command not found\r\n" + PROMPT));
+    expect(output(opened.id)).toBe(`${PROMPT}echo hi\r\nhi\r\n${PROMPT}size\r\n43 132\r\n${PROMPT}nope\r\nnope: command not found\r\n${PROMPT}`);
+    expect(logged()).toEqual(["POST 200", "GET 200", "UPGRADE 101", "WS", "WS", "WS", "WS", "WS"]);
+    expect(fixture.requests.filter((entry) => entry.method === "WS").map((entry) => entry.body)).toEqual([
+      { type: "resize", cols: 132, rows: 43 },
+      { type: "input", data: "ec" }, { type: "input", data: "ho hi\r" }, { type: "input", data: "si" }, { type: "input", data: "ze\rnope\r" },
+    ]);
+    // Every output event is base64 of at most 64 KiB.
+    for (const [name, payload] of events) if (name === "terminal.output") expect(Buffer.from(payload.data, "base64").length).toBeLessThanOrEqual(64 * 1024);
+    expect((await open("annex:kelp-forest")).transport).toBe("ssh");
+  });
+
+  test("the session is reused: a second terminal on the connection does not sign in again", async () => {
+    const first = await open();
+    const second = await open("night-watch");
+    expect(second.id).not.toBe(first.id);
+    expect(logged().filter((entry) => entry.startsWith("POST"))).toEqual(["POST 200"]);
+    // Concurrent first opens on a fresh connection share one sign-in too.
+    const other = bridge.addConnection("Again", fixture.url, FIXTURE_TOKEN).id;
+    await Promise.all([open("keeper-log", other), open("crease-check", other)]);
+    expect(logged().filter((entry) => entry.startsWith("POST"))).toEqual(["POST 200", "POST 200"]);
+  });
+
+  test("close: exactly one terminal.closed, then the id is dead; close is idempotent", async () => {
+    const { id } = await open();
+    await ready(id);
+    expect(await handle("terminal.close", { id })).toEqual({});
+    expect(await handle("terminal.close", { id })).toEqual({});
+    expect(closed(id)).toEqual([{ id, code: 1000, reason: "Terminal closed" }]);
+    await expect(bridge.handle("terminal.input", { id, data: "x" })).rejects.toThrow("unknown terminal");
+    await expect(bridge.handle("terminal.resize", { id, cols: 80, rows: 24 })).rejects.toThrow("unknown terminal");
+    await until(() => fixture.openTerminals().length === 0);
+    await Bun.sleep(0);
+    expect(closed(id)).toHaveLength(1);
+  });
+
+  test("rejections: ids, then values; connection, agent, cap and https before any request", async () => {
+    const { id } = await open();
+    const unknown = "0123456789abcdef0123456789abcdef";
+    const vectors: [string, Record<string, unknown>, string][] = [
+      ["terminal.input", { id: unknown, data: "x" }, "unknown terminal"],
+      ["terminal.input", { id: "T1", data: "x" }, "unknown terminal"],
+      ["terminal.input", { data: "x" }, "unknown terminal"],
+      ["terminal.input", { id: unknown, data: "" }, "unknown terminal"],
+      ["terminal.input", { id, data: "" }, "invalid data"],
+      ["terminal.input", { id, data: "a".repeat(16385) }, "invalid data"],
+      ["terminal.input", { id, data: 5 }, "invalid data"],
+      ["terminal.resize", { id: unknown, cols: 1, rows: 1 }, "unknown terminal"],
+      ["terminal.resize", { id, cols: 1, rows: 1 }, "invalid cols"],
+      ["terminal.resize", { id, cols: 80, rows: 201 }, "invalid rows"],
+      ["terminal.resize", { id, cols: "80", rows: 24 }, "invalid cols"],
+      ["terminal.open", { connection: "missing", agent: "keeper-log" }, "unknown connection: missing"],
+      ["terminal.open", { connection, agent: "bad name" }, "invalid agent: bad name"],
+      ["terminal.open", { connection, agent: "a:b:c" }, "invalid agent: a:b:c"],
+      ["terminal.open", { connection, agent: null }, "invalid agent: null"],
+    ];
+    for (const [method, params, error] of vectors) await expect(bridge.handle(method, params)).rejects.toThrow(error);
+    expect(await handle("terminal.close", { id: "not-an-id" })).toEqual({});
+    expect(await handle("terminal.close", {})).toEqual({});
+    const before = fixture.requests.length;
+    const tailnet = bridge.addConnection("Tailnet", "http://100.64.0.1:8790", "x").id;
+    await expect(bridge.handle("terminal.open", { connection: tailnet, agent: "keeper-log" })).rejects.toThrow("Terminals need an https connection");
+    await expect(bridge.handle("terminal.open", { connection: tailnet, agent: "bad name" })).rejects.toThrow("invalid agent: bad name");
+    expect(fixture.requests.length).toBe(before);
+    expect(closed(id)).toEqual([]);
+  });
+
+  test("at most 4 terminals, counting ones still opening", async () => {
+    const ids = (await Promise.all(["keeper-log", "night-watch", "crease-check", "ebb-report"].map((agent) => open(agent)))).map((r) => r.id);
+    const before = fixture.requests.length;
+    await expect(bridge.handle("terminal.open", { connection, agent: "concierge" })).rejects.toThrow("Too many terminals open");
+    const tailnet = bridge.addConnection("Tailnet", "http://100.64.0.1:8790", "x").id;
+    await expect(bridge.handle("terminal.open", { connection: tailnet, agent: "concierge" })).rejects.toThrow("Terminals need an https connection");
+    expect(fixture.requests.length).toBe(before);
+    await handle("terminal.close", { id: ids[0] });
+    expect((await open("concierge")).transport).toBe("local");
+    expect(bridge.openTerminalCount).toBe(4);
+  });
+
+  test("4001: terminal.closed with the server's code, no reconnect; the next open signs in again exactly once", async () => {
+    const { id } = await open();
+    await ready(id);
+    await fetch(fixture.url + "/__fixture/terminal/expire", { method: "POST", headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } });
+    await until(() => closed(id).length > 0);
+    expect(controls(id).at(-1)).toEqual({ type: "error", message: "Session expired or revoked" });
+    expect(closed(id)).toEqual([{ id, code: 4001, reason: "Session expired or revoked" }]);
+    // The 4001 dropped the session: the next open signs in first, once.
+    const again = await open();
+    expect(again.transport).toBe("local");
+    expect(logged().filter((entry) => !entry.startsWith("WS"))).toEqual(["POST 200", "GET 200", "UPGRADE 101", "POST 200", "GET 200", "UPGRADE 101"]);
+    await Bun.sleep(20);
+    expect(closed(id)).toHaveLength(1);
+  });
+
+  test("a session the server forgot (restart): one re-sign-in and the open succeeds", async () => {
+    const { id } = await open();
+    await ready(id);
+    fixture.reset();
+    await until(() => closed(id).length > 0);
+    expect(closed(id)).toEqual([{ id, code: 1001, reason: "Server stopping" }]);
+    expect((await open()).transport).toBe("local");
+    expect(logged()).toEqual(["GET 401", "POST 200", "GET 200", "UPGRADE 101"]);
+  });
+
+  test("a 401 again after signing in again is final", async () => {
+    const calls: string[] = [];
+    const stub = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url.slice(url.lastIndexOf("/")));
+      if (url.endsWith("/auth/login")) return new Response("{}", { headers: { "set-cookie": `__Host-am_session=${"s".repeat(43)}; Path=/` } });
+      if (url.endsWith("/terminal")) return Response.json({ error: "Web terminal requires a browser session" }, { status: 401 });
+      return fetch(input, init);
+    }) as typeof fetch;
+    const stubbed = new DevBridge({ version: "t", build: "t" }, stub);
+    const id = stubbed.addConnection("Stub", "https://am.example.com", "x").id;
+    await expect(stubbed.handle("terminal.open", { connection: id, agent: "keeper-log" })).rejects.toThrow("The server rejected the terminal session");
+    expect(calls).toEqual(["/login", "/terminal", "/login", "/terminal"]);
+  });
+
+  test("sign-in and preflight failures, in plain words", async () => {
+    const answers: Record<string, Response | (() => Response)> = {};
+    const calls: string[] = [];
+    const stub = (async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      const answer = answers[url.endsWith("/auth/login") ? "login" : "preflight"];
+      if (!answer) throw new TypeError("fetch failed");
+      return typeof answer === "function" ? answer() : answer.clone();
+    }) as typeof fetch;
+    const stubbed = new DevBridge({ version: "t", build: "t" }, stub);
+    const id = stubbed.addConnection("Stub", "https://am.example.com", "x").id;
+    const attempt = () => stubbed.handle("terminal.open", { connection: id, agent: "keeper-log" });
+    const origin = "This server only allows terminals from its own web address. Connect the app to that address to use terminals.";
+    const loginVectors: [Response | undefined, string][] = [
+      [Response.json({ error: "Invalid access key" }, { status: 401 }), "The server rejected the access token"],
+      [Response.json({ error: "origin rejected" }, { status: 403 }), origin],
+      [Response.json({ error: "not found" }, { status: 404 }), "This server has no web sign-in, so terminals are unavailable"],
+      [Response.json({ error: "Too many attempts. Wait a minute." }, { status: 429 }), "Too many sign-in attempts. Wait a minute and try again."],
+      [new Response(null, { status: 302, headers: { location: "https://elsewhere.example" } }), "The server returned HTTP 302"],
+      [Response.json({ ok: true }), "The server did not start a terminal session"],
+      [Response.json({ ok: true }, { headers: { "set-cookie": "other=abcdefghijklmnopqrstuvwxyz" } }), "The server did not start a terminal session"],
+      [undefined, "Couldn't reach the server"],
+    ];
+    for (const [response, error] of loginVectors) {
+      if (response) answers.login = response;
+      else delete answers.login;
+      await expect(attempt()).rejects.toThrow(error);
+    }
+    // Each failed sign-in was tried once; a 429 is surfaced, not retried.
+    expect(calls).toHaveLength(loginVectors.length);
+    answers.login = new Response("{}", { headers: { "set-cookie": `__Host-am_session=${"s".repeat(43)}; Path=/; HttpOnly` } });
+    const preflightVectors: [Response | undefined, string][] = [
+      [Response.json({ error: "Agent is stopped; resume it before attaching" }, { status: 409 }), "Agent is stopped; resume it before attaching"],
+      [Response.json({ error: "origin rejected" }, { status: 403 }), origin],
+      [Response.json({ error: "Too many terminal requests" }, { status: 429 }), "Too many terminal connections"],
+      [Response.json({ error: "ssh lantern: down" }, { status: 502 }), "The server returned HTTP 502"],
+      [Response.json({ available: true, transport: "telnet" }), "This server did not answer like Agent Motel"],
+      [undefined, "Couldn't reach the server"],
+    ];
+    for (const [response, error] of preflightVectors) {
+      if (response) answers.preflight = response;
+      else delete answers.preflight;
+      await expect(attempt()).rejects.toThrow(error);
+    }
+  });
+
+  test("against the fixture: wrong token, wrong origin, stopped, unreachable and missing agents", async () => {
+    const wrong = bridge.addConnection("Wrong", fixture.url, "wrong-token").id;
+    await expect(bridge.handle("terminal.open", { connection: wrong, agent: "keeper-log" })).rejects.toThrow("The server rejected the access token");
+    const localhost = bridge.addConnection("Localhost", fixture.url.replace("127.0.0.1", "localhost"), FIXTURE_TOKEN).id;
+    await expect(bridge.handle("terminal.open", { connection: localhost, agent: "keeper-log" })).rejects.toThrow(
+      "This server only allows terminals from its own web address. Connect the app to that address to use terminals.",
+    );
+    const vectors: [string, string][] = [
+      ["old-lens", "Agent is stopped; resume it before attaching"],
+      ["paper-trail", "Agent terminal is unavailable (tmux session missing)"],
+      ["nobody", "Agent no longer exists under this name"],
+      ["annex:nobody", 'no agent matches "nobody"'],
+      ["lantern:beacon", "The server returned HTTP 502"],
+      ["elsewhere:x", 'unknown host "elsewhere" (not in config.remotes)'],
+    ];
+    for (const [agent, error] of vectors) await expect(bridge.handle("terminal.open", { connection, agent })).rejects.toThrow(error);
+    const down = bridge.addConnection("Down", "http://127.0.0.1:9", FIXTURE_TOKEN).id;
+    await expect(bridge.handle("terminal.open", { connection: down, agent: "keeper-log" })).rejects.toThrow("Couldn't reach the server");
+    expect(bridge.openTerminalCount).toBe(0);
+  });
+
+  test("exit: the control message, then terminal.closed with the server's code", async () => {
+    const { id } = await open();
+    await ready(id);
+    await handle("terminal.input", { id, data: "exit\r" });
+    await until(() => closed(id).length > 0);
+    expect(controls(id)).toEqual([{ type: "ready" }, { type: "exit", code: 0 }]);
+    expect(closed(id)).toEqual([{ id, code: 1000, reason: "Terminal detached" }]);
+    expect(output(id)).toBe(PROMPT + "exit\r\n");
+    // Output, controls and the close arrive in that order.
+    const order = events.filter(([, payload]) => payload.id === id).map(([name]) => name);
+    expect(order.at(-1)).toBe("terminal.closed");
+    expect(order.at(-2)).toBe("terminal.control");
+  });
+
+  test("an input frame the server refuses closes with its 1008", async () => {
+    const { id } = await open();
+    await ready(id);
+    // 16 KiB of three-byte characters is within the bridge's character count but not the byte limit.
+    await expect(bridge.handle("terminal.input", { id, data: "€".repeat(5462) })).rejects.toThrow("invalid data");
+    await handle("terminal.input", { id, data: "€".repeat(5461) });
+    await handle("terminal.input", { id, data: "\x03" });
+    await until(() => output(id).endsWith("^C\r\n" + PROMPT));
+    expect(closed(id)).toEqual([]);
+  });
+
+  test("connections.remove and a URL change close the connection's terminals (1006); a new token only drops the session", async () => {
+    const { id } = await open();
+    const other = bridge.addConnection("Other", fixture.url, FIXTURE_TOKEN).id;
+    const kept = await open("night-watch", other);
+    await handle("connections.remove", { id: connection });
+    // Events of a terminal wait until its open has returned; it may still be within that turn.
+    await until(() => closed(id).length > 0);
+    expect(closed(id)).toEqual([{ id, code: 1006, reason: "The connection was removed or changed" }]);
+    expect(closed(kept.id)).toEqual([]);
+    await handle("connections.save", { id: other, name: "Renamed only", url: fixture.url });
+    const logins = () => logged().filter((entry) => entry.startsWith("POST")).length;
+    const before = logins();
+    await open("crease-check", other);
+    expect(logins()).toBe(before);
+    await handle("connections.save", { id: other, name: "New token", url: fixture.url, token: FIXTURE_TOKEN });
+    await open("ebb-report", other);
+    expect(logins()).toBe(before + 1);
+    expect(closed(kept.id)).toEqual([]);
+    await handle("connections.save", { id: other, name: "Moved", url: fixture.url.replace("127.0.0.1", "localhost"), token: FIXTURE_TOKEN });
+    await until(() => closed(kept.id).length > 0);
+    expect(closed(kept.id)).toEqual([{ id: kept.id, code: 1006, reason: "The connection was removed or changed" }]);
+    await until(() => fixture.openTerminals().length === 0);
+  });
+
+  test("a flood is relayed whole and in order, coalesced into events of at most 64 KiB", async () => {
+    await fetch(fixture.url + "/__fixture/terminal/flood", { method: "POST", headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } });
+    const { id } = await open();
+    await until(() => output(id).length >= FLOOD_BYTES + PROMPT.length, 20_000);
+    let expected = PROMPT;
+    for (let i = 0; i < FLOOD_BYTES / 64; i++) expected += floodLine(i);
+    expect(output(id) === expected).toBe(true);
+    const sizes = events.filter(([name, payload]) => name === "terminal.output" && payload.id === id).map(([, payload]) => Buffer.from(payload.data, "base64").length);
+    expect(Math.max(...sizes)).toBe(64 * 1024);
+    expect(sizes.length).toBeGreaterThanOrEqual(FLOOD_BYTES / (64 * 1024));
+    expect(closed(id)).toEqual([]);
+  });
+
+  test("more than 4 MiB the page has not taken closes with 1013, once, and detaches from the server", async () => {
+    bridge.subscribe(() => new Promise(() => {}));
+    await fetch(fixture.url + "/__fixture/terminal/flood", { method: "POST", headers: { authorization: `Bearer ${FIXTURE_TOKEN}` } });
+    const { id } = await open();
+    await until(() => closed(id).length > 0, 20_000);
+    expect(closed(id)).toEqual([{ id, code: 1013, reason: "Output exceeded rendering capacity" }]);
+    // Emitted but never taken: at most the cap (under load it can even trip before the first event).
+    expect(output(id).length).toBeLessThanOrEqual(4 * 1024 * 1024);
+    await until(() => fixture.openTerminals().length === 0);
+    await Bun.sleep(20);
+    expect(closed(id)).toHaveLength(1);
+  });
+
+  test("closeAllTerminals (the page went away) closes every terminal without events; an open in progress fails", async () => {
+    const first = await open();
+    const second = await open("night-watch");
+    bridge.closeAllTerminals();
+    await until(() => fixture.openTerminals().length === 0);
+    await Bun.sleep(20);
+    expect([...closed(first.id), ...closed(second.id)]).toEqual([]);
+    expect(bridge.openTerminalCount).toBe(0);
+    // A page reload while a terminal is opening.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow = new DevBridge({ version: "t", build: "t" }, (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/terminal")) await gate;
+      return fetch(input, init);
+    }) as typeof fetch);
+    const id = slow.addConnection("Slow", fixture.url, FIXTURE_TOKEN).id;
+    const pending = slow.handle("terminal.open", { connection: id, agent: "keeper-log" });
+    await until(() => fixture.requests.some((entry) => entry.path === "/auth/login"));
+    slow.closeAllTerminals();
+    release();
+    await expect(pending).rejects.toThrow("The page changed while the terminal was opening");
+    expect(slow.openTerminalCount).toBe(0);
+    await until(() => fixture.openTerminals().length === 0);
+  });
+});
+
+describe("dev server terminal relay", () => {
+  let fixture: FixtureServer;
+  let devBridge: DevBridge;
+  let server: ReturnType<typeof startDevServer>;
+  let connection: string;
+  beforeAll(() => {
+    fixture = startFixtureServer({ port: 0, flipMs: 60_000 });
+    devBridge = new DevBridge({ version: "t", build: "t" });
+    connection = devBridge.addConnection("Fixture motel", fixture.url, FIXTURE_TOKEN).id;
+    server = startDevServer({ port: 0, bridge: devBridge, root: tmpdir() });
+  });
+  afterAll(() => {
+    server.stop();
+    devBridge.stopAll();
+    fixture.stop();
+  });
+  const post = async (method: string, params: unknown) =>
+    (await fetch(server.url + "/__bridge", { method: "POST", headers: { origin: server.url, "content-type": "application/json" }, body: JSON.stringify({ method, params }) })).json() as Promise<any>;
+
+  test("events reach the page over the bridge stream; the cookie never does; a disconnect closes the page's terminals", async () => {
+    const controller = new AbortController();
+    const stream = await fetch(server.url + "/__bridge/events", { headers: { origin: server.url }, signal: controller.signal });
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const pump = (async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+      }
+    })().catch(() => {});
+    const opened = await post("terminal.open", { connection, agent: "keeper-log" });
+    expect(opened.result).toEqual({ id: expect.stringMatching(/^[a-f0-9]{32}$/), transport: "local" });
+    const id = opened.result.id;
+    expect((await post("terminal.input", { id, data: "echo relayed\r" })).result).toEqual({});
+    const relayed = () =>
+      text.split("\n\n").filter((chunk) => chunk.startsWith("data: ")).map((chunk) => JSON.parse(chunk.slice(6))).filter((event) => event.payload?.id === id);
+    const decoded = () => Buffer.concat(relayed().filter((event) => event.name === "terminal.output").map((event) => Buffer.from(event.payload.data, "base64"))).toString();
+    const deadline = Date.now() + 5000;
+    while (!decoded().includes("relayed\r\n") && Date.now() < deadline) await Bun.sleep(5);
+    expect(decoded()).toContain("echo relayed\r\nrelayed\r\n");
+    expect(relayed()[0]).toEqual({ name: "terminal.control", payload: { id, message: { type: "ready" } } });
+    const cookies = [...((devBridge as unknown as { sessions: Map<string, { cookie: string }> }).sessions.values())].map((session) => session.cookie);
+    expect(cookies).toHaveLength(1);
+    expect(text).not.toContain(cookies[0]!);
+    expect(JSON.stringify(opened)).not.toContain(cookies[0]!);
+    expect((await post("terminal.input", { id: "nope", data: "x" })).error).toBe("unknown terminal");
+    controller.abort();
+    await pump;
+    const until = Date.now() + 5000;
+    while ((devBridge.openTerminalCount > 0 || fixture.openTerminals().length > 0) && Date.now() < until) await Bun.sleep(5);
+    expect(devBridge.openTerminalCount).toBe(0);
+    expect(fixture.openTerminals()).toEqual([]);
   });
 });

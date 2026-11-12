@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private(set) var webView: WKWebView!
     let store = ConnectionStore()
     private(set) lazy var bridge = Bridge(store: store, confirmation: Confirmation(
-        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.showWindow() }))
+        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.revealForSheet() }))
     /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
     var activatesWindow = true
     private var errorPanel: NSStackView!
@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func applicationWillTerminate(_ notification: Notification) {
         bridge.stopAllStreams()
+        bridge.terminals.shutDown()
         bridge.cancelRequests()
     }
 
@@ -111,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         section("View", [
             ("Reload", #selector(reloadPage), "r"),
             ("Find", #selector(find), "f"),
+            nil,
+            ("Show Chat", #selector(showChat), "1"),
+            ("Show Terminal", #selector(showTerminal), "2"),
         ])
         section("Window", [
             ("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
@@ -125,6 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if activatesWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderBack(nil)
+        }
+    }
+
+    /// Brings the window forward for a confirmation sheet without activating the app: if the app
+    /// stopped being active a moment ago, activating it would take focus from the other app.
+    func revealForSheet() {
+        if activatesWindow {
+            window.makeKeyAndOrderFront(nil)
         } else {
             window.orderBack(nil)
         }
@@ -153,6 +167,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     @objc func find() {
         bridge.emit("menu.command", ["command": "find"])
+    }
+
+    @objc func showChat() {
+        bridge.emit("menu.command", ["command": "chat"])
+    }
+
+    @objc func showTerminal() {
+        bridge.emit("menu.command", ["command": "terminal"])
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -196,6 +218,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
+    /// A new page load replaces the page and its terminal ids, so its terminals close.
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        bridge.terminals.pageChanged()
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         showError(error)
     }
@@ -205,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        bridge.terminals.pageChanged()
         showError("The page stopped unexpectedly.")
     }
 

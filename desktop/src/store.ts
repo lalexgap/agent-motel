@@ -105,3 +105,8 @@ export const saveInspectorPrefsRaw = (raw: string): void => write(INSPECTOR_KEY,
 const PRS_KEY = "am.desktop.prs.v1";
 export const loadPrsPrefsRaw = (): string | null => read(PRS_KEY);
 export const savePrsPrefsRaw = (raw: string): void => write(PRS_KEY, raw);
+
+// Chat or Terminal for the open agent: one global choice, as the browser UI's am.detailMode.
+const AGENT_VIEW_KEY = "am.desktop.agentView.v1";
+export const loadAgentViewRaw = (): string | null => read(AGENT_VIEW_KEY);
+export const saveAgentViewRaw = (mode: string): void => write(AGENT_VIEW_KEY, mode);

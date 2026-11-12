@@ -45,6 +45,8 @@ export interface Fx {
   deliverMs: number;
   replyMs: number;
   transitionMs: number;
+  // The agent's tmux session ended: attached terminals exit.
+  detachTerminals?(row: FixtureRow): void;
 }
 
 export const json = (body: unknown, status = 200) =>
@@ -52,7 +54,12 @@ export const json = (body: unknown, status = 200) =>
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
-export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
+export function buildRoutes(fx: Fx): {
+  routes: Route[];
+  flipDrift(): void;
+  terminalTarget(raw: string): { row: FixtureRow; transport: "local" | "ssh" } | Response;
+  keyOf(row: FixtureRow): string;
+} {
   const s = () => fx.state();
 
   const resolveHost = (host: string): string | null | undefined =>
@@ -118,6 +125,7 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     row.updatedAt = now;
     if (status === "working") row.workingSince ??= now;
     else delete row.workingSince;
+    if (STOPPED.has(status)) fx.detachTerminals?.(row);
   }
   // Richer than the real stream, which sends only `{id, type: "fleet", event, agent?, at}` and only for
   // local agents: UI code must treat these as refresh cues and never read `status`, `host` or `type` here.
@@ -460,6 +468,7 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
         const state = s();
         bump(row);
         state.rows.splice(state.rows.indexOf(row), 1);
+        fx.detachTerminals?.(row);
         for (const message of queueOf(row)) state.messages.delete(message.id);
         state.queues.delete(row);
         state.transcripts.delete(row);
@@ -527,6 +536,7 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
           return json({ error: `agent "${row.name}" already exists — restart it with \`am resume ${row.name}\`` }, 409);
         }
         const from = row.host ?? FIXTURE_LOCAL_HOST;
+        fx.detachTerminals?.(row);
         if (destination) row.host = destination;
         else delete row.host;
         if (typeof body.dir === "string" && body.dir) row.dir = body.dir;
@@ -975,7 +985,26 @@ export function buildRoutes(fx: Fx): { routes: Route[]; flipDrift(): void } {
     drain(row);
   }
 
+  // Mirrors terminalTarget / remoteTerminalTarget in src/webTerminal.ts.
+  function terminalTarget(raw: string): { row: FixtureRow; transport: "local" | "ssh" } | Response {
+    const target = parseTarget(raw);
+    if (target instanceof Response) return target;
+    if (target.host) {
+      const row = agentOf(target);
+      if (row instanceof Response) return row;
+      if (STOPPED.has(row.status)) return json({ error: "Remote agent is stopped; resume it before attaching" }, 409);
+      return { row, transport: "ssh" };
+    }
+    const row = hostRows(null).find((candidate) => candidate.name === target.name);
+    if (!row) return json({ error: "Agent no longer exists under this name" }, 404);
+    if (row.status === "exited") return json({ error: "Agent is stopped; resume it before attaching" }, 409);
+    if (row.status === "dead") return json({ error: "Agent terminal is unavailable (tmux session missing)" }, 409);
+    return { row, transport: "local" };
+  }
+
   return {
+    terminalTarget,
+    keyOf,
     routes: [...readRoutes, ...lifecycleRoutes, ...manageRoutes, ...agentSetupRoutes, ...promptRoutes, ...fileRoutes, ...usageRoutes, ...prRoutes, ...searchRoutes],
     flipDrift,
   };

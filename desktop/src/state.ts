@@ -2,7 +2,8 @@
 // the change channels views subscribe to so they re-render their own region.
 import { parseDrafts, parseModePreference, type PendingMessage } from "./composer";
 import { agentKey, fleetRows, isConciergeKey, parseAgentKey, type ConnectionFleet, type TreeModel } from "./fleet";
-import { loadDraftsRaw, loadPrefs, loadSendModeRaw, savePrefs } from "./store";
+import { loadAgentViewRaw, loadDraftsRaw, loadPrefs, loadSendModeRaw, saveAgentViewRaw, savePrefs } from "./store";
+import { parseAgentViewMode, type AgentViewMode } from "./terminalModel";
 import type { AgentDetail, AgentRow, AppInfo, Connection, StreamState, SubagentRecord, Transcript } from "./types";
 import { Unread } from "./unread";
 
@@ -88,6 +89,9 @@ export const state = {
   // The subagent the subagent view shows (`<agent key>#<id>`); its parent stays `selected`.
   subagent: null as string | null,
   taskExpanded: false,
+  // `agentViewVisit` overrides the saved Chat/Terminal choice for this visit only.
+  agentView: parseAgentViewMode(loadAgentViewRaw()),
+  agentViewVisit: null as AgentViewMode | null,
   editing: null as string | null,
   formOpen: false,
   pendingRemove: null as string | null,
@@ -95,6 +99,13 @@ export const state = {
 };
 
 export const unread = new Unread();
+
+export const agentViewMode = (): AgentViewMode => state.agentViewVisit ?? state.agentView;
+export function setAgentView(mode: AgentViewMode): void {
+  state.agentView = mode;
+  state.agentViewVisit = null;
+  saveAgentViewRaw(mode);
+}
 
 export const persist = () =>
   savePrefs({

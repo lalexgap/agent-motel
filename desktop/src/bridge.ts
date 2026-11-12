@@ -1,6 +1,6 @@
 // The page's only way out: the native WKScriptMessageHandlerWithReply in the
 // Mac app, or the dev server's /__bridge endpoints when running in a browser.
-import { CONFIRM_OPEN, confirmMessage, isConfirmMethod } from "./policy";
+import { CONFIRM_OPEN, confirmMessage, isConfirmMethod, terminalConsentMessage } from "./policy";
 import type { BridgeEventName, BridgeEvents, BridgeMethod, BridgeMethods, DevConfirmation } from "./types";
 
 interface NativeHandler {
@@ -40,6 +40,7 @@ export async function call<M extends BridgeMethod>(method: M, params: BridgeMeth
     }
   }
   if (isConfirmMethod(method)) return (await devConfirmed(method, params)) as BridgeMethods[M]["result"];
+  if (method === "terminal.open") return (await devTerminalOpen(params)) as BridgeMethods[M]["result"];
   return (await devCall(method, params)) as BridgeMethods[M]["result"];
 }
 
@@ -83,6 +84,27 @@ async function devConfirmed(method: string, params: unknown): Promise<unknown> {
     return { cancelled: true };
   }
   return devCall("dev.confirm", { ticket, accept: true });
+}
+
+// The dev bridge has no consent gate; this asks once per connection per page load, after the
+// same checks the native shell makes before its sheet.
+const terminalConsented = new Set<string>();
+
+async function devTerminalOpen(params: unknown): Promise<unknown> {
+  const connection = (params as { connection?: unknown } | null)?.connection;
+  if (typeof connection !== "string" || !terminalConsented.has(connection)) {
+    if (confirmOwner) throw new Error(CONFIRM_OPEN);
+    const owner = {};
+    confirmOwner = owner;
+    try {
+      const target = (await devCall("dev.terminalCheck", params)) as { name: string; url: string };
+      if (!window.confirm(terminalConsentMessage(target.name, target.url))) return { cancelled: true };
+      terminalConsented.add(connection as string);
+    } finally {
+      if (confirmOwner === owner) confirmOwner = null;
+    }
+  }
+  return devCall("terminal.open", params);
 }
 
 export function on<N extends BridgeEventName>(name: N, handler: Handler<N>): () => void {
