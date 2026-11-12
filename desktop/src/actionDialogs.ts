@@ -10,6 +10,7 @@ import {
   effortChoices,
   keyAfter,
   modelChoices,
+  modelPrecondition,
   moveDir,
   moveHostOptions,
   nameProblem,
@@ -27,11 +28,11 @@ import { selectAgent } from "./chat";
 import { refreshConnection } from "./data";
 import { h } from "./dom";
 import { agentPath, parseAgentKey } from "./fleet";
-import { AGENT_GONE, RUNNING_STATUSES } from "./policy";
+import { AGENT_GONE } from "./policy";
 import { focusCursor } from "./sidebar";
 import { findRow, state } from "./state";
 import { flashStatus } from "./statusbar";
-import type { AgentDetail, HostsResponse, RunningStatus } from "./types";
+import type { AgentDetail, HostsResponse } from "./types";
 
 type Failed = Extract<ActionOutcome, { kind: "failed" }>;
 
@@ -475,17 +476,14 @@ async function submitModel(): Promise<void> {
           ? { kind: "failed", message: error.message, tokenRejected: error.status === 401 }
           : { kind: "failed", message: UNREACHABLE, advised: true }, SUFFIX.model, modelSelect);
     }
-    if (fresh.createdAt !== context.createdAt) {
+    const precondition = modelPrecondition(fresh, context.createdAt);
+    if ("error" in precondition) {
       setBusy(box, false);
-      return fail(box, key, { kind: "failed", message: "This agent was replaced since the dialog opened. Close the dialog and check the agent before retrying.", advised: true }, SUFFIX.model, modelSelect);
-    }
-    if (!(RUNNING_STATUSES as readonly string[]).includes(fresh.status)) {
-      setBusy(box, false);
-      return fail(box, key, { kind: "failed", message: "This agent has stopped since the dialog opened. Resume it before changing the model.", advised: true }, SUFFIX.model, modelSelect);
+      return fail(box, key, { kind: "failed", message: precondition.error, advised: true }, SUFFIX.model, modelSelect);
     }
     const outcome = await callOutcome("agents.model", {
       connection, agent: id, model: modelSelect.value || null, effort: effortSelect.value || null,
-      createdAt: context.createdAt, status: fresh.status as RunningStatus,
+      createdAt: context.createdAt, status: precondition.status,
     });
     if (outcome.kind === "cancelled") return;
     if (outcome.kind === "failed") {

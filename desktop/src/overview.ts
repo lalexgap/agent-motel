@@ -1,6 +1,7 @@
 import { selectAgent } from "./chat";
-import { $, composerInput, dot, h } from "./dom";
-import { agentId, agentKey, conciergeRow, fleetRows, statusLabel, type ConnectionFleet } from "./fleet";
+import { agentsWaitingOnDecisions, blockingDecisions, decisionsName, rowDecisionsLabel } from "./decisions";
+import { $, composerInput, decisionsBadge, dot, h } from "./dom";
+import { agentId, agentKey, conciergeRow, fleetRows, rowStatusLabel, type ConnectionFleet } from "./fleet";
 import { registerShortcut } from "./keyboard";
 import {
   compareOverview,
@@ -44,12 +45,14 @@ function conciergeNode(fleet: ConnectionFleet, row: AgentRow, multi: boolean): H
   title.append(h("span", "am-concierge-mark", "✳"), document.createTextNode("Ask the concierge"));
   if (multi) title.append(h("span", "am-ask-conn", fleet.name));
   const where = h("span", "am-ask-status");
-  where.append(dot(row.status), document.createTextNode(`${row.host || fleet.local || "This server"} · ${statusLabel(row.status)}`));
+  where.append(dot(row.status), document.createTextNode(`${row.host || fleet.local || "This server"} · ${rowStatusLabel(row)}`));
   if (unread.isNew(key, row.updatedAt, state.selected)) where.append(h("span", "unread-badge am-new", "New"));
+  const decisions = decisionsBadge(row);
+  if (decisions) where.append(decisions);
   const hint = h("span", "am-ask-hint");
   hint.append(h("span", "agent-tag", row.provider || "codex"), h("kbd", "", "c"));
   node.append(title, where, hint);
-  node.setAttribute("aria-label", `Ask the concierge${multi ? ` on ${fleet.name}` : ""}, ${statusLabel(row.status)}`);
+  node.setAttribute("aria-label", `Ask the concierge${multi ? ` on ${fleet.name}` : ""}, ${rowStatusLabel(row)}${decisions ? `, ${decisionsName(row)}` : ""}`);
   node.addEventListener("click", () => openConcierge(key));
   return node;
 }
@@ -63,6 +66,12 @@ function cardNode(entry: Entry, all: readonly AgentRow[], multi: boolean, now: n
   const identity = h("div", "agent-identity");
   identity.append(h("h3", "", row.name));
   if (unread.isNew(key, row.updatedAt, state.selected)) identity.append(h("span", "unread-badge am-new", "New"));
+  const decisions = rowDecisionsLabel(row);
+  if (decisions) {
+    const tag = h("span", `am-card-decisions${blockingDecisions(row) ? " blocking" : ""}`, decisions);
+    tag.title = decisionsName(row);
+    identity.append(tag);
+  }
   identity.append(h("p", "", row.task || "No task"));
   if (row.spawnedBy) identity.append(h("small", "parent-label", "↳ " + row.spawnedBy));
   const id = agentId(row);
@@ -70,14 +79,14 @@ function cardNode(entry: Entry, all: readonly AgentRow[], multi: boolean, now: n
   if (children) identity.append(h("small", "child-count", `${children} child agent${children === 1 ? "" : "s"}`));
   if (multi) identity.append(h("small", "am-card-conn", fleet.name));
   const status = dot(row.status);
-  status.title = statusLabel(row.status);
+  status.title = rowStatusLabel(row);
   const repo = h("span", "agent-repo", repoName(row));
   repo.title = [repoPath(row), row.host || fleet.local || "local", row.queued ? `${row.queued} queued` : "", multi ? fleet.name : ""].filter(Boolean).join(" · ");
   const runtime = h("span", "agent-runtime", elapsed(runtimeMs(row, now)));
   runtime.title = "Elapsed time in the current working state";
   runtime.dataset.status = row.status;
   runtime.dataset.since = row.statusChangedAt || "";
-  card.setAttribute("aria-label", `${row.name}, ${statusLabel(row.status)}, ${repoName(row)}${multi ? `, ${fleet.name}` : ""}`);
+  card.setAttribute("aria-label", `${row.name}, ${rowStatusLabel(row)}${decisions ? `, ${decisionsName(row)}` : ""}, ${repoName(row)}${multi ? `, ${fleet.name}` : ""}`);
   card.append(status, identity, h("span", "agent-tag", row.provider || "codex"), repo, runtime);
   return card;
 }
@@ -147,8 +156,12 @@ function renderOverview(): void {
 
   const loaded = [...state.conns.values()].every((conn) => conn.loaded);
   const problem = rows.length ? null : loadProblem();
-  $("am-overview-sub").textContent = rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}${multi ? ` on ${all.length} connections` : ""}`
+  const sub = $("am-overview-sub");
+  sub.textContent = rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}${multi ? ` on ${all.length} connections` : ""}`
     : problem ?? (loaded ? "" : "Loading the fleet…");
+  // The concierge's own decisions count too: they wait on the owner all the same.
+  const waiting = agentsWaitingOnDecisions(all.flatMap((fleet) => fleet.rows));
+  if (waiting) sub.append(document.createTextNode(" · "), h("span", "am-decisions-summary", waiting));
 
   const visible = entries.filter(({ row, fleet }) =>
     matchesOverviewFilter(row, state.overviewFilter) &&

@@ -13,7 +13,10 @@ import {
   keyAfter,
   keyToRelease,
   LIFECYCLE,
+  AGENT_REPLACED,
+  AGENT_STOPPED,
   modelChoices,
+  modelPrecondition,
   moveDir,
   moveHostOptions,
   nameProblem,
@@ -156,6 +159,28 @@ describe("what the menu and header offer", () => {
     expect(LIFECYCLE).toEqual({ resume: "agents.resume", restart: "agents.restart", interrupt: "agents.interrupt", stop: "agents.stop", delete: "agents.remove" });
     for (const [action, method] of Object.entries(LIFECYCLE))
       expect((CONFIRM_METHODS as readonly string[]).includes(method)).toBe(action !== "resume");
+  });
+});
+
+describe("an agent shown working while it waits on its subagents", () => {
+  // am shows an idle-at-prompt agent with live subagents as working; its stored status stays idle.
+  const waiting = { name: "bosun-call", status: "working", rawStatus: "idle", provider: "claude", busyWith: { subagents: 2, background: 0 } } as const;
+
+  test("Interrupt is offered on the displayed status, as in the browser UI", () => {
+    expect(actionAvailable(waiting, "interrupt")).toBe(true);
+    expect(browser.actionAvailable(waiting, "interrupt")).toBe(true);
+    // A stalled agent (needs-attention, stored idle) keeps it too.
+    expect(actionAvailable({ ...waiting, status: "needs-attention" }, "interrupt")).toBe(true);
+    expect(actionAvailable({ ...waiting, status: "idle", rawStatus: "working" } as ActionSubject, "interrupt")).toBe(false);
+  });
+
+  test("the model change echoes the displayed status, never rawStatus", () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    expect(modelPrecondition({ ...waiting, createdAt }, createdAt)).toEqual({ status: "working" });
+    expect(modelPrecondition({ status: "needs-attention", rawStatus: "idle", createdAt }, createdAt)).toEqual({ status: "needs-attention" });
+    expect(modelPrecondition({ status: "idle", rawStatus: "working", createdAt }, createdAt)).toEqual({ status: "idle" });
+    expect(modelPrecondition({ status: "exited", rawStatus: "idle", createdAt }, createdAt)).toEqual({ error: AGENT_STOPPED });
+    expect(modelPrecondition({ ...waiting, createdAt: "2026-01-02T00:00:00.000Z" }, createdAt)).toEqual({ error: AGENT_REPLACED });
   });
 });
 

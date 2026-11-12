@@ -2,11 +2,12 @@
 // of pending and queued messages, the working indicator and jump-to-latest.
 import { BUBBLE_LABEL, bubbles, reconcilePending, userTexts, type Bubble } from "./composer";
 import { loadDetail } from "./data";
+import { blockingDecisions, decisionsTitle, rowDecisionsLabel } from "./decisions";
 import { $, badge, composerInput, h } from "./dom";
 import { showDraft, stashDraft } from "./drafts";
-import { BUSY, parseAgentKey } from "./fleet";
+import { BUSY, busySubagents, parseAgentKey, workingLabel } from "./fleet";
 import { duration, firstLine } from "./format";
-import { agentComposer, agentSource, changed, composer, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
+import { agentComposer, agentSource, changed, composer, findRow, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
 import { mainView, registerMainView, showMainView } from "./views";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
@@ -114,6 +115,7 @@ function renderHeader(): void {
   const reason = $("am-agent-reason");
   reason.hidden = !source.statusReason;
   reason.textContent = source.statusReason || "";
+  renderDecisions(key);
   const task = (source.task || "").trim();
   const taskBox = $("am-agent-task");
   taskBox.hidden = !task;
@@ -124,7 +126,7 @@ function renderHeader(): void {
   toggle.hidden = !multi;
   toggle.textContent = state.taskExpanded ? "Less" : "More";
   toggle.setAttribute("aria-expanded", String(state.taskExpanded));
-  updateWorking(status, source.workingSince || source.statusChangedAt);
+  updateWorking(status, source.workingSince || source.statusChangedAt, busySubagents(source));
   fillSlot(headerActions, "am-agent-actions", (box) => $("am-agent-name").parentElement!.append(box), key);
   fillSlot(cards, "am-cards", (box) => $("am-composer").before(box), key);
 }
@@ -230,14 +232,33 @@ function markSeen(view: HTMLElement): void {
   if (unread.markSeen(key, view.dataset.updatedAt)) changed("seen");
 }
 
-function updateWorking(status: string, since: string | undefined): void {
+// Decisions come on fleet rows only, never on the detail.
+function renderDecisions(key: string): void {
+  const row = findRow(key);
+  const label = row ? rowDecisionsLabel(row) : "";
+  const line = $("am-agent-decisions");
+  line.hidden = !label;
+  line.classList.toggle("blocking", !!row && blockingDecisions(row) > 0);
+  if (!row || !label) {
+    line.replaceChildren();
+    line.removeAttribute("title");
+    return;
+  }
+  const question = (row.firstDecision || "").trim();
+  line.replaceChildren(h("b", "", label), document.createTextNode(" waiting on you"));
+  if (question) line.append(document.createTextNode(" · "), h("span", "am-decisions-question", question));
+  line.title = decisionsTitle(row);
+}
+
+function updateWorking(status: string, since: string | undefined, subagents: number): void {
   const box = $("am-working");
   const busy = BUSY.has(status);
   box.hidden = !busy;
   if (!busy) return;
   box.dataset.status = status;
   box.dataset.since = since || "";
-  const label = { starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working";
+  box.dataset.subagents = String(subagents);
+  const label = workingLabel(status, subagents);
   const announced = box.querySelector("[role=status]");
   if (announced && announced.textContent !== label) announced.textContent = label;
   tickWorking();
@@ -246,7 +267,7 @@ function updateWorking(status: string, since: string | undefined): void {
 export function tickWorking(): void {
   const box = $("am-working");
   if (box.hidden) return;
-  const label = { starting: "Starting", waiting: "Waiting on background tasks" }[box.dataset.status || ""] || "Working";
+  const label = workingLabel(box.dataset.status || "", Number(box.dataset.subagents) || 0);
   const start = Date.parse(box.dataset.since || "");
   const text = box.querySelector(".working-text");
   if (text) text.textContent = label + (Number.isFinite(start) ? ` for ${duration(Date.now() - start)}` : "");

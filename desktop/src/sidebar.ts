@@ -2,7 +2,7 @@
 // toggle, keyboard navigation and the resizable divider.
 import { markSelection, selectAgent } from "./chat";
 import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
-import { $, composerInput, copyText, dot, h } from "./dom";
+import { $, composerInput, copyText, decisionsBadge, dot, h } from "./dom";
 import {
   ATTENTION_GROUP,
   buildTree,
@@ -11,7 +11,8 @@ import {
   isPinnedConcierge,
   moveCursor,
   repoLabel,
-  statusLabel,
+  rowReasonBeside,
+  rowStatusLabel,
   statusShort,
   STOPPED,
   type AgentItem,
@@ -78,6 +79,8 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   const line = h("div", "am-agent-line");
   line.append(h("span", "am-agent-name", row.name));
   if (isNew(item)) line.append(newBadge());
+  const decisions = decisionsBadge(row, now);
+  if (decisions) line.append(decisions);
   const subcount = subagentCount(row);
   if (subcount) line.append(subcount);
   line.append(h("span", "am-agent-provider", providerLabel(row.provider)));
@@ -99,7 +102,7 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   text.append(line, meta);
   node.append(dot(row.status), text);
   const summary = [parts.status, parts.reason, parts.queued, parts.age, parts.prs].filter(Boolean).join(" · ");
-  node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${providerLabel(row.provider)}\n${summary}`;
+  node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${providerLabel(row.provider)}\n${summary}${decisions ? `\n${decisions.title}` : ""}`;
   return node;
 }
 
@@ -153,9 +156,11 @@ function conciergeNode(item: AgentItem): HTMLElement {
   if (item.connectionName) label.append(h("span", "am-concierge-conn", item.connectionName));
   const time = h("span", "am-agent-time", relativeTime(row.statusChangedAt));
   time.dataset.since = row.statusChangedAt || "";
-  time.title = `${statusLabel(row.status)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
+  time.title = `${rowStatusLabel(row)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
   line.append(label);
   if (isNew(item)) line.append(newBadge());
+  const decisions = decisionsBadge(row);
+  if (decisions) line.append(decisions);
   line.append(time);
   const meta = h("div", "am-agent-meta");
   meta.append(h("span", "", row.provider));
@@ -167,7 +172,8 @@ function conciergeNode(item: AgentItem): HTMLElement {
   text.append(line, meta);
   node.append(dot(row.status), text);
   const where = item.connectionName ? ` on ${item.connectionName}` : "";
-  node.title = `Concierge${where} · ${statusLabel(row.status)}${row.statusReason ? ` — ${row.statusReason}` : ""} · press c to open`;
+  const reason = rowReasonBeside(row, row.statusReason || "");
+  node.title = `Concierge${where} · ${rowStatusLabel(row)}${reason ? ` — ${reason}` : ""}${decisions ? ` · ${decisions.getAttribute("aria-label")}` : ""} · press c to open`;
   return node;
 }
 

@@ -17,6 +17,10 @@ export const FIXTURE_IDS = {
     tests: "c6e9a1b3d5f70824",
     // fold-line's: a running Codex subagent with no transcript yet.
     baselines: "d17b5e0a9c3f6284",
+    // bosun-call's two live ones, and still-water's finished one it never picked up.
+    shepherd: "e2c8f4a6b0d13579",
+    reviewer: "f39a7c1e5b2d4680",
+    stalled: "0a4e8c2f6b1d3957",
   },
 };
 
@@ -131,6 +135,18 @@ export interface Subagent {
 export function seedSubagents(row: FixtureRow, now: number): Subagent[] {
   if (row.name === "fold-line" && !row.host) {
     return [{ record: { id: FIXTURE_IDS.subagents.baselines, type: "explorer", description: "Diff the visual baselines", startedAt: minutesAgo(now, 6) }, entries: null }];
+  }
+  if (row.name === "bosun-call" && !row.host) {
+    return [
+      { record: { id: FIXTURE_IDS.subagents.shepherd, type: "shepherd", description: "Shepherd PR 12", startedAt: minutesAgo(now, 8) }, entries: [] },
+      { record: { id: FIXTURE_IDS.subagents.reviewer, type: "reviewer", startedAt: minutesAgo(now, 7) }, entries: [] },
+    ];
+  }
+  if (row.name === "still-water" && !row.host) {
+    return [{
+      record: { id: FIXTURE_IDS.subagents.stalled, type: "reviewer", startedAt: minutesAgo(now, 20), endedAt: minutesAgo(now, 12), message: "Two readings disagree with the gauge log; details in the review." },
+      entries: [{ index: 0, kind: "user", text: "Review the March backfill for gaps and duplicates." }],
+    }];
   }
   if (row.name !== "harbor-lights" || row.host) return [];
   const sidecar = (id: string) => `${FIXTURE_HOME}/.claude/projects/-home-keeper--agent-manager-worktrees-lighthouse-harbor-lights/subagents/agent-${id}.jsonl`;

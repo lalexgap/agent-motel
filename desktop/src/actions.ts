@@ -2,9 +2,9 @@
 // choices, the move dialog's hosts, how a result reads, what to open
 // afterwards and when a key must be released first. The rules follow the
 // browser UI's (web/app.js); tests/desktopActions.test.ts compares them.
-import { AGENT_GONE, CONFIRM_OPEN, isConfirmMethod } from "./policy";
+import { AGENT_GONE, CONFIRM_OPEN, isConfirmMethod, RUNNING_STATUSES } from "./policy";
 import { TOKEN_REJECTED } from "./composer";
-import type { AgentRow, ConfirmedResult, HostsResponse } from "./types";
+import type { AgentRow, ConfirmedResult, HostsResponse, RunningStatus } from "./types";
 
 // A fleet row (no capabilities) or an agent detail (with them).
 export type ActionSubject = Partial<Pick<AgentRow, "name" | "status" | "provider" | "role">> & { capabilities?: Record<string, unknown> };
@@ -124,6 +124,17 @@ export function moveDir(text: string): { dir?: string } | { error: string } {
   if (!dir) return {};
   if (!dir.startsWith("/") || /[\u0000-\u001f\u007f]/.test(dir)) return { error: "The destination directory must be an absolute path." };
   return { dir };
+}
+
+// The model change's precondition from a fresh detail: the same agent, still
+// running, and the status am will compare, which is the displayed `status`
+// (never `rawStatus`), as the browser UI sends it.
+export const AGENT_REPLACED = "This agent was replaced since the dialog opened. Close the dialog and check the agent before retrying.";
+export const AGENT_STOPPED = "This agent has stopped since the dialog opened. Resume it before changing the model.";
+export function modelPrecondition(fresh: Pick<AgentRow, "createdAt" | "status" | "rawStatus">, createdAt: string): { status: RunningStatus } | { error: string } {
+  if (fresh.createdAt !== createdAt) return { error: AGENT_REPLACED };
+  if (!(RUNNING_STATUSES as readonly string[]).includes(fresh.status)) return { error: AGENT_STOPPED };
+  return { status: fresh.status as RunningStatus };
 }
 
 export const AGENT_CHANGED = "Agent status changed. Refresh and try again.";
