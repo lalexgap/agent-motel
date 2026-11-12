@@ -249,7 +249,6 @@ describe("delivery receipts", () => {
       expect(typed()).toBe("");
       expect(keys()).toEqual([]);
       expect(queueDepth("api")).toBe(1);
-      // Once it is answered, steering types as before.
       rmSync(join(home, "dialog"));
       expect((await sendCommand("api", "carry on", { now: true })).outcome).toBe("steered");
       expect(typed()).toBe("carry on\n");

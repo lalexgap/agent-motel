@@ -68,10 +68,9 @@ function rateLimited(from: string, to: string): SendOutcome {
   return "dropped";
 }
 
-// Text typed into a pane that shows a dialog answers the dialog, and its Enter
-// confirms whatever is selected. Claude's composer is on screen through a
-// turn, so only that takes typing; Codex's is harder to tell mid-turn, so
-// only its dialog refuses. Callers hold the delivery lock.
+// Typing into a dialog answers it and Enter confirms the selection. Claude's
+// composer shows through a turn, so only it takes typing; Codex's is hard to
+// recognise mid-turn, so only its dialog refuses. Callers hold the delivery lock.
 export function paneTakesTyping(agent: AgentState): boolean {
   const provider = agentProvider(agent);
   if (provider === "antigravity") return true;
@@ -126,7 +125,6 @@ export async function sendCommand(
       say(opts, `sent to "${agent.name}" (steering current turn)`);
       return printResult(opts, { id, outcome: "steered" });
     }
-    // Queued below instead, for the next turn boundary.
     say(opts, `"${agent.name}" is not at its composer (a dialog may be waiting) — not steering`);
   }
 
