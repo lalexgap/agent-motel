@@ -527,9 +527,10 @@ export function cachedGitDiffSummary(dir: string): DiffSummary | null | undefine
 
 // The ledger for PR status, with open records that show no life marked quiet
 // so a shepherd that died silently stops holding its PR in "shepherding".
-function prSubagents(agent: AgentState, alive: boolean): PrSubagent[] {
+// Only Claude subagents have a transcript to show life; others are left as-is.
+export function prSubagents(agent: AgentState, alive: boolean): PrSubagent[] {
   const records = readSubagents(agent.name);
-  if (!alive || records.every((record) => record.endedAt)) return records;
+  if (!alive || agentProvider(agent) !== "claude" || records.every((record) => record.endedAt)) return records;
   const quiet = new Set(subagentLiveness(agent, records).quiet.map((record) => record.id));
   return records.map((record) => quiet.has(record.id) ? { ...record, quiet: true } : record);
 }

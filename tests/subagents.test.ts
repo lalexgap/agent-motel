@@ -37,6 +37,7 @@ import {
   subagentRows,
 } from "../src/commands/subagents";
 import { recordSubagentEvent } from "../src/commands/hook";
+import { prSubagents } from "../src/commands/ls";
 import { matchSubagent } from "../src/commands/transcript";
 
 let home: string;
@@ -352,6 +353,13 @@ describe("recordSubagentEvent", () => {
     recordSubagentEvent("subagent-start", codex, { agent_id: "c1" });
     recordSubagentEvent("subagent-stop", codex, { agent_id: "c1", agent_transcript_path: transcript });
     expect(readSubagents("api")[1]!.description).toBeUndefined();
+  });
+
+  test("PR status marks a silent open subagent quiet only where there is a transcript to show life", () => {
+    recordSubagentStart("api", { id: "s1", type: "shepherd", description: "Shepherd PR 7", at: "2026-09-21T10:00:00.000Z" });
+    expect(prSubagents(agent, true)[0]!.quiet).toBe(true);
+    expect(prSubagents(agent, false)[0]!.quiet).toBeUndefined();
+    expect(prSubagents({ ...agent, provider: "codex" }, true)[0]!.quiet).toBeUndefined();
   });
 
   test("a reused id starts a fresh run instead of resurrecting a closed one", () => {
