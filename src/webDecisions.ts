@@ -173,6 +173,26 @@ async function notifyDecision(agent: string, id: string, action: DecisionAction,
   finally { clearTimeout(timer); }
 }
 
+// Keep private decision text out of the OS command line while using the CLI's
+// normal argument parsing, store locking, and plan updates.
+const decisionWrapper = `
+import json
+import runpy
+import sys
+
+if sys.version_info < (3, 9):
+    sys.exit(2)
+cli = sys.argv[1]
+agent, ident, action, value = json.load(sys.stdin)
+args = ["--agent=" + agent, "resolve" if action == "answer" else "withdraw", ident]
+if action == "answer":
+    args.append("--answer=" + value)
+elif value:
+    args.append("--reason=" + value)
+sys.argv = [cli] + args + ["--via", "page"]
+runpy.run_path(cli, run_name="__main__")
+`;
+
 export async function applyDecisionAction(
   agent: string,
   id: string,
@@ -181,14 +201,17 @@ export async function applyDecisionAction(
   timeoutMs = DECISION_CLI_TIMEOUT_MS,
 ): Promise<DecisionActionResult> {
   const cli = binary("decision");
-  if (!cli) return { ok: false, status: 503, reason: "decision_cli_missing", error: "Decision answering is not available on this server." };
-  const args = action === "answer"
-    ? [cli, `--agent=${agent}`, "resolve", id, `--answer=${value}`, "--via", "page"]
-    : [cli, `--agent=${agent}`, "withdraw", id, ...(value ? [`--reason=${value}`] : []), "--via", "page"];
+  const python = Bun.which("python3", { PATH: process.env.PATH ?? "" });
+  if (!cli || !python) return { ok: false, status: 503, reason: "decision_cli_missing", error: "Decision answering is not available on this server." };
+  const validated = decisionText(value, action === "answer");
+  if (!validDecisionsAgent(agent) || !validDecisionId(id) || validated === null) {
+    return { ok: false, status: 503, reason: "decision_cli_failed", error: "Could not record this decision. Try again." };
+  }
+  const stdin = Buffer.from(JSON.stringify([agent, id, action, validated]));
   const env = toolEnv();
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn(args, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    proc = Bun.spawn([python, "-I", "-X", "utf8", "-c", decisionWrapper, cli], { env, stdin, stdout: "pipe", stderr: "pipe" });
   } catch {
     return { ok: false, status: 503, reason: "decision_cli_failed", error: "Could not record this decision. Try again." };
   }
