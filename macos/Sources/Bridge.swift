@@ -78,6 +78,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             return try await get(params)
         case "decisions.open":
             return try await openDecisions(params)
+        case "decisions.answer":
+            let connection = try savedConnection(params)
+            return try await write(DecisionsPolicy.actionRequest(base: connection.url, agent: params["agent"], id: params["id"],
+                                                                 action: params["action"], text: params["text"]), connection: connection)
         case "messages.send":
             let connection = try savedConnection(params)
             return try await write(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],

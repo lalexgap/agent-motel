@@ -102,8 +102,8 @@ window.agentDecisionsPage = (() => {
       return;
     }
     const groups = visibleGroups(report.groups, query, blockingOnly);
-    const canAnswer = typeof view.actions.onAnswer === "function";
-    const signature = JSON.stringify([groups, query, blockingOnly, canAnswer]);
+    const canAnswer = typeof view.actions.onSubmit === "function";
+    const signature = JSON.stringify([groups, query, blockingOnly, canAnswer, view.data.scope || "default"]);
     if (view.signature === signature) return;
     view.signature = signature;
     if (!groups.length) {
@@ -121,13 +121,24 @@ window.agentDecisionsPage = (() => {
       heading.append(open);
       const card = window.agentDecisions.renderDecisionCard(group.decisions, {
         agent: group.agent,
-        ...(canAnswer ? { onAnswer: view.actions.onAnswer } : {}),
+        scope: view.data.scope || "default",
+        ...(canAnswer ? { onSubmit: view.actions.onSubmit } : {}),
       });
       section.append(heading);
       if (card) section.append(card);
       nodes.push(section);
     }
+    const active = document.activeElement;
+    const focusKey = active?.dataset?.decisionFocus;
+    const selection = focusKey && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
     list.replaceChildren(...nodes);
+    if (focusKey && typeof list.querySelectorAll === "function") {
+      const replacement = [...list.querySelectorAll("[data-decision-focus]")].find((node) => node.dataset.decisionFocus === focusKey);
+      if (replacement) {
+        replacement.focus();
+        if (selection && typeof replacement.setSelectionRange === "function") replacement.setSelectionRange(selection[0], selection[1]);
+      }
+    }
   }
 
   return { buildPage, render, visibleGroups };

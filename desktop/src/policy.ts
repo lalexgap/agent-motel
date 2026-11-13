@@ -91,6 +91,26 @@ export function checkDecisionId(value: unknown): Checked<string | undefined> {
   return { ok: true, value };
 }
 
+export const DECISION_TEXT_MAX_BYTES = 4_000;
+
+export function checkDecisionAnswerId(value: unknown): Checked<string> {
+  if (typeof value !== "string" || !/^d-[1-9][0-9]*$/.test(value) || value.length > 40) {
+    return { ok: false, error: "invalid decision id" };
+  }
+  return { ok: true, value };
+}
+
+export function checkDecisionAction(value: unknown): Checked<"answer" | "withdraw"> {
+  return value === "answer" || value === "withdraw" ? { ok: true, value } : { ok: false, error: "invalid decision action" };
+}
+
+export function checkDecisionText(value: unknown, required: boolean): Checked<string> {
+  if (typeof value !== "string" || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(value)) return { ok: false, error: "invalid decision text" };
+  const text = value.trim();
+  if ((required && !text) || new TextEncoder().encode(text).length > DECISION_TEXT_MAX_BYTES) return { ok: false, error: "invalid decision text" };
+  return { ok: true, value: text };
+}
+
 // The URL is a credential. Callers must consume it inside the bridge and never return or log it.
 export function decisionsPageUrl(value: unknown, agent: string, decisionId?: string): Checked<URL> {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as { url?: unknown }).url : undefined;

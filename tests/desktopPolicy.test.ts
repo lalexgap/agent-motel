@@ -4,6 +4,9 @@ import {
   buildAction,
   checkAgent,
   checkDecisionId,
+  checkDecisionAction,
+  checkDecisionAnswerId,
+  checkDecisionText,
   checkDecisionsAgent,
   checkMessageId,
   checkMessageText,
@@ -169,6 +172,20 @@ describe("decisions.open", () => {
     for (const url of ["http://drop.example.test/q/SECRET", "file:///tmp/SECRET", "https://u:p@drop.example.test/q/SECRET", "javascript:alert(1)"]) {
       expect(decisionsPageUrl({ url }, "api", "d-1")).toEqual({ ok: false, error: "The server returned an invalid decisions page link" });
     }
+  });
+});
+
+describe("decisions.answer", () => {
+  test("accepts only d-N ids, the two actions, and bounded clean text", () => {
+    expect(checkDecisionAnswerId("d-1")).toEqual({ ok: true, value: "d-1" });
+    for (const id of ["d-0", "1", "d--1", "d-1/x", "d-" + "1".repeat(40), null]) expect(checkDecisionAnswerId(id).ok).toBe(false);
+    expect(checkDecisionAction("answer")).toEqual({ ok: true, value: "answer" });
+    expect(checkDecisionAction("withdraw")).toEqual({ ok: true, value: "withdraw" });
+    for (const action of ["resolve", "delete", "", null]) expect(checkDecisionAction(action).ok).toBe(false);
+    expect(checkDecisionText("  ship it  ", true)).toEqual({ ok: true, value: "ship it" });
+    expect(checkDecisionText("", false)).toEqual({ ok: true, value: "" });
+    for (const value of ["", " ", "x\u0000", "x".repeat(4001), null]) expect(checkDecisionText(value, true).ok).toBe(false);
+    expect(checkDecisionText("é".repeat(2001), true).ok).toBe(false);
   });
 });
 
