@@ -1,7 +1,7 @@
 // Route handlers of the fixture am server, one group per area. Each mirrors
 // the real route in src/server.ts: the same validation order, statuses, error
 // strings and `reason` values, including the quirks a client has to survive.
-import { checkDecisionsAgent, checkMessageText } from "../src/policy";
+import { checkDecisionAction, checkDecisionAnswerId, checkDecisionsAgent, checkDecisionText, checkMessageText } from "../src/policy";
 import type { QueueItem, TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, REPO, worktree, type FixtureRow } from "./data";
 import { catalogsFor, findCatalog, ROLES, seedWorkspace, selectionError, type Workspace } from "./extras";
@@ -62,6 +62,7 @@ export function buildRoutes(fx: Fx): {
   keyOf(row: FixtureRow): string;
 } {
   const s = () => fx.state();
+  const fixtureDecisions = decisionsInboxFixture();
 
   const resolveHost = (host: string): string | null | undefined =>
     host === "local" || host === FIXTURE_LOCAL_HOST ? null : FIXTURE_REMOTE_HOSTS.some((item) => item.name === host) ? host : undefined;
@@ -935,9 +936,26 @@ export function buildRoutes(fx: Fx): {
       if (target.host) return json({ decisions: [], remote: true });
       const row = agentOf(target);
       if (row instanceof Response) return row;
-      return json({ decisions: decisionsInboxFixture().groups.find((group) => group.agent === row.name)?.decisions ?? [] });
+      return json({ decisions: fixtureDecisions.groups.find((group) => group.agent === row.name)?.decisions ?? [] });
     } },
-    { method: "GET", path: "/api/decisions", handler: () => json(decisionsInboxFixture()) },
+    { method: "GET", path: "/api/decisions", handler: () => json(fixtureDecisions) },
+    { method: "POST", path: "/api/decisions/answer", handler: ({ body }) => {
+      if (!isObject(body)) return json({ error: "JSON object required", reason: "invalid_body" }, 400);
+      const agent = checkDecisionsAgent(body.agent);
+      const id = checkDecisionAnswerId(body.id);
+      const action = checkDecisionAction(body.action);
+      if (!agent.ok) return json({ error: "Invalid agent name", reason: "invalid_agent" }, 400);
+      if (!id.ok) return json({ error: "Invalid decision id", reason: "invalid_id" }, 400);
+      if (!action.ok) return json({ error: "Invalid decision action", reason: "invalid_action" }, 400);
+      const text = checkDecisionText(action.value === "answer" ? body.answer : body.reason ?? "", action.value === "answer");
+      if (!text.ok) return json({ error: "Invalid decision text", reason: "invalid_text" }, 400);
+      const group = fixtureDecisions.groups.find((item) => item.agent === agent.value);
+      const index = group?.decisions.findIndex((item) => item.id === id.value) ?? -1;
+      if (!group || index < 0) return json({ error: "This decision is no longer open. Refresh to see its current state.", reason: "decision_closed" }, 409);
+      group.decisions.splice(index, 1);
+      fixtureDecisions.groups = fixtureDecisions.groups.filter((item) => item.decisions.length);
+      return json({ ok: true, changed: true, status: action.value === "answer" ? "decided" : "withdrawn" });
+    } },
     { method: "POST", path: "/api/decisions/link", handler: ({ body }) => {
       const agent = isObject(body) ? checkDecisionsAgent(body.agent) : { ok: false as const, error: "JSON object required" };
       if (!agent.ok) return json({ error: agent.error, reason: "invalid_agent" }, 400);

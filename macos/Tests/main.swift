@@ -198,10 +198,29 @@ do {
     }
     check((try? DecisionsPolicy.decisionID(nil)) == nil && (try? DecisionsPolicy.decisionID("d-1")) == "d-1", "decision id optional")
     check(rejection { try DecisionsPolicy.decisionID(7) } == "invalid decision id", "decision id type")
+    let answer = try DecisionsPolicy.actionRequest(base: base, agent: "archived.design", id: "d-7", action: "answer", text: "  Ship it  ")
+    check(answer.method == .post && answer.url.absoluteString == base + "/api/decisions/answer" && answer.timeout == 45,
+          "decision answer request")
+    check(body(answer) == ["agent": "archived.design", "id": "d-7", "action": "answer", "answer": "Ship it"],
+          "decision answer body")
+    let withdraw = try DecisionsPolicy.actionRequest(base: base, agent: "api", id: "d-8", action: "withdraw", text: "")
+    check(body(withdraw) == ["agent": "api", "id": "d-8", "action": "withdraw"], "decision withdrawal body")
+    for id in ["1", "d-0", "d-1/x", "d-"] {
+        check(rejection { try DecisionsPolicy.actionRequest(base: base, agent: "api", id: id, action: "answer", text: "x") }
+              == "invalid decision id", "accepted answer id \(id)")
+    }
+    for action in ["resolve", "delete", ""] {
+        check(rejection { try DecisionsPolicy.actionRequest(base: base, agent: "api", id: "d-1", action: action, text: "x") }
+              == "invalid decision action", "accepted decision action \(action)")
+    }
+    check(rejection { try DecisionsPolicy.actionRequest(base: base, agent: "api", id: "d-1", action: "answer", text: " ") }
+          == "invalid decision text", "accepted empty answer")
+    check(rejection { try DecisionsPolicy.actionRequest(base: base, agent: "api", id: "d-1", action: "answer", text: String(repeating: "é", count: 2001)) }
+          == "invalid decision text", "accepted oversized answer")
 } catch {
     check(false, "decisions policy: \(error)")
 }
-print("PASS decisions policy (fixed POST, local agent, optional anchor, HTTPS credential-free response)")
+print("PASS decisions policy (fixed link/answer POSTs, local agent, bounded action values, HTTPS credential-free response)")
 
 // Write surface: same vectors as tests/desktopPolicy.test.ts.
 func plan(_ method: String, _ params: [String: Any]) throws -> ActionPlan {

@@ -487,6 +487,23 @@ final class SmokeRunner {
         delegate.bridge.decisionsOpener = { NSWorkspace.shared.open($0) }
         print("PASS decisions.open used the fixed authenticated POST and native opener without returning the capability")
 
+        let answeredDecision = try status(try await call("decisions.answer", [
+            "connection": id, "agent": "chart-table", "id": "d-1", "action": "answer", "text": "Ship the smaller change",
+        ]), "decisions.answer")
+        try expect(answeredDecision.0 == 200 && answeredDecision.1["status"] as? String == "decided",
+                   "decisions.answer option: \(answeredDecision)")
+        let withdrawnDecision = try status(try await call("decisions.answer", [
+            "connection": id, "agent": "chart-table", "id": "d-2", "action": "withdraw", "text": "Covered by the first decision",
+        ]), "decisions.answer")
+        try expect(withdrawnDecision.0 == 200 && withdrawnDecision.1["status"] as? String == "withdrawn",
+                   "decisions.answer withdrawal: \(withdrawnDecision)")
+        let remainingDecisions = try status(try await call("api.get", [
+            "connection": id, "path": "/api/agents/chart-table/decisions",
+        ]), "chart-table decisions")
+        try expect(remainingDecisions.0 == 200 && (remainingDecisions.1["decisions"] as? [Any])?.isEmpty == true,
+                   "closed fixture decisions remained open: \(remainingDecisions)")
+        print("PASS decisions.answer sent an option and a withdrawal through the native bridge and refreshed fixture reads")
+
         let baseline = try await fixtureRequests().count
         let invalidSends: [([String: Any], String)] = [
             (["agent": "harbor-lights", "text": "hi", "mode": "interrupt"], "mode must be queue or now"),

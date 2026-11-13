@@ -11,7 +11,7 @@ Every request the app can send other than a `GET` is one of these, each a separa
 - **Answer:** a relay permission request (`POST …/permissions/:id` with `{optionId}`) and a Claude pane prompt (`POST …/prompt` with `{id, optionId, text?}`).
 - **Attach:** upload an image (`POST …/files` with the raw bytes: PNG, JPEG, GIF or WebP, at most 10 MiB).
 - **Search:** conversations (`POST /api/search` with `{query}`; read-only on the server).
-- **Decisions:** open an agent's decisions page (`POST /api/decisions/link` with `{agent}`); the secret HTTPS capability is validated and opened natively, never returned to the bundled page.
+- **Decisions:** answer or withdraw local decisions through the narrow native `decisions.answer` bridge (`POST /api/decisions/answer` with bounded values). Older servers fall back to `POST /api/decisions/link`; that secret HTTPS capability is validated and opened natively, never returned to the bundled page.
 
 There is no generic write method: interrupt with text, `interrupt` send mode and every other route stay unreachable. The interactive terminal is separate (see [Terminal](#terminal)): its own four bridge methods, which carry terminal messages, never URLs or raw frames.
 

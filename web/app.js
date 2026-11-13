@@ -2278,10 +2278,11 @@ const decisionsInboxActions = {
     }
     selectAgent(name);
   },
+  onSubmit: submitInlineDecision,
 };
 
 function renderDecisionInbox() {
-  window.agentDecisionsPage.render(decisionsRoot, { ...decisionsInboxView }, decisionsInboxActions);
+  window.agentDecisionsPage.render(decisionsRoot, { ...decisionsInboxView, scope: "web" }, decisionsInboxActions);
 }
 
 function showDecisionInbox() {
@@ -2378,6 +2379,24 @@ async function openDecisionsPage(agent, anchor, note) {
   showDecisionsNote(note, "Opened the decisions page in a new tab. Didn't open?", target);
 }
 
+async function submitInlineDecision(decision, agent, action, text) {
+  const body = action === "answer"
+    ? { agent, id: decision.id, action, answer: text }
+    : { agent, id: decision.id, action, ...(text ? { reason: text } : {}) };
+  const response = await fetch("/api/decisions/answer", {
+    method: "POST", credentials: "same-origin", cache: "no-store",
+    headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401) { lock(); throw new Error("Sign in again to submit this decision."); }
+  if (response.status === 404 && data.reason !== "decision_not_found") {
+    await openDecisionsPage(agent, "#" + encodeURIComponent(`${agent}-${decision.id}`), $("decisions-note"));
+    throw new Error("This server needs an update for inline answers. The external decisions page was opened instead.");
+  }
+  if (!response.ok) throw new Error(data.error || `Could not submit the decision (${response.status}).`);
+  await refresh();
+}
+
 function renderDecisionsCue() {
   const count = state.rows.filter((row) => row.openDecisions > 0).length;
   const cue = $("decisions-cue");
@@ -2438,8 +2457,8 @@ function renderDecisions(force = false) {
   if (!force && container.dataset.content === content) return;
   container.dataset.content = content;
   const card = window.agentDecisions.renderDecisionCard(decisions, {
-    agent: name, now, unavailable: decisionsUnavailable,
-    onAnswer: (decision, agent) => openDecisionsPage(agent, "#" + encodeURIComponent(`${agent}-${decision.id}`), $("decisions-note")),
+    agent: name, scope: "web", now, unavailable: decisionsUnavailable,
+    onSubmit: submitInlineDecision,
   });
   container.replaceChildren(...(card ? [card] : []));
   container.hidden = !card;

@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 import { writeAgent } from "../src/state";
-import { decisionsPageLink, validDecisionsAgent } from "../src/webDecisions";
+import { applyDecisionAction, decisionsPageLink, validDecisionsAgent } from "../src/webDecisions";
 
 const TOKEN = "test-key-with-at-least-24-characters";
 const ORIGIN = "https://am.example.test";
 const SECRET = "https://drop.example.test/q/SECRET-token-123";
+const realDecision = Bun.which("decision", { PATH: process.env.PATH ?? "" });
 
 let home: string;
 let bin: string;
@@ -20,6 +21,44 @@ const saved = { PATH: process.env.PATH, HOME: process.env.HOME, DECISIONS_HOME: 
 function fakeDrop(script: string) {
   const path = join(bin, "drop");
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(home, "drop-argv")}"\n${script}\n`);
+  chmodSync(path, 0o755);
+}
+
+function installDecision() {
+  const path = join(bin, "decision");
+  writeFileSync(path, `#!/usr/bin/env python3
+import fcntl, json, os, sys
+args = sys.argv[1:]
+agent = next((x.split("=", 1)[1] for x in args if x.startswith("--agent=")), "")
+verb = next((x for x in args if x in ("resolve", "withdraw")), "")
+i = args.index(verb); ident = args[i + 1]
+value = next((x.split("=", 1)[1] for x in args if x.startswith("--answer=") or x.startswith("--reason=")), "")
+home = os.environ["DECISIONS_HOME"]
+with open(os.path.join(home, ".lock"), "w") as lock:
+  fcntl.flock(lock, fcntl.LOCK_EX)
+  path = os.path.join(home, agent + ".json")
+  try:
+    store = json.load(open(path))
+  except FileNotFoundError:
+    print(f"no decision {ident} for this agent", file=sys.stderr); sys.exit(1)
+  item = next((d for d in store["decisions"] if d["id"] == ident), None)
+  if not item:
+    print(f"no decision {ident} for this agent", file=sys.stderr); sys.exit(1)
+  status = "decided" if verb == "resolve" else "withdrawn"
+  answer = value or None
+  if item["status"] != "open":
+    if item["status"] == status and item.get("answer") == answer: sys.exit(0)
+    print(f"{ident} is already {item['status']}: -", file=sys.stderr); sys.exit(1)
+  item.update(status=status, answer=answer, answered_via="page", acked_at=None)
+  with open(path, "w") as out: json.dump(store, out)
+print(f"{ident} {status}")
+`);
+  chmodSync(path, 0o755);
+}
+
+function fakeAm() {
+  const path = join(bin, "am");
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${join(home, "am-argv")}"\n`);
   chmodSync(path, 0o755);
 }
 
@@ -40,6 +79,11 @@ function post(body: unknown, headers: Record<string, string> = bearer) {
 }
 function getInbox(headers: Record<string, string> = bearer) {
   return fetch(`${server.url}/api/decisions`, { headers });
+}
+function answer(body: unknown, headers: Record<string, string> = bearer) {
+  return fetch(`${server.url}/api/decisions/answer`, {
+    method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+  });
 }
 async function browserCookie(): Promise<string> {
   const login = await fetch(`${server.url}/auth/login`, {
@@ -253,6 +297,117 @@ describe("GET /api/decisions", () => {
   });
 });
 
+describe("POST /api/decisions/answer", () => {
+  test.skipIf(!realDecision)("integrates with an installed decision CLI using only isolated stores", async () => {
+    symlinkSync(realDecision!, join(bin, "decision"));
+    fakeAm();
+    writeStore("api", [{ id: "d-1", status: "open", question: "Ship?", answer: null, answered_via: null, acked_at: null }]);
+    const response = await answer({ agent: "api", id: "d-1", action: "answer", answer: "Ship it" });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions[0])
+      .toMatchObject({ status: "decided", answer: "Ship it", answered_via: "page", acked_at: null });
+  });
+
+  test("requires auth and browser CSRF protection", async () => {
+    installDecision();
+    writeStore("api", [{ id: "d-1", status: "open", question: "Ship?" }]);
+    const payload = { agent: "api", id: "d-1", action: "answer", answer: "Yes" };
+    expect((await answer(payload, {})).status).toBe(401);
+    const cookie = await browserCookie();
+    expect((await answer(payload, { cookie })).status).toBe(403);
+    expect((await answer(payload, { cookie, origin: "https://evil.test" })).status).toBe(403);
+    expect((await answer(payload, { cookie, origin: ORIGIN })).status).toBe(200);
+  });
+
+  test("validates the fixed action contract before spawning the CLI", async () => {
+    const valid = { agent: "api", id: "d-1", action: "answer", answer: "Yes" };
+    const invalid = [
+      { ...valid, agent: "host:api" }, { ...valid, agent: "../api" }, { ...valid, id: "1" },
+      { ...valid, id: "d-0" }, { ...valid, action: "delete" }, { ...valid, answer: "  " },
+      { ...valid, answer: "x".repeat(4001) }, { ...valid, answer: "yes\u0000" },
+      { ...valid, reason: "no" }, { agent: "api", id: "d-1", action: "withdraw", answer: "no" },
+      { ...valid, verb: "resolve" }, null, [],
+    ];
+    for (const body of invalid) expect((await answer(body)).status).toBe(400);
+    expect((await answer({ agent: "api", id: "d-1", action: "withdraw" })).status).toBe(503);
+    expect(() => readFileSync(join(home, "am-argv"))).toThrow();
+  });
+
+  test("answers through argv, records page provenance, and wakes once without embedding the answer", async () => {
+    installDecision();
+    fakeAm();
+    writeStore("api", [{ id: "d-1", status: "open", question: "Ship?", answer: null, answered_via: null, acked_at: null }]);
+    const payload = { agent: "api", id: "d-1", action: "answer", answer: "--ship the smaller change" };
+    const response = await answer(payload);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ ok: true, changed: true, status: "decided" });
+    const stored = JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8"));
+    expect(stored.decisions[0]).toMatchObject({ status: "decided", answer: "--ship the smaller change", answered_via: "page", acked_at: null });
+    const wake = readFileSync(join(home, "am-argv"), "utf8");
+    expect(wake).toContain("send\napi\n[decision d-1] Alex answered this on the decisions page.");
+    expect(wake).toContain("--from\ndecisions-page\n");
+    expect(wake).not.toContain("smaller change");
+    expect(await (await answer(payload)).json()).toEqual({ ok: true, changed: false, status: "decided" });
+    expect(readFileSync(join(home, "am-argv"), "utf8")).toBe(wake);
+  });
+
+  test("withdraws with an optional reason and keeps it distinct from an answer", async () => {
+    installDecision();
+    fakeAm();
+    writeStore("api", [
+      { id: "d-1", status: "open", question: "Relevant?" },
+      { id: "d-2", status: "open", question: "Still needed?" },
+    ]);
+    expect(await (await answer({ agent: "api", id: "d-1", action: "withdraw", reason: "Superseded" })).json())
+      .toEqual({ ok: true, changed: true, status: "withdrawn" });
+    expect((await answer({ agent: "api", id: "d-2", action: "withdraw" })).status).toBe(200);
+    const stored = JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8"));
+    expect(stored.decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "d-1", status: "withdrawn", answer: "Superseded", answered_via: "page", acked_at: null }),
+      expect.objectContaining({ id: "d-2", status: "withdrawn", answer: null, answered_via: "page", acked_at: null }),
+    ]));
+    expect(readFileSync(join(home, "am-argv"), "utf8")).toContain("Alex dismissed this on the decisions page");
+  });
+
+  test("serializes concurrent answer and withdrawal without overwriting the winner", async () => {
+    installDecision();
+    fakeAm();
+    writeStore("api", [{ id: "d-1", status: "open", question: "Choose" }]);
+    const results = await Promise.all([
+      answer({ agent: "api", id: "d-1", action: "answer", answer: "Keep" }),
+      answer({ agent: "api", id: "d-1", action: "withdraw", reason: "Obsolete" }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    const stored = JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions[0];
+    expect([["decided", "Keep"], ["withdrawn", "Obsolete"]]).toContainEqual([stored.status, stored.answer]);
+    expect(readFileSync(join(home, "am-argv"), "utf8").match(/^send$/gm)).toHaveLength(1);
+    const stale = await results.find((r) => r.status === 409)!.json();
+    expect(stale).toEqual({ error: "This decision is no longer open. Refresh to see its current state.", reason: "decision_closed" });
+  });
+
+  test("handles disabled config, missing CLI, stale ids, failures, and timeout with sanitized errors", async () => {
+    writeStore("api", [{ id: "d-1", status: "open", question: "Choose" }]);
+    expect((await answer({ agent: "api", id: "d-1", action: "answer", answer: "x" })).status).toBe(503);
+    installDecision();
+    const missing = await answer({ agent: "api", id: "d-2", action: "answer", answer: "secret" });
+    expect(missing.status).toBe(404);
+    expect(await missing.text()).not.toContain("secret");
+    writeFileSync(join(process.env.AGENTMGR_HOME!, "config.json"), JSON.stringify({ decisions: false }));
+    const disabled = await answer({ agent: "api", id: "d-1", action: "answer", answer: "x" });
+    expect(disabled.status).toBe(403);
+    expect(disabled.headers.get("cache-control")).toBe("no-store");
+
+    rmSync(join(bin, "decision"));
+    writeFileSync(join(bin, "decision"), "#!/bin/sh\nsleep 5\n");
+    chmodSync(join(bin, "decision"), 0o755);
+    rmSync(join(process.env.AGENTMGR_HOME!, "config.json"));
+    const result = await applyDecisionAction("api", "d-1", "answer", "secret", 100);
+    expect(result).toMatchObject({ ok: false, status: 503, reason: "decision_cli_timeout" });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+});
+
 test("web fleet rows carry the decision fields, exited agents included", async () => {
   seedAgent("api", "exited");
   seedAgent("quiet");
@@ -274,13 +429,26 @@ describe("web/decisions.js", () => {
     children: (Node | string)[] = [];
     attrs = new Map<string, string>();
     className = "";
+    value = "";
+    name = "";
+    checked = false;
     disabled = false;
     href = "";
     target = "";
     rel = "";
     type = "";
     title = "";
+    placeholder = "";
+    rows = 0;
+    maxLength = 0;
     onclick?: () => Promise<void>;
+    oninput?: () => void;
+    onchange?: () => void;
+    classList = { toggle: (name: string, force: boolean) => {
+      const names = new Set(this.className.split(/\s+/).filter(Boolean));
+      if (force) names.add(name); else names.delete(name);
+      this.className = [...names].join(" ");
+    } };
     constructor(public tag: string) {}
     set textContent(value: string) { this.children = [String(value)]; }
     get textContent(): string { return this.children.map((c) => (typeof c === "string" ? c : c.textContent)).join(""); }
@@ -316,8 +484,8 @@ describe("web/decisions.js", () => {
     expect(card.find("decisions-title")[0]!.textContent).toBe("1 decision waiting on you");
     expect(card.find("decision-question")[0]!.children).toEqual(["Ship <b>it</b>?"]);
     expect(card.all().some((n) => ["b", "i", "img"].includes(n.tag))).toBe(false);
-    expect(card.find("decision-option").map((n) => n.textContent)).toEqual(["<img src=x onerror=alert(1)>", "no"]);
-    expect(card.find("decision-option").every((n) => n.tag === "li")).toBe(true);
+    expect(card.find("decision-option").map((n) => n.textContent)).toEqual(["<img src=x onerror=alert(1)>", "no", "Other"]);
+    expect(card.find("decision-option").every((n) => n.tag === "label")).toBe(true);
     expect(card.find("decision-blocking")[0]!.textContent).toBe("Blocking");
     expect(card.find("decision-age")[0]!.textContent).toBe("asked 2h ago");
     expect(card.find("decision-why")[0]!.textContent).toBe("Why why <i>");
@@ -335,27 +503,33 @@ describe("web/decisions.js", () => {
     expect(D.safeLink("http://x.test/a")).toBe("http://x.test/a");
   });
 
-  test("the answer button calls back with the decision and agent, busy until it settles", async () => {
+  test("radio selection never submits; explicit submit is deduplicated while pending", async () => {
     const calls: unknown[] = [];
     let settle!: () => void;
     const first = decision(), second = decision({ id: "d-4", blocking: false });
     const card = D.renderDecisionCard([first, second], {
-      agent: "api", now: NOW,
-      onAnswer: (d: unknown, agent: string) => { calls.push([d, agent]); return new Promise<void>((resolve) => { settle = resolve; }); },
+      agent: "api", scope: "server-a", now: NOW,
+      onSubmit: (d: unknown, agent: string, action: string, text: string, scope: string) => {
+        calls.push([d, agent, action, text, scope]); return new Promise<void>((resolve) => { settle = resolve; });
+      },
     }) as Node;
     const buttons = card.find("decision-answer");
-    expect(buttons.map((b) => b.textContent)).toEqual(["Answer on the decisions page", "Answer on the decisions page"]);
+    expect(buttons.map((b) => b.textContent)).toEqual(["Submit answer", "Submit answer"]);
+    const radios = card.all().filter((node) => node.type === "radio");
+    radios[3]!.checked = true;
+    radios[3]!.onchange!();
+    expect(calls).toEqual([]);
     const clicked = buttons[1]!.onclick!();
     const duplicate = buttons[1]!.onclick!();
     expect(buttons[1]!.disabled).toBe(true);
-    expect(calls).toEqual([[second, "api"]]);
+    expect(calls).toEqual([[second, "api", "answer", "<img src=x onerror=alert(1)>", "server-a"]]);
     settle();
     await Promise.all([clicked, duplicate]);
     expect(buttons[1]!.disabled).toBe(false);
   });
 
   test("an unavailable page disables the buttons with its explanation", () => {
-    const card = D.renderDecisionCard([decision()], { agent: "api", now: NOW, unavailable: "Not set up here.", onAnswer() {} }) as Node;
+    const card = D.renderDecisionCard([decision()], { agent: "api", now: NOW, unavailable: "Not set up here.", onSubmit() {} }) as Node;
     const button = card.find("decision-answer")[0]!;
     expect([button.disabled, button.title]).toEqual([true, "Not set up here."]);
     expect(card.find("decisions-unavailable")[0]!.textContent).toBe("Not set up here.");
@@ -366,6 +540,35 @@ describe("web/decisions.js", () => {
     const defaultCard = D.renderDecisionCard([decision()], { agent: "api" }) as Node;
     expect(readonly.find("decision-answer")).toHaveLength(0);
     expect(defaultCard.find("decision-answer")).toHaveLength(0);
+  });
+
+  test("custom drafts and submissions are isolated by connection, agent and id", async () => {
+    const calls: unknown[] = [];
+    const render = (scope: string) => D.renderDecisionCard([decision()], {
+      agent: "api", scope, onSubmit: (...args: unknown[]) => { calls.push(args); },
+    }) as Node;
+    const first = render("server-a");
+    const custom = first.find("decision-custom")[0]!;
+    custom.value = "Draft A";
+    custom.oninput!();
+    const other = render("server-b");
+    expect(other.find("decision-custom")[0]!.value).toBe("");
+    const restored = render("server-a");
+    expect(restored.find("decision-custom")[0]!.value).toBe("Draft A");
+    await restored.find("decision-answer")[0]!.onclick!();
+    expect(calls[0]).toEqual([expect.anything(), "api", "answer", "Draft A", "server-a"]);
+  });
+
+  test("withdrawal is an explicit action with an optional reason", async () => {
+    const calls: unknown[] = [];
+    const card = D.renderDecisionCard([decision({ id: "d-9" })], {
+      agent: "api", scope: "server", onSubmit: (...args: unknown[]) => { calls.push(args); },
+    }) as Node;
+    const reason = card.find("decision-withdraw-reason")[0]!;
+    reason.value = "Superseded";
+    reason.oninput!();
+    await card.find("decision-withdraw")[0]!.onclick!();
+    expect(calls[0]).toEqual([expect.anything(), "api", "withdraw", "Superseded", "server"]);
   });
 
   test("the page loads decisions.js before app.js and the server serves it", () => {

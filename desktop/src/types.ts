@@ -152,6 +152,7 @@ export const wasCancelled = (result: ConfirmedResult): result is Cancelled => (r
 
 export type RunningStatus = "starting" | "idle" | "waiting" | "working" | "needs-attention";
 export type ImageType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+export type DecisionAction = "answer" | "withdraw";
 
 type AgentParams = { connection: string; agent: string };
 
@@ -164,6 +165,7 @@ export interface BridgeMethods {
   "api.get": { params: { connection: string; path: string }; result: ApiResponse };
   // Fetches the secret capability URL natively and opens it without returning it to the page.
   "decisions.open": { params: AgentParams & { decisionId?: string }; result: Record<string, never> };
+  "decisions.answer": { params: AgentParams & { id: string; action: DecisionAction; text: string }; result: ApiResponse };
   // Mutations take values; the bridge builds each path and body itself.
   "messages.send": { params: { connection: string; agent: string; text: string; mode: SendMode }; result: ApiResponse };
   "messages.cancel": { params: { connection: string; agent: string; id: string }; result: ApiResponse };
