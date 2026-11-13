@@ -1,6 +1,7 @@
 import { apiGet, ApiError } from "./api";
 import { selectAgent } from "./chat";
-import { decisionOpener } from "./decisionOpen";
+import { submitDecision } from "./decisionSubmit";
+import { refreshConnection } from "./data";
 import { DecisionsInbox, type DecisionsReport } from "./decisionsInbox";
 import { $, h } from "./dom";
 import { agentKey } from "./fleet";
@@ -14,7 +15,7 @@ interface DecisionsActions {
   setQuery(query: string): void;
   setBlockingOnly(blocking: boolean): void;
   openAgent(name: string): void;
-  onAnswer?(decision: { id: string }, agent: string): Promise<void>;
+  onSubmit?(decision: { id: string }, agent: string, action: "answer" | "withdraw", text: string, scope: string): Promise<void>;
 }
 declare global {
   interface Window {
@@ -22,7 +23,7 @@ declare global {
       buildPage(root: HTMLElement): HTMLElement;
       render(root: HTMLElement, data: {
         report: DecisionsReport | null; loading: boolean; error: string | null;
-        query: string; blockingOnly: boolean; notice?: string;
+        query: string; blockingOnly: boolean; notice?: string; scope?: string;
       }, actions: DecisionsActions): void;
     };
   }
@@ -57,7 +58,7 @@ function render(): void {
     badge.title = `${reported} open decisions on the selected server`;
     if (visible()) window.agentDecisionsPage.render(root, {
       report: inbox.report, loading: inbox.loading, error: inbox.error,
-      query, blockingOnly, notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
+      query, blockingOnly, scope: inbox.connection ?? "", notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
     }, actions);
     return;
   }
@@ -67,7 +68,7 @@ function render(): void {
   badge.title = `${count} open decisions on the selected server`;
   if (visible()) window.agentDecisionsPage.render(root, {
     report: inbox.report, loading: inbox.loading, error: inbox.error,
-    query, blockingOnly, notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
+    query, blockingOnly, scope: inbox.connection ?? "", notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
   }, actions);
 }
 
@@ -81,19 +82,20 @@ const actions: DecisionsActions = {
     if (conn && row) selectAgent(agentKey(conn.conn.id, row), false, "chat");
     else { notice = `${name} is no longer in this server's fleet. Its open decisions are still shown here.`; render(); }
   },
-  async onAnswer(decision, agent) {
-    const connection = inbox.connection;
+  async onSubmit(decision, agent, action, text, scope) {
+    const connection = scope;
     if (!connection) throw new Error("Select a server to answer this decision.");
     const request = ++actionSequence;
     try {
-      await decisionOpener.open({ connection, agent, decisionId: decision.id });
+      await submitDecision(connection, agent, decision.id, action, text);
+      await Promise.all([inbox.refreshLatest(), refreshConnection(connection)]);
       if (request === actionSequence && inbox.connection === connection && notice) {
         notice = "";
         render();
       }
     } catch (cause) {
       if (request === actionSequence && inbox.connection === connection) {
-        notice = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+        notice = cause instanceof Error ? cause.message : "Could not submit this decision.";
         render();
       }
       throw cause;

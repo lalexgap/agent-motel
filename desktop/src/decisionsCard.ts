@@ -1,6 +1,8 @@
 import { apiGet } from "./api";
 import { registerCard } from "./chat";
-import { decisionOpener } from "./decisionOpen";
+import { ownsDecisionCardMutation } from "./decisionCardState";
+import { submitDecision } from "./decisionSubmit";
+import { refreshConnection } from "./data";
 import type { InboxDecision } from "./decisionsInbox";
 import { showDecisionsForAgent } from "./decisionsView";
 import { h } from "./dom";
@@ -13,7 +15,9 @@ declare global {
     agentDecisions: {
       renderDecisionCard(decisions: InboxDecision[], options: {
         agent: string;
-        onAnswer?: (decision: InboxDecision, agent: string) => Promise<void>;
+        scope: string;
+        onSubmit?: (decision: InboxDecision, agent: string, action: "answer" | "withdraw", text: string, scope: string) => Promise<void>;
+        onOpenExternal?: (decision: InboxDecision, agent: string) => Promise<void>;
       }): HTMLElement | null;
     };
   }
@@ -87,18 +91,24 @@ function card(key: string): HTMLElement | null {
   node.setAttribute("aria-label", "Agent decisions");
   const rendered = window.agentDecisions.renderDecisionCard(entries, {
     agent: row.name,
-    onAnswer: async (decision) => {
+    scope: parsed.connection,
+    onSubmit: async (decision, _agent, action, text) => {
       const generation = cardGeneration;
       const request = ++actionSequence;
       try {
-        await decisionOpener.open({ connection: parsed.connection, agent: row.name, decisionId: decision.id });
-        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key && actionError) {
+        await submitDecision(parsed.connection, row.name, decision.id, action, text);
+        if (ownsDecisionCardMutation(generation, cardGeneration, request, actionSequence, key, selected, state.selected)) {
+          sequence++;
+          loading = false;
+          entries = entries.filter((entry) => entry.id !== decision.id);
+          signature = "";
           actionError = "";
           changed("agent");
         }
+        await refreshConnection(parsed.connection);
       } catch (cause) {
-        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key) {
-          actionError = cause instanceof Error ? cause.message : "Could not open the decisions page.";
+        if (ownsDecisionCardMutation(generation, cardGeneration, request, actionSequence, key, selected, state.selected)) {
+          actionError = cause instanceof Error ? cause.message : "Could not submit this decision.";
           changed("agent");
         }
         throw cause;

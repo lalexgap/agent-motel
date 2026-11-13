@@ -35,6 +35,8 @@ struct WriteRequest: Equatable {
 /// validates and opens it natively instead of returning it to the page.
 enum DecisionsPolicy {
     static let timeout: TimeInterval = 30
+    static let answerTimeout: TimeInterval = 45
+    static let maxTextBytes = 4_000
     static let invalidLink = "The server returned an invalid decisions page link"
     private static let nameCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-".unicodeScalars)
 
@@ -54,6 +56,32 @@ enum DecisionsPolicy {
             throw PolicyError("invalid decision id")
         }
         return id
+    }
+
+    static func answerID(_ value: Any?) throws -> String {
+        guard let id = value as? String, id.range(of: #"^d-[1-9][0-9]*$"#, options: .regularExpression) != nil,
+              id.count <= 40 else { throw PolicyError("invalid decision id") }
+        return id
+    }
+
+    static func actionRequest(base: String, agent rawAgent: Any?, id rawID: Any?, action rawAction: Any?, text rawText: Any?) throws -> WriteRequest {
+        let agent = try agent(rawAgent)
+        let id = try answerID(rawID)
+        guard let action = rawAction as? String, action == "answer" || action == "withdraw" else {
+            throw PolicyError("invalid decision action")
+        }
+        guard let source = rawText as? String, !MessagePolicy.hasControl(source, allowLineBreaks: true) else {
+            throw PolicyError("invalid decision text")
+        }
+        let text = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.utf8.count <= maxTextBytes, action == "withdraw" || !text.isEmpty else {
+            throw PolicyError("invalid decision text")
+        }
+        var body: [String: Any] = ["agent": agent, "id": id, "action": action]
+        if action == "answer" { body["answer"] = text }
+        else if !text.isEmpty { body["reason"] = text }
+        let url = try ConnectionPolicy.apiURL(base: base, path: "/api/decisions/answer")
+        return try .json(url, body, timeout: answerTimeout)
     }
 
     static func request(base: String, agent rawAgent: Any?) throws -> WriteRequest {

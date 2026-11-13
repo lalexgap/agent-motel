@@ -8,6 +8,9 @@ import {
   buildAction,
   checkAgent,
   checkDecisionId,
+  checkDecisionAction,
+  checkDecisionAnswerId,
+  checkDecisionText,
   checkDecisionsAgent,
   checkMessageId,
   checkMessageText,
@@ -226,6 +229,15 @@ export class DevBridge {
         return this.apiGet(text(params.connection, "connection"), params.path);
       case "decisions.open":
         return this.openDecisions(params);
+      case "decisions.answer": {
+        const conn = this.connection(text(params.connection, "connection"));
+        const agent = checked(checkDecisionsAgent(params.agent));
+        const id = checked(checkDecisionAnswerId(params.id));
+        const action = checked(checkDecisionAction(params.action));
+        const value = checked(checkDecisionText(params.text, action === "answer"));
+        const body = action === "answer" ? { agent, id, action, answer: value } : { agent, id, action, ...(value ? { reason: value } : {}) };
+        return this.mutate(conn, "POST", "/api/decisions/answer", JSON.stringify(body));
+      }
       case "messages.send": {
         const conn = this.connection(text(params.connection, "connection"));
         const agent = checked(checkAgent(params.agent));
