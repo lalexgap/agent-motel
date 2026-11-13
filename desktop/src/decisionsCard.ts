@@ -1,5 +1,6 @@
 import { apiGet } from "./api";
 import { registerCard } from "./chat";
+import { ownsDecisionCardMutation } from "./decisionCardState";
 import { submitDecision } from "./decisionSubmit";
 import { refreshConnection } from "./data";
 import type { InboxDecision } from "./decisionsInbox";
@@ -96,17 +97,17 @@ function card(key: string): HTMLElement | null {
       const request = ++actionSequence;
       try {
         await submitDecision(parsed.connection, row.name, decision.id, action, text);
-        sequence++;
-        loading = false;
-        entries = entries.filter((entry) => entry.id !== decision.id);
-        signature = "";
-        await refreshConnection(parsed.connection);
-        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key && actionError) {
+        if (ownsDecisionCardMutation(generation, cardGeneration, request, actionSequence, key, selected, state.selected)) {
+          sequence++;
+          loading = false;
+          entries = entries.filter((entry) => entry.id !== decision.id);
+          signature = "";
           actionError = "";
           changed("agent");
         }
+        await refreshConnection(parsed.connection);
       } catch (cause) {
-        if (generation === cardGeneration && request === actionSequence && selected === key && state.selected === key) {
+        if (ownsDecisionCardMutation(generation, cardGeneration, request, actionSequence, key, selected, state.selected)) {
           actionError = cause instanceof Error ? cause.message : "Could not submit this decision.";
           changed("agent");
         }

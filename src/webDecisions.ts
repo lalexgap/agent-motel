@@ -145,6 +145,8 @@ export type DecisionActionResult =
 function toolEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
   delete env.AGENTMGR_AGENT;
+  delete env.CODEX_THREAD_ID;
+  delete env.CODEX_SESSION_ID;
   delete env.DECISIONS_AGENT;
   delete env.DECISIONS_PLAN;
   return env;
@@ -155,11 +157,19 @@ async function notifyDecision(agent: string, id: string, action: DecisionAction,
   if (!am) return;
   const verb = action === "answer" ? "answered" : "dismissed";
   const message = `[decision ${id}] Alex ${verb} this on the decisions page. Run \`decision inbox\`, then \`decision show ${id}\`, and act on it.`;
-  const proc = Bun.spawn([am, "send", agent, message, "--from", "decisions-page"], {
-    env, stdin: "ignore", stdout: "ignore", stderr: "ignore",
-  });
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([am, "send", agent, message, "--local", "--exact"], {
+      env, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+    });
+  } catch {
+    return;
+  }
   const timer = setTimeout(() => proc.kill("SIGKILL"), 10_000);
-  try { await proc.exited; } catch { /* The outcome is already safely stored. */ }
+  try {
+    const code = await proc.exited;
+    if (code !== 0) return;
+  } catch { /* The decision is already safely stored. */ }
   finally { clearTimeout(timer); }
 }
 
