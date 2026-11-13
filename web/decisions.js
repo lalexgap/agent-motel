@@ -50,7 +50,6 @@ window.agentDecisions = (() => {
     return drafts.get(key);
   }
 
-  // opts: { agent, now, unavailable, onSubmit(decision, agent, action, text), onOpenExternal }.
   function decisionItem(decision, opts) {
     const item = el("li", "decision-item" + (decision.blocking ? " blocking" : ""));
     const head = el("div", "decision-head");
