@@ -28,10 +28,11 @@ function fakeDrop(script: string) {
   chmodSync(path, 0o755);
 }
 
-function installDecision() {
+function installDecision(beforeWrite = "") {
   const path = join(bin, "decision");
   writeFileSync(path, `#!/usr/bin/env python3
 import fcntl, json, os, sys
+${beforeWrite}
 args = sys.argv[1:]
 agent = next((x.split("=", 1)[1] for x in args if x.startswith("--agent=")), "")
 verb = next((x for x in args if x in ("resolve", "withdraw")), "")
@@ -309,11 +310,54 @@ describe("POST /api/decisions/answer", () => {
   test.skipIf(!realDecision)("integrates with an installed decision CLI using only isolated stores", async () => {
     symlinkSync(realDecision!, join(bin, "decision"));
     fakeAm();
-    writeStore("api", [{ id: "d-1", status: "open", question: "Ship?", answer: null, answered_via: null, acked_at: null }]);
+    writeStore("api", [
+      { id: "d-1", status: "open", question: "Ship?", answer: null, answered_via: null, acked_at: null },
+      { id: "d-2", status: "open", question: "Keep?", answer: null, answered_via: null, acked_at: null },
+    ]);
     const response = await answer({ agent: "api", id: "d-1", action: "answer", answer: "Ship it" });
     expect(response.status).toBe(200);
-    expect(JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions[0])
-      .toMatchObject({ status: "decided", answer: "Ship it", answered_via: "page", acked_at: null });
+    expect((await answer({ agent: "api", id: "d-2", action: "withdraw", reason: "Obsolete" })).status).toBe(200);
+    expect(JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions)
+      .toMatchObject([
+        { status: "decided", answer: "Ship it", answered_via: "page", acked_at: null },
+        { status: "withdrawn", answer: "Obsolete", answered_via: "page", acked_at: null },
+      ]);
+  });
+
+  test.skipIf(process.platform !== "linux")("neither action puts private text in the fixture process command line", async () => {
+    installDecision(`
+import time
+time.sleep(0.05)
+with open("/proc/self/cmdline", "rb") as cmdline:
+  with open(os.path.join(os.environ["DECISIONS_HOME"], "fixture-cmdline"), "wb") as out:
+    out.write(cmdline.read())
+`);
+    const sentinel = "--synthetic-private-雪\nsecond line";
+    for (const [id, action, field] of [["d-1", "answer", "answer"], ["d-2", "withdraw", "reason"]]) {
+      writeStore("api", [{ id, status: "open", question: "Choose" }]);
+      expect((await answer({ agent: "api", id, action, [field!]: sentinel })).status).toBe(200);
+      const cmdline = readFileSync(join(process.env.DECISIONS_HOME!, "fixture-cmdline"), "utf8").split("\0");
+      expect(cmdline.slice(-3)).toEqual([expect.any(String), join(bin, "decision"), ""]);
+      expect(cmdline.join(" ")).not.toContain("synthetic-private");
+      expect(JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions[0].answer).toBe(sentinel);
+    }
+  });
+
+  test("missing or unsupported Python and an incompatible CLI fail with sanitized errors", async () => {
+    installDecision();
+    const payload = { agent: "api", id: "d-1", action: "answer", answer: "private answer" };
+    process.env.PATH = bin;
+    expect(await (await answer(payload)).json()).toMatchObject({ reason: "decision_cli_missing" });
+    writeFileSync(join(bin, "python3"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+    const unsupported = await answer(payload);
+    expect(unsupported.status).toBe(503);
+    expect(await unsupported.json()).toEqual({ reason: "decision_cli_failed", error: "Could not record this decision. Try again." });
+    rmSync(join(bin, "python3"));
+    process.env.PATH = `${bin}:/usr/bin:/bin`;
+    writeFileSync(join(bin, "decision"), "#!/bin/sh\nexit 0\n");
+    const incompatible = await answer(payload);
+    expect(incompatible.status).toBe(503);
+    expect(await incompatible.json()).toEqual({ reason: "decision_cli_failed", error: "Could not record this decision. Try again." });
   });
 
   test("requires auth and browser CSRF protection", async () => {
@@ -431,7 +475,7 @@ describe("POST /api/decisions/answer", () => {
     expect(disabled.headers.get("cache-control")).toBe("no-store");
 
     rmSync(join(bin, "decision"));
-    writeFileSync(join(bin, "decision"), "#!/bin/sh\nsleep 5\n");
+    writeFileSync(join(bin, "decision"), "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n");
     chmodSync(join(bin, "decision"), 0o755);
     rmSync(join(process.env.AGENTMGR_HOME!, "config.json"));
     const result = await applyDecisionAction("api", "d-1", "answer", "secret", 100);
