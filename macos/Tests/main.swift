@@ -201,10 +201,10 @@ do {
     let answer = try DecisionsPolicy.actionRequest(base: base, agent: "archived.design", id: "d-7", action: "answer", text: "  Ship it  ")
     check(answer.method == .post && answer.url.absoluteString == base + "/api/decisions/answer" && answer.timeout == 45,
           "decision answer request")
-    check(body(answer) == ["agent": "archived.design", "id": "d-7", "action": "answer", "answer": "Ship it"],
+    check((body(answer) as? [String: String]) == ["agent": "archived.design", "id": "d-7", "action": "answer", "answer": "Ship it"],
           "decision answer body")
     let withdraw = try DecisionsPolicy.actionRequest(base: base, agent: "api", id: "d-8", action: "withdraw", text: "")
-    check(body(withdraw) == ["agent": "api", "id": "d-8", "action": "withdraw"], "decision withdrawal body")
+    check((body(withdraw) as? [String: String]) == ["agent": "api", "id": "d-8", "action": "withdraw"], "decision withdrawal body")
     for id in ["1", "d-0", "d-1/x", "d-"] {
         check(rejection { try DecisionsPolicy.actionRequest(base: base, agent: "api", id: id, action: "answer", text: "x") }
               == "invalid decision id", "accepted answer id \(id)")
