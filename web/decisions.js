@@ -7,6 +7,7 @@
 window.agentDecisions = (() => {
   const drafts = new Map();
   const submissions = new Map();
+  const customChoice = Symbol("custom");
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -98,8 +99,8 @@ window.agentDecisions = (() => {
     customRadio.name = radioName;
     customRadio.value = "custom";
     customRadio.setAttribute("data-decision-focus", `${key}\noption-custom`);
-    customRadio.checked = draft.choice === "custom";
-    customRadio.onchange = () => { if (customRadio.checked) { draft.choice = "custom"; draft.error = draft.success = ""; custom.focus?.(); } };
+    customRadio.checked = draft.choice === customChoice;
+    customRadio.onchange = () => { if (customRadio.checked) { draft.choice = customChoice; draft.error = draft.success = ""; custom.focus?.(); } };
     customLabel.append(customRadio, document.createTextNode("Other"));
     options.append(customLabel);
     const custom = el("textarea", "decision-custom");
@@ -108,10 +109,10 @@ window.agentDecisions = (() => {
     custom.placeholder = "Write another answer";
     custom.setAttribute("data-decision-focus", `${key}\ncustom`);
     custom.value = draft.custom;
-    custom.oninput = () => { draft.custom = custom.value; draft.choice = "custom"; customRadio.checked = true; draft.error = draft.success = ""; };
+    custom.oninput = () => { draft.custom = custom.value; draft.choice = customChoice; customRadio.checked = true; draft.error = draft.success = ""; };
     form.append(options, custom);
     if (!choices.length) {
-      draft.choice = "custom";
+      draft.choice = customChoice;
       customRadio.checked = true;
     }
     const footer = el("div", "decision-actions");
@@ -153,7 +154,7 @@ window.agentDecisions = (() => {
       };
       const send = async (action) => {
         if (submissions.has(key)) return submissions.get(key);
-        const text = action === "answer" ? (draft.choice === "custom" ? draft.custom.trim() : draft.choice) : draft.reason.trim();
+        const text = action === "answer" ? (draft.choice === customChoice ? draft.custom.trim() : draft.choice) : draft.reason.trim();
         if (action === "answer" && !text) { draft.error = "Choose an option or write an answer."; draft.success = ""; show(); return; }
         draft.error = draft.success = "";
         const pending = Promise.resolve(opts.onSubmit(decision, opts.agent, action, text, opts.scope));

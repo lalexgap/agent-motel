@@ -15,7 +15,11 @@ const realDecision = Bun.which("decision", { PATH: process.env.PATH ?? "" });
 let home: string;
 let bin: string;
 let server: ApiServerHandle;
-const saved = { PATH: process.env.PATH, HOME: process.env.HOME, DECISIONS_HOME: process.env.DECISIONS_HOME, AGENTMGR_HOME: process.env.AGENTMGR_HOME };
+const saved = {
+  PATH: process.env.PATH, HOME: process.env.HOME, DECISIONS_HOME: process.env.DECISIONS_HOME,
+  AGENTMGR_HOME: process.env.AGENTMGR_HOME, AGENTMGR_AGENT: process.env.AGENTMGR_AGENT,
+  CODEX_THREAD_ID: process.env.CODEX_THREAD_ID, CODEX_SESSION_ID: process.env.CODEX_SESSION_ID,
+};
 
 // A stand-in for the `drop` CLI; the real one would mint or print a live secret link.
 function fakeDrop(script: string) {
@@ -58,7 +62,11 @@ print(f"{ident} {status}")
 
 function fakeAm() {
   const path = join(bin, "am");
-  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${join(home, "am-argv")}"\n`);
+  writeFileSync(path, `#!/bin/sh
+printf '%s\\n' "$@" >> "${join(home, "am-argv")}"
+printf '%s\\n' "\${AGENTMGR_AGENT-unset}" "\${CODEX_THREAD_ID-unset}" "\${CODEX_SESSION_ID-unset}" > "${join(home, "am-env")}"
+exit "\${FAKE_AM_EXIT-0}"
+`);
   chmodSync(path, 0o755);
 }
 
@@ -333,9 +341,12 @@ describe("POST /api/decisions/answer", () => {
     expect(() => readFileSync(join(home, "am-argv"))).toThrow();
   });
 
-  test("answers through argv, records page provenance, and wakes once without embedding the answer", async () => {
+  test("answers through argv, records page provenance, and wakes once with local exact operator dispatch", async () => {
     installDecision();
     fakeAm();
+    process.env.AGENTMGR_AGENT = "parent-agent";
+    process.env.CODEX_THREAD_ID = "private-thread";
+    process.env.CODEX_SESSION_ID = "private-session";
     writeStore("api", [{ id: "d-1", status: "open", question: "Ship?", answer: null, answered_via: null, acked_at: null }]);
     const payload = { agent: "api", id: "d-1", action: "answer", answer: "--ship the smaller change" };
     const response = await answer(payload);
@@ -346,10 +357,31 @@ describe("POST /api/decisions/answer", () => {
     expect(stored.decisions[0]).toMatchObject({ status: "decided", answer: "--ship the smaller change", answered_via: "page", acked_at: null });
     const wake = readFileSync(join(home, "am-argv"), "utf8");
     expect(wake).toContain("send\napi\n[decision d-1] Alex answered this on the decisions page.");
-    expect(wake).toContain("--from\ndecisions-page\n");
+    expect(wake).toEndWith("--local\n--exact\n");
+    expect(wake).not.toContain("--from");
     expect(wake).not.toContain("smaller change");
+    expect(readFileSync(join(home, "am-env"), "utf8")).toBe("unset\nunset\nunset\n");
     expect(await (await answer(payload)).json()).toEqual({ ok: true, changed: false, status: "decided" });
     expect(readFileSync(join(home, "am-argv"), "utf8")).toBe(wake);
+  });
+
+  test("a failed exact wake remains best-effort after the decision is committed", async () => {
+    installDecision();
+    fakeAm();
+    process.env.FAKE_AM_EXIT = "1";
+    writeStore("api", [{ id: "d-1", status: "open", question: "Ship?" }]);
+    try {
+      const response = await answer({ agent: "api", id: "d-1", action: "answer", answer: "private answer" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true, changed: true, status: "decided" });
+      expect(JSON.parse(readFileSync(join(process.env.DECISIONS_HOME!, "api.json"), "utf8")).decisions[0])
+        .toMatchObject({ status: "decided", answer: "private answer" });
+      const wake = readFileSync(join(home, "am-argv"), "utf8");
+      expect(wake).toEndWith("--local\n--exact\n");
+      expect(wake).not.toContain("private answer");
+    } finally {
+      delete process.env.FAKE_AM_EXIT;
+    }
   });
 
   test("withdraws with an optional reason and keeps it distinct from an answer", async () => {
@@ -526,6 +558,20 @@ describe("web/decisions.js", () => {
     settle();
     await Promise.all([clicked, duplicate]);
     expect(buttons[1]!.disabled).toBe(false);
+  });
+
+  test("an option literally named custom stays distinct from Other", async () => {
+    const calls: unknown[] = [];
+    const selected = decision({ id: "d-5", options: ["custom"] });
+    const card = D.renderDecisionCard([selected], {
+      agent: "api", scope: "server-a", onSubmit: (...args: unknown[]) => { calls.push(args); },
+    }) as Node;
+    const option = card.all().find((node) => node.type === "radio" && node.value === "custom")!;
+    option.checked = true;
+    option.onchange!();
+    await card.find("decision-answer")[0]!.onclick!();
+    expect(calls).toEqual([[selected, "api", "answer", "custom", "server-a"]]);
+    expect(card.find("decision-submit-status")[0]!.textContent).toBe("Answer submitted.");
   });
 
   test("an unavailable page disables the buttons with its explanation", () => {

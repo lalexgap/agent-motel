@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { DecisionsInbox, parseDecisionsReport } from "../desktop/src/decisionsInbox";
+import { ownsDecisionCardMutation } from "../desktop/src/decisionCardState";
 import { decisionsInboxFixture } from "../desktop/fixtures/decisionsInbox";
 import { FIXTURE_TOKEN, startFixtureServer } from "../desktop/fixtures/server";
 import { validateApiPath } from "../desktop/src/policy";
 
 describe("decisions inbox requests", () => {
+  test("card mutations require the original target and generation", () => {
+    expect(ownsDecisionCardMutation(2, 2, 4, 4, "local:a", "local:a", "local:a")).toBe(true);
+    expect(ownsDecisionCardMutation(2, 3, 4, 4, "local:a", "local:b", "local:b")).toBe(false);
+    expect(ownsDecisionCardMutation(2, 2, 4, 4, "local:a", "local:a", "local:b")).toBe(false);
+  });
   test("the native GET path policy permits the read endpoint", () => {
     expect(() => validateApiPath("/api/decisions")).not.toThrow();
   });
