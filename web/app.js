@@ -178,6 +178,15 @@ const statusName = (status) =>
     exited: "Exited",
     starting: "Starting",
   })[status] || status;
+const activeSubagentCount = (row) => Math.max(0, ...[
+  row.busyWith?.subagents,
+  row.subagents?.active,
+  row.subagents?.running?.length,
+].filter((count) => typeof count === "number" && count > 0));
+const sidebarStatusName = (row) =>
+  row.status === "waiting" || (row.status === "working" && (row.busyWith?.subagents || 0) > 0)
+    ? "Waiting"
+    : statusName(row.status);
 function badge(status) {
   const node = el("span", "badge");
   node.append(dot(status), document.createTextNode(statusName(status)));
@@ -469,24 +478,32 @@ function renderFleet() {
     const provider = row.provider === "codex" ? "Codex" : row.provider === "claude" ? "Claude" : row.provider === "antigravity" ? "Antigravity" : "Unknown";
     const label = el("span", "side-agent-provider", provider);
     label.dataset.provider = provider.toLowerCase();
-    const time = runtime(row) >= 0 ? ` · ${elapsed(runtime(row))}` : "";
-    button.title = `${row.name} · ${statusName(row.status)}${time} · ${provider}`;
     const heading = el("span", "side-agent-heading");
     heading.append(dot(row.status), el("span", "side-agent-name", row.name));
-    if (row.openDecisions > 0) heading.append(decisionsBadge(row));
     heading.append(label);
     const age = Date.parse(row.updatedAt || "");
     const reason = row.statusDetail || row.statusReason;
-    button.setAttribute("aria-label", [row.name, statusName(row.status), reason, provider,
-      row.openDecisions > 0 ? decisionsBadgeLabel(row) : ""].filter(Boolean).join(", "));
-    const meta = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : "",
-      Number.isFinite(age) ? `${elapsed(Math.max(0, Date.now() - age))} ago` : ""].filter(Boolean);
+    const subagents = activeSubagentCount(row);
+    const metadata = el("span", "side-agent-meta");
+    const meta = [sidebarStatusName(row), subagents ? `${subagents} subagent${subagents === 1 ? "" : "s"}` : ""];
+    if (Number.isFinite(age)) {
+      const updated = el("span", "side-agent-age", `${elapsed(Math.max(0, Date.now() - age))} ago`);
+      updated.title = `Last updated ${new Date(age).toLocaleString()}`;
+      meta.filter(Boolean).forEach((part) => metadata.append(el("span", "", part), document.createTextNode(" · ")));
+      metadata.append(updated);
+    } else metadata.textContent = meta.filter(Boolean).join(" · ");
+    const detail = [statusName(row.status), reason, row.queued ? `${row.queued} queued` : ""];
     const prs = row.prMonitor?.pullRequests || [];
-    if (prs.length) meta.push(prs.map(pr => `PR #${pr.number} · ${pr.state.toLowerCase()}`).join(", "));
+    if (prs.length) detail.push(prs.map(pr => `PR #${pr.number} · ${pr.state.toLowerCase()}`).join(", "));
+    if (row.openDecisions > 0) detail.push(decisionsBadgeLabel(row));
     const seen = state.lastSeen.get(key(row));
-    if (seen && row.updatedAt > seen && state.selected !== key(row)) heading.append(el("span", "unread-badge", "New"));
-    const metadata = el("span", "side-agent-meta", meta.join(" · "));
-    metadata.title = meta.join(" · ");
+    if (seen && row.updatedAt > seen && state.selected !== key(row)) detail.push("New activity");
+    if (Number.isFinite(age)) detail.push(`Last updated ${new Date(age).toLocaleString()}`);
+    button.title = `${row.name} · ${provider}\n${detail.filter(Boolean).join(" · ")}`;
+    button.setAttribute("aria-label", [row.name, sidebarStatusName(row),
+      subagents ? `${subagents} active subagent${subagents === 1 ? "" : "s"}` : "", provider,
+      reason, row.queued ? `${row.queued} queued` : "", row.openDecisions > 0 ? decisionsBadgeLabel(row) : "",
+      Number.isFinite(age) ? `Last updated ${new Date(age).toLocaleString()}` : ""].filter(Boolean).join(", "));
     button.append(heading, metadata);
     button.classList.toggle("selected", key(row) === state.selected);
     if (key(row) === state.selected) button.setAttribute("aria-current", "page");

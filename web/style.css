@@ -2346,7 +2346,7 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 
 .side-agent { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
 .side-agent-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.side-agent-meta { font-size: 11px; line-height: 1.5; color: #b8b8c4; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.side-agent-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; line-height: 1.5; color: #b8b8c4; white-space: nowrap; text-align: left; }
 .sidebar-group-label { display: flex; gap: 8px; align-items: center; padding: 0 12px 8px; font-size: 12px; color: #b8b8c4; }
 .sidebar-group-label select { min-width: 0; padding: 4px; flex: 1; }
 .sidebar-group-title { padding: 12px 10px 4px; margin: 0; font-size: 11px; color: #c0bdd0; overflow-wrap: anywhere; }
