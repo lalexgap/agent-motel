@@ -58,3 +58,26 @@ describe("runDecisionRequests", () => {
     expect(shown).toEqual([{ title: "am: decisions needed", message: "4 new decisions from alpha, beta", meta: {} }]);
   });
 });
+
+describe("runDecisionRequests with the real store", () => {
+  test("announces the first decision on a host whose store folder didn't exist yet", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const root = mkdtempSync(join(tmpdir(), "am-decision-home-"));
+    const home = join(root, "decisions");
+    const stateFile = join(root, "state.json");
+    const previous = process.env.DECISIONS_HOME;
+    process.env.DECISIONS_HOME = home;
+    try {
+      const shown: string[] = [];
+      const publish = (title: string) => { shown.push(title); };
+      runDecisionRequests({ stateFile, publish });
+      mkdirSync(home);
+      writeFileSync(join(home, "alpha.json"), store({ id: "d1" }));
+      runDecisionRequests({ stateFile, publish });
+      expect(shown).toEqual(["am: alpha"]);
+    } finally {
+      if (previous === undefined) delete process.env.DECISIONS_HOME;
+      else process.env.DECISIONS_HOME = previous;
+    }
+  });
+});

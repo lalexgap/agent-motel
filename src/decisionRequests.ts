@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { parseOpenDecisions, readDecisionStoreTextsResult, type OpenDecision } from "./decisions";
+import { decisionsHome, parseOpenDecisions, readDecisionStoreTextsResult, type OpenDecision } from "./decisions";
 import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { notify } from "./notify";
 import { baseDir } from "./paths";
@@ -61,7 +62,8 @@ export function runDecisionRequests(options: {
   if (loadConfig().decisions === false) return [];
   let stores = options.stores;
   if (!stores) {
-    const result = readDecisionStoreTextsResult();
+    // No folder yet is an empty scan, so the first decision ever opened here is announced.
+    const result = existsSync(decisionsHome()) ? readDecisionStoreTextsResult() : { texts: new Map<string, string>(), complete: true };
     // A store that failed to read would look like its decisions were answered.
     if (!result?.complete) return [];
     stores = result.texts;
