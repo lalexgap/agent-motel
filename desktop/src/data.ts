@@ -107,12 +107,13 @@ export async function startConnection(conn: Connection): Promise<void> {
 }
 
 export async function reloadAll(): Promise<void> {
+  const loads: Promise<void>[] = [];
   for (const id of state.conns.keys()) {
-    void loadHosts(id);
     void loadConcierge(id);
-    void loadAgents(id);
+    loads.push(loadHosts(id), loadAgents(id));
   }
   if (state.selected) void loadDetail();
+  await Promise.allSettled(loads);
 }
 
 export async function loadDetail(): Promise<void> {

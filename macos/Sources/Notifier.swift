@@ -12,7 +12,7 @@ final class Notifier: NSObject, NSMenuDelegate {
     static let pullRequestCategory = "pr"
 
     /// Called when a notification about an agent is clicked; `host` is empty when unknown.
-    var openAgent: (_ host: String, _ agent: String) -> Void = { _, _ in }
+    var openAgent: (_ host: String, _ agent: String, _ kind: String) -> Void = { _, _, _ in }
     private let defaults: UserDefaults
     private var center: UNUserNotificationCenter { .current() }
     private var authorization: UNAuthorizationStatus = .notDetermined
@@ -63,6 +63,7 @@ final class Notifier: NSObject, NSMenuDelegate {
         if let host = incoming.host { info["host"] = host }
         if let agent = incoming.agent { info["agent"] = agent }
         if let pr = incoming.pullRequest { info["pr"] = pr.absoluteString }
+        if let kind = incoming.kind { info["kind"] = kind.rawValue }
         content.userInfo = info
         if delivery == .quiet {
             content.interruptionLevel = .passive
@@ -78,6 +79,7 @@ final class Notifier: NSObject, NSMenuDelegate {
     private func respond(action: String, info: [AnyHashable: Any]) {
         let agent = info["agent"] as? String
         let host = info["host"] as? String ?? ""
+        let kind = (info["kind"] as? String).flatMap(NotificationKind.init(rawValue:))?.rawValue ?? ""
         // Re-checked: userInfo comes back from the system, not from code this app ran.
         if action == Self.openPullRequestAction {
             if let raw = info["pr"] as? String, let url = NotificationPolicy.pullRequestURL(raw) { NSWorkspace.shared.open(url) }
@@ -85,9 +87,9 @@ final class Notifier: NSObject, NSMenuDelegate {
         }
         guard action == Self.openAgentAction || action == UNNotificationDefaultActionIdentifier else { return }
         if let agent, MessagePolicy.isName(Substring(agent)) {
-            openAgent(host, agent)
+            openAgent(host, agent, kind)
         } else {
-            openAgent("", "")
+            openAgent("", "", "")
         }
     }
 
@@ -122,7 +124,7 @@ final class Notifier: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let prefs = preferences
         if authorization == .denied {
-            let off = NSMenuItem(title: "Off in System Settings: am uses its own notifier", action: nil, keyEquivalent: "")
+            let off = NSMenuItem(title: "Off in System Settings: notifications are lost while the app runs", action: nil, keyEquivalent: "")
             off.isEnabled = false
             menu.addItem(off)
             menu.addItem(.separator())
@@ -180,11 +182,13 @@ extension Notifier: UNUserNotificationCenterDelegate {
         let host = info["host"] as? String
         let agent = info["agent"] as? String
         let pr = info["pr"] as? String
+        let kind = info["kind"] as? String
         Task { @MainActor [weak self] in
             var copy: [String: String] = [:]
             if let host { copy["host"] = host }
             if let agent { copy["agent"] = agent }
             if let pr { copy["pr"] = pr }
+            if let kind { copy["kind"] = kind }
             self?.respond(action: action, info: copy)
             completionHandler()
         }

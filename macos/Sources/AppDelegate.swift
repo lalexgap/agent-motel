@@ -70,10 +70,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             errorPanel.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -48),
         ])
         if postsNotifications {
-            notifier.openAgent = { [weak self] host, agent in
+            notifier.openAgent = { [weak self] host, agent, kind in
                 guard let self else { return }
                 self.showWindow()
-                if !agent.isEmpty { self.bridge.emit("notification.open", ["host": host, "agent": agent]) }
+                if !agent.isEmpty { self.bridge.emit("notification.open", ["host": host, "agent": agent, "kind": kind]) }
             }
             notifier.start()
         }
