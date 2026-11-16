@@ -87,7 +87,6 @@ function rowTooltip(item: AgentItem, provider: string): string {
   return `${row.host ? `${row.host}:` : ""}${row.name} · ${provider}\n${details.filter(Boolean).join(" · ")}`;
 }
 
-// Two compact lines: identity and provider, then status, active subagents and update age.
 function agentNode(item: AgentItem, now: number): HTMLElement {
   const { row } = item;
   const node = h("div", `am-row am-agent${STOPPED.has(row.status) ? " stopped" : ""}`);
