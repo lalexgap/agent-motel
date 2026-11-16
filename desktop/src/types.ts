@@ -227,6 +227,8 @@ export interface BridgeEvents {
   "events.state": { connection: string; state: StreamState; error?: string };
   "events.message": { connection: string; event: string; data: unknown };
   "menu.command": { command: "connections" | "find" | "reload" | "chat" | "terminal" };
+  // A native notification was clicked; `host` is empty when the sender gave none.
+  "notification.open": { host: string; agent: string; kind?: string };
   // `data` is base64 of raw output bytes, at most 64 KiB decoded per event.
   "terminal.output": { id: string; data: string };
   "terminal.control": { id: string; message: TerminalControl };

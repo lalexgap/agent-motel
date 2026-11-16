@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window: { [weak self] in self?.window }, reveal: { [weak self] in self?.revealForSheet() }))
     /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
     var activatesWindow = true
+    /// Off in the smoke test, which must not ask for notification permission.
+    var postsNotifications = true
+    let notifier = Notifier()
     private var errorPanel: NSStackView!
     private var errorLabel: NSTextField!
 
@@ -66,8 +69,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             errorPanel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             errorPanel.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -48),
         ])
+        if postsNotifications {
+            notifier.openAgent = { [weak self] host, agent, kind in
+                guard let self else { return }
+                self.showWindow()
+                if !agent.isEmpty { self.bridge.emit("notification.open", ["host": host, "agent": agent, "kind": kind]) }
+            }
+            notifier.start()
+        }
         showWindow()
         loadHome()
+    }
+
+    /// `agent-motel://notify?…` from am's daemon on this Mac (`open -g`, so the app stays in the background).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard postsNotifications else { return }
+        for url in urls where url.scheme?.lowercased() == NotificationPolicy.scheme { notifier.handle(url) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -123,6 +140,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             ("Show Agent Motel", #selector(showWindow), "0"),
         ])
         NSApp.windowsMenu = menu.items.last?.submenu
+        // After "Connections…" and its separator.
+        if let appMenu = menu.items.first?.submenu {
+            let notifications = NSMenuItem(title: "Notifications", action: nil, keyEquivalent: "")
+            notifications.submenu = notifier.makeMenu()
+            appMenu.insertItem(notifications, at: 4)
+            appMenu.insertItem(.separator(), at: 5)
+        }
     }
 
     @objc func showWindow() {

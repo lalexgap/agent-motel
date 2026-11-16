@@ -19,6 +19,7 @@ struct Smoke {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         delegate.activatesWindow = false
+        delegate.postsNotifications = false
         app.delegate = delegate
         // Not just .accessory: an NSAlert sheet can make an accessory app's window key and the app
         // frontmost. A prohibited app can never be activated, so the confirmation sheets stay off the

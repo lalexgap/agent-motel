@@ -13,6 +13,7 @@ import { initDecisionsPage } from "./decisionsView";
 import { initPrs } from "./prsView";
 import { parseAgentKey } from "./fleet";
 import { initInspector } from "./inspector";
+import { openFromNotification } from "./notificationOpen";
 import { initKeyboard } from "./keyboard";
 import { initRelatedSection } from "./relatedSection";
 import { initSearch } from "./searchView";
@@ -75,6 +76,7 @@ function wire(): void {
   on("events.state", onStreamState);
   on("events.message", onStreamMessage);
   on("menu.command", onMenu);
+  on("notification.open", (payload) => void openFromNotification(payload));
 }
 
 // One clock: relative times, the working indicator, and the polls that cover

@@ -13,6 +13,7 @@ import {
   isPinnedConcierge,
   matchesFilter,
   moveCursor,
+  notificationAgentKey,
   NO_REPO,
   parseAgentKey,
   repoLabel,
@@ -279,5 +280,31 @@ describe("formatting and prefs", () => {
     expect(parsePrefs(JSON.stringify(saved))).toMatchObject(saved);
     expect(parsePrefs(JSON.stringify({ sidebarGroup: "planet", sidebarSort: 3, overviewFilter: "x", overviewSort: null, overviewReverse: "yes" })))
       .toMatchObject({ sidebarGroup: "tree", sidebarSort: "status", overviewFilter: "live", overviewSort: "status", overviewReverse: false });
+  });
+});
+
+describe("notificationAgentKey", () => {
+  const hub: ConnectionFleet = {
+    id: "c1", name: "home", local: "gapserver", remoteHosts: ["laptop"], unreachable: [], conciergeKey: null,
+    rows: [row("alpha"), row("beta", { host: "laptop" }), row("gamma", { host: "laptop" })],
+  };
+  const other: ConnectionFleet = { ...hub, id: "c2", local: "work", remoteHosts: [], rows: [row("alpha"), row("delta")] };
+
+  test("matches the hub's own agents by its host name and remotes by theirs", () => {
+    expect(notificationAgentKey([hub, other], "gapserver", "alpha")).toBe("c1/alpha");
+    expect(notificationAgentKey([hub, other], "work", "alpha")).toBe("c2/alpha");
+    expect(notificationAgentKey([hub, other], "laptop", "beta")).toBe("c1/laptop:beta");
+  });
+
+  test("falls back to a unique name when the host alias differs", () => {
+    expect(notificationAgentKey([hub, other], "Alexs-MacBook", "gamma")).toBe("c1/laptop:gamma");
+    expect(notificationAgentKey([hub, other], "", "delta")).toBe("c2/delta");
+    expect(notificationAgentKey([hub, other], "", "alpha")).toBeNull();
+  });
+
+  test("gives up on an ambiguous or unknown agent", () => {
+    expect(notificationAgentKey([hub, other], "elsewhere", "alpha")).toBeNull();
+    expect(notificationAgentKey([hub, other], "gapserver", "nobody")).toBeNull();
+    expect(notificationAgentKey([hub, other], "gapserver", "")).toBeNull();
   });
 });
