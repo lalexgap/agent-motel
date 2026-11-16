@@ -31,7 +31,8 @@ export interface AgentRow {
   queued?: number;
   createdAt: string;
   updatedAt: string;
-  workingSince?: string;
+  workingSince?: string | null;
+  promptAt?: string | null;
   spawnedBy?: string;
   prMonitor?: { pullRequests?: { number: number; state: string }[] };
   subagents?: SubagentSummary;
