@@ -758,3 +758,42 @@ check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1,
 check(!ConfirmationArming.isArmed(typedAt: rearmedAt + 0.1, now: rearmedAt + 0.1, since: rearmedAt), "re-armed when the sheet became key")
 check(ConfirmationArming.isArmed(typedAt: rearmedAt + 0.5, now: rearmedAt + 0.5, since: rearmedAt), "armed again after the delay")
 print("PASS confirmation arming (both the key's time and now past the delay, re-armed from when the sheet became key)")
+
+func notifyURL(_ query: String) -> URL { URL(string: "agent-motel://notify?\(query)")! }
+let fullNotification = NotificationPolicy.parse(notifyURL(
+    "v=1&title=am%3A%20alpha%20(home)&message=needs%20you%0Anow&id=01JABC&host=gapserver&agent=alpha&kind=pr"
+        + "&url=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F12"))
+check(fullNotification == IncomingNotification(id: "01JABC", host: "gapserver", agent: "alpha", kind: .pr, title: "am: alpha (home)",
+                                               message: "needs you now", pullRequest: URL(string: "https://github.com/owner/repo/pull/12")),
+      "full notification: \(String(describing: fullNotification))")
+check(fullNotification?.requestIdentifier == "gapserver/01JABC" && fullNotification?.threadIdentifier == "gapserver/alpha", "identifiers")
+let bare = NotificationPolicy.parse(notifyURL("v=1&title=am%20(home)&message=3%20earlier%20notifications"))
+check(bare?.kind == nil && bare?.agent == nil && bare?.requestIdentifier == nil && bare?.threadIdentifier == "am", "summary")
+check(NotificationPolicy.parse(notifyURL("v=1&title=t&message=m&kind=decision"))?.kind == .decision, "decision kind")
+// Invalid optional fields are dropped; the text still shows.
+let scrubbed = NotificationPolicy.parse(notifyURL("v=1&title=t&message=m&agent=..%2Fevil&host=-x&id=a%2Fb&url=https%3A%2F%2Fevil.example%2Fpull%2F1"))
+check(scrubbed?.agent == nil && scrubbed?.host == nil && scrubbed?.id == nil && scrubbed?.pullRequest == nil, "scrubbed optional fields")
+for query in ["title=t&message=m", "v=2&title=t&message=m", "v=1&message=m", "v=1&title=&message=m", "v=1&title=t",
+              "v=1&title=t&message=m&kind=evil", "v=1&title=t&title=u&message=m"] {
+    check(NotificationPolicy.parse(notifyURL(query)) == nil, "accepted \(query)")
+}
+for value in ["agent-motel://other?v=1&title=t&message=m", "am-app://notify?v=1&title=t&message=m", "agent-motel://u:p@notify?v=1&title=t&message=m"] {
+    check(NotificationPolicy.parse(URL(string: value)!) == nil, "accepted \(value)")
+}
+check(NotificationPolicy.parse(notifyURL("v=1&title=\(String(repeating: "x", count: 300))&message=m"))?.title.count == 200, "title cap")
+for value in ["https://github.com/o/r/pull/0", "https://github.com/o/r/pull/01", "https://github.com/../r/pull/1",
+              "https://github.com/o/r/issues/1", "http://github.com/o/r/pull/1", "https://github.com/o/r/pull/1/files"] {
+    check(NotificationPolicy.pullRequestURL(value) == nil, "accepted PR \(value)")
+}
+var preferences = NotificationPreferences()
+check(NotificationPolicy.delivery(for: .idle, preferences: preferences, minuteOfDay: 23 * 60) == .alert, "quiet hours off")
+preferences.enabled.remove(.idle)
+check(NotificationPolicy.delivery(for: .idle, preferences: preferences, minuteOfDay: 600) == .drop, "kind off")
+check(NotificationPolicy.delivery(for: nil, preferences: preferences, minuteOfDay: 600) == .alert, "summary always shows")
+preferences.quietHours = true
+check(NotificationPolicy.delivery(for: .attention, preferences: preferences, minuteOfDay: 23 * 60) == .quiet, "late evening is quiet")
+check(NotificationPolicy.delivery(for: .attention, preferences: preferences, minuteOfDay: 7 * 60 + 59) == .quiet, "early morning is quiet")
+check(NotificationPolicy.delivery(for: .attention, preferences: preferences, minuteOfDay: 8 * 60) == .alert, "quiet hours end")
+check(NotificationPolicy.inQuietHours(600, start: 540, end: 720) && !NotificationPolicy.inQuietHours(720, start: 540, end: 720), "same-day range")
+check(!NotificationPolicy.inQuietHours(600, start: 600, end: 600), "empty range")
+print("PASS notification policy (hand-off URL parsing and validation, identifiers, PR links, per-kind preferences, quiet hours)")

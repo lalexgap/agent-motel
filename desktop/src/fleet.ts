@@ -329,3 +329,17 @@ export function moveCursor(items: readonly TreeItem[], current: string | null, d
   if (index < 0) return (delta > 0 ? items[0] : items[items.length - 1])!.id;
   return items[Math.max(0, Math.min(items.length - 1, index + delta))]!.id;
 }
+
+// A notification names the host that raised it and the agent's bare name; the
+// app keys rows by connection, and a connection's own agents carry no host.
+// A hub may know a remote by an alias other than its own name for itself, so
+// fall back to the name when it is unique across every connection.
+export function notificationAgentKey(all: readonly ConnectionFleet[], host: string, agent: string): string | null {
+  if (!agent) return null;
+  for (const fleet of host ? all : []) {
+    const row = fleet.rows.find((r) => r.name === agent && (r.host ? r.host === host : host === fleet.local));
+    if (row) return agentKey(fleet.id, row);
+  }
+  const named = all.flatMap((fleet) => fleet.rows.filter((r) => r.name === agent).map((r) => agentKey(fleet.id, r)));
+  return named.length === 1 ? named[0]! : null;
+}

@@ -12,6 +12,13 @@
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
+    <!-- am's daemon hands notifications over as agent-motel://notify?… (see Notifier.swift). -->
+    <key>CFBundleURLTypes</key><array>
+        <dict>
+            <key>CFBundleURLName</key><string>ca.alexgap.agent-motel.notify</string>
+            <key>CFBundleURLSchemes</key><array><string>agent-motel</string></array>
+        </dict>
+    </array>
     <key>NSAppTransportSecurity</key><dict>
         <key>NSExceptionDomains</key><dict>
             <key>ts.net</key><dict>
