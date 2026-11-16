@@ -5,11 +5,12 @@ import { loadDetail } from "./data";
 import { blockingDecisions, decisionsTitle, rowDecisionsLabel } from "./decisions";
 import { $, badge, composerInput, h } from "./dom";
 import { showDraft, stashDraft } from "./drafts";
-import { BUSY, busySubagents, parseAgentKey, workingLabel } from "./fleet";
-import { duration, firstLine } from "./format";
+import { parseAgentKey } from "./fleet";
+import { firstLine } from "./format";
 import { agentComposer, agentSource, changed, composer, findRow, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
 import type { AgentViewMode } from "./terminalModel";
 import { mainView, registerMainView, showMainView } from "./views";
+import { workingIndicator, workingText } from "./working";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
 // title row and cards above the message box. Each renders for the open agent on
@@ -129,7 +130,7 @@ function renderHeader(): void {
   toggle.hidden = !multi;
   toggle.textContent = state.taskExpanded ? "Less" : "More";
   toggle.setAttribute("aria-expanded", String(state.taskExpanded));
-  updateWorking(status, source.workingSince || source.statusChangedAt, busySubagents(source));
+  updateWorking(source);
   fillSlot(headerActions, "am-agent-actions", (box) => $("am-agent-name").parentElement!.append(box), key);
   fillSlot(cards, "am-cards", (box) => $("am-composer").before(box), key);
 }
@@ -253,27 +254,28 @@ function renderDecisions(key: string): void {
   line.title = decisionsTitle(row);
 }
 
-function updateWorking(status: string, since: string | undefined, subagents: number): void {
+function updateWorking(row: ReturnType<typeof agentSource>): void {
   const box = $("am-working");
-  const busy = BUSY.has(status);
-  box.hidden = !busy;
-  if (!busy) return;
-  box.dataset.status = status;
-  box.dataset.since = since || "";
-  box.dataset.subagents = String(subagents);
-  const label = workingLabel(status, subagents);
+  const indicator = workingIndicator(row, Date.now());
+  box.hidden = !indicator;
+  if (!indicator) return;
+  box.dataset.label = indicator.label;
+  box.dataset.anchor = indicator.anchor === undefined ? "" : String(indicator.anchor);
+  box.dataset.attention = String(indicator.attention);
   const announced = box.querySelector("[role=status]");
-  if (announced && announced.textContent !== label) announced.textContent = label;
-  tickWorking();
+  if (announced && announced.textContent !== indicator.label) announced.textContent = indicator.label;
+  const text = box.querySelector(".working-text");
+  if (text) text.textContent = indicator.text;
 }
 
-export function tickWorking(): void {
+export function tickWorking(now = Date.now()): void {
   const box = $("am-working");
   if (box.hidden) return;
-  const label = workingLabel(box.dataset.status || "", Number(box.dataset.subagents) || 0);
-  const start = Date.parse(box.dataset.since || "");
+  const label = box.dataset.label || "Working";
+  const parsed = Number(box.dataset.anchor);
+  const anchor = box.dataset.anchor && Number.isFinite(parsed) ? parsed : undefined;
   const text = box.querySelector(".working-text");
-  if (text) text.textContent = label + (Number.isFinite(start) ? ` for ${duration(Date.now() - start)}` : "");
+  if (text && box.dataset.attention !== "true") text.textContent = workingText(label, anchor, now);
 }
 
 // While another main view covers the chat (a subagent's transcript), the

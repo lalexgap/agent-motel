@@ -1519,7 +1519,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
   overflow-wrap: anywhere;
 }
 
-/* "Working for 12s", ticking, with a light sweeping across the muted text. */
+/* The local elapsed clock shares a subtle sweep with the desktop app. */
 .working-indicator {
   margin: 0 max(var(--chat-lane-pad), calc((100% - var(--chat-lane)) / 2));
   padding: 4px 4px 8px;
@@ -2647,4 +2647,10 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
 .decisions-inbox-group .decisions-title { display: none; }
 @media (max-width: 700px) {
   #decisions-status { width: 100%; margin-left: 0; }
+}
+
+.working-indicator[data-attention="true"] .working-text {
+  animation: none;
+  background: none;
+  color: var(--fg-muted);
 }

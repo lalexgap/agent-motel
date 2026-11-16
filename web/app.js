@@ -789,23 +789,43 @@ function workingLabel(status, subagents = 0) {
   if (status === "working" && subagents > 0) return `Waiting on ${subagents} subagent${subagents === 1 ? "" : "s"}`;
   return { starting: "Starting", waiting: "Waiting on background tasks" }[status] || "Working";
 }
-function tickWorking(box) {
-  const start = Number(box.dataset.since);
-  box.querySelector(".working-text").textContent = workingLabel(box.dataset.status, Number(box.dataset.subagents) || 0) +
-    (Number.isFinite(start) && box.dataset.since !== "" ? " for " + duration(Math.max(0, Date.now() - start)) : "");
+function workingAnchor(row) {
+  if (!["starting", "working", "waiting"].includes(row.status)) return undefined;
+  const candidates = row.status === "starting" || (row.status === "working" && row.busyWith?.subagents > 0)
+    ? [row.statusChangedAt] : [row.workingSince, row.promptAt, row.statusChangedAt];
+  return candidates.map(value => Date.parse(value || "")).find(Number.isFinite);
 }
-function showWorking(id, status, since, busyWith) {
-  const box = $(id), busy = ["working", "starting", "waiting"].includes(status);
-  box.hidden = !busy;
-  if (!busy) return;
-  const start = Date.parse(since || "");
-  const subagents = busyWith?.subagents || 0;
-  box.dataset.status = status;
-  box.dataset.subagents = String(subagents);
+function workingText(label, since, now = Date.now()) {
+  const seconds = Math.floor((now - since) / 1000);
+  if (!Number.isFinite(seconds) || seconds < 2) return label + "…";
+  const minutes = Math.floor(seconds / 60);
+  const elapsed = seconds < 60 ? `${seconds}s` : minutes < 60
+    ? `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`
+    : `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+  return `${label} · ${elapsed}`;
+}
+function tickWorking(box) {
+  const label = box.dataset.label || "Working";
+  box.querySelector(".working-text").textContent = box.dataset.attention === "true"
+    ? label : workingText(label, box.dataset.since === "" ? undefined : Number(box.dataset.since));
+}
+function showWorking(id, row = {}) {
+  const box = $(id), status = row.status;
+  const attention = status === "needs-attention" || row.blockingDecisions > 0;
+  box.hidden = !attention && !["working", "starting", "waiting"].includes(status);
+  if (box.hidden) return;
+  let label = workingLabel(status, row.busyWith?.subagents || 0);
+  if (status === "working" && row.busyWith?.subagents === 1 && row.subagents?.running?.length === 1) {
+    const type = row.subagents.running[0].type?.trim();
+    if (type) label = `Waiting on ${type}`;
+  }
+  if (attention) label = status === "needs-attention" ? row.statusReason?.trim() || "Needs attention" : "Waiting for your answer";
+  const start = workingAnchor(row);
+  box.dataset.label = label;
+  box.dataset.attention = String(attention);
   box.dataset.since = Number.isFinite(start) ? String(start) : "";
-  // The ticking text is hidden from screen readers; only a status change is announced.
   const announced = box.querySelector("[role=status]");
-  if (announced.textContent !== workingLabel(status, subagents)) announced.textContent = workingLabel(status, subagents);
+  if (announced.textContent !== label) announced.textContent = label;
   tickWorking(box);
 }
 setInterval(() => {
@@ -1010,7 +1030,7 @@ async function refreshDetail() {
     onError: notice,
   });
   renderDecisions();
-  showWorking("chat-working", detail.status, detail.statusChangedAt, detail.busyWith);
+  showWorking("chat-working", { ...state.rows.find(row => key(row) === name), ...detail });
   const fingerprint = JSON.stringify(transcript.entries),
     rerender = view.dataset.content !== fingerprint;
   if (rerender) {
@@ -1763,7 +1783,7 @@ async function refreshDock() {
   )
     return;
   const row = state.rows.find((row) => key(row) === name);
-  showWorking("dock-working", row?.status, row?.statusChangedAt, row?.busyWith);
+  showWorking("dock-working", row);
   const view = $("dock-transcript");
   const entries = transcript.entries
     .filter((entry) => entry.kind !== "tool")

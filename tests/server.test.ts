@@ -196,6 +196,21 @@ describe("api only — no static shell", () => {
 });
 
 describe("agents api", () => {
+  test("list and detail preserve turn anchors independently of status changes", async () => {
+    seedAgent("alpha", "working");
+    const anchors = { workingSince: "2026-11-16T16:00:00.000Z", promptAt: "2026-11-16T16:00:03.000Z", statusChangedAt: "2026-11-16T16:00:10.000Z" };
+    writeAgent({ ...readAgent("alpha")!, ...anchors });
+    const list = await (await fetch(url("/api/agents"), auth())).json() as any;
+    const detail = await (await fetch(url("/api/agents/alpha"), auth())).json() as any;
+    expect(list.rows.find((row: any) => row.name === "alpha")).toMatchObject(anchors);
+    expect(detail).toMatchObject(anchors);
+    const agent = readAgent("alpha")!;
+    delete agent.workingSince;
+    delete agent.promptAt;
+    writeAgent(agent);
+    expect(await (await fetch(url("/api/agents/alpha"), auth())).json()).toMatchObject({ workingSince: null, promptAt: null });
+  });
+
   test("GET /api/agents merges local rows with queue depth", async () => {
     seedAgent("alpha", "working");
     queueAppend("alpha", "do the thing");
