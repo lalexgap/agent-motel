@@ -1,5 +1,5 @@
 // Reproduces web/app.js ordering; tests/desktopOrdering.test.ts checks parity against it.
-import { rowReasonBeside, rowStatusLabel, statusLabel, STOPPED } from "./fleet";
+import { statusLabel, STOPPED } from "./fleet";
 import type { AgentRow } from "./types";
 
 export const repoPath = (row: Pick<AgentRow, "repoRoot" | "dir">): string => row.repoRoot || row.dir || "";
@@ -107,6 +107,17 @@ export function compareSidebar(a: AgentRow, b: AgentRow, { sort, reverse, now }:
 const PROVIDER_LABEL: Record<string, string> = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
 export const providerLabel = (provider: string | undefined): string => PROVIDER_LABEL[provider ?? ""] ?? "Unknown";
 
+export function activeSubagentCount(row: Pick<AgentRow, "busyWith" | "subagents">): number {
+  const counts = [row.busyWith?.subagents, row.subagents?.active, row.subagents?.running?.length]
+    .filter((count): count is number => typeof count === "number" && count > 0);
+  return counts.length ? Math.max(...counts) : 0;
+}
+
+export function sidebarStatusLabel(row: Pick<AgentRow, "status" | "busyWith" | "subagents">): string {
+  if (row.status === "waiting" || (row.status === "working" && (row.busyWith?.subagents ?? 0) > 0)) return "Waiting";
+  return statusLabel(row.status);
+}
+
 // The agent id of the row's parent (web/app.js `parentKey`): a bare name on a
 // remote host means an agent on that same host.
 export function parentId(row: Pick<AgentRow, "spawnedBy" | "host">): string | null {
@@ -114,14 +125,11 @@ export function parentId(row: Pick<AgentRow, "spawnedBy" | "host">): string | nu
   return row.spawnedBy.includes(":") || !row.host ? row.spawnedBy : `${row.host}:${row.spawnedBy}`;
 }
 
-export function sidebarMeta(row: AgentRow, now: number): { status: string; reason: string; queued: string; age: string; prs: string } {
+export function sidebarMeta(row: AgentRow, now: number): { status: string; subagents: number; age: string } {
   const updated = Date.parse(row.updatedAt || "");
-  const prs = row.prMonitor?.pullRequests ?? [];
   return {
-    status: rowStatusLabel(row),
-    reason: rowReasonBeside(row, row.statusDetail || row.statusReason || ""),
-    queued: row.queued ? `${row.queued} queued` : "",
+    status: sidebarStatusLabel(row),
+    subagents: activeSubagentCount(row),
     age: Number.isFinite(updated) ? `${elapsed(Math.max(0, now - updated))} ago` : "",
-    prs: prs.map((pr) => `PR #${pr.number} · ${String(pr.state).toLowerCase()}`).join(", "),
   };
 }

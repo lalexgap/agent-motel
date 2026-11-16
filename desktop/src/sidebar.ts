@@ -2,28 +2,23 @@
 // toggle, keyboard navigation and the resizable divider.
 import { markSelection, selectAgent } from "./chat";
 import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
-import { $, composerInput, copyText, decisionsBadge, dot, h } from "./dom";
+import { $, composerInput, copyText, dot, h } from "./dom";
 import {
-  ATTENTION_GROUP,
   buildTree,
-  CONCIERGE_SECTION,
   conciergeTarget,
   isPinnedConcierge,
   moveCursor,
-  repoLabel,
-  rowReasonBeside,
   rowStatusLabel,
-  statusShort,
   STOPPED,
   type AgentItem,
   type GroupItem,
-  type SubagentItem,
   type TreeItem,
 } from "./fleet";
 import { relativeTime } from "./format";
 import { registerShortcut } from "./keyboard";
 import { focusAgentInput } from "./terminalView";
 import {
+  activeSubagentCount,
   elapsed,
   providerLabel,
   SIDEBAR_GROUPS,
@@ -34,7 +29,7 @@ import {
 } from "./ordering";
 import { fleets, loadProblem, persist, state, subscribe, unread } from "./state";
 import { flashStatus } from "./statusbar";
-import { itemKey, nestSubagents, runningOf } from "./subagents";
+import { itemKey } from "./subagents";
 import { openSubagent } from "./subagentView";
 
 const SIDEBAR_MIN = 200;
@@ -61,11 +56,38 @@ function groupNode(item: GroupItem): HTMLElement {
   return node;
 }
 
-const newBadge = (): HTMLElement => h("span", "unread-badge am-new", "New");
 const isNew = (item: AgentItem): boolean => unread.isNew(item.key, item.row.updatedAt, state.selected);
 
-// The browser UI's row: name, "New", provider; then status · detail · queued ·
-// age · pull requests on one line that truncates at the reason first.
+function timestampNode(updatedAt: string, age: string): HTMLElement | null {
+  if (!age) return null;
+  const time = h("span", "am-agent-age", age);
+  time.dataset.updated = updatedAt;
+  time.title = `Last updated ${new Date(updatedAt).toLocaleString()}`;
+  return time;
+}
+
+function subagentCount(count: number): HTMLElement | null {
+  if (count <= 0) return null;
+  const node = h("span", "am-subcount", `${count} subagent${count === 1 ? "" : "s"}`);
+  node.title = `${count} active subagent${count === 1 ? "" : "s"}`;
+  return node;
+}
+
+function rowTooltip(item: AgentItem, provider: string): string {
+  const { row } = item;
+  const details = [rowStatusLabel(row), row.statusDetail || row.statusReason || "", row.queued ? `${row.queued} queued` : ""];
+  const subagents = activeSubagentCount(row);
+  if (subagents > 0) details.push(`${subagents} active subagent${subagents === 1 ? "" : "s"}`);
+  const prs = row.prMonitor?.pullRequests ?? [];
+  if (prs.length) details.push(prs.map((pr) => `PR #${pr.number} · ${String(pr.state).toLowerCase()}`).join(", "));
+  if ((row.openDecisions ?? 0) > 0) details.push(`${row.openDecisions} open decision${row.openDecisions === 1 ? "" : "s"}`);
+  if (isNew(item)) details.push("New activity");
+  const updated = Date.parse(row.updatedAt || "");
+  if (Number.isFinite(updated)) details.push(`Last updated ${new Date(updated).toLocaleString()}`);
+  return `${row.host ? `${row.host}:` : ""}${row.name} · ${provider}\n${details.filter(Boolean).join(" · ")}`;
+}
+
+// Two compact lines: identity and provider, then status, active subagents and update age.
 function agentNode(item: AgentItem, now: number): HTMLElement {
   const { row } = item;
   const node = h("div", `am-row am-agent${STOPPED.has(row.status) ? " stopped" : ""}`);
@@ -79,67 +101,25 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   const text = h("div", "am-agent-text");
   const line = h("div", "am-agent-line");
   line.append(h("span", "am-agent-name", row.name));
-  if (isNew(item)) line.append(newBadge());
-  const decisions = decisionsBadge(row, now);
-  if (decisions) line.append(decisions);
-  const subcount = subagentCount(row);
-  if (subcount) line.append(subcount);
-  line.append(h("span", "am-agent-provider", providerLabel(row.provider)));
+  const provider = providerLabel(row.provider);
+  line.append(h("span", "am-agent-provider", provider));
   const parts = sidebarMeta(row, now);
   const meta = h("div", "am-agent-meta");
-  // The rest is one run of inline text so it ends in a single ellipsis, as in the browser UI.
-  const rest = h("span", "am-agent-rest");
-  const add = (node: HTMLElement) => rest.append(document.createTextNode(" · "), node);
-  if (item.parent === ATTENTION_GROUP) add(h("span", "am-agent-context", `${repoLabel(row)} · ${item.hostLabel}`));
-  if (parts.reason) add(h("span", "am-agent-reason", parts.reason));
-  if (parts.queued) add(h("span", "am-queued", parts.queued));
-  if (parts.age) {
-    const age = h("span", "am-agent-age", parts.age);
-    age.dataset.updated = row.updatedAt;
-    add(age);
-  }
-  if (parts.prs) add(h("span", "am-agent-prs", parts.prs));
-  meta.append(h("span", `am-status-text s-${row.status}`, parts.status), rest);
+  meta.append(h("span", `am-status-text s-${row.status}`, parts.status));
+  const count = subagentCount(parts.subagents);
+  if (count) meta.append(document.createTextNode(" · "), count);
+  const age = timestampNode(row.updatedAt, parts.age);
+  if (age) meta.append(document.createTextNode(" · "), age);
   text.append(line, meta);
   node.append(dot(row.status), text);
-  const summary = [parts.status, parts.reason, parts.queued, parts.age, parts.prs].filter(Boolean).join(" · ");
-  node.title = `${row.host ? `${row.host}:` : ""}${row.name} · ${providerLabel(row.provider)}\n${summary}${decisions ? `\n${decisions.title}` : ""}`;
+  node.title = rowTooltip(item, provider);
+  node.setAttribute("aria-label", node.title.replace("\n", ", "));
   return node;
 }
 
-function subagentCount(row: AgentItem["row"]): HTMLElement | null {
-  const count = runningOf(row).length || (row.subagents?.active ?? 0);
-  if (count <= 0) return null;
-  const node = h("span", "am-subcount", `↳${count}`);
-  node.title = `${count} subagent${count === 1 ? "" : "s"} running`;
-  return node;
-}
+const inPinned = (item: TreeItem): boolean => isPinnedConcierge(item);
 
-// A running built-in subagent, nested under its parent's row. It carries
-// data-subagent-key, not data-agent-key, so agent-row logic and the context
-// menu pass it by.
-function subagentNode(item: SubagentItem): HTMLElement {
-  const node = h("div", "am-row am-subagent");
-  node.setAttribute("role", "treeitem");
-  node.setAttribute("aria-level", String(item.depth + 1));
-  node.setAttribute("aria-selected", String(item.key === state.subagent));
-  node.tabIndex = -1;
-  node.dataset.itemId = item.id;
-  node.dataset.subagentKey = item.key;
-  node.style.setProperty("--depth", String(item.depth));
-  const time = h("span", "am-agent-time", relativeTime(item.startedAt));
-  time.dataset.since = item.startedAt || "";
-  node.append(h("span", "am-subagent-mark", "↳"), h("span", "am-subagent-label", item.label), time);
-  node.title = `${item.label} · built-in subagent, running${item.startedAt ? ` since ${new Date(item.startedAt).toLocaleTimeString()}` : ""} · read-only`;
-  node.setAttribute("aria-label", `Subagent ${item.label}, running`);
-  return node;
-}
-
-// The pinned concierge section: its row and the subagents nested under it.
-const inPinned = (item: TreeItem): boolean =>
-  isPinnedConcierge(item) || (item.kind === "subagent" && item.parent.startsWith(`${CONCIERGE_SECTION}>`));
-
-function conciergeNode(item: AgentItem): HTMLElement {
+function conciergeNode(item: AgentItem, now: number): HTMLElement {
   const { row } = item;
   const stopped = STOPPED.has(row.status);
   const node = h("div", `am-row am-agent am-concierge${stopped ? " stopped" : ""}${row.status === "needs-attention" ? " attention" : ""}`);
@@ -155,26 +135,19 @@ function conciergeNode(item: AgentItem): HTMLElement {
   const label = h("span", "am-agent-name am-concierge-name");
   label.append(h("span", "am-concierge-mark", "✳"), document.createTextNode("Concierge"));
   if (item.connectionName) label.append(h("span", "am-concierge-conn", item.connectionName));
-  const time = h("span", "am-agent-time", relativeTime(row.statusChangedAt));
-  time.dataset.since = row.statusChangedAt || "";
-  time.title = `${rowStatusLabel(row)} since ${new Date(row.statusChangedAt).toLocaleString()}`;
-  line.append(label);
-  if (isNew(item)) line.append(newBadge());
-  const decisions = decisionsBadge(row);
-  if (decisions) line.append(decisions);
-  line.append(time);
+  const provider = providerLabel(row.provider);
+  line.append(label, h("span", "am-agent-provider", provider));
+  const parts = sidebarMeta(row, now);
   const meta = h("div", "am-agent-meta");
-  meta.append(h("span", "", row.provider));
-  if (stopped) meta.append(h("span", "am-status-text s-stopped", `stopped · ${statusShort(row.status)}`));
-  else if (row.status !== "idle") meta.append(h("span", `am-status-text s-${row.status}`, statusShort(row.status)));
-  if ((row.queued ?? 0) > 0) meta.append(h("span", "am-queued", `${row.queued} queued`));
-  const subcount = subagentCount(row);
-  if (subcount) meta.append(subcount);
+  meta.append(h("span", `am-status-text s-${row.status}`, parts.status));
+  const count = subagentCount(parts.subagents);
+  if (count) meta.append(document.createTextNode(" · "), count);
+  const time = timestampNode(row.updatedAt, parts.age);
+  if (time) meta.append(document.createTextNode(" · "), time);
   text.append(line, meta);
   node.append(dot(row.status), text);
-  const where = item.connectionName ? ` on ${item.connectionName}` : "";
-  const reason = rowReasonBeside(row, row.statusReason || "");
-  node.title = `Concierge${where} · ${rowStatusLabel(row)}${reason ? ` — ${reason}` : ""}${decisions ? ` · ${decisions.getAttribute("aria-label")}` : ""} · press c to open`;
+  node.title = `${rowTooltip(item, provider)}${item.connectionName ? ` · ${item.connectionName}` : ""}\nPress c to open`;
+  node.setAttribute("aria-label", node.title.replaceAll("\n", ", "));
   return node;
 }
 
@@ -194,7 +167,7 @@ function renderTree(): void {
     filter: state.filter, showStopped: state.showStopped, collapsed: state.collapsed,
     group: state.sidebarGroup, sort: state.sidebarSort, reverse: state.sidebarReverse, now,
   });
-  state.tree = { ...built, items: nestSubagents(built.items) };
+  state.tree = built;
   const { items } = state.tree;
   if (state.cursor && !items.some((item) => item.id === state.cursor)) {
     // Keep the cursor on the same agent or subagent if it moved groups, else fall back.
@@ -206,8 +179,9 @@ function renderTree(): void {
   const nodes: HTMLElement[] = [];
   let pinned: HTMLElement | null = null;
   for (const item of items) {
-    const node = item.kind === "group" ? groupNode(item) : item.kind === "subagent" ? subagentNode(item)
-      : isPinnedConcierge(item) ? conciergeNode(item) : agentNode(item, now);
+    if (item.kind === "subagent") continue;
+    const node = item.kind === "group" ? groupNode(item)
+      : isPinnedConcierge(item) ? conciergeNode(item, now) : agentNode(item, now);
     if (item.id === state.cursor) node.tabIndex = 0;
     if (inPinned(item)) {
       if (!pinned) {

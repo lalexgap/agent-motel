@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { buildTree, busySubagents, LIST_GROUP, rowReasonBeside, rowStatusLabel, workingLabel, type ConnectionFleet, type TreeItem } from "../desktop/src/fleet";
 import {
+  activeSubagentCount,
   compareOverview,
   compareSidebar,
   elapsed,
@@ -14,6 +15,7 @@ import {
   runtimeMs,
   sidebarMeta,
   sidebarRank,
+  sidebarStatusLabel,
   statusGroup,
   type OverviewSort,
   type SidebarGroup,
@@ -179,13 +181,22 @@ describe("sidebar sorting and grouping", () => {
 });
 
 describe("sidebar row meta", () => {
-  test("status · detail · queued · age · pull requests", () => {
+  test("shows only status, active subagent count and last-update age", () => {
     const meta = sidebarMeta(row("a", "needs-attention", {
       statusReason: "reason", statusDetail: "detail", queued: 2, updatedAt: ago(75),
       prMonitor: { pullRequests: [{ number: 12, state: "OPEN" }, { number: 13, state: "MERGED" }] },
     }), NOW);
-    expect(meta).toEqual({ status: "Needs attention", reason: "detail", queued: "2 queued", age: "1h 15m ago", prs: "PR #12 · open, PR #13 · merged" });
-    expect(sidebarMeta(row("b", "idle", { updatedAt: "" }), NOW)).toEqual({ status: "Idle", reason: "", queued: "", age: "", prs: "" });
+    expect(meta).toEqual({ status: "Needs attention", subagents: 0, age: "1h 15m ago" });
+    expect(sidebarMeta(row("b", "idle", { updatedAt: "" }), NOW)).toEqual({ status: "Idle", subagents: 0, age: "" });
+  });
+
+  test("uses every existing active-subagent summary and labels a busy parent Waiting", () => {
+    expect(activeSubagentCount(row("a", "working", { busyWith: { subagents: 2, background: 0 } }))).toBe(2);
+    expect(activeSubagentCount(row("a", "working", { subagents: { active: 3, types: "", detail: "" } }))).toBe(3);
+    expect(activeSubagentCount(row("a", "working", { subagents: { active: 0, types: "", detail: "", running: [{ id: "a" }, { id: "b" }] } }))).toBe(2);
+    expect(sidebarStatusLabel(row("a", "working", { busyWith: { subagents: 2, background: 0 } }))).toBe("Waiting");
+    expect(sidebarStatusLabel(row("a", "working", { subagents: { active: 2, types: "", detail: "" } }))).toBe("Working");
+    expect(sidebarStatusLabel(row("a", "waiting"))).toBe("Waiting");
   });
 });
 
@@ -222,7 +233,7 @@ describe("an agent waiting on its subagents", () => {
     expect(rowReasonBeside(waiting, "waiting on 2 subagents (Shepherd PR 12, revi…")).toBe("Shepherd PR 12, revi…");
     expect(rowReasonBeside(waiting, "something else")).toBe("something else");
     expect(rowReasonBeside(row("a", "working"), "waiting on 2 subagents (x)")).toBe("waiting on 2 subagents (x)");
-    expect(sidebarMeta(waiting, NOW)).toEqual({ status: "Waiting on 2 subagents", reason: "Shepherd PR 12, reviewer", queued: "", age: "2m ago", prs: "" });
+    expect(sidebarMeta(waiting, NOW)).toEqual({ status: "Waiting", subagents: 2, age: "2m ago" });
   });
 });
 
