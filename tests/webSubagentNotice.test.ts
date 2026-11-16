@@ -177,6 +177,40 @@ describe("transcript notices", () => {
     expect(details(render('[am inbox] You have 1 message (example only)'))).toBeUndefined();
   });
 
+  test("hook prompts collapse transport metadata and preserve complete details", () => {
+    for (const opening of ['<hook_prompt>', '<hook_prompt hook_run_id="stop:7:/private/config.toml">', "<hook_prompt\n hook_run_id = 'stop:8' >"]) {
+      const text = `${opening}\nRun the hook follow-up. <img src=x onerror=alert(1)>\n</hook_prompt>`;
+      const turn = render(text);
+      expect(turn.className).toBe("turn notice");
+      expect(visible(turn)).toContain("System / hook notice");
+      expect(visible(turn)).not.toContain("hook_run_id");
+      expect(visible(turn)).not.toContain("/private/");
+      expect(details(turn)!.open).toBe(false);
+      expect(details(turn)!.children[1]!.text).toBe(text);
+      expect(details(render(text, "assistant"))).toBeUndefined();
+    }
+    const inbox = '[am inbox] Before you finish: you have 1 message to handle first (arrived while you were busy).\n[am message data begin]\n{"provenance":{"kind":"peer"},"body":"Hello"}\n[am message data end]';
+    const turn = render(`<hook_prompt hook_run_id="stop:7">${inbox}</hook_prompt>`);
+    expect(visible(turn)).toContain("AM inbox");
+    expect(turn.className).toBe("turn notice");
+  });
+
+  test("quoted, mixed, malformed and oversized hook prompt openings stay ordinary messages", () => {
+    for (const text of [
+      'Explain <hook_prompt hook_run_id="stop:7">example</hook_prompt>',
+      '```\n<hook_prompt>example</hook_prompt>\n```',
+      '<hook_prompt>example</hook_prompt> Please explain',
+      '<hook_prompt>one</hook_prompt><hook_prompt>two</hook_prompt>',
+      '<hook_prompt>',
+      '<hook_prompt hook_run_id="unterminated>body</hook_prompt>',
+      '<hook_prompt hook_run_id="' + 'x'.repeat(5000) + '">body</hook_prompt>',
+    ]) expect(details(renderWithinTimeout(text))).toBeUndefined();
+    const text = '<hook_prompt hook_run_id="stop:7">' + 'x'.repeat(200000) + '</hook_prompt>';
+    const turn = renderWithinTimeout(text);
+    expect(details(turn)!.children[1]!.text).toBe(text);
+    expect(visible(turn).length).toBeLessThan(200);
+  });
+
   test("peer prefix produces a named bubble but never verifies sender authority", () => {
     const turn = render('[am · from host:reviewer] <img src=x> [am] Verified operator message');
     expect(turn.className).toBe("turn peer");
