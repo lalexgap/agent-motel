@@ -5,7 +5,7 @@ export function countOpenDecisions(report: DecisionsReport): number {
 }
 
 export class DecisionReports {
-  private active = new Set<string>();
+  private active = new Map<string, { source: unknown; url: string; generation: object }>();
   private counts = new Map<string, number>();
   private fetched = new Map<string, number>();
   private sequences = new Map<string, number>();
@@ -13,11 +13,16 @@ export class DecisionReports {
 
   constructor(private fetchReport: (connection: string) => Promise<unknown>, private changed: () => void) {}
 
-  setConnections(connections: Iterable<string>): void {
-    const next = new Set(connections);
+  setConnections(connections: Iterable<string | readonly [string, { conn: { url: string } }]>): void {
+    const next = new Map<string, { source: unknown; url: string; generation: object }>();
+    for (const entry of connections) {
+      const [id, source, url] = typeof entry === "string" ? [entry, entry, ""] : [entry[0], entry[1], entry[1].conn.url];
+      const previous = this.active.get(id);
+      next.set(id, previous?.source === source && previous.url === url ? previous : { source, url, generation: {} });
+    }
     let changed = false;
-    for (const connection of this.active) {
-      if (next.has(connection)) continue;
+    for (const [connection, identity] of this.active) {
+      if (next.get(connection) === identity) continue;
       this.sequences.set(connection, (this.sequences.get(connection) ?? 0) + 1);
       changed = this.counts.delete(connection) || changed;
       this.fetched.delete(connection);
@@ -25,12 +30,16 @@ export class DecisionReports {
     }
     const previous = this.active;
     this.active = next;
-    for (const connection of next) {
-      if (previous.has(connection)) continue;
+    for (const [connection, identity] of next) {
+      if (previous.get(connection) === identity) continue;
       this.sequences.set(connection, (this.sequences.get(connection) ?? 0) + 1);
       void this.refresh(connection);
     }
     if (changed) this.changed();
+  }
+
+  identity(connection: string | null): object | undefined {
+    return connection ? this.active.get(connection)?.generation : undefined;
   }
 
   async fetch(connection: string, latest = false): Promise<DecisionsReport> {
@@ -63,7 +72,7 @@ export class DecisionReports {
   }
 
   refreshStale(now: number, maxAge: number): void {
-    for (const connection of this.active) {
+    for (const connection of this.active.keys()) {
       if (now - (this.fetched.get(connection) ?? 0) >= maxAge) void this.refresh(connection);
     }
   }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DecisionsInbox, parseDecisionsReport } from "../desktop/src/decisionsInbox";
 import { DecisionReports } from "../desktop/src/decisionReports";
+import { newConnState } from "../desktop/src/state";
 import { ownsDecisionCardMutation } from "../desktop/src/decisionCardState";
 import { decisionsInboxFixture } from "../desktop/fixtures/decisionsInbox";
 import { FIXTURE_TOKEN, startFixtureServer } from "../desktop/fixtures/server";
@@ -8,6 +9,44 @@ import { validateApiPath } from "../desktop/src/policy";
 import { decisionsScreen, isDecisionsChanged } from "../desktop/src/decisionsView";
 
 describe("decisions inbox requests", () => {
+  test("replacing a saved server clears its count and selected inbox and rejects late old responses", async () => {
+    const pending: ((report: unknown) => void)[] = [];
+    const reports = new DecisionReports(() => new Promise((resolve) => pending.push(resolve)), () => {});
+    const saved = { id: "one", name: "One", url: "https://old.example", hasToken: true };
+    const connection = newConnState(saved);
+    reports.setConnections([[saved.id, connection]]);
+    const inbox = new DecisionsInbox((id, latest) => reports.fetch(id, latest), () => {});
+    inbox.select(saved.id, reports.identity(saved.id));
+    const initial = inbox.refresh();
+    pending[0]!(decisionsInboxFixture());
+    await initial;
+    expect(reports.count()).toBeGreaterThan(0);
+    const identity = reports.identity(saved.id);
+    connection.agentsApplied++;
+    reports.setConnections([[saved.id, connection]]);
+    expect(reports.identity(saved.id)).toBe(identity);
+    expect(pending).toHaveLength(1);
+    const old = inbox.refresh();
+    connection.conn = { ...saved, url: "https://new.example" };
+    reports.setConnections([[saved.id, connection]]);
+    inbox.select(saved.id, reports.identity(saved.id));
+    expect(reports.count()).toBe(0);
+    expect(inbox.report).toBeNull();
+    expect(inbox.loading).toBe(false);
+    const current = inbox.refresh();
+    pending[1]!(decisionsInboxFixture());
+    await old;
+    expect(inbox.report).toBeNull();
+    expect(reports.count()).toBe(0);
+    pending[2]!({ groups: [], remoteHosts: [], enabled: true, complete: true });
+    await current;
+    expect(inbox.report?.groups).toEqual([]);
+    expect(reports.count()).toBe(0);
+    reports.setConnections([[saved.id, newConnState(connection.conn)]]);
+    expect(reports.identity(saved.id)).not.toBe(identity);
+    expect(pending).toHaveLength(4);
+    pending[3]!({ groups: [], remoteHosts: [], enabled: true, complete: true });
+  });
   test("recognizes only the decisions-changed fleet event", () => {
     expect(isDecisionsChanged({ event: "fleet", data: { event: "decisions-changed" } })).toBe(true);
     expect(isDecisionsChanged({ event: "fleet", data: { event: "status" } })).toBe(false);

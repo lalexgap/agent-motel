@@ -41,6 +41,7 @@ let blockingOnly = false;
 let notice = "";
 let actionSequence = 0;
 let seenAgents = 0;
+let selectedIdentity: object | undefined;
 let publishedCount: number | null = null;
 const visible = () => !!page && !page.hidden && screen() === "fleet";
 const reports = new DecisionReports(async (connection) => {
@@ -125,9 +126,11 @@ const actions: DecisionsActions = {
 };
 
 function setConnection(connection: string | null): void {
-  if (connection === inbox.connection) return;
+  const identity = reports.identity(connection);
+  if (connection === inbox.connection && identity === selectedIdentity) return;
+  selectedIdentity = identity;
   actionSequence++;
-  inbox.select(connection);
+  inbox.select(connection, identity);
   notice = "";
   query = "";
   blockingOnly = false;
@@ -202,10 +205,13 @@ export function initDecisionsPage(): void {
     else nav.removeAttribute("aria-current");
   });
   subscribe("fleet", () => {
-    reports.setConnections(state.conns.keys());
+    reports.setConnections(state.conns);
     reports.refreshStale(Date.now(), 2000);
     if (!inbox.connection || !state.conns.has(inbox.connection)) {
       setConnection(pickConnection([...state.conns.keys()], {}));
+    } else if (selectedIdentity !== reports.identity(inbox.connection)) {
+      setConnection(inbox.connection);
+      void inbox.refresh();
     }
     renderPicker();
     const applied = state.conns.get(inbox.connection ?? "")?.agentsApplied ?? 0;

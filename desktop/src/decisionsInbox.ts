@@ -34,12 +34,14 @@ export class DecisionsInbox {
   loading = false;
   fetchedAt = 0;
   private sequence = 0;
+  private identity: unknown;
 
   constructor(private fetchReport: (connection: string, latest: boolean) => Promise<unknown>, private changed: () => void) {}
 
-  select(connection: string | null): void {
-    if (connection === this.connection) return;
+  select(connection: string | null, identity: unknown = connection): void {
+    if (connection === this.connection && identity === this.identity) return;
     this.connection = connection;
+    this.identity = identity;
     this.sequence++;
     this.report = null;
     this.error = null;
