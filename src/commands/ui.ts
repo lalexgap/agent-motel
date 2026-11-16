@@ -1,4 +1,4 @@
-import { safePaneTitle } from "../paneTitle";
+import { HUB_TITLE_FORMAT, safePaneTitle, tmuxPaneTitle } from "../paneTitle";
 import { withAuditContext } from "../audit";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,7 +153,7 @@ export function createHub(): void {
 
   tmux("set-option", "-t", hubTarget(), "status-format[0]", "");
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
-  tmux("set-option", "-t", hubTarget(), "set-titles-string", "#{pane_title}");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", HUB_TITLE_FORMAT);
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
   applyHubStyle();
   applyHubBindings();
@@ -264,7 +264,7 @@ export function uiCommand(): void {
     applyHubBindings();
   }
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
-  tmux("set-option", "-t", hubTarget(), "set-titles-string", "#{pane_title}");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", HUB_TITLE_FORMAT);
   attachOrSwitch(HUB_SESSION);
 }
 
@@ -286,7 +286,8 @@ export async function sidebarCommand(): Promise<void> {
     const { host, name } = splitFleetKey(agentKey);
     const pane = ensureRightPane();
     if (!pane) return { text: "could not create the agent pane", level: "error" };
-    tmux("select-pane", "-t", pane, "-T", hubPaneTitle(subagentKey(agentKey, id)));
+    tmux("set-option", "-p", "-t", pane, "allow-set-title", "off");
+    tmux("select-pane", "-t", pane, "-T", tmuxPaneTitle(hubPaneTitle(subagentKey(agentKey, id))));
     const key = subagentKey(agentKey, id);
     if (shown !== key) {
       const peekArgs = ["peek", name, "--subagent", id, "--follow"];
@@ -307,7 +308,8 @@ export async function sidebarCommand(): Promise<void> {
     const { host, name } = splitFleetKey(key);
     const pane = ensureRightPane();
     if (!pane) return { text: "could not create the agent pane", level: "error" };
-    tmux("select-pane", "-t", pane, "-T", hubPaneTitle(key));
+    tmux("set-option", "-p", "-t", pane, "allow-set-title", host ? "off" : "on");
+    tmux("select-pane", "-t", pane, "-T", tmuxPaneTitle(hubPaneTitle(key)));
 
     if (host) {
       if (!name) {

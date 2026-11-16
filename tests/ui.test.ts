@@ -1,4 +1,4 @@
-import { paneTitleSequence } from "../src/paneTitle";
+import { paneTitleSequence, tmuxPaneTitle } from "../src/paneTitle";
 import { describe, expect, test } from "bun:test";
 import { hubPaneTitle, remoteNewCommandArgs } from "../src/commands/ui";
 
@@ -33,6 +33,7 @@ describe("focused hub pane titles", () => {
   test("keeps names literal and removes terminal control characters", () => {
     expect(paneTitleSequence("a\x07\x1b]52;c;payload\x9cb\n")).toBe("\x1b]2;a]52;c;payloadb\x07");
     expect(paneTitleSequence("#{pane_title}; '$()' \\" )).toBe("\x1b]2;#{pane_title}; '$()' \\\x07");
+    expect(tmuxPaneTitle("literal #{session_name}; $(ignored)\x07")).toBe("literal ##{session_name}; $(ignored)");
     expect(paneTitleSequence("\x00\x1b\x7f\x9f")).toBe("\x1b]2;am\x07");
   });
 });
