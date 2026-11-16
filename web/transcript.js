@@ -235,6 +235,13 @@ window.agentTranscript = (() => {
     const inbox = (value) => /^\[am inbox\] (?:Before you finish: you have \d+ messages? to handle first |You have \d+ messages? \()/.test(value) &&
       value.includes("\n[am message data begin]\n") && value.includes("\n[am message data end]");
     if (inbox(text)) return notice("AM inbox", "Messages delivered while the agent was busy", "messages");
+    const hookPrompt = /^<hook_prompt(?:\s+hook_run_id\s*=\s*(?:"[^"<>\r\n]{0,1024}"|'[^'<>\r\n]{0,1024}'))?\s*>/.exec(text.slice(0, 1100));
+    if (hookPrompt && text.endsWith("</hook_prompt>") && text.indexOf("</hook_prompt>", hookPrompt[0].length) === text.length - 14) {
+      const body = text.slice(hookPrompt[0].length, -14).trim();
+      return inbox(body)
+        ? notice("AM inbox", "Messages delivered while the agent was busy", "messages")
+        : notice("System / hook notice", "", "notice");
+    }
     if (text.startsWith("{") && text.length <= 131072) {
       try {
         const data = JSON.parse(text);
