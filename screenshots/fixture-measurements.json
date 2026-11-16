@@ -1,0 +1,18 @@
+{
+  "before": {
+    "start": "5",
+    "top": 0,
+    "first": "ConciergeFixture message 5 — Example conversation text. Example conversation text. Example conversation text. Example conversation text."
+  },
+  "after": {
+    "start": "5",
+    "top": 0,
+    "first": "ConciergeFixture message 5 — Example conversation text. Example conversation text. Example conversation text. Example conversation text.",
+    "count": 65
+  },
+  "reset": {
+    "start": "60",
+    "count": 20
+  },
+  "scope": "Production dock HTML/CSS/renderer; mocked transcript API; no live fleet requests"
+}
