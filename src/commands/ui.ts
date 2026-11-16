@@ -1,3 +1,4 @@
+import { HUB_TITLE_FORMAT, safePaneTitle, tmuxPaneTitle } from "../paneTitle";
 import { withAuditContext } from "../audit";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -80,6 +81,15 @@ export function remoteNewCommandArgs(opts: {
   return args;
 }
 
+export function hubPaneTitle(key: string | null): string {
+  if (!key) return "am";
+  const sub = splitSubagentKey(key);
+  const { host, name } = splitFleetKey(sub?.agentKey ?? key);
+  if (!name) return "am";
+  const agent = host ? `${name}@${shortHost(host)}` : name;
+  return safePaneTitle(sub ? `${agent} ⤷ ${sub.id.slice(0, 8)}` : agent);
+}
+
 function hubTarget(): string {
   return `=${HUB_SESSION}:`;
 }
@@ -131,7 +141,9 @@ function ensureRightPane(): string | null {
   tmux("split-window", "-h", "-d", "-t", `${hubTarget()}.0`, "-c", process.cwd(),
     messageCommand("select an agent in the sidebar"));
   tmux("resize-pane", "-t", `${hubTarget()}.0`, "-x", String(SIDEBAR_WIDTH));
-  return rightPaneId();
+  const pane = rightPaneId();
+  if (pane) tmux("select-pane", "-t", pane, "-T", "am");
+  return pane;
 }
 
 export function createHub(): void {
@@ -139,18 +151,9 @@ export function createHub(): void {
   if (result.exitCode !== 0) throw new Error(`tmux new-session failed: ${result.stderr.trim()}`);
   ensureRightPane();
 
-  // Hub chrome: the status line is the full-width contextual key bar (the
-  // sidebar pushes its content via status-format), and ctrl-q returns focus
-  // to the sidebar (gets you out of being locked into an agent). The binding
-  // lives in a hub-only key table, so the outer client intercepts ctrl-q
-  // before the nested agent session (whose own ctrl-q binding means detach)
-  // ever sees it.
   tmux("set-option", "-t", hubTarget(), "status-format[0]", "");
-  // The terminal tab title follows whichever agent the right pane shows
-  // (showAgent updates the string); direct `am j` attaches get theirs from
-  // the per-agent session titles instead.
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
-  tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", HUB_TITLE_FORMAT);
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
   applyHubStyle();
   applyHubBindings();
@@ -260,6 +263,8 @@ export function uiCommand(): void {
     applyHubStyle();
     applyHubBindings();
   }
+  tmux("set-option", "-t", hubTarget(), "set-titles", "on");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", HUB_TITLE_FORMAT);
   attachOrSwitch(HUB_SESSION);
 }
 
@@ -281,13 +286,14 @@ export async function sidebarCommand(): Promise<void> {
     const { host, name } = splitFleetKey(agentKey);
     const pane = ensureRightPane();
     if (!pane) return { text: "could not create the agent pane", level: "error" };
+    tmux("set-option", "-p", "-t", pane, "allow-set-title", "off");
+    tmux("select-pane", "-t", pane, "-T", tmuxPaneTitle(hubPaneTitle(subagentKey(agentKey, id))));
     const key = subagentKey(agentKey, id);
     if (shown !== key) {
       const peekArgs = ["peek", name, "--subagent", id, "--follow"];
       const command = host
         ? `env -u TMUX ${sshAmTtyCommand(host, peekArgs)}`
         : `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} ${peekArgs.map(shQuote).join(" ")}`;
-      tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name} ⤷ ${id.slice(0, 8)}`);
       const respawned = tmux("respawn-pane", "-k", "-t", pane, command);
       if (respawned.exitCode !== 0) return { text: `subagent view failed: ${respawned.stderr.trim()}`, level: "error" };
       shown = key;
@@ -302,9 +308,12 @@ export async function sidebarCommand(): Promise<void> {
     const { host, name } = splitFleetKey(key);
     const pane = ensureRightPane();
     if (!pane) return { text: "could not create the agent pane", level: "error" };
+    tmux("set-option", "-p", "-t", pane, "allow-set-title", host ? "off" : "on");
+    tmux("select-pane", "-t", pane, "-T", tmuxPaneTitle(hubPaneTitle(key)));
 
     if (host) {
       if (!name) {
+        shown = null;
         tmux("respawn-pane", "-k", "-t", pane, messageCommand(`${host} unreachable`));
         return null;
       }
@@ -328,7 +337,6 @@ export async function sidebarCommand(): Promise<void> {
         }
       }
       if (shown !== key) {
-        tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name}@${shortHost(host)}`);
         // Prep the remote session for the nested attach. Besides hiding its
         // status bar, assert the scroll bindings ON THE REMOTE: the hub
         // forwards each wheel notch as a bare PageUp/Down (a remote pane's
@@ -386,7 +394,6 @@ export async function sidebarCommand(): Promise<void> {
     }
 
     if (shown !== key) {
-      tmux("set-option", "-t", hubTarget(), "set-titles-string", name);
       // The nested attach needs TMUX unset, or the inner tmux refuses to
       // start. The inner session's status bar is noise inside the pane.
       tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
@@ -406,6 +413,7 @@ export async function sidebarCommand(): Promise<void> {
   const config = loadConfig();
 
   const handlers: PickerHandlers = {
+    title: (item) => hubPaneTitle(item?.name ?? null),
     highlight: (key: string) => {
       clearTimeout(highlightTimer);
       highlightTimer = setTimeout(() => showAgent(key, false), HIGHLIGHT_DEBOUNCE_MS);

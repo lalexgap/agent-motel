@@ -64,3 +64,28 @@ test.each(["stop", "remove"])("picker renders progress and accepts input during 
     await running;
   `);
 });
+
+test("hub picker publishes selection, empty reset and re-selection titles", () => {
+  fixture(`
+    mock.module("./src/usage", () => ({ startUsagePolling: () => () => {}, usageBadge: () => "" }));
+    Object.defineProperty(process.stdin, "isTTY", { value: true });
+    process.stdin.setRawMode = () => process.stdin;
+    let frames = "", highlights = [];
+    process.stdout.write = text => { frames += text; return true; };
+    const { pick } = await import("./src/picker");
+    const running = pick(() => [{ name: "alpha", label: "alpha" }, { name: "beta", label: "beta" }], {
+      title: item => item?.name ?? "am",
+      highlight: name => highlights.push(name)
+    });
+    const key = value => process.stdin.emit("data", Buffer.from(value));
+    assert.ok(frames.includes("\\x1b]2;alpha\\x07"));
+    key("j");
+    assert.ok(frames.includes("\\x1b]2;beta\\x07"));
+    key("/"); key("nomatch");
+    assert.ok(frames.includes("\\x1b]2;am\\x07"));
+    key("\\x1b");
+    assert.ok(highlights.filter(name => name === "alpha").length >= 2);
+    key("\\x03");
+    await running;
+  `);
+});

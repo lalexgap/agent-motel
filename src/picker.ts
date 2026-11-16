@@ -1,3 +1,4 @@
+import { paneTitleSequence } from "./paneTitle";
 import { completeDir, completeDirRemote } from "./dirComplete";
 import { localAgentMatches, search } from "./search";
 import { startUsagePolling, usageBadge } from "./usage";
@@ -173,6 +174,7 @@ export interface PickerHandlers {
   // this to make the agent pane follow the scroll). Debouncing is the
   // handler's job.
   highlight?: (name: string) => void;
+  title?: (item: PickerItem | undefined) => string;
   // Slow actions (ssh moves, provider handoffs): the resolved message lands
   // in the banner when done; rejections surface (as errors) there too.
   move?: (name: string) => Feedback | Promise<Feedback>;
@@ -1468,10 +1470,13 @@ export async function pick(
     const selected = matches[cursor];
     cursorName = selected?.name ?? null;
 
+    if (handlers.title) out(paneTitleSequence(handlers.title(selected)));
+
     if (selected && handlers.highlight && selected.name !== lastHighlighted) {
       lastHighlighted = selected.name;
       handlers.highlight(selected.name);
     }
+    if (!selected) lastHighlighted = null;
 
     // Subagent rows carry a status for their glyph but aren't agents — the
     // tally is what the operator is running, not what those are running.
