@@ -185,12 +185,11 @@ function auditedForward<T>(host: string, args: string[], run: () => T, outcome: 
   }
 }
 
-// Login shell (bash -lc) so ~/.bun/bin lands on PATH for non-interactive
-// ssh; bash rather than sh because profiles routinely use bashisms
-// (`source`) that dash chokes on. argv is re-quoted to survive both ssh's
-// argument join and the remote shell.
+// Bash profiles may omit install paths configured only in zsh.
+const REMOTE_PATH_PREFIX = 'export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ';
+
 function sshArgv(host: string, remoteCommand: string, tty: boolean): string[] {
-  return ["ssh", ...muxOpts(), ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remoteCommand)}`];
+  return ["ssh", ...muxOpts(), ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(REMOTE_PATH_PREFIX + remoteCommand)}`];
 }
 
 export function amCommandString(args: string[]): string {

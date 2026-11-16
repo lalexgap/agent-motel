@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isForwardable, sshAmTtyCommand, stripHostArgs, type SshResult } from "../src/remote";
+import { isForwardable, sshAmStreamArgv, sshAmTtyCommand, stripHostArgs, type SshResult } from "../src/remote";
 import { shQuote } from "../src/tmux";
 
 const remoteModule = new URL("../src/remote.ts", import.meta.url).pathname;
@@ -140,12 +140,55 @@ describe("sshAmTtyCommand", () => {
         "-t",
         "server",
         "--",
-        `bash -lc ${shQuote("'am' 'peek' 'api' '--subagent' 'abc' '--follow'")}`,
+        `bash -lc ${shQuote('export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ' + "'am' 'peek' 'api' '--subagent' 'abc' '--follow'")}`,
       ]);
     } finally {
       if (mux === undefined) delete process.env.AM_SSH_NO_MUX;
       else process.env.AM_SSH_NO_MUX = mux;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("remote login PATH", () => {
+  test("resolves mocked am/tmux and preserves remote PATH and hostile arguments", () => {
+    const dir = mkdtempSync(join(tmpdir(), "am-path-"));
+    const home = join(dir, "home with 'quotes' $dollars");
+    const bin = join(home, ".bun", "bin");
+    const profileBin = join(dir, "profile-bin");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(profileBin);
+    const executable = (path: string, body: string) => {
+      writeFileSync(path, "#!/bin/bash\n" + body);
+      chmodSync(path, 0o755);
+    };
+    try {
+      executable(join(bin, "am"), 'printf "%s\\0" "$@"; tmux; profile-tool; printf "%s\\0" "$PATH"');
+      executable(join(bin, "tmux"), 'printf "mock-tmux\\0"');
+      executable(join(profileBin, "profile-tool"), 'printf "profile-tool\\0"');
+      // Model the login shell after profiles have set HOME/PATH, without reading real profiles.
+      executable(join(dir, "bash"), 'test "$1" = -lc || exit 99\nexec /bin/bash --noprofile --norc -c "$2"');
+      const args = ["probe", "spaces and 'quotes'", '$(touch should-not-exist)', "; exit 97", "line\nbreak", ""];
+      const oldMux = process.env.AM_SSH_NO_MUX;
+      process.env.AM_SSH_NO_MUX = "1";
+      let argv: string[];
+      try { argv = sshAmStreamArgv("mock-host", args); }
+      finally {
+        if (oldMux === undefined) delete process.env.AM_SSH_NO_MUX;
+        else process.env.AM_SSH_NO_MUX = oldMux;
+      }
+      expect(argv.slice(0, -1)).toEqual(["ssh", "mock-host", "--"]);
+      const run = Bun.spawnSync(["/bin/bash", "--noprofile", "--norc", "-c", argv.at(-1)!], {
+        cwd: dir,
+        env: { HOME: home, PATH: `${dir}:${profileBin}` },
+      });
+      expect(run.exitCode).toBe(0);
+      expect(run.stdout.toString().split("\0")).toEqual([
+        ...args, "mock-tmux", "profile-tool",
+        `${bin}:/opt/homebrew/bin:/usr/local/bin:${dir}:${profileBin}`, "",
+      ]);
+      expect(existsSync(join(dir, "should-not-exist"))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
