@@ -36,14 +36,15 @@ export interface NotificationMeta {
 // The app's hand-off URL. The app validates every field again; this only
 // bounds the size and drops what the app would reject anyway.
 export function appNotificationUrl(title: string, message: string, url: string | undefined, meta: NotificationMeta = {}): string {
-  const params = new URLSearchParams({ v: "1", title: title.slice(0, APP_TITLE_MAX), message: message.slice(0, APP_MESSAGE_MAX) });
+  const fields: [string, string][] = [["v", "1"], ["title", title.slice(0, APP_TITLE_MAX)], ["message", message.slice(0, APP_MESSAGE_MAX)]];
   for (const key of ["id", "host", "agent", "kind"] as const) {
     const value = meta[key];
-    if (value) params.set(key, value);
+    if (value) fields.push([key, value]);
   }
   const target = notificationPrUrl(url);
-  if (target) params.set("url", target);
-  return `agent-motel://notify?${params.toString()}`;
+  if (target) fields.push(["url", target]);
+  // Percent-encoding, not URLSearchParams: Foundation reads "+" as a literal plus.
+  return `agent-motel://notify?${fields.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
 }
 
 // The running app's bundle, from its executable path (…/X.app/Contents/MacOS/AgentMotel).

@@ -139,6 +139,8 @@ describe("Agent Motel app notifications", () => {
       v: "1", title: "am: alpha", message: "needs you", id: "m1", host: "gapserver", agent: "alpha", kind: "attention", url: prUrl,
     });
     expect(d.itermCalls()).toBe(0);
+    expect(cmd[4]).toContain("title=am%3A%20alpha");
+    expect(cmd[4]).not.toContain("+");
   });
 
   test("falls back to the standard notifiers when the app is not running", async () => {
