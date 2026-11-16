@@ -16,6 +16,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     private let api = APIClient()
     /// Replaced only by the smoke app so a synthetic capability is captured without launching a browser.
     var decisionsOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    var decisionsCountChanged: (Int) -> Void = { _ in }
     private(set) var streams: [String: EventStream] = [:]
     private(set) lazy var terminals = TerminalManager(store: store, confirmation: confirmation) { [weak self] name, payload, delivered in
         guard let self else { return }
@@ -82,6 +83,15 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             let connection = try savedConnection(params)
             return try await write(DecisionsPolicy.actionRequest(base: connection.url, agent: params["agent"], id: params["id"],
                                                                  action: params["action"], text: params["text"]), connection: connection)
+        case "decisions.count":
+            guard let number = params["count"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+                  (0...100_000).contains(number.doubleValue) else {
+                throw PolicyError("count must be an integer from 0 to 100000")
+            }
+            decisionsCountChanged(number.intValue)
+            return [String: Any]()
         case "messages.send":
             let connection = try savedConnection(params)
             return try await write(MessagePolicy.send(base: connection.url, agent: params["agent"], text: params["text"],

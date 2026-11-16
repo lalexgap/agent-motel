@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeEvents, startDaemonServer, stuckDeliveryReason, daemonHealth, daemonRequest, nextPollMs, watchDaemonEvents, type DaemonHandle } from "../src/daemon";
@@ -8,10 +8,13 @@ import { queueAppend } from "../src/queue";
 
 let home: string;
 let daemon: DaemonHandle;
+let decisionsHomeBefore: string | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "am-test-"));
   process.env.AGENTMGR_HOME = home;
+  decisionsHomeBefore = process.env.DECISIONS_HOME;
+  process.env.DECISIONS_HOME = join(home, "decisions");
   daemon = startDaemonServer();
 });
 
@@ -19,9 +22,29 @@ afterEach(() => {
   daemon.stop();
   rmSync(home, { recursive: true, force: true });
   delete process.env.AGENTMGR_HOME;
+  if (decisionsHomeBefore === undefined) delete process.env.DECISIONS_HOME;
+  else process.env.DECISIONS_HOME = decisionsHomeBefore;
 });
 
 describe("daemon", () => {
+  test("external decision store replacements emit SSE invalidations", async () => {
+    const response = await daemonRequest("/events", { timeoutMs: 0 });
+    const reader = response!.body!.getReader();
+    await reader.read();
+    const directory = process.env.DECISIONS_HOME!;
+    mkdirSync(directory, { recursive: true });
+    const temporary = join(directory, ".am-test-decisions.tmp");
+    writeFileSync(temporary, JSON.stringify({ version: 1, decisions: [{ id: "d-1", status: "open", question: "Choose?" }] }));
+    renameSync(temporary, join(directory, "am-test-decisions.json"));
+    const decoder = new TextDecoder();
+    try {
+      let chunk = "";
+      while (!chunk.includes("decisions-changed")) chunk = decoder.decode((await reader.read()).value);
+      expect(chunk).toContain('"agent":"am-test-decisions"');
+      expect(chunk).not.toContain("Choose?");
+    } finally { await reader.cancel(); }
+  });
+
   test("health reports pid", async () => {
     const health = await daemonHealth();
     expect(health?.pid).toBe(process.pid);

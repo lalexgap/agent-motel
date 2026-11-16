@@ -2,6 +2,7 @@ import { startPrMonitor } from "./prMonitor";
 import { startAutoGc } from "./autoGc";
 import { startDecisionFreshness } from "./decisionFreshness";
 import { startDecisionRequests } from "./decisionRequests";
+import { startDecisionEvents } from "./decisionEvents";
 import { startUsageLedgerJob } from "./usageLedger";
 import { reconcileAntigravityAgent } from "./antigravity";
 import { startNotificationRelay } from "./notificationRelay";
@@ -301,6 +302,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
 
   // Codex approvals reach the daemon's own app-server connection; it records
   // them for `am serve` clients and replies with their answers.
+  const decisionEvents = startDecisionEvents(publish);
   const codexApprovals = startCodexApprovalWatcher({ publish, log });
   const notificationRelay = startNotificationRelay(log);
 
@@ -481,6 +483,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       autoGc.stop();
       decisionFreshness.stop();
       decisionRequests.stop();
+      decisionEvents.stop();
       usageLedger.stop();
       clearInterval(reconciler);
       clearInterval(keepalive);

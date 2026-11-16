@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     let notifier = Notifier()
     private var errorPanel: NSStackView!
     private var errorLabel: NSTextField!
+    private var decisionsStatusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -35,6 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.uiDelegate = self
         webView.underPageBackgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
         bridge.webView = webView
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "AM"
+        statusItem.button?.toolTip = "Agent Motel decisions"
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(showDecisions)
+        decisionsStatusItem = statusItem
+        bridge.decisionsCountChanged = { [weak self] count in
+            self?.decisionsStatusItem?.button?.title = count > 0 ? "AM · \(count)" : "AM"
+            self?.decisionsStatusItem?.button?.toolTip = "\(count) open decisions — click to answer"
+        }
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -132,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             nil,
             ("Show Chat", #selector(showChat), "1"),
             ("Show Terminal", #selector(showTerminal), "2"),
+            ("Show Decisions", #selector(showDecisions), "3"),
         ])
         section("Window", [
             ("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
@@ -147,6 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             appMenu.insertItem(notifications, at: 4)
             appMenu.insertItem(.separator(), at: 5)
         }
+    }
+
+    @objc func showDecisions() {
+        showWindow()
+        bridge.emit("menu.command", ["command": "decisions"])
     }
 
     @objc func showWindow() {

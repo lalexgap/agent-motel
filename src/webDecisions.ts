@@ -73,14 +73,14 @@ function webDecision(d: Decision): WebDecision {
 
 function sortOpen(decisions: Decision[]): Decision[] {
   return decisions.filter((d) => d.status === "open").sort((a, b) =>
-    Number(!!b.blocking) - Number(!!a.blocking) || (text(a.asked_at) ?? "").localeCompare(text(b.asked_at) ?? ""));
+    Number(!!b.blocking) - Number(!!a.blocking) || (text(b.asked_at) ?? "").localeCompare(text(a.asked_at) ?? ""));
 }
 
-// Open decisions only, blocking first then oldest. A name the store CLI would
+// Open decisions only, blocking first then newest. A name the store CLI would
 // slug to another agent's file owns no store (see ownsStore).
 export function agentDecisions(name: string): WebDecision[] {
   if (!decisionsEnabled() || !ownsStore(name)) return [];
-  return openDecisions(name).map(webDecision);
+  return sortOpen(openDecisions(name)).map(webDecision);
 }
 
 // This server's local stores only. Remote hosts are disclosed for coverage, but
@@ -102,9 +102,9 @@ export function decisionsReport(): WebDecisionsReport {
   groups.sort((a, b) => {
     const aBlocking = a.decisions.some((d) => d.blocking);
     const bBlocking = b.decisions.some((d) => d.blocking);
-    const aOldest = a.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
-    const bOldest = b.decisions.map((d) => d.asked_at ?? "").sort()[0] ?? "";
-    return Number(bBlocking) - Number(aBlocking) || aOldest.localeCompare(bOldest) || a.agent.localeCompare(b.agent);
+    const aNewest = a.decisions[0]?.asked_at ?? "";
+    const bNewest = b.decisions[0]?.asked_at ?? "";
+    return Number(bBlocking) - Number(aBlocking) || bNewest.localeCompare(aNewest) || a.agent.localeCompare(b.agent);
   });
   return { groups, remoteHosts, enabled: true, complete };
 }

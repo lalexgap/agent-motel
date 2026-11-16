@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { startApiServer, type ApiServerHandle } from "../src/server";
 import { writeAgent } from "../src/state";
+import { auditLogFile } from "../src/audit";
 import { applyDecisionAction, decisionsPageLink, validDecisionsAgent } from "../src/webDecisions";
 
 const TOKEN = "test-key-with-at-least-24-characters";
@@ -253,6 +254,22 @@ describe("GET /api/agents/:name/decisions", () => {
 });
 
 describe("GET /api/decisions", () => {
+  test("orders blocking decisions first then newest in inbox and agent cards", async () => {
+    seedAgent("api");
+    writeStore("api", [
+      { id: "d-1", status: "open", question: "Old", asked_at: "2026-01-01T00:00:00Z" },
+      { id: "d-2", status: "open", question: "New", asked_at: "2026-02-01T00:00:00Z" },
+      { id: "d-3", status: "open", question: "Blocking", blocking: true, asked_at: "2025-01-01T00:00:00Z" },
+    ]);
+    writeStore("new-agent", [{ id: "d-1", status: "open", question: "Newest", asked_at: "2026-03-01T00:00:00Z" }]);
+    writeStore("old-agent", [{ id: "d-1", status: "open", question: "Oldest", asked_at: "2024-03-01T00:00:00Z" }]);
+    const report = await (await getInbox()).json();
+    expect(report.groups.map((g: any) => g.agent)).toEqual(["api", "new-agent", "old-agent"]);
+    expect(report.groups[0].decisions.map((d: any) => d.id)).toEqual(["d-3", "d-2", "d-1"]);
+    const card = await (await fetch(`${server.url}/api/agents/api/decisions`, { headers: bearer })).json();
+    expect(card.decisions.map((d: any) => d.id)).toEqual(["d-3", "d-2", "d-1"]);
+  });
+
   test("requires auth and returns all local open stores with no-store, without running drop", async () => {
     seedAgent("stopped", "exited");
     writeStore("stopped", [
@@ -407,6 +424,15 @@ with open("/proc/self/cmdline", "rb") as cmdline:
     expect(readFileSync(join(home, "am-env"), "utf8")).toBe("unset\nunset\nunset\n");
     expect(await (await answer(payload)).json()).toEqual({ ok: true, changed: false, status: "decided" });
     expect(readFileSync(join(home, "am-argv"), "utf8")).toBe(wake);
+    const auditText = readFileSync(auditLogFile(), "utf8");
+    const audit = auditText.trim().split("\n").map((line) => JSON.parse(line));
+    expect(audit).toHaveLength(4);
+    expect(audit[0]).toMatchObject({ actor: "shared-bearer", auth: "bearer", action: "decision-answer", phase: "requested", target: "api", reason: "d-1" });
+    expect(audit[1]).toMatchObject({ requestId: audit[0].requestId, phase: "completed", reason: "d-1:changed" });
+    expect(audit[3]).toMatchObject({ phase: "completed", reason: "d-1:unchanged" });
+    expect(Number.isFinite(Date.parse(audit[1].timestamp))).toBe(true);
+    expect(auditText).not.toContain(payload.answer);
+    expect(auditText).not.toContain(TOKEN);
   });
 
   test("a failed exact wake remains best-effort after the decision is committed", async () => {
