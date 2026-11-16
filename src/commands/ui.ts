@@ -263,6 +263,8 @@ export function uiCommand(): void {
     applyHubStyle();
     applyHubBindings();
   }
+  tmux("set-option", "-t", hubTarget(), "set-titles", "on");
+  tmux("set-option", "-t", hubTarget(), "set-titles-string", "#{pane_title}");
   attachOrSwitch(HUB_SESSION);
 }
 
@@ -291,7 +293,6 @@ export async function sidebarCommand(): Promise<void> {
       const command = host
         ? `env -u TMUX ${sshAmTtyCommand(host, peekArgs)}`
         : `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} ${peekArgs.map(shQuote).join(" ")}`;
-
       const respawned = tmux("respawn-pane", "-k", "-t", pane, command);
       if (respawned.exitCode !== 0) return { text: `subagent view failed: ${respawned.stderr.trim()}`, level: "error" };
       shown = key;
@@ -310,6 +311,7 @@ export async function sidebarCommand(): Promise<void> {
 
     if (host) {
       if (!name) {
+        shown = null;
         tmux("respawn-pane", "-k", "-t", pane, messageCommand(`${host} unreachable`));
         return null;
       }
