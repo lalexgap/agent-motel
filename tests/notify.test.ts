@@ -179,6 +179,7 @@ describe("Agent Motel app notifications", () => {
     expect(url.searchParams.get("message")).toHaveLength(1000);
     expect(url.searchParams.has("url")).toBe(false);
     expect(url.searchParams.has("agent")).toBe(false);
+    expect(() => appNotificationUrl("a".repeat(199) + "😀", "\uD800", undefined)).not.toThrow();
   });
 });
 

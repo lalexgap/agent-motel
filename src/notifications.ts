@@ -5,10 +5,10 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { baseDir } from "./paths";
 import { newMsgId } from "./msgid";
 
-export type NotificationKind = "attention" | "idle" | "share" | "pr";
+export type NotificationKind = "attention" | "idle" | "share" | "pr" | "decision";
 
 export function isNotificationKind(value: unknown): value is NotificationKind {
-  return value === "attention" || value === "idle" || value === "share" || value === "pr";
+  return value === "attention" || value === "idle" || value === "share" || value === "pr" || value === "decision";
 }
 
 export function notificationPrUrl(value: unknown): string | undefined {

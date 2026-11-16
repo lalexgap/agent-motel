@@ -44,7 +44,7 @@ export function appNotificationUrl(title: string, message: string, url: string |
   const target = notificationPrUrl(url);
   if (target) fields.push(["url", target]);
   // Percent-encoding, not URLSearchParams: Foundation reads "+" as a literal plus.
-  return `agent-motel://notify?${fields.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
+  return `agent-motel://notify?${fields.map(([k, v]) => `${k}=${encodeURIComponent(v.toWellFormed())}`).join("&")}`;
 }
 
 // The running app's bundle, from its executable path (…/X.app/Contents/MacOS/AgentMotel).
