@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import type { AgentRow } from "../desktop/src/types";
 import { workingAnchor, workingIndicator, workingText } from "../desktop/src/working";
 
@@ -84,4 +86,20 @@ describe("workingIndicator", () => {
     expect(workingIndicator(subject, NOW)?.text).toBe("Working · 2s");
     expect(workingIndicator(subject, NOW + 10_000)?.text).toBe("Working · 12s");
   });
+});
+
+
+test("a fresher detail keeps fleet-only blockers and subagent names", () => {
+  const source = readFileSync(new URL("../desktop/src/state.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export function agentSource(");
+  const end = source.indexOf("export function agentComposer(", start);
+  const fleet = row({ updatedAt: at(-10_000), blockingDecisions: 1, busyWith: { subagents: 1, background: 0 }, subagents: { running: [{ id: "s1", type: "reviewer" }] } });
+  const detail = row({ updatedAt: at(-1_000), workingSince: at(-5_000) });
+  const context: any = { findRow: () => fleet, state: { detail: { key: "agent", detail } } };
+  runInNewContext(source.slice(start, end).replace("export function agentSource(key: string): Partial<AgentRow>", "function agentSource(key)"), context);
+  const selected = context.agentSource("agent");
+  expect(selected.workingSince).toBe(detail.workingSince);
+  expect(workingIndicator(selected, NOW)?.text).toBe("Waiting for your answer");
+  fleet.blockingDecisions = 0;
+  expect(workingIndicator(context.agentSource("agent"), NOW)?.label).toBe("Waiting on reviewer");
 });

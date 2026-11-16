@@ -163,7 +163,7 @@ export function findRow(key: string): AgentRow | null {
 export function agentSource(key: string): Partial<AgentRow> {
   const row = findRow(key);
   const detail = state.detail?.key === key ? state.detail.detail : null;
-  return { ...(detail ?? {}), ...(row && (!detail || Date.parse(row.updatedAt) >= Date.parse(detail.updatedAt)) ? row : {}) };
+  return { ...(row ?? {}), ...(detail ?? {}), ...(row && (!detail || Date.parse(row.updatedAt) >= Date.parse(detail.updatedAt)) ? row : {}) };
 }
 
 export function agentComposer(key: string): AgentComposer {
