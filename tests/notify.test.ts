@@ -47,7 +47,7 @@ describe("iTerm2 notifications", () => {
   });
 });
 
-import { buildNotifyCommand, deliverNotification, type NotificationDelivery } from "../src/notify";
+import { APP_BUNDLE_ID, appBundleFromExecutable, appNotificationUrl, buildNotifyCommand, plistDeclaresScheme, deliverNotification, type NotificationDelivery } from "../src/notify";
 import { loadConfig } from "../src/config";
 
 const prUrl = "https://github.com/owner/repo/pull/123";
@@ -57,7 +57,7 @@ function delivery(overrides: Partial<NotificationDelivery> = {}) {
   const warnings: string[] = [];
   let itermCalls = 0;
   const deps: NotificationDelivery = {
-    platform: "darwin", has: () => true,
+    platform: "darwin", has: () => true, appRunning: () => false,
     run: async (cmd, vars, options) => { calls.push({ cmd, vars, ...(options ? { options } : {}) }); return 0; },
     iterm: () => { itermCalls++; return true; }, warn: message => { warnings.push(message); },
     ...overrides,
@@ -121,5 +121,78 @@ describe("clickable PR notifications", () => {
     await deliverNotification("Agent idle", "body", undefined, notifyConfig, d.deps);
     expect(d.calls).toHaveLength(0);
     expect(d.itermCalls()).toBe(1);
+  });
+});
+
+describe("Agent Motel app notifications", () => {
+  const meta = { id: "m1", host: "gapserver", agent: "alpha", kind: "attention" as const };
+
+  test("hands the notification to the running app instead of any other notifier", async () => {
+    const d = delivery({ appRunning: () => true });
+    await deliverNotification("am: alpha", "needs you", prUrl, notifyConfig, d.deps, meta);
+    expect(d.calls).toHaveLength(1);
+    const cmd = d.calls[0]!.cmd;
+    expect(cmd.slice(0, 4)).toEqual(["open", "-g", "-b", APP_BUNDLE_ID]);
+    const handoff = new URL(cmd[4]!);
+    expect(handoff.protocol).toBe("agent-motel:");
+    expect(Object.fromEntries(handoff.searchParams)).toEqual({
+      v: "1", title: "am: alpha", message: "needs you", id: "m1", host: "gapserver", agent: "alpha", kind: "attention", url: prUrl,
+    });
+    expect(d.itermCalls()).toBe(0);
+  });
+
+  test("falls back to the standard notifiers when the app is not running", async () => {
+    const d = delivery({ appRunning: () => false });
+    await deliverNotification("Agent idle", "body", undefined, notifyConfig, d.deps, meta);
+    expect(d.calls).toHaveLength(0);
+    expect(d.itermCalls()).toBe(1);
+  });
+
+  test("falls back with a warning when the hand-off fails", async () => {
+    const d = delivery({ appRunning: () => true, has: () => false, iterm: () => false, run: async (cmd) => (cmd[0] === "open" ? 1 : 0) });
+    await deliverNotification("am: alpha", "body", undefined, notifyConfig, d.deps, meta);
+    expect(d.warnings[0]).toContain("Agent Motel app");
+  });
+
+  test("respects appNotifications: false and a custom notifyCommand", async () => {
+    const off = delivery({ appRunning: () => true });
+    await deliverNotification("am: alpha", "body", undefined, { ...notifyConfig, appNotifications: false }, off.deps, meta);
+    expect(off.calls.some(c => c.cmd[0] === "open")).toBe(false);
+    const custom = delivery({ appRunning: () => true });
+    await deliverNotification("am: alpha", "body", undefined, { ...notifyConfig, notifyCommand: "my-notifier" }, custom.deps, meta);
+    expect(custom.calls[0]!.cmd).toEqual(["sh", "-c", "my-notifier"]);
+  });
+
+  test("never checks for the app off macOS", async () => {
+    let checked = false;
+    const d = delivery({ platform: "linux", appRunning: () => (checked = true) });
+    await deliverNotification("am: alpha", "body", undefined, notifyConfig, d.deps, meta);
+    expect(checked).toBe(false);
+    expect(d.calls[0]!.cmd[0]).toBe("notify-send");
+  });
+
+  test("bounds the hand-off and drops an invalid PR URL", () => {
+    const url = new URL(appNotificationUrl("t".repeat(500), "m".repeat(5000), "javascript:alert(1)", {}));
+    expect(url.searchParams.get("title")).toHaveLength(200);
+    expect(url.searchParams.get("message")).toHaveLength(1000);
+    expect(url.searchParams.has("url")).toBe(false);
+    expect(url.searchParams.has("agent")).toBe(false);
+  });
+});
+
+describe("app hand-off readiness", () => {
+  test("finds the bundle from the running executable", () => {
+    expect(appBundleFromExecutable("/Users/me/Applications/Agent Motel.app/Contents/MacOS/AgentMotel\n")).toBe("/Users/me/Applications/Agent Motel.app");
+    expect(appBundleFromExecutable("AgentMotel")).toBeNull();
+    expect(appBundleFromExecutable("/usr/local/bin/AgentMotel")).toBeNull();
+  });
+
+  test("only a build that registers the scheme gets the hand-off", () => {
+    const withScheme = `<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>x</string>
+      <key>CFBundleURLSchemes</key>
+      <array><string>agent-motel</string></array></dict></array>`;
+    expect(plistDeclaresScheme(withScheme)).toBe(true);
+    expect(plistDeclaresScheme(`<key>CFBundleIdentifier</key><string>ca.alexgap.agent-motel</string>`)).toBe(false);
+    expect(plistDeclaresScheme(`<key>CFBundleURLSchemes</key><array><string>am-app</string></array><array><string>agent-motel</string></array>`)).toBe(false);
   });
 });

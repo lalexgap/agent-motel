@@ -1,6 +1,6 @@
 import { loadConfig, localHostIdentity } from "./config";
 import { isNotificationKind, notificationPrUrl, planRelayDisplay, readRelayCursors, writeRelayCursor, type NotificationBatch } from "./notifications";
-import { canShowNotifications, showNotification } from "./notify";
+import { canShowNotifications, showNotification, type NotificationMeta } from "./notify";
 import { sshAmAsync, type SshResult } from "./remote";
 
 // Relayed entries are shown, never re-journaled, so two hosts listing each
@@ -13,7 +13,7 @@ const DISABLED_RECHECK_MS = 60_000;
 
 export interface RelayDeps {
   run: (host: string, args: string[], timeoutMs: number) => Promise<SshResult>;
-  show: (title: string, message: string, url?: string) => void;
+  show: (title: string, message: string, url?: string, meta?: NotificationMeta) => void;
   cursor: (host: string) => string | undefined;
   saveCursor: (host: string, cursor: string) => void;
   now: () => number;
@@ -47,7 +47,7 @@ export async function relayOnce(host: string, deps: RelayDeps = defaultDeps, wai
     const url = notificationPrUrl(e.url);
     return [{ ...e, url }];
   });
-  for (const display of planRelayDisplay(host, entries, deps.now())) deps.show(display.title, display.message, display.url);
+  for (const display of planRelayDisplay(host, entries, deps.now())) deps.show(display.title, display.message, display.url, display.meta);
   if (batch.cursor !== after) deps.saveCursor(host, batch.cursor);
   return true;
 }
