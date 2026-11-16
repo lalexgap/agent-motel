@@ -33,6 +33,10 @@ export interface Config {
   // macOS: post through iTerm2 (OSC 9 to an attached tmux client in iTerm2)
   // when one exists, for the iTerm2 icon. Default on; false keeps osascript.
   itermNotifications?: boolean;
+  // macOS: when the Agent Motel app is running, hand notifications to it so
+  // they come from the app (grouped per agent, click opens the agent) instead
+  // of the notifiers below. Default on; false keeps the old notifiers.
+  appNotifications?: boolean;
   // Overrides the built-in notifiers on any platform: run via `sh -c` with
   // $AM_TITLE and $AM_MESSAGE set. On a headless server, point this at a
   // push service (e.g. curl -d "$AM_MESSAGE" ntfy.sh/<topic>).

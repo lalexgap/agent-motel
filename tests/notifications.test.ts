@@ -127,7 +127,7 @@ describe("planRelayDisplay", () => {
   test("shows recent entries individually, labelled with the host", () => {
     const recent = { ...entry("1", "2026-01-01T00:59:30Z", "alpha"), url: PR_URL };
     const shown = planRelayDisplay("gapserver", [recent], now);
-    expect(shown).toEqual([{ title: "am: alpha (gapserver)", message: "msg 1", url: PR_URL }]);
+    expect(shown).toEqual([{ title: "am: alpha (gapserver)", message: "msg 1", url: PR_URL, meta: { id: "1", host: recent.host, agent: "alpha", kind: recent.kind } }]);
   });
 
   test("collapses stale entries into one summary", () => {
@@ -138,9 +138,10 @@ describe("planRelayDisplay", () => {
     ], now);
     expect(shown).toEqual([
       { title: "am (gapserver)", message: "2 earlier notifications: alpha, beta" },
-      { title: "am: gamma (gapserver)", message: "msg 3" },
+      { title: "am: gamma (gapserver)", message: "msg 3", meta: expect.objectContaining({ id: "3", agent: "gamma" }) },
     ]);
     expect(shown[0]!.url).toBeUndefined();
+    expect(shown[0]!.meta).toBeUndefined();
   });
 
   test("caps a burst of recent entries", () => {

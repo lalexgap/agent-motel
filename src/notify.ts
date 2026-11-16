@@ -1,4 +1,4 @@
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, readFileSync, writeSync } from "node:fs";
 import { loadConfig, localHostIdentity, type Config } from "./config";
 import { tmux } from "./tmux";
 import { notificationPrUrl, recordNotification, type NotificationKind } from "./notifications";
@@ -12,11 +12,66 @@ function terminalNotifierValue(value: string): string {
 // headless server (linux). Resolution order:
 //   1. config.notifyCommand — any platform; run via sh with $AM_TITLE and
 //      $AM_MESSAGE (e.g. a curl to ntfy.sh for phone push from a server)
-//   2. macOS: clickable PRs use terminal-notifier; other alerts/failures use
-//      iTerm2 when attached, then osascript (Script Editor icon)
+//   2. macOS: the Agent Motel app when it is running (its own banners, click
+//      to open the agent); else clickable PRs use terminal-notifier, other
+//      alerts/failures iTerm2 when attached, then osascript (Script Editor icon)
 //   3. linux: notify-send when present
 //   4. silently nothing — a missing notifier must never matter
 // Every notification is also journaled so remote daemons can relay it.
+
+export const APP_BUNDLE_ID = "ca.alexgap.agent-motel";
+export const APP_PROCESS = "AgentMotel";
+const APP_TITLE_MAX = 200;
+const APP_MESSAGE_MAX = 1000;
+
+// Who and what a notification is about, for the app's grouping, preferences
+// and click-through. Absent for summaries and legacy callers.
+export interface NotificationMeta {
+  id?: string;
+  host?: string;
+  agent?: string;
+  kind?: NotificationKind;
+}
+
+// The app's hand-off URL. The app validates every field again; this only
+// bounds the size and drops what the app would reject anyway.
+export function appNotificationUrl(title: string, message: string, url: string | undefined, meta: NotificationMeta = {}): string {
+  const fields: [string, string][] = [["v", "1"], ["title", title.slice(0, APP_TITLE_MAX)], ["message", message.slice(0, APP_MESSAGE_MAX)]];
+  for (const key of ["id", "host", "agent", "kind"] as const) {
+    const value = meta[key];
+    if (value) fields.push([key, value]);
+  }
+  const target = notificationPrUrl(url);
+  if (target) fields.push(["url", target]);
+  // Percent-encoding, not URLSearchParams: Foundation reads "+" as a literal plus.
+  return `agent-motel://notify?${fields.map(([k, v]) => `${k}=${encodeURIComponent(v.toWellFormed())}`).join("&")}`;
+}
+
+// The running app's bundle, from its executable path (…/X.app/Contents/MacOS/AgentMotel).
+export function appBundleFromExecutable(path: string): string | null {
+  const match = /^(\/.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(path.trim());
+  return match ? match[1]! : null;
+}
+
+// True when its Info.plist registers the hand-off scheme. An older build
+// would take the URL and show nothing, so it must not get the hand-off.
+export function plistDeclaresScheme(plist: string): boolean {
+  return /<key>CFBundleURLSchemes<\/key>\s*<array>(?:(?!<\/array>)[^])*<string>agent-motel<\/string>/.test(plist);
+}
+
+function appHandoffReady(): boolean {
+  const pids = Bun.spawnSync(["pgrep", "-x", APP_PROCESS], { stderr: "ignore" });
+  if (pids.exitCode !== 0) return false;
+  for (const pid of pids.stdout.toString().split("\n").filter(Boolean)) {
+    const comm = Bun.spawnSync(["ps", "-o", "comm=", "-p", pid], { stderr: "ignore" });
+    const bundle = appBundleFromExecutable(comm.stdout.toString());
+    if (!bundle) continue;
+    try {
+      if (plistDeclaresScheme(readFileSync(`${bundle}/Contents/Info.plist`, "utf8"))) return true;
+    } catch { /* not readable: treat as an old build */ }
+  }
+  return false;
+}
 
 export interface NotifyEnv {
   platform: NodeJS.Platform;
@@ -43,12 +98,14 @@ export function buildNotifyCommand(
 
 export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind; url?: string }): void {
   const url = notificationPrUrl(meta.url);
+  const host = localHostIdentity();
+  let id: string | undefined;
   try {
-    recordNotification({ host: localHostIdentity(), agent: meta.agent, kind: meta.kind, title, message, ...(url ? { url } : {}) });
+    id = recordNotification({ host, agent: meta.agent, kind: meta.kind, title, message, ...(url ? { url } : {}) }).id;
   } catch {
     // the journal is best-effort, like the notifier
   }
-  showNotification(title, message, url);
+  showNotification(title, message, url, { id, host, agent: meta.agent, kind: meta.kind });
 }
 
 export function canShowNotifications(config: Config = loadConfig()): boolean {
@@ -113,14 +170,32 @@ function postViaIterm(title: string, message: string): boolean {
 
 export interface NotificationDelivery extends NotifyEnv {
   run: (cmd: string[], vars: Record<string, string>, options?: { keepAlive?: boolean }) => Promise<number>;
+  // Whether an Agent Motel app that accepts the hand-off is running on this Mac.
+  appRunning: () => boolean;
   iterm: (title: string, message: string) => boolean;
   warn: (message: string) => void;
 }
 
-export async function deliverNotification(title: string, message: string, url: string | undefined, config: Config, delivery: NotificationDelivery): Promise<void> {
+export async function deliverNotification(
+  title: string,
+  message: string,
+  url: string | undefined,
+  config: Config,
+  delivery: NotificationDelivery,
+  meta: NotificationMeta = {},
+): Promise<void> {
   const target = notificationPrUrl(url);
   const vars = { AM_TITLE: title, AM_MESSAGE: message, AM_URL: target ?? "" };
   if (!config.notifyCommand && delivery.platform === "darwin") {
+    // The running app shows it instead, so it's one banner from one sender;
+    // the app applies its own per-kind preferences and quiet hours.
+    if (config.appNotifications !== false && delivery.appRunning()) {
+      try {
+        const handoff = ["open", "-g", "-b", APP_BUNDLE_ID, appNotificationUrl(title, message, target, meta)];
+        if (await delivery.run(handoff, vars, { keepAlive: true }) === 0) return;
+      } catch { /* Fall back to the standard notifiers. */ }
+      delivery.warn("am: could not hand the notification to the Agent Motel app; using the standard notifier.");
+    }
     if (target && delivery.has("terminal-notifier")) {
       try {
         const cmd = buildNotifyCommand(title, message, config, delivery, target)!;
@@ -137,10 +212,11 @@ export async function deliverNotification(title: string, message: string, url: s
 }
 
 // Display without journaling, so relayed notifications don't bounce back.
-export function showNotification(title: string, message: string, url?: string): void {
+export function showNotification(title: string, message: string, url?: string, meta: NotificationMeta = {}): void {
   void deliverNotification(title, message, url, loadConfig(), {
     platform: process.platform,
     has: binary => !!Bun.which(binary),
+    appRunning: appHandoffReady,
     iterm: postViaIterm,
     warn: message => console.error(message),
     run: async (cmd, vars, options) => {
@@ -155,5 +231,5 @@ export function showNotification(title: string, message: string, url?: string): 
         if (killTimeout) clearTimeout(killTimeout);
       }
     },
-  }).catch(error => console.error(`am: notification display failed: ${error}`));
+  }, meta).catch(error => console.error(`am: notification display failed: ${error}`));
 }

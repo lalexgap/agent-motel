@@ -5,10 +5,10 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { baseDir } from "./paths";
 import { newMsgId } from "./msgid";
 
-export type NotificationKind = "attention" | "idle" | "share" | "pr";
+export type NotificationKind = "attention" | "idle" | "share" | "pr" | "decision";
 
 export function isNotificationKind(value: unknown): value is NotificationKind {
-  return value === "attention" || value === "idle" || value === "share" || value === "pr";
+  return value === "attention" || value === "idle" || value === "share" || value === "pr" || value === "decision";
 }
 
 export function notificationPrUrl(value: unknown): string | undefined {
@@ -161,6 +161,8 @@ export interface Display {
   title: string;
   message: string;
   url?: string;
+  // For the macOS app's grouping and click-through; absent on summaries.
+  meta?: { id: string; host: string; agent?: string; kind: NotificationKind };
 }
 
 // Stale or over-cap entries (the laptop slept) collapse into one summary.
@@ -185,6 +187,13 @@ export function planRelayDisplay(
     title: `${e.title} (${host})`,
     message: e.message,
     ...(notificationPrUrl(e.url) ? { url: e.url } : {}),
+    // Relayed JSON is untrusted; the app re-validates, this keeps the types honest.
+    meta: {
+      id: typeof e.id === "string" ? e.id : "",
+      host: typeof e.host === "string" ? e.host : host,
+      ...(typeof e.agent === "string" && e.agent ? { agent: e.agent } : {}),
+      kind: e.kind,
+    },
   });
   return displays;
 }
