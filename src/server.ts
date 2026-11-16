@@ -6,7 +6,7 @@ import { moveAgent } from "./commands/move";
 import { handoffAgent } from "./commands/handoff";
 import { agentWorkspaceDiff, agentWorkspace, validateRemoteWorkspace, cachedWorkspace, withPullRequests, type WorkspaceInfo } from "./workspace";
 import { createWebAuth, secureWebResponse } from "./webAuth";
-import { agentDecisions, decisionsPageLink, decisionsReport, validDecisionsAgent } from "./webDecisions";
+import { agentDecisions, applyDecisionAction, decisionText, decisionsPageLink, decisionsReport, validDecisionId, validDecisionsAgent, type DecisionAction } from "./webDecisions";
 import { createWebTerminal, terminalTarget, remoteTerminalTarget, type TerminalData } from "./webTerminal";
 import { startWebEvents } from "./webEvents";
 import { ensureConcierge, resolveConciergeHostAsync } from "./commands/concierge";
@@ -714,6 +714,34 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     if (body.agent !== undefined && !validDecisionsAgent(body.agent)) return json({ error: "invalid agent name", reason: "invalid_agent" }, 400);
     const result = await decisionsPageLink(body.agent as string | undefined);
     const response = result.ok ? json({ url: result.url }) : json({ error: result.error, reason: result.reason }, result.status);
+    response.headers.set("cache-control", "no-store");
+    return response;
+  }
+
+  // POST /api/decisions/answer — close one local decision through the store
+  // owner's locked CLI. The action is deliberately closed: no CLI verb or path
+  // comes from the request.
+  if (parts.length === 2 && parts[0] === "decisions" && parts[1] === "answer" && method === "POST") {
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    const fail = (error: string, status: number, reason: string) => {
+      const response = json({ error, reason }, status);
+      response.headers.set("cache-control", "no-store");
+      return response;
+    };
+    if (!body || typeof body !== "object" || Array.isArray(body)) return fail("JSON object required", 400, "invalid_body");
+    const allowed = new Set(["agent", "id", "action", "answer", "reason"]);
+    if (Object.keys(body).some((key) => !allowed.has(key))) return fail("Unexpected request field", 400, "invalid_body");
+    if (!validDecisionsAgent(body.agent)) return fail("Invalid agent name", 400, "invalid_agent");
+    if (!validDecisionId(body.id)) return fail("Invalid decision id", 400, "invalid_id");
+    if (body.action !== "answer" && body.action !== "withdraw") return fail("Invalid decision action", 400, "invalid_action");
+    if (loadConfig().decisions === false) return fail("Decisions are disabled on this server.", 403, "decisions_disabled");
+    const action = body.action as DecisionAction;
+    if (action === "answer" && body.reason !== undefined) return fail("Unexpected request field", 400, "invalid_body");
+    if (action === "withdraw" && body.answer !== undefined) return fail("Unexpected request field", 400, "invalid_body");
+    const value = decisionText(action === "answer" ? body.answer : body.reason, action === "answer");
+    if (value === null) return fail(action === "answer" ? "Answer must be nonempty and at most 4000 bytes" : "Reason must be at most 4000 bytes", 400, "invalid_text");
+    const result = await applyDecisionAction(body.agent, body.id, action, value);
+    const response = result.ok ? json(result) : json({ error: result.error, reason: result.reason }, result.status);
     response.headers.set("cache-control", "no-store");
     return response;
   }

@@ -19,6 +19,8 @@ class Node {
   hidden = false;
   checked = false;
   disabled = false;
+  selectionStart = 0;
+  selectionEnd = 0;
   onclick?: (event?: any) => any;
   oninput?: (event: any) => any;
   onchange?: (event: any) => any;
@@ -35,17 +37,27 @@ class Node {
   set innerHTML(_: string) { throw new Error("innerHTML must not be used"); }
   append(...nodes: (Node | string)[]) { this.children.push(...nodes); }
   replaceChildren(...nodes: (Node | string)[]) { this.children = nodes; }
-  setAttribute(name: string, value: string) { this.attrs.set(name, value); }
+  setAttribute(name: string, value: string) {
+    this.attrs.set(name, value);
+    if (name.startsWith("data-")) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
+  }
   removeAttribute(name: string) { this.attrs.delete(name); }
   all(): Node[] { return this.children.flatMap((child) => typeof child === "string" ? [] : [child, ...child.all()]); }
   querySelector(selector: string): Node | null {
     if (selector.startsWith("#")) return [this, ...this.all()].find((node) => node.id === selector.slice(1)) ?? null;
     return null;
   }
+  querySelectorAll(selector: string): Node[] {
+    if (selector === "[data-decision-focus]") return [this, ...this.all()].filter((node) => !!node.dataset.decisionFocus);
+    return [];
+  }
+  focus() { document.activeElement = this; }
+  setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
   find(className: string): Node[] { return [this, ...this.all()].filter((node) => node.className.split(/\s+/).includes(className)); }
 }
 
 const document = {
+  activeElement: null as Node | null,
   createElement: (tag: string) => new Node(tag),
   createTextNode: (text: string) => text,
 };
@@ -93,18 +105,22 @@ test("shared page is pure DOM and filters decisions without interpreting hostile
   expect(root.querySelector("#decisions-coverage")!.textContent).toContain("Connect to those servers directly");
 });
 
-test("the host can add answer actions and receives the clicked decision and agent", async () => {
+test("the host can add inline actions and receives the selected answer and scope", async () => {
   const root = setup();
   const answered: unknown[] = [];
   const actions = {
     refresh() {}, setQuery() {}, setBlockingOnly() {}, openAgent() {},
-    onAnswer: async (decision: unknown, agent: string) => { answered.push([decision, agent]); },
+    onSubmit: async (...args: unknown[]) => { answered.push(args); },
   };
-  page.render(root, { report, loading: false, error: null, query: "", blockingOnly: false }, actions);
+  page.render(root, { report, loading: false, error: null, query: "", blockingOnly: false, scope: "server-a" }, actions);
   const buttons = root.find("decision-answer");
   expect(buttons).toHaveLength(2);
+  const radios = root.all().filter((node) => node.type === "radio");
+  radios[3]!.checked = true;
+  radios[3]!.onchange!({});
+  expect(answered).toEqual([]);
   await buttons[1]!.onclick!();
-  expect(answered).toEqual([[report.groups[0]!.decisions[1], "api<img>"]]);
+  expect(answered).toEqual([[report.groups[0]!.decisions[1], "api<img>", "answer", "sqlite", "server-a"]]);
 });
 
 test("unchanged and partial-error results preserve DOM and filter focus controls", () => {
@@ -120,6 +136,27 @@ test("unchanged and partial-error results preserve DOM and filter focus controls
   page.render(root, { ...data, error: "offline" }, actions);
   expect(root.querySelector("#decisions-inbox-list")!.children[0]).toBe(renderedGroup);
   expect(root.querySelector("#decisions-status")!.textContent).toContain("Showing earlier results");
+});
+
+test("an unrelated decision refresh preserves the focused draft and selection", () => {
+  const root = setup();
+  const actions = { refresh() {}, setQuery() {}, setBlockingOnly() {}, openAgent() {}, onSubmit() {} };
+  const data = { report, loading: false, error: null, query: "", blockingOnly: false, scope: "server-a" };
+  page.render(root, data, actions);
+  const custom = root.find("decision-custom")[0]!;
+  custom.value = "draft answer";
+  custom.oninput!({});
+  custom.selectionStart = 2;
+  custom.selectionEnd = 7;
+  custom.focus();
+  const changed = structuredClone(report);
+  changed.groups.push({ agent: "other", decisions: [{ ...report.groups[0]!.decisions[1], id: "d-9" }] });
+  page.render(root, { ...data, report: changed }, actions);
+  const replacement = root.find("decision-custom")[0]!;
+  expect(replacement).not.toBe(custom);
+  expect(replacement.value).toBe("draft answer");
+  expect(document.activeElement).toBe(replacement);
+  expect([replacement.selectionStart, replacement.selectionEnd]).toEqual([2, 7]);
 });
 
 test("loading, error, empty, filtered-empty and disabled states are distinct", () => {

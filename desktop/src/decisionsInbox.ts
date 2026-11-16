@@ -69,4 +69,13 @@ export class DecisionsInbox {
       }
     }
   }
+
+  // A mutation must not let an older periodic read put the closed item back.
+  async refreshLatest(): Promise<void> {
+    if (this.loading) {
+      this.sequence++;
+      this.loading = false;
+    }
+    await this.refresh();
+  }
 }

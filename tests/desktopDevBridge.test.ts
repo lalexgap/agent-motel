@@ -227,6 +227,31 @@ describe("dev bridge decisions.open", () => {
   });
 });
 
+describe("dev bridge decisions.answer", () => {
+  test("validates values and posts only the fixed action body", async () => {
+    const seen: { input: string; init?: RequestInit }[] = [];
+    const bridge = new DevBridge({ version: "t", build: "t" }, (async (input: string, init?: RequestInit) => {
+      seen.push({ input, init }); return Response.json({ ok: true });
+    }) as typeof fetch);
+    const connection = bridge.addConnection("Motel", "https://am.example.test", "stored-token");
+    expect(await bridge.handle("decisions.answer", { connection: connection.id, agent: "api", id: "d-1", action: "answer", text: "  Ship it  " }))
+      .toEqual({ status: 200, body: { ok: true } });
+    expect(seen[0]!.input).toBe("https://am.example.test/api/decisions/answer");
+    expect(JSON.parse(String(seen[0]!.init!.body))).toEqual({ agent: "api", id: "d-1", action: "answer", answer: "Ship it" });
+    expect(new Headers(seen[0]!.init!.headers).get("authorization")).toBe("Bearer stored-token");
+    expect(await bridge.handle("decisions.answer", { connection: connection.id, agent: "api", id: "d-2", action: "withdraw", text: "" }))
+      .toEqual({ status: 200, body: { ok: true } });
+    expect(JSON.parse(String(seen[1]!.init!.body))).toEqual({ agent: "api", id: "d-2", action: "withdraw" });
+    for (const params of [
+      { connection: connection.id, agent: "host:api", id: "d-1", action: "answer", text: "x" },
+      { connection: connection.id, agent: "api", id: "1", action: "answer", text: "x" },
+      { connection: connection.id, agent: "api", id: "d-1", action: "resolve", text: "x" },
+      { connection: connection.id, agent: "api", id: "d-1", action: "answer", text: "" },
+    ]) await expect(bridge.handle("decisions.answer", params)).rejects.toThrow();
+    expect(seen).toHaveLength(2);
+  });
+});
+
 describe("dev bridge messages", () => {
   let fixture: FixtureServer;
   let bridge: DevBridge;
