@@ -1,10 +1,11 @@
 import { apiGet } from "./api";
+import { on } from "./bridge";
 import { registerCard } from "./chat";
 import { ownsDecisionCardMutation } from "./decisionCardState";
 import { submitDecision } from "./decisionSubmit";
 import { refreshConnection } from "./data";
 import type { InboxDecision } from "./decisionsInbox";
-import { showDecisionsForAgent } from "./decisionsView";
+import { isDecisionsChanged, showDecisionsForAgent } from "./decisionsView";
 import { h } from "./dom";
 import { parseAgentKey } from "./fleet";
 import { changed, findRow, state } from "./state";
@@ -128,6 +129,15 @@ function card(key: string): HTMLElement | null {
 
 export function initDecisionsCard(): void {
   registerCard(card);
+  on("events.message", (payload) => {
+    const parsed = selected && parseAgentKey(selected);
+    if (!parsed || payload.connection !== parsed.connection || !isDecisionsChanged(payload)) return;
+    sequence++;
+    loading = false;
+    signature = "";
+    fetchedAt = 0;
+    changed("agent");
+  });
   onMainViewChange(() => {
     if (selected && selected !== state.selected) {
       selected = null;

@@ -243,6 +243,8 @@ am plan api --json      # {name, path, exists, updatedAt, content}
 
 ### Open decisions
 
+The inbox and agent cards show blocking questions first, newest first within that priority. The daemon emits `decisions-changed` fleet SSE events when canonical store contents change, including answers recorded in chat. API answer/withdraw requests record the authenticated actor, timestamp, decision ID and outcome in the lifecycle audit; private answer text and bearer tokens are excluded. A shared bearer identifies the operator credential, not an individual person.
+
 Agents that use the decisions skill register the questions they are waiting on you for with its `decision` CLI, which keeps one store per agent at `${DECISIONS_HOME:-~/.local/state/agent-decisions}/<agent>.json`. am reads that store; it never keeps its own copy:
 
 - `am ls` adds `· 2 decisions` (or `· 1 decision (blocking)`) to the status column of any agent with open decisions, exited ones included, and `am ls --json` rows carry `openDecisions` and `blockingDecisions` (0 when none). Each host reads its own stores, so rows from a remote running an older am have neither.

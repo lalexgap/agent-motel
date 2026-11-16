@@ -4,8 +4,24 @@ import { ownsDecisionCardMutation } from "../desktop/src/decisionCardState";
 import { decisionsInboxFixture } from "../desktop/fixtures/decisionsInbox";
 import { FIXTURE_TOKEN, startFixtureServer } from "../desktop/fixtures/server";
 import { validateApiPath } from "../desktop/src/policy";
+import { aggregateDecisionCount, isDecisionsChanged } from "../desktop/src/decisionsView";
 
 describe("decisions inbox requests", () => {
+  test("recognizes only the decisions-changed fleet event", () => {
+    expect(isDecisionsChanged({ event: "fleet", data: { event: "decisions-changed" } })).toBe(true);
+    expect(isDecisionsChanged({ event: "fleet", data: { event: "status" } })).toBe(false);
+    expect(isDecisionsChanged({ event: "decisions-changed", data: {} })).toBe(false);
+    expect(isDecisionsChanged({ event: "fleet", data: null })).toBe(false);
+  });
+  test("aggregates selected inbox history with other servers' local rows only", () => {
+    const selected = decisionsInboxFixture();
+    const expectedSelected = selected.groups.reduce((total, group) => total + group.decisions.length, 0);
+    expect(aggregateDecisionCount([
+      ["selected", [{ openDecisions: 99 }, { host: "remote", openDecisions: 50 }]],
+      ["other", [{ openDecisions: 3 }, { host: "mirror", openDecisions: 8 }]],
+    ], "selected", selected)).toBe(expectedSelected + 3);
+    expect(aggregateDecisionCount([["only", [{ openDecisions: 100_001 }]]], null, null)).toBe(100_000);
+  });
   test("card mutations require the original target and generation", () => {
     expect(ownsDecisionCardMutation(2, 2, 4, 4, "local:a", "local:a", "local:a")).toBe(true);
     expect(ownsDecisionCardMutation(2, 3, 4, 4, "local:a", "local:b", "local:b")).toBe(false);

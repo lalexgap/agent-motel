@@ -9,7 +9,7 @@ import { initContextMenu } from "./contextMenu";
 import { onStreamMessage, onStreamState, poll, reloadAll, startConnection } from "./data";
 import { initOverview, tickOverview } from "./overview";
 import { initDecisionsCard } from "./decisionsCard";
-import { initDecisionsPage } from "./decisionsView";
+import { initDecisionsPage, showDecisions } from "./decisionsView";
 import { initPrs } from "./prsView";
 import { parseAgentKey } from "./fleet";
 import { initInspector } from "./inspector";
@@ -30,6 +30,7 @@ function onMenu(payload: BridgeEvents["menu.command"]): void {
   if (payload.command === "connections") openSetup();
   else if (payload.command === "find") focusFilter();
   else if (payload.command === "reload") void reloadAll();
+  else if (payload.command === "decisions") showDecisions();
   else if (payload.command === "chat" || payload.command === "terminal") showAgentView(payload.command);
 }
 

@@ -166,6 +166,7 @@ export interface BridgeMethods {
   // Fetches the secret capability URL natively and opens it without returning it to the page.
   "decisions.open": { params: AgentParams & { decisionId?: string }; result: Record<string, never> };
   "decisions.answer": { params: AgentParams & { id: string; action: DecisionAction; text: string }; result: ApiResponse };
+  "decisions.count": { params: { count: number }; result: Record<string, never> };
   // Mutations take values; the bridge builds each path and body itself.
   "messages.send": { params: { connection: string; agent: string; text: string; mode: SendMode }; result: ApiResponse };
   "messages.cancel": { params: { connection: string; agent: string; id: string }; result: ApiResponse };
@@ -228,7 +229,7 @@ export type StreamState = "connecting" | "open" | "closed";
 export interface BridgeEvents {
   "events.state": { connection: string; state: StreamState; error?: string };
   "events.message": { connection: string; event: string; data: unknown };
-  "menu.command": { command: "connections" | "find" | "reload" | "chat" | "terminal" };
+  "menu.command": { command: "connections" | "find" | "reload" | "chat" | "terminal" | "decisions" };
   // A native notification was clicked; `host` is empty when the sender gave none.
   "notification.open": { host: string; agent: string; kind?: string };
   // `data` is base64 of raw output bytes, at most 64 KiB decoded per event.

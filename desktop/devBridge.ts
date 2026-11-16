@@ -238,6 +238,12 @@ export class DevBridge {
         const body = action === "answer" ? { agent, id, action, answer: value } : { agent, id, action, ...(value ? { reason: value } : {}) };
         return this.mutate(conn, "POST", "/api/decisions/answer", JSON.stringify(body));
       }
+      case "decisions.count": {
+        const count = params.count;
+        if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > 100_000)
+          throw new Error("count must be an integer from 0 to 100000");
+        return {};
+      }
       case "messages.send": {
         const conn = this.connection(text(params.connection, "connection"));
         const agent = checked(checkAgent(params.agent));

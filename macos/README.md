@@ -52,7 +52,9 @@ Any local process, and a web page whose link you accept in the browser's "Open A
 
 ## Shortcuts
 
-**⌘,** connections, **⌘R** refresh (reloads the page if it never finished loading), **⌘F** find, **⌘1** show the agent's chat, **⌘2** show its terminal, **⌘0** show the window, **⌘W** close it, **⌘M** minimise. Closing the window or quitting leaves server agents running. Set `AM_DEBUG=1` in the environment to enable the Web Inspector. If the page fails to load, a Reload button appears.
+The menu bar item shows the open decision count. Click it to open Decisions; answers made in chat clear through the live event stream.
+
+**⌘,** connections, **⌘R** refresh (reloads the page if it never finished loading), **⌘F** find, **⌘1** show the agent's chat, **⌘2** show its terminal, **⌘3** open Decisions, **⌘0** show the window, **⌘W** close it, **⌘M** minimise. Closing the window or quitting leaves server agents running. Set `AM_DEBUG=1` in the environment to enable the Web Inspector. If the page fails to load, a Reload button appears.
 
 ## Smoke test
 

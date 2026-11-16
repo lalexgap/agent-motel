@@ -442,6 +442,16 @@ final class SmokeRunner {
         try expect(unknown == "unknown method: no.such.method", "unknown method message: \(unknown)")
         print("PASS app.info and unknown-method rejection")
 
+        var decisionsCount: Int?
+        delegate.bridge.decisionsCountChanged = { decisionsCount = $0 }
+        let countResult = try object(try await call("decisions.count", ["count": 7]), "decisions.count")
+        try expect(countResult.isEmpty && decisionsCount == 7, "decisions.count callback: \(String(describing: decisionsCount))")
+        for invalid in [-1, 100_001, 1.5, true] as [Any] {
+            let message = try await rejection("decisions.count", ["count": invalid])
+            try expect(message == "count must be an integer from 0 to 100000", "decisions.count accepted \(invalid): \(message)")
+        }
+        print("PASS decisions.count validates and invokes the native menu callback")
+
         let bad = try object(try await call("connections.test", ["url": server, "token": "wrong-\(UUID().uuidString)"]), "test")
         try expect(bad["ok"] as? Bool == false && bad["status"] as? Int == 401, "wrong token gave \(bad)")
         let good = try object(try await call("connections.test", ["url": server, "token": token]), "test")

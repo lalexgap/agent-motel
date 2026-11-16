@@ -1,4 +1,5 @@
 import { apiGet, ApiError } from "./api";
+import { call, on } from "./bridge";
 import { selectAgent } from "./chat";
 import { submitDecision } from "./decisionSubmit";
 import { refreshConnection } from "./data";
@@ -39,6 +40,7 @@ let blockingOnly = false;
 let notice = "";
 let actionSequence = 0;
 let seenAgents = 0;
+let publishedCount: number | null = null;
 const visible = () => !!page && !page.hidden && screen() === "fleet";
 const inbox = new DecisionsInbox(async (connection) => {
   try { return await apiGet(connection, "/api/decisions"); }
@@ -48,8 +50,43 @@ const inbox = new DecisionsInbox(async (connection) => {
   }
 }, render);
 
+export function isDecisionsChanged(payload: { event: string; data: unknown }): boolean {
+  return payload.event === "fleet" && !!payload.data && typeof payload.data === "object"
+    && (payload.data as { event?: unknown }).event === "decisions-changed";
+}
+
+export function aggregateDecisionCount(
+  connections: Iterable<readonly [string, readonly { host?: string; openDecisions?: number }[]]>,
+  selectedConnection: string | null,
+  report: DecisionsReport | null,
+): number {
+  let count = 0;
+  for (const [connection, rows] of connections) {
+    if (connection === selectedConnection && report) {
+      count += report.groups.reduce((total, group) => total + group.decisions.length, 0);
+      continue;
+    }
+    count += rows.filter((row) => !row.host).reduce((total, row) => {
+      const open = row.openDecisions;
+      return total + (Number.isInteger(open) && (open ?? 0) > 0 ? open! : 0);
+    }, 0);
+  }
+  return Math.min(count, 100_000);
+}
+
+function publishDecisionCount(): void {
+  const connections = [...state.conns].map(([id, connection]) => [id, connection.rows] as const);
+  const count = aggregateDecisionCount(connections, inbox.connection, inbox.report);
+  if (count === publishedCount) return;
+  publishedCount = count;
+  void call("decisions.count", { count }).catch(() => {
+    if (publishedCount === count) publishedCount = null;
+  });
+}
+
 function render(): void {
   if (!page) return;
+  publishDecisionCount();
   const reported = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0);
   const rows = state.conns.get(inbox.connection ?? "")?.rows ?? [];
   if (reported !== undefined) {
@@ -189,6 +226,9 @@ export function initDecisionsPage(): void {
       if (Date.now() - inbox.fetchedAt > 2000) void inbox.refresh();
     }
     render();
+  });
+  on("events.message", (payload) => {
+    if (isDecisionsChanged(payload) && payload.connection === inbox.connection) void inbox.refreshLatest();
   });
   setInterval(() => {
     if (!document.hidden && Date.now() - inbox.fetchedAt >= 15000) void inbox.refresh();

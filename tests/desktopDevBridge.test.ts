@@ -46,6 +46,12 @@ describe("dev bridge methods", () => {
     await expect(bridge.handle("nope.nope", {})).rejects.toThrow("unknown method: nope.nope");
   });
 
+  test("decisions.count is a validated no-op", async () => {
+    for (const count of [0, 1, 100_000]) expect(await bridge.handle("decisions.count", { count })).toEqual({});
+    for (const count of [-1, 100_001, 1.5, NaN, Infinity, "1", true, null, undefined])
+      await expect(bridge.handle("decisions.count", { count })).rejects.toThrow("count must be an integer from 0 to 100000");
+  });
+
   test("save validates and never returns the token", async () => {
     await expect(bridge.handle("connections.save", { name: "x", url: "http://192.168.1.5" })).rejects.toThrow(/Plain http/);
     await expect(bridge.handle("connections.save", { name: "x", url: fixture.url })).rejects.toThrow(/access token/);

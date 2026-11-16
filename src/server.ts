@@ -740,7 +740,18 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
     if (action === "withdraw" && body.answer !== undefined) return fail("Unexpected request field", 400, "invalid_body");
     const value = decisionText(action === "answer" ? body.answer : body.reason, action === "answer");
     if (value === null) return fail(action === "answer" ? "Answer must be nonempty and at most 4000 bytes" : "Reason must be at most 4000 bytes", 400, "invalid_text");
-    const result = await applyDecisionAction(body.agent, body.id, action, value);
+    const auditAction = `decision-${action}`;
+    const requestId = recordAudit(body.agent, auditAction, "requested", { reason: body.id });
+    let result;
+    try {
+      result = await applyDecisionAction(body.agent, body.id, action, value);
+      recordAudit(body.agent, auditAction, result.ok ? "completed" : result.status < 500 ? "refused" : "failed", {
+        requestId, reason: result.ok ? `${body.id}:${result.changed ? "changed" : "unchanged"}` : `${body.id}:${result.reason}`,
+      });
+    } catch (error) {
+      recordAudit(body.agent, auditAction, "failed", { requestId, reason: body.id });
+      throw error;
+    }
     const response = result.ok ? json(result) : json({ error: result.error, reason: result.reason }, result.status);
     response.headers.set("cache-control", "no-store");
     return response;
