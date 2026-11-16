@@ -14,7 +14,7 @@ function conciergeNavigation(savedMode?: string) {
   const element = (id: string): any => {
     if (!elements.has(id)) elements.set(id, {
       hidden: false, value: "", textContent: "", dataset: {}, attributes: {},
-      classList: { remove() {}, toggle() {} }, replaceChildren() {},
+      classList: { contains() { return false; }, remove() {}, toggle() {} }, replaceChildren() {},
       setAttribute(name: string, value: string) { this.attributes[name] = value; },
       focus() { this.focused = true; },
     });
@@ -24,9 +24,12 @@ function conciergeNavigation(savedMode?: string) {
   question.dataset.ask = "What needs attention?";
   const storage = new Map(savedMode ? [["am.detailMode", savedMode]] : []);
   const writes: string[] = [];
-  const state = { selected: null, rows: [], drafts: new Map(), detailVersion: 0, detailMode: "terminal" };
+  const state = {
+    selected: null, rows: [], drafts: new Map(), lastRead: new Map(),
+    detailVersion: 0, detailMode: "terminal",
+  };
   const vm = {
-    state, $: element,
+    state, $: element, modelDialog: null,
     document: {
       querySelector: () => element("page-heading"),
       querySelectorAll: (selector: string) => selector === "[data-ask]" ? [question] : [],
@@ -39,6 +42,7 @@ function conciergeNavigation(savedMode?: string) {
     key: (row: any) => row.name,
     el: () => ({}), notice() {}, renderFleet() {}, refreshWorkspace() {},
     connectEvents() {}, updateDetailMetaToggle() {}, renderAttachments() {},
+    closeModelDialog() {}, markDisplayedDetailSeen() {},
     refreshDetail: async () => {}, api: async () => ({ key: "concierge" }),
   };
   runInNewContext([
@@ -61,20 +65,25 @@ function dockLifecycle() {
   };
   const state = {
     authenticated: true, selected: null, conciergeKey: "concierge", detailVersion: 0, sessionEpoch: 0, dockRevision: 0,
-    rows: [{ name: "concierge" }], drafts: new Map(), draftRevisions: new Map(), sending: new Map(), attachments: new Map(),
+    rows: [{ name: "concierge" }], lastSeen: new Map(), lastRead: new Map(), drafts: new Map(),
+    draftRevisions: new Map(), sending: new Map(), attachments: new Map(),
   };
   let respond!: (transcript: any) => void;
   const vm: any = {
     state, $: element, key: (row: any) => row.name,
+    statusName: (status: string) => status,
     api: () => new Promise(resolve => { respond = resolve; }),
     showWorking() {}, pendingFor: () => [], preserveConversationScroll: () => () => {},
     chatTurn: (entry: any) => ({ index: entry.index }), el: (_tag: string, _class: string, text: string) => ({ text }),
     agentTerminal: { close() {} }, closeAgentMenu() {}, stopEvents() {}, clearConversationSearch() {},
+    closeModelDialog() {}, resetDecisions() {}, renderPrs() {}, updatePrsBadge() {},
+    renderDecisionInbox() {}, updateDecisionsNavBadge() {},
     pendingSent: new Map(), lastUserTexts: new Map(), handoverSource: null, manageAgent: null, diffRequest: null,
+    decisionsUnavailable: null, prsView: {}, decisionsInboxView: {},
   };
   runInNewContext([
     source.slice(source.indexOf("function lock("), source.indexOf("async function unlock(")),
-    source.slice(source.indexOf("function dockHistoryEntries("), source.indexOf('$("dock-form").onsubmit')),
+    source.slice(source.indexOf("function renderDockIdentity("), source.indexOf("const dockSubmitButton")),
   ].join("\n"), vm);
   return {
     state, view: element("dock-transcript"), lock: () => vm.lock(), refresh: () => vm.refreshDock(),
