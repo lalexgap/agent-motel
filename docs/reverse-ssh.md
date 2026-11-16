@@ -93,8 +93,10 @@ am send <laptop-agent> "hi"   # forwards live over the tunnel
 - The tunnel is plain ssh; `am` stays transport-ignorant. `am tunnel` only
   supervises the connection.
 
-Remote commands run through `bash -lc`. The fleet prepends `$HOME/.bun/bin`,
+Forwarded `am` commands run through `bash -lc`. Their wrapper prepends `$HOME/.bun/bin`,
 `/opt/homebrew/bin`, and `/usr/local/bin` after login profiles run so standard
 Bun and Homebrew installs resolve even when only zsh configures those paths.
 These directories take precedence; the remaining login PATH is preserved.
 For installations elsewhere, add the directory to `~/.bash_profile`.
+Raw SSH commands used for tmux previews and pane attachment bypass this wrapper;
+make `tmux` available on the remote SSH shell's PATH separately.
