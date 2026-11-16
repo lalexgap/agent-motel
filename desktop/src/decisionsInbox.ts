@@ -35,7 +35,7 @@ export class DecisionsInbox {
   fetchedAt = 0;
   private sequence = 0;
 
-  constructor(private fetchReport: (connection: string) => Promise<unknown>, private changed: () => void) {}
+  constructor(private fetchReport: (connection: string, latest: boolean) => Promise<unknown>, private changed: () => void) {}
 
   select(connection: string | null): void {
     if (connection === this.connection) return;
@@ -47,7 +47,7 @@ export class DecisionsInbox {
     this.fetchedAt = 0;
   }
 
-  async refresh(): Promise<void> {
+  async refresh(latest = false): Promise<void> {
     const connection = this.connection;
     if (!connection || this.loading) return;
     const sequence = ++this.sequence;
@@ -55,7 +55,7 @@ export class DecisionsInbox {
     this.fetchedAt = Date.now();
     this.changed();
     try {
-      const data = await this.fetchReport(connection);
+      const data = await this.fetchReport(connection, latest);
       if (sequence !== this.sequence) return;
       this.report = parseDecisionsReport(data);
       this.error = null;
@@ -76,6 +76,6 @@ export class DecisionsInbox {
       this.sequence++;
       this.loading = false;
     }
-    await this.refresh();
+    await this.refresh(true);
   }
 }

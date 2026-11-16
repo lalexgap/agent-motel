@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { DecisionsInbox, parseDecisionsReport } from "../desktop/src/decisionsInbox";
+import { DecisionReports } from "../desktop/src/decisionReports";
 import { ownsDecisionCardMutation } from "../desktop/src/decisionCardState";
 import { decisionsInboxFixture } from "../desktop/fixtures/decisionsInbox";
 import { FIXTURE_TOKEN, startFixtureServer } from "../desktop/fixtures/server";
 import { validateApiPath } from "../desktop/src/policy";
-import { aggregateDecisionCount, isDecisionsChanged } from "../desktop/src/decisionsView";
+import { decisionsScreen, isDecisionsChanged } from "../desktop/src/decisionsView";
 
 describe("decisions inbox requests", () => {
   test("recognizes only the decisions-changed fleet event", () => {
@@ -13,14 +14,47 @@ describe("decisions inbox requests", () => {
     expect(isDecisionsChanged({ event: "decisions-changed", data: {} })).toBe(false);
     expect(isDecisionsChanged({ event: "fleet", data: null })).toBe(false);
   });
-  test("aggregates selected inbox history with other servers' local rows only", () => {
-    const selected = decisionsInboxFixture();
-    const expectedSelected = selected.groups.reduce((total, group) => total + group.decisions.length, 0);
-    expect(aggregateDecisionCount([
-      ["selected", [{ openDecisions: 99 }, { host: "remote", openDecisions: 50 }]],
-      ["other", [{ openDecisions: 3 }, { host: "mirror", openDecisions: 8 }]],
-    ], "selected", selected)).toBe(expectedSelected + 3);
-    expect(aggregateDecisionCount([["only", [{ openDecisions: 100_001 }]]], null, null)).toBe(100_000);
+  test("opens decisions from setup only when a saved server exists", () => {
+    expect(decisionsScreen("setup", 1)).toBe("fleet");
+    expect(decisionsScreen("setup", 0)).toBe("setup");
+    expect(decisionsScreen("fleet", 0)).toBe("fleet");
+  });
+  test("counts canonical reports for every server before the inbox opens", async () => {
+    const archived = decisionsInboxFixture();
+    const other = { groups: [{ agent: "other", decisions: archived.groups[0]!.decisions.slice(0, 1) }], remoteHosts: ["mirror"], enabled: true, complete: true };
+    const reports = new DecisionReports(async (connection) => connection === "one" ? archived : other, () => {});
+    reports.setConnections(["one", "two"]);
+    await Promise.all([reports.refresh("one"), reports.refresh("two")]);
+    const expected = archived.groups.reduce((total, group) => total + group.decisions.length, 0) + 1;
+    expect(reports.count()).toBe(expected);
+  });
+  test("an event refresh supersedes an older count request without duplicating ordinary refreshes", async () => {
+    const pending: ((report: unknown) => void)[] = [];
+    let calls = 0;
+    const reports = new DecisionReports(() => new Promise((resolve) => { calls++; pending.push(resolve); }), () => {});
+    reports.setConnections(["one"]);
+    void reports.refresh("one");
+    expect(calls).toBe(1);
+    const latest = reports.refresh("one", true);
+    expect(calls).toBe(2);
+    pending[1]!({ groups: [], remoteHosts: [], enabled: true, complete: true });
+    await latest;
+    pending[0]!(decisionsInboxFixture());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reports.count()).toBe(0);
+  });
+  test("drops a removed server's late result even when the same id is saved again", async () => {
+    const pending: ((report: unknown) => void)[] = [];
+    const reports = new DecisionReports(() => new Promise((resolve) => pending.push(resolve)), () => {});
+    reports.setConnections(["one"]);
+    reports.setConnections([]);
+    reports.setConnections(["one"]);
+    pending[1]!({ groups: [{ agent: "current", decisions: decisionsInboxFixture().groups[0]!.decisions.slice(0, 1) }], remoteHosts: [], enabled: true, complete: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reports.count()).toBe(1);
+    pending[0]!(decisionsInboxFixture());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reports.count()).toBe(1);
   });
   test("card mutations require the original target and generation", () => {
     expect(ownsDecisionCardMutation(2, 2, 4, 4, "local:a", "local:a", "local:a")).toBe(true);

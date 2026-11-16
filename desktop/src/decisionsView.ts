@@ -2,6 +2,7 @@ import { apiGet, ApiError } from "./api";
 import { call, on } from "./bridge";
 import { selectAgent } from "./chat";
 import { submitDecision } from "./decisionSubmit";
+import { countOpenDecisions, DecisionReports } from "./decisionReports";
 import { refreshConnection } from "./data";
 import { DecisionsInbox, type DecisionsReport } from "./decisionsInbox";
 import { $, h } from "./dom";
@@ -9,7 +10,7 @@ import { agentKey } from "./fleet";
 import { registerShortcut } from "./keyboard";
 import { state, subscribe } from "./state";
 import { pickConnection } from "./usage";
-import { onMainViewChange, registerMainView, screen, showMainView } from "./views";
+import { onMainViewChange, registerMainView, screen, setScreen, showMainView, type Screen } from "./views";
 
 interface DecisionsActions {
   refresh(): void;
@@ -42,41 +43,26 @@ let actionSequence = 0;
 let seenAgents = 0;
 let publishedCount: number | null = null;
 const visible = () => !!page && !page.hidden && screen() === "fleet";
-const inbox = new DecisionsInbox(async (connection) => {
+const reports = new DecisionReports(async (connection) => {
   try { return await apiGet(connection, "/api/decisions"); }
   catch (error) {
     if (error instanceof ApiError && error.status === 404) throw new Error("Update this server to view its decisions inbox.");
     throw error;
   }
 }, render);
+const inbox = new DecisionsInbox((connection, latest) => reports.fetch(connection, latest), render);
 
 export function isDecisionsChanged(payload: { event: string; data: unknown }): boolean {
   return payload.event === "fleet" && !!payload.data && typeof payload.data === "object"
     && (payload.data as { event?: unknown }).event === "decisions-changed";
 }
 
-export function aggregateDecisionCount(
-  connections: Iterable<readonly [string, readonly { host?: string; openDecisions?: number }[]]>,
-  selectedConnection: string | null,
-  report: DecisionsReport | null,
-): number {
-  let count = 0;
-  for (const [connection, rows] of connections) {
-    if (connection === selectedConnection && report) {
-      count += report.groups.reduce((total, group) => total + group.decisions.length, 0);
-      continue;
-    }
-    count += rows.filter((row) => !row.host).reduce((total, row) => {
-      const open = row.openDecisions;
-      return total + (Number.isInteger(open) && (open ?? 0) > 0 ? open! : 0);
-    }, 0);
-  }
-  return Math.min(count, 100_000);
+export function decisionsScreen(current: Screen, connections: number): Screen {
+  return current === "setup" && connections === 0 ? "setup" : "fleet";
 }
 
 function publishDecisionCount(): void {
-  const connections = [...state.conns].map(([id, connection]) => [id, connection.rows] as const);
-  const count = aggregateDecisionCount(connections, inbox.connection, inbox.report);
+  const count = reports.count();
   if (count === publishedCount) return;
   publishedCount = count;
   void call("decisions.count", { count }).catch(() => {
@@ -87,8 +73,7 @@ function publishDecisionCount(): void {
 function render(): void {
   if (!page) return;
   publishDecisionCount();
-  const reported = inbox.report?.groups.reduce((total, group) => total + group.decisions.length, 0);
-  const rows = state.conns.get(inbox.connection ?? "")?.rows ?? [];
+  const reported = inbox.report ? countOpenDecisions(inbox.report) : undefined;
   if (reported !== undefined) {
     badge.textContent = String(reported);
     badge.hidden = !reported;
@@ -99,10 +84,9 @@ function render(): void {
     }, actions);
     return;
   }
-  const count = rows.filter((row) => !row.host).reduce((total, row) => total + (row.openDecisions ?? 0), 0);
-  badge.textContent = String(count);
-  badge.hidden = !count;
-  badge.title = `${count} open decisions on the selected server`;
+  badge.textContent = "0";
+  badge.hidden = true;
+  badge.title = "0 open decisions on the selected server";
   if (visible()) window.agentDecisionsPage.render(root, {
     report: inbox.report, loading: inbox.loading, error: inbox.error,
     query, blockingOnly, scope: inbox.connection ?? "", notice: notice || (inbox.report && !inbox.report.complete ? "Some local decision stores could not be read; refresh to try again." : !inbox.connection ? "Connect a server to view decisions." : ""),
@@ -172,7 +156,9 @@ export function showDecisionsForAgent(connection: string, name: string): void {
 }
 
 export function showDecisions(): void {
-  if (screen() !== "fleet") return;
+  const targetScreen = decisionsScreen(screen(), state.conns.size);
+  if (targetScreen !== "fleet") return;
+  if (screen() !== targetScreen) setScreen(targetScreen);
   const target = pickConnection([...state.conns.keys()], { openKey: state.selected, saved: inbox.connection });
   if (state.selected) selectAgent(null);
   showMainView("decisions");
@@ -216,6 +202,8 @@ export function initDecisionsPage(): void {
     else nav.removeAttribute("aria-current");
   });
   subscribe("fleet", () => {
+    reports.setConnections(state.conns.keys());
+    reports.refreshStale(Date.now(), 2000);
     if (!inbox.connection || !state.conns.has(inbox.connection)) {
       setConnection(pickConnection([...state.conns.keys()], {}));
     }
@@ -228,9 +216,13 @@ export function initDecisionsPage(): void {
     render();
   });
   on("events.message", (payload) => {
-    if (isDecisionsChanged(payload) && payload.connection === inbox.connection) void inbox.refreshLatest();
+    if (!isDecisionsChanged(payload)) return;
+    if (payload.connection === inbox.connection) void inbox.refreshLatest();
+    else void reports.refresh(payload.connection, true);
   });
   setInterval(() => {
-    if (!document.hidden && Date.now() - inbox.fetchedAt >= 15000) void inbox.refresh();
+    if (document.hidden) return;
+    reports.refreshStale(Date.now(), 15000);
+    if (Date.now() - inbox.fetchedAt >= 15000) void inbox.refresh();
   }, 3000);
 }
