@@ -1398,8 +1398,10 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .side-agent:hover { background: var(--surface); color: var(--fg); }
 .side-agent.selected { background: var(--surface-raised); color: var(--fg-strong); }
 .workspace, .side-heading { color: var(--fg-subtle); }
+/* Sixteen steps a turn still reads as spinning, at a fraction of the frames a
+   smooth spin costs: every frame recomposites the whole window. */
 @media (prefers-reduced-motion: no-preference) {
-  .dot.working, .dot.waiting { animation: working-spin 1.6s linear infinite; }
+  .dot.working, .dot.waiting { animation: working-spin 1.6s steps(16) infinite; }
 }
 @keyframes working-spin { to { transform: rotate(1turn); } }
 /* A running animation wakes the renderer every frame, so none run while the
