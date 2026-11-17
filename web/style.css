@@ -1063,6 +1063,7 @@ dialog p.muted {
 .cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger-text); background: var(--danger-soft); font-size: 13.5px; line-height: 1.45; }
 .cleanup-ack { display: flex; justify-content: flex-start; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
 .cleanup-ack input { margin-top: 2px; }
+.cleanup-ack input[type=checkbox] { width: auto; flex: 0 0 auto; }
 .danger-ack { color: var(--danger-text); font-weight: 600; }
 .cleanup-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .cleanup-actions .danger { background: var(--danger-text); color: white; border-color: var(--danger-text); }

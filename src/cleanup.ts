@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readlinkSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { stopAgent } from "./commands/rm";
 import { applyDevPoolCleanup, planDevPoolCleanup, type DevPoolCleanupPlan } from "./cleanupDevPool";
@@ -240,12 +240,36 @@ function gitSnapshot(path: string, excludes: string[] = []): unknown {
   const untracked = listed(command("ls-files", "--others", "--exclude-standard", "-z"));
   const ignored = listed(command("ls-files", "--others", "--ignored", "--exclude-standard", "-z"));
   const files = [untracked, ignored].flatMap((value) => Array.isArray(value) ? value : []);
+  let remainingBytes = 64 * 1024 * 1024;
+  const deadline = Date.now() + GIT_TIMEOUT_MS;
+  if (files.length > NESTED_LIMIT) throw new Error("too many loose files to verify cleanup safely");
   const metadata = files.sort().map((file) => {
+    let fd: number | undefined;
     try {
-      const stat = statSync(join(path, file));
-      return [file, stat.mode, stat.size, stat.mtimeMs];
+      if (Date.now() > deadline) throw new Error("loose file verification timed out");
+      const target = join(path, file);
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink()) return [file, stat.mode, readlinkSync(target)];
+      if (stat.isDirectory() && file.endsWith("/")) return [file, "nested repository"];
+      if (!stat.isFile()) throw new Error("loose file is not a regular file");
+      fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error("loose file changed while opening");
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(64 * 1024);
+      let count: number;
+      while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+        remainingBytes -= count;
+        if (remainingBytes < 0 || Date.now() > deadline) throw new Error("loose file verification limit exceeded");
+        hash.update(buffer.subarray(0, count));
+      }
+      const after = fstatSync(fd);
+      if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) throw new Error("loose file changed while reading");
+      return [file, stat.mode, stat.size, stat.mtimeMs, hash.digest("hex")];
     } catch {
-      return [file, "unreadable"];
+      throw new Error(`cannot verify loose file safely for cleanup: ${file}`);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
   });
   return {
@@ -336,6 +360,15 @@ function removeWorktree(agent: AgentState, force: boolean, confirmedGit: Confirm
     if (!confirmedGit || JSON.stringify(gitSnapshot(path, confirmedGit.excludes)) !== JSON.stringify(confirmedGit.snapshot)) {
       failure = "worktree changed after cleanup confirmation; worktree retained";
       return;
+    }
+    for (const file of confirmedGit.excludes) {
+      try {
+        lstatSync(join(path, file));
+        failure = "dev-pool database marker reappeared after cleanup; worktree retained";
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
     const result = Bun.spawnSync([
       "git", "-C", agent.repoRoot!, "worktree", "remove", ...(force ? ["--force"] : []), path,

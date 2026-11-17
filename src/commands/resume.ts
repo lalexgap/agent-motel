@@ -78,17 +78,19 @@ function restoreCleanedWorktree(agent: AgentState): void {
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
   }
-  if (existsSync(agent.worktreePath)) {
-    if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
-    return;
+  if (!existsSync(agent.worktreePath)) {
+    mkdirSync(dirname(agent.worktreePath), { recursive: true });
+    const result = Bun.spawnSync(["git", "-C", agent.repoRoot, "worktree", "add", agent.worktreePath, agent.worktreeBranch], {
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    if (result.exitCode !== 0) throw new Error(`could not recreate cleaned worktree: ${result.stderr.toString().trim()}`);
   }
-  mkdirSync(dirname(agent.worktreePath), { recursive: true });
-  const result = Bun.spawnSync(["git", "-C", agent.repoRoot, "worktree", "add", agent.worktreePath, agent.worktreeBranch], {
-    timeout: 60_000,
-    killSignal: "SIGKILL",
-  });
-  if (result.exitCode !== 0) throw new Error(`could not recreate cleaned worktree: ${result.stderr.toString().trim()}`);
-  if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
+  const restoredRel = relative(canonicalPath(agent.worktreePath), canonicalPath(agent.dir));
+  if (restoredRel === ".." || restoredRel.startsWith(`..${sep}`) || isAbsolute(restoredRel)) {
+    throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  mkdirSync(agent.dir, { recursive: true });
 }
 
 async function reviveAgentLocked(agent: AgentState, opts: ResumeOpts): Promise<void> {

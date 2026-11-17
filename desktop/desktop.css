@@ -2115,6 +2115,7 @@ button.am-rel-item:hover {
 .am-cleanup-dialog .cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger); background: var(--danger-soft); font-size: 13px; line-height: 1.45; }
 .am-cleanup-dialog .cleanup-ack { display: flex; justify-content: flex-start; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
 .am-cleanup-dialog .cleanup-ack input { margin-top: 2px; }
+.am-cleanup-dialog .cleanup-ack input[type=checkbox] { width: auto; flex: 0 0 auto; }
 .am-cleanup-dialog .danger-ack { color: var(--danger); font-weight: 600; }
 /* Open decisions the agent registered for the owner: a count, warning-toned when any blocks. */
 .am-decisions,

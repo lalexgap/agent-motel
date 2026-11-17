@@ -470,7 +470,7 @@ export function buildRoutes(fx: Fx): {
           name: row.name,
           createdAt: row.createdAt,
           token: "a".repeat(64),
-          remove: [`/Users/fixture/.agent-manager/worktrees/${row.name}`, `/Users/fixture/.agent-manager/private/${row.name}.sqlite`],
+          remove: [`/Users/fixture/.agent-manager/worktrees/${row.name}`, `private database producthunt_dev_${row.name.replace(/[^a-zA-Z0-9_]/g, "_")} (all data)`],
           keep: ["Conversation transcript", "Branch cleanup-ui"],
           blockers: [{ reason: "The fixture checkout has uncommitted changes", forceable: true }],
           branch: "cleanup-ui",

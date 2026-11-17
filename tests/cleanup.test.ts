@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupAgent, planCleanup } from "../src/cleanup";
@@ -7,6 +7,7 @@ import { reviveAgent } from "../src/commands/resume";
 import { codexDaemonSocket } from "../src/codexDaemon";
 import { startDaemonServer, type DaemonHandle } from "../src/daemon";
 import { ensurePlan } from "../src/plan";
+import { agentsDir } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
 
@@ -211,6 +212,51 @@ describe("cleanup", () => {
     expect(existsSync(worktree)).toBe(true);
   });
 
+  for (const mutation of ["same-metadata", "database-marker"]) {
+    test(`refuses forced deletion after dev-pool ${mutation} mutation`, async () => {
+      const oldPath = process.env.PATH;
+      const bin = join(home, "bin");
+      mkdirSync(bin);
+      try {
+        const agent = makeAgent();
+        writeFileSync(join(worktree, ".gitignore"), "tmp/\n");
+        git(worktree, "add", ".gitignore");
+        git(worktree, "commit", "-qm", "ignore dev-pool marker");
+        mkdirSync(join(worktree, "tmp"));
+        const marker = join(worktree, "tmp", ".dev-stack-db");
+        const database = join(home, "database-exists");
+        if (mutation === "database-marker") {
+          writeFileSync(join(worktree, ".env"), "DATABASE_URL=postgres://fixture@localhost/producthunt_development\n");
+          writeFileSync(marker, "DB_NAME=producthunt_dev_fixture\nDATABASE_URL=postgres://fixture@localhost/producthunt_dev_fixture\n");
+          writeFileSync(database, "1");
+        }
+        const loose = join(worktree, "loose.txt");
+        writeFileSync(loose, "before");
+        utimesSync(loose, 1700000000, 1700000000);
+        const stateDir = join(process.env.DEV_POOL_ROOT!, "state");
+        mkdirSync(stateDir, { recursive: true });
+        const slot = join(stateDir, "slot-1.json");
+        writeFileSync(slot, JSON.stringify({ lease: { worktree, agentName: agent.name } }));
+        const rewrite = mutation === "same-metadata"
+          ? `printf '%s' afterx > '${loose}'\ntouch -d @1700000000 '${loose}'`
+          : `/bin/rm '${database}' '${marker}'\nprintf '%s' unconfirmed > '${marker}'`;
+        writeFileSync(join(bin, "dev-pool"), `#!/bin/sh\nprintf '%s' '{"lease":null}' > '${slot}'\n${rewrite}\n`);
+        writeFileSync(join(bin, "psql"), `#!/bin/sh\nif [ -f '${database}' ]; then echo 1; fi\n`);
+        chmodSync(join(bin, "dev-pool"), 0o755);
+        chmodSync(join(bin, "psql"), 0o755);
+        process.env.PATH = `${bin}:${oldPath}`;
+        const preview = await planCleanup(agent);
+        await expect(cleanupAgent(agent, { force: true, expectedToken: preview.token })).rejects.toThrow(
+          mutation === "same-metadata" ? /worktree changed after cleanup confirmation/ : /database marker reappeared/,
+        );
+        expect(existsSync(worktree)).toBe(true);
+        expect(readFileSync(mutation === "same-metadata" ? loose : marker, "utf8")).toBe(mutation === "same-metadata" ? "afterx" : "unconfirmed");
+      } finally {
+        process.env.PATH = oldPath;
+      }
+    });
+  }
+
   test("refuses deletion when a Codex daemon turn cannot be stopped", async () => {
     const oldCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = join(home, "codex-home");
@@ -254,18 +300,20 @@ describe("cleanup", () => {
     }
   });
 
-  test("resume recreates a cleaned worktree when the agent directory is a checkout subdirectory", async () => {
+  for (const committed of [true, false]) test(`resume recreates a cleaned worktree with a ${committed ? "committed" : "untracked-only"} cwd`, async () => {
     const oldPath = process.env.PATH;
     let daemon: DaemonHandle | undefined;
     try {
       mkdirSync(join(worktree, "packages", "app"), { recursive: true });
       writeFileSync(join(worktree, "packages", "app", "README.md"), "fixture\n");
-      git(worktree, "add", ".");
-      git(worktree, "commit", "-qm", "add app directory");
+      if (committed) {
+        git(worktree, "add", ".");
+        git(worktree, "commit", "-qm", "add app directory");
+      }
       const agent = makeAgent("cleanup-subdir");
       agent.dir = join(worktree, "packages", "app");
       writeAgent(agent);
-      await cleanupAgent(agent);
+      await cleanupAgent(agent, { force: !committed });
       writeFileSync(join(home, "tmux"), `#!/bin/sh\ncase " $* " in *" has-session "*) exit 1;; *" new-session "*) exit 0;; esac\n`);
       writeFileSync(join(home, "claude"), "#!/bin/sh\nexit 0\n");
       chmodSync(join(home, "tmux"), 0o755);
@@ -280,5 +328,21 @@ describe("cleanup", () => {
       daemon?.stop();
       process.env.PATH = oldPath;
     }
+  });
+
+  test("resume rejects a restored cwd symlink escaping the checkout", async () => {
+    const external = join(home, "external");
+    mkdirSync(external);
+    symlinkSync(external, join(worktree, "escape"));
+    git(worktree, "add", "escape");
+    git(worktree, "commit", "-qm", "add symlink fixture");
+    const agent = makeAgent();
+    await cleanupAgent(agent);
+    const cleaned = readAgent(agent.name)!;
+    cleaned.dir = join(worktree, "escape", "new-cwd");
+    writeFileSync(join(agentsDir(), `${cleaned.name}.json`), JSON.stringify(cleaned));
+    await expect(reviveAgent(cleaned)).rejects.toThrow(/cannot be recreated safely/);
+    expect(existsSync(join(external, "new-cwd"))).toBe(false);
+    expect(readAgent(agent.name)?.cleanedAt).toBeDefined();
   });
 });
