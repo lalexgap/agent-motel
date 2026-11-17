@@ -1,3 +1,4 @@
+import * as cleanup from "../src/cleanup";
 import * as migration from "../src/commands/move";
 import * as handover from "../src/commands/handoff";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -776,6 +777,20 @@ describe("remote agents api (host:name)", () => {
   const post = (path: string, body?: unknown) =>
     fetch(url(path), auth({ method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
 
+  test("cleanup forwards exact identity, preview and confirmation token to its host", async () => {
+    const token = "b".repeat(64);
+    reply = () => ({ exitCode: 0, stdout: JSON.stringify({ name: "fixture", createdAt: "created", token, remove: [], keep: [], blockers: [], branch: null, prs: [] }) });
+    expect((await post("/api/agents/laptop:fixture/cleanup", { dryRun: true })).status).toBe(200);
+    expect(calls.at(-1)?.args).toEqual(["cleanup", "fixture", "--json", "--dry-run", "--local", "--exact"]);
+    expect((await post("/api/agents/laptop:fixture/cleanup", { createdAt: "created", token, force: true })).status).toBe(200);
+    expect(calls.at(-1)?.args).toEqual(["cleanup", "fixture", "--json", "--force", "--created-at", "created", "--plan-token", token, "--local", "--exact"]);
+    const count = calls.length;
+    expect((await post("/api/agents/laptop:fixture/cleanup", { createdAt: "created" })).status).toBe(400);
+    expect(calls).toHaveLength(count);
+    reply = () => ({ exitCode: 1, stderr: "unknown command cleanup" });
+    expect((await post("/api/agents/laptop:fixture/cleanup", { dryRun: true })).status).toBe(409);
+  });
+
   test("pasted images are pushed into the remote agent's inbox", async () => {
     const send = (key: string, body: string | Uint8Array, type = "image/png") =>
       fetch(url(`/api/agents/${key}/files`), auth({ method: "POST", body, headers: { "content-type": type } }));
@@ -1301,4 +1316,37 @@ test("conversation search requires authentication, validates query and federates
     expect(calls[0].args).toEqual(["__web-search", "--local", "--exact"]);
     expect(calls[0].opts.stdin).toBe(JSON.stringify("--needle"));
   } finally { setRemoteRunnersForTests(); }
+});
+
+
+describe("agent cleanup API", () => {
+  test("authenticates, requires exact identity and previews before applying", async () => {
+    seedAgent("cleanup-target");
+    const agent = readAgent("cleanup-target")!;
+    const plan = { token: "a".repeat(64), name: agent.name, createdAt: agent.createdAt, remove: ["worktree"], keep: ["branch"], blockers: [], branch: "cleanup", prs: [] };
+    const preview = spyOn(cleanup, "planCleanup").mockResolvedValue(plan as any);
+    const apply = spyOn(cleanup, "cleanupAgent").mockResolvedValue(plan as any);
+    const post = (name: string, body: unknown) => fetch(url(`/api/agents/${name}/cleanup`), auth({ method: "POST", body: JSON.stringify(body) }));
+    try {
+      expect((await fetch(url("/api/agents/cleanup-target/cleanup"), { method: "POST", body: "{}" })).status).toBe(401);
+      expect((await post("cleanup-targ", { dryRun: true })).status).toBe(404);
+      expect((await post(agent.name, { dryRun: "true" })).status).toBe(400);
+      expect((await post(agent.name, { dryRun: true, force: "false" })).status).toBe(400);
+      expect((await post(agent.name, { dryRun: true, path: "/tmp/other" })).status).toBe(400);
+      expect((await post(agent.name, {})).status).toBe(400);
+      expect((await post(agent.name, { createdAt: "old", token: plan.token })).status).toBe(409);
+      expect(preview).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      const response = await post(agent.name, { dryRun: true });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(plan);
+      expect(apply).not.toHaveBeenCalled();
+      expect((await post(agent.name, { createdAt: agent.createdAt, token: plan.token, force: true })).status).toBe(200);
+      expect(apply).toHaveBeenCalledWith(agent, { force: true, expectedCreatedAt: agent.createdAt, expectedToken: plan.token });
+      apply.mockRejectedValueOnce(new Error("owned by another agent"));
+      const blocked = await post(agent.name, { createdAt: agent.createdAt, token: plan.token });
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toEqual({ error: "owned by another agent" });
+    } finally { preview.mockRestore(); apply.mockRestore(); }
+  });
 });

@@ -1,3 +1,4 @@
+import { cleanupAgent, planCleanup } from "./cleanup";
 import { agentPanePrompt, answerPanePrompt, validPromptAnswer } from "./webPrompts";
 import { runConversationSearch, validSearchQuery, type ConversationMatches } from "./webSearch";
 import { recordAudit, withAuditContext } from "./audit";
@@ -393,6 +394,24 @@ async function interruptBody(req: Request): Promise<Response | string> {
   return typeof body?.text === "string" ? body.text.trim() : "";
 }
 
+async function cleanupBody(req: Request): Promise<{ dryRun: boolean; force: boolean; createdAt?: string; token?: string } | Response> {
+  const body = await req.json().catch(() => null) as {
+    dryRun?: unknown;
+    force?: unknown;
+    createdAt?: unknown;
+    token?: unknown;
+  } | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "JSON object required" }, 400);
+  if (Object.keys(body).some(key => !["dryRun", "force", "createdAt", "token"].includes(key))) return json({ error: "unsupported cleanup field" }, 400);
+  if ((body.dryRun !== undefined && typeof body.dryRun !== "boolean") || (body.force !== undefined && typeof body.force !== "boolean"))
+    return json({ error: "dryRun and force must be booleans" }, 400);
+  if (body.createdAt !== undefined && (typeof body.createdAt !== "string" || !body.createdAt.trim())) return json({ error: "createdAt must be a nonempty string" }, 400);
+  if (body.token !== undefined && (typeof body.token !== "string" || !/^[a-f0-9]{64}$/.test(body.token))) return json({ error: "invalid cleanup preview token" }, 400);
+  if (!body.dryRun && !body.token) return json({ error: "preview cleanup first; token required" }, 400);
+  if (!body.dryRun && !body.createdAt) return json({ error: "preview cleanup first; createdAt required" }, 400);
+  return { dryRun: body.dryRun ?? false, force: body.force ?? false, createdAt: body.createdAt, token: body.token };
+}
+
 async function handoffBody(req: Request): Promise<{ to: "claude" | "codex"; newName?: string; full: boolean } | Response> {
   const body = await req.json().catch(() => null) as { to?: unknown; newName?: unknown; full?: unknown } | null;
   if (body?.to === "antigravity") return json({ error: "antigravity handoff is unsupported" }, 400);
@@ -556,6 +575,14 @@ async function handleRemoteAgent(req: Request, host: string, name: string, rest:
       return json({ ok: true });
     }
 
+    if (route === "cleanup" && rest.length === 1 && method === "POST") {
+      const body = await cleanupBody(req);
+      if (body instanceof Response) return body;
+      return json(await runRemoteJson(host, ["cleanup", name, "--json",
+        ...(body.dryRun ? ["--dry-run"] : []), ...(body.force ? ["--force"] : []),
+        ...(body.createdAt ? ["--created-at", body.createdAt] : []), ...(body.token ? ["--plan-token", body.token] : [])], { timeoutMs: 120_000 }));
+    }
+
     if (route === "stop" && method === "POST") {
       const refused = await stopBody(req);
       if (refused) return refused;
@@ -636,7 +663,7 @@ let activeSearches = 0;
 
 // Only route templates enter the audit context; never request URLs or IDs.
 function auditRoute(req: Request, parts: string[]): string {
-  const actions = new Set(["stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage", "decisions"]);
+  const actions = new Set(["cleanup", "stop", "restart", "model", "resume", "move", "handoff", "rename", "messages", "permissions", "prompt", "interrupt", "files", "transcript", "workspace", "diff", "subagents", "usage", "decisions"]);
   const route = parts[0] === "agents" && parts.length >= 2
     ? `agents/:name${parts[2] && actions.has(parts[2]) ? `/${parts[2]}${parts.length > 3 ? "/:id" : ""}` : parts.length > 2 ? "/:action" : ""}`
     : "api";
@@ -1095,6 +1122,19 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       try {
         const result = await renameAgent(name, body.name);
         return json({ ok: true, oldName: result.oldName, name: result.newName, live: result.live });
+      } catch (error) {
+        return json({ error: (error as Error).message }, 409);
+      }
+    }
+
+    if (parts.length === 3 && parts[2] === "cleanup" && method === "POST") {
+      const body = await cleanupBody(req);
+      if (body instanceof Response) return body;
+      const agent = readAgent(name);
+      if (!agent) return json({ error: `no local agent "${name}"` }, 404);
+      if (body.createdAt && body.createdAt !== agent.createdAt) return json({ error: "agent changed; preview cleanup again" }, 409);
+      try {
+        return json(body.dryRun ? await planCleanup(agent) : await cleanupAgent(agent, { force: body.force, expectedCreatedAt: body.createdAt, expectedToken: body.token }));
       } catch (error) {
         return json({ error: (error as Error).message }, 409);
       }

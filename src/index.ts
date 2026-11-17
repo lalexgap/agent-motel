@@ -25,6 +25,7 @@ import { renameCommand } from "./commands/rename";
 import { outboxAckCommand, outboxClaimCommand, outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent, stopIfIdle } from "./commands/rm";
+import { cleanupCommand } from "./commands/cleanup";
 import { restoreCommand } from "./commands/restore";
 import { gcAutoCommand, gcCommand, gcRestoreCommand } from "./commands/gc";
 import { runAutoGc } from "./autoGc";
@@ -254,6 +255,10 @@ usage:
                               session; preserves its conversation, queue, inbox,
                               and previous-name alias
   am stop <name>              kill the session but keep state (resumable)
+  am cleanup <name> [--dry-run] [--force] [--json]
+                              stop the agent and remove its owned worktree and
+                              queued messages; keep state, branch, transcript,
+                              plan, decisions, handoffs, and registered PRs
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
                               (the state is snapshotted to trash first)
   am restore [<name>]         bring back a removed agent (resumes its
@@ -360,7 +365,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
-  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "cleanup", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
   "report", "comms", "wait", "peek", "subagents", "usage", "plan", "pr",
 ]);
 
@@ -914,6 +919,16 @@ async function main(): Promise<void> {
       console.log(`stopped "${agent.name}" — resume with \`am resume ${agent.name}\``);
       break;
     }
+    case "cleanup":
+      await cleanupCommand(requirePositional(args, 0, "agent name"), {
+        dryRun: !!args.flags["dry-run"],
+        force: !!args.flags.force,
+        json: !!args.flags.json,
+        exact: !!args.flags.exact,
+        createdAt: args.flags["created-at"] as string | undefined,
+        planToken: args.flags["plan-token"] as string | undefined,
+      });
+      break;
     case "rm":
       rmCommand(requirePositional(args, 0, "agent name"), { clean: !!args.flags.clean, auditAction: args.flags["for-move"] === true ? "move-cleanup" : "remove" });
       break;

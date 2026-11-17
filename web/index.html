@@ -364,6 +364,7 @@
                     <button id="change-model-agent">Change model…</button
                     ><button id="handover-agent">Handover…</button
                     ><button data-action="stop">Stop</button
+                    ><button data-action="cleanup">Clean up…</button
                     ><button data-action="delete" class="danger">Remove…</button>
                   </div>
                 </details>
@@ -487,6 +488,7 @@
       <button role="menuitem" data-agent-menu="interrupt">Interrupt</button>
       <button role="menuitem" data-agent-menu="stop">Stop</button>
       <div class="menu-separator" role="separator"></div>
+      <button role="menuitem" data-agent-menu="cleanup">Clean up…</button>
       <button role="menuitem" data-agent-menu="delete" class="danger">Remove…</button>
     </div>
     <dialog id="workspace-diff-dialog" aria-labelledby="workspace-diff-title">
@@ -521,6 +523,27 @@
         <p class="muted model-observed-note">The model shown in agent details comes from the last reply and can lag until the agent replies again.</p>
         <p id="model-error" class="error" role="alert"></p>
         <button class="primary" id="model-submit" type="submit" disabled>Restart with model</button>
+      </form>
+    </dialog>
+    <dialog id="cleanup-dialog" aria-labelledby="cleanup-dialog-title">
+      <form id="cleanup-form">
+        <div class="section-header">
+          <h2 id="cleanup-dialog-title">Clean up agent</h2>
+          <button type="button" id="close-cleanup" aria-label="Close cleanup preview">×</button>
+        </div>
+        <p id="cleanup-source"></p>
+        <p class="cleanup-warning">Cleanup permanently deletes the listed files. Resume can recreate the checkout, but deleted uncommitted changes and the private database are not restored.</p>
+        <div id="cleanup-loading" class="muted" role="status">Preparing cleanup preview…</div>
+        <div id="cleanup-preview" hidden>
+          <section><h3>Remove</h3><ul id="cleanup-remove"></ul></section>
+          <section><h3>Keep</h3><ul id="cleanup-keep"></ul></section>
+          <section><h3>Branch and pull requests</h3><p id="cleanup-git"></p></section>
+          <section id="cleanup-blockers-section" hidden><h3>Blockers</h3><ul id="cleanup-blockers"></ul></section>
+          <label class="cleanup-ack"><input id="cleanup-confirm" type="checkbox"> I reviewed this preview and understand these items will be permanently deleted.</label>
+          <label id="cleanup-force-field" class="cleanup-ack danger-ack" hidden><input id="cleanup-force" type="checkbox"> Force cleanup despite the blockers above.</label>
+        </div>
+        <p id="cleanup-error" class="error" role="alert"></p>
+        <div class="cleanup-actions"><button id="cleanup-cancel" type="button">Cancel</button><button class="danger" id="cleanup-submit" type="submit" disabled>Clean up</button></div>
       </form>
     </dialog>
     <dialog id="handover-dialog" aria-labelledby="handover-title">

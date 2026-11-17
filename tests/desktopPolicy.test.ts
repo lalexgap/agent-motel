@@ -273,6 +273,8 @@ const BASE: Record<string, Record<string, unknown>> = {
   "agents.restart": { agent: "harbor-lights" },
   "agents.interrupt": { agent: "harbor-lights" },
   "agents.stop": { agent: "harbor-lights" },
+  "agents.cleanupPreview": { agent: "harbor-lights" },
+  "agents.cleanup": { agent: "harbor-lights", createdAt: "2026-11-01T09:00:00.000Z", token: "a".repeat(64), force: false },
   "agents.remove": { agent: "harbor-lights" },
   "agents.rename": { agent: "harbor-lights", name: "harbor-beacon" },
   "agents.move": { agent: "harbor-lights", host: "annex" },
@@ -314,6 +316,30 @@ interface Rule {
 const same = (...inputs: unknown[]): [unknown, unknown][] => inputs.map((input) => [input, input]);
 
 const RULES: Rule[] = [
+  {
+    rule: "token (cleanup plan identity)",
+    method: "agents.cleanup",
+    param: "token",
+    accepted: same("a".repeat(64), "0123456789abcdef".repeat(4)),
+    rejected: ["", "a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), "a\nb", 7, null, undefined],
+    error: () => "invalid token",
+  },
+  {
+    rule: "createdAt (cleanup plan identity)",
+    method: "agents.cleanup",
+    param: "createdAt",
+    accepted: same("2026-11-01T09:00:00.000Z", "a".repeat(128), " x ", "x\ty"),
+    rejected: ["", "a".repeat(129), "a\nb", "a\u0000", 7, null, undefined],
+    error: () => "invalid createdAt",
+  },
+  {
+    rule: "force (cleanup)",
+    method: "agents.cleanup",
+    param: "force",
+    accepted: same(true, false),
+    rejected: ["true", 1, 0, "", null, undefined],
+    error: () => "invalid force",
+  },
   {
     rule: "name (rename target)",
     method: "agents.rename",
@@ -569,6 +595,8 @@ describe("action policy: requests", () => {
     ["agents.restart", { agent: "annex:kelp-forest" }, { method: "POST", path: "/api/agents/annex%3Akelp-forest/restart", body: {}, contentType: "application/json", timeoutMs: 60_000, precheckPath: "/api/agents/annex%3Akelp-forest" }],
     ["agents.interrupt", {}, { method: "POST", path: "/api/agents/harbor-lights/interrupt", body: {}, contentType: "application/json", timeoutMs: 60_000, precheckPath: "/api/agents/harbor-lights" }],
     ["agents.stop", {}, { method: "POST", path: "/api/agents/harbor-lights/stop", body: {}, contentType: "application/json", timeoutMs: 60_000, precheckPath: "/api/agents/harbor-lights" }],
+    ["agents.cleanupPreview", {}, { method: "POST", path: "/api/agents/harbor-lights/cleanup", body: { dryRun: true }, contentType: "application/json", timeoutMs: 60_000 }],
+    ["agents.cleanup", {}, { method: "POST", path: "/api/agents/harbor-lights/cleanup", body: { createdAt: "2026-11-01T09:00:00.000Z", token: "a".repeat(64), force: false }, contentType: "application/json", timeoutMs: 120_000, precheckPath: "/api/agents/harbor-lights" }],
     ["agents.remove", {}, { method: "DELETE", path: "/api/agents/harbor-lights", timeoutMs: 60_000, precheckPath: "/api/agents/harbor-lights" }],
     ["agents.rename", {}, { method: "POST", path: "/api/agents/harbor-lights/rename", body: { name: "harbor-beacon" }, contentType: "application/json", timeoutMs: 60_000 }],
     ["agents.move", { dir: "/srv/x" }, { method: "POST", path: "/api/agents/harbor-lights/move", body: { host: "annex", dir: "/srv/x" }, contentType: "application/json", timeoutMs: 600_000, precheckPath: "/api/agents/harbor-lights" }],
@@ -602,6 +630,8 @@ describe("action policy: requests", () => {
       "agents.create": ["name", "task", "provider", "dir", "remoteDir", "host", "model", "effort", "role"],
       "agents.handoff": ["to", "newName", "full"],
       "agents.model": ["model", "effort", "createdAt", "status"],
+      "agents.cleanupPreview": ["dryRun"],
+      "agents.cleanup": ["createdAt", "token", "force"],
       "agents.move": ["host", "dir"],
       "agents.interrupt": [],
     };

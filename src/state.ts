@@ -120,6 +120,7 @@ export interface AgentState {
   spawnedBy?: string;
   // Created with --no-plan: never give it a plan file, even on resume.
   noPlan?: boolean;
+  cleanedAt?: string;
   // Set at every main-session start (startup, resume, compaction, /clear): the
   // next prompt injects the plan head once, then clears it.
   planPending?: boolean;

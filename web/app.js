@@ -1396,6 +1396,7 @@ $("agent-context-menu").onclick = event => {
   if (!state.authenticated) return;
   if (action === "handover") openHandover(name);
   else if (["rename", "move"].includes(action)) openManageAgent(name, action);
+  else if (action === "cleanup") openCleanup(name);
   else if (["resume", "restart", "interrupt", "stop", "delete"].includes(action)) runAgentAction(name, action);
   else {
     if (action !== "open") setDetailMode(action);
@@ -1489,6 +1490,113 @@ function updateAgentActions(row, container = document.querySelector(".actions"),
     button.disabled = !!agentKey && pendingActions.has(agentKey);
   }
 }
+
+let cleanupContext = null;
+function cleanupItems(id, items, empty) {
+  const list = $(id);
+  list.replaceChildren(...(items.length ? items.map(item => el("li", "", item)) : [el("li", "muted", empty)]));
+}
+function cleanupCanApply() {
+  if (!cleanupContext?.plan || cleanupContext.busy) return false;
+  const blockers = cleanupContext.plan.blockers;
+  if (blockers.some(blocker => !blocker.forceable)) return false;
+  return $("cleanup-confirm").checked && (!blockers.length || $("cleanup-force").checked);
+}
+function renderCleanupPlan(plan) {
+  cleanupItems("cleanup-remove", plan.remove, "Nothing");
+  cleanupItems("cleanup-keep", plan.keep, "Nothing");
+  const branch = plan.branch ? `Branch: ${plan.branch}.` : "No branch is attached.";
+  const prs = plan.prs.length ? ` Pull requests: ${plan.prs.join(", ")}.` : " No pull requests are attached.";
+  $("cleanup-git").textContent = branch + prs;
+  cleanupItems("cleanup-blockers", plan.blockers.map(blocker => `${blocker.reason}${blocker.forceable ? " (can be forced)" : " (cannot be forced)"}`), "None");
+  $("cleanup-blockers-section").hidden = !plan.blockers.length;
+  const canForce = plan.blockers.length > 0 && plan.blockers.every(blocker => blocker.forceable);
+  $("cleanup-force-field").hidden = !canForce;
+  $("cleanup-preview").hidden = false;
+  $("cleanup-loading").hidden = true;
+  $("cleanup-submit").disabled = !cleanupCanApply();
+}
+function validCleanupPlan(value, name) {
+  const planName = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
+  const strings = list => Array.isArray(list) && list.every(item => typeof item === "string");
+  if (!value || typeof value !== "object" || value.name !== planName || typeof value.createdAt !== "string" || !/^[a-f0-9]{64}$/.test(value.token) ||
+      !strings(value.remove) || !strings(value.keep) || !strings(value.prs) ||
+      !(value.branch === null || typeof value.branch === "string") || !Array.isArray(value.blockers) ||
+      !value.blockers.every(blocker => blocker && typeof blocker.reason === "string" && typeof blocker.forceable === "boolean")) {
+    throw new Error("The server returned an invalid cleanup preview.");
+  }
+  return value;
+}
+async function openCleanup(name) {
+  if (!state.authenticated || pendingActions.has(name)) return;
+  const epoch = state.sessionEpoch;
+  cleanupContext = { name, epoch, plan: null, busy: true };
+  $("cleanup-source").textContent = name;
+  $("cleanup-error").textContent = "";
+  $("cleanup-loading").hidden = false;
+  $("cleanup-loading").textContent = "Preparing cleanup preview…";
+  $("cleanup-preview").hidden = true;
+  $("cleanup-confirm").checked = false;
+  $("cleanup-force").checked = false;
+  $("cleanup-submit").disabled = true;
+  $("cleanup-dialog").showModal();
+  try {
+    const plan = validCleanupPlan(await api("/api/agents/" + encodeURIComponent(name) + "/cleanup", { dryRun: true }), name);
+    if (!cleanupContext || cleanupContext.name !== name || epoch !== state.sessionEpoch || !state.authenticated) return;
+    cleanupContext.plan = plan;
+    cleanupContext.busy = false;
+    renderCleanupPlan(plan);
+  } catch (error) {
+    if (cleanupContext?.name === name && epoch === state.sessionEpoch) {
+      cleanupContext.busy = false;
+      $("cleanup-loading").hidden = true;
+      $("cleanup-error").textContent = error.message;
+    }
+  }
+}
+function closeCleanup() {
+  if (cleanupContext?.busy) return;
+  cleanupContext = null;
+  $("cleanup-dialog").close();
+}
+$("close-cleanup").onclick = closeCleanup;
+$("cleanup-cancel").onclick = closeCleanup;
+$("cleanup-dialog").onclose = () => { cleanupContext = null; };
+$("cleanup-dialog").oncancel = event => { if (cleanupContext?.busy) event.preventDefault(); };
+for (const id of ["cleanup-confirm", "cleanup-force"]) $(id).onchange = () => { $("cleanup-submit").disabled = !cleanupCanApply(); };
+$("cleanup-form").onsubmit = async event => {
+  event.preventDefault();
+  const context = cleanupContext;
+  if (!context?.plan || !cleanupCanApply() || context.epoch !== state.sessionEpoch || !state.authenticated) return;
+  const force = context.plan.blockers.length > 0;
+  context.busy = true;
+  $("cleanup-submit").disabled = true;
+  $("cleanup-cancel").disabled = true;
+  $("close-cleanup").disabled = true;
+  $("cleanup-submit").textContent = "Cleaning up…";
+  $("cleanup-error").textContent = "";
+  try {
+    await api("/api/agents/" + encodeURIComponent(context.name) + "/cleanup", { createdAt: context.plan.createdAt, token: context.plan.token, force });
+    if (!cleanupContext || context.epoch !== state.sessionEpoch || !state.authenticated) return;
+    cleanupContext.busy = false;
+    $("cleanup-dialog").close();
+    cleanupContext = null;
+    if (state.selected === context.name) showOverview();
+    await refresh();
+  } catch (error) {
+    if (cleanupContext === context && context.epoch === state.sessionEpoch) {
+      context.busy = false;
+      $("cleanup-error").textContent = error.message + " Preview again before retrying if the agent or connection changed.";
+    }
+  } finally {
+    if (cleanupContext === context) {
+      $("cleanup-cancel").disabled = false;
+      $("close-cleanup").disabled = false;
+      $("cleanup-submit").textContent = "Clean up";
+      $("cleanup-submit").disabled = !cleanupCanApply();
+    }
+  }
+};
 async function runAgentAction(name, action) {
   if (!state.authenticated || pendingActions.has(name)) return;
   const row = state.rows.find(row => key(row) === name);
@@ -1509,7 +1617,7 @@ async function runAgentAction(name, action) {
     if (state.selected === name) updateAgentActions(state.rows.find(row => key(row) === name));
   }
 }
-document.querySelectorAll("[data-action]").forEach(button => { button.onclick = () => runAgentAction(state.selected, button.dataset.action); });
+document.querySelectorAll("[data-action]").forEach(button => { button.onclick = () => button.dataset.action === "cleanup" ? openCleanup(state.selected) : runAgentAction(state.selected, button.dataset.action); });
 
 let modelDialog = null;
 function modelChoices(catalog, current) {

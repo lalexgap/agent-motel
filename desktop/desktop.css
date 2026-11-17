@@ -2105,6 +2105,18 @@ button.am-rel-item:hover {
 .am-action-dialog .am-dialog-actions .primary {
   width: auto;
 }
+
+.am-cleanup-dialog { width: min(620px, calc(100vw - 32px)); }
+.am-cleanup-dialog form { display: grid; gap: 12px; }
+.am-cleanup-dialog section { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.am-cleanup-dialog h3 { margin: 0 0 5px; font-size: 13px; }
+.am-cleanup-dialog ul { margin: 0; padding-left: 20px; max-height: 130px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.am-cleanup-dialog section p { margin: 0; line-height: 1.45; }
+.am-cleanup-dialog .cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger); background: var(--danger-soft); font-size: 13px; line-height: 1.45; }
+.am-cleanup-dialog .cleanup-ack { display: flex; justify-content: flex-start; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
+.am-cleanup-dialog .cleanup-ack input { margin-top: 2px; }
+.am-cleanup-dialog .cleanup-ack input[type=checkbox] { width: auto; flex: 0 0 auto; }
+.am-cleanup-dialog .danger-ack { color: var(--danger); font-weight: 600; }
 /* Open decisions the agent registered for the owner: a count, warning-toned when any blocks. */
 .am-decisions,
 .am-card-decisions {

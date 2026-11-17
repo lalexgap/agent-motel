@@ -1,7 +1,8 @@
 import { reserveAntigravityLaunch, stopAntigravity, failAntigravityLaunch } from "../antigravity";
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
@@ -21,6 +22,7 @@ import {
 import { agentEnv } from "./new";
 import { pretrustClaudeAgentDir } from "../claudeTrust";
 import { ensureAgentPlan } from "../plan";
+import { canonicalPath } from "../worktreeOwnership";
 
 export interface ResumeOpts {
   message?: string;
@@ -64,8 +66,37 @@ function requireCapturedConciergeSession(agent: AgentState): void {
 
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
-export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, internal: {lifecycleLocked?:boolean} = {}): Promise<void> {
-  if(agentProvider(agent)==="antigravity")return reviveAntigravity(agent,opts,!!internal.lifecycleLocked);
+function restoreCleanedWorktree(agent: AgentState): void {
+  if (!agent.cleanedAt) return;
+  if (!agent.worktreePath || !agent.worktreeBranch || !agent.repoRoot ||
+      !isAbsolute(agent.dir) || !isAbsolute(agent.worktreePath) || !isAbsolute(agent.repoRoot) || !existsSync(agent.repoRoot)) {
+    throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  let rel: string;
+  try { rel = relative(canonicalPath(agent.worktreePath), canonicalPath(agent.dir)); }
+  catch { throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`); }
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  if (!existsSync(agent.worktreePath)) {
+    mkdirSync(dirname(agent.worktreePath), { recursive: true });
+    const result = Bun.spawnSync(["git", "-C", agent.repoRoot, "worktree", "add", agent.worktreePath, agent.worktreeBranch], {
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    if (result.exitCode !== 0) throw new Error(`could not recreate cleaned worktree: ${result.stderr.toString().trim()}`);
+  }
+  const restoredRel = relative(canonicalPath(agent.worktreePath), canonicalPath(agent.dir));
+  if (restoredRel === ".." || restoredRel.startsWith(`..${sep}`) || isAbsolute(restoredRel)) {
+    throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  mkdirSync(agent.dir, { recursive: true });
+}
+
+async function reviveAgentLocked(agent: AgentState, opts: ResumeOpts): Promise<void> {
+  agent = currentLifecycleAgent(agent);
+  restoreCleanedWorktree(agent);
+  if(agentProvider(agent)==="antigravity")return reviveAntigravity(agent,opts,true);
   if (hasSession(agent.tmuxSession)) return; // already live
   requireCapturedConciergeSession(agent);
   if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
@@ -80,6 +111,7 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, inte
   // Queue before the session starts so the SessionStart hook finds it.
   if (plan.deferredMessage) queueDeferredMessage(agent.name, plan.deferredMessage);
 
+  delete agent.cleanedAt;
   updateAgentStatus(agent, "starting", "resuming");
   writeAgent(agent);
   newSession({
@@ -88,6 +120,17 @@ export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, inte
     env: agentEnv(agent.name, provider),
     command: scrubNestedSessionEnv(plan.command),
   });
+}
+
+export async function reviveAgent(agent: AgentState, opts: ResumeOpts = {}, internal: {lifecycleLocked?:boolean} = {}): Promise<void> {
+  const locked = !!internal.lifecycleLocked;
+  if (locked && !lifecycleLockHeld(agent.name)) throw new Error("resume requires the agent lifecycle lock");
+  if (!locked && !acquireLifecycleLock(agent.name)) throw new Error(`agent "${agent.name}" lifecycle is busy — retry resume`);
+  try {
+    await reviveAgentLocked(agent, opts);
+  } finally {
+    if (!locked) releaseLifecycleLock(agent.name);
+  }
 }
 
 // All revive callers (restore, picker and API included) share this barrier.
@@ -108,9 +151,11 @@ async function reviveAntigravity(expected:AgentState, opts:ResumeOpts, locked:bo
       stopAntigravity(agent);
       await ensureDaemon();
       if (plan.antigravityRunId) {
+        delete agent.cleanedAt;
         agent=reserveAntigravityLaunch(agent,plan);
         updateAgentStatus(agent,"starting","resuming reserved Antigravity generation");writeAgent(agent);
       } else {
+        delete agent.cleanedAt;
         delete agent.antigravityRunId;
         delete agent.antigravityRunPhase;
         delete agent.antigravityCleanupRunId;

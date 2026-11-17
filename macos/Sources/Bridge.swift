@@ -271,6 +271,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     /// status in the native sheet, and sends nothing unless the user accepts.
     private func action(_ method: String, _ params: [String: Any]) async throws -> Any {
         let connection = try savedConnection(params)
+        if method == "agents.cleanupPreview" {
+            return try await write(ActionPolicy.plan(method, base: connection.url, params: params).request, connection: connection)
+        }
+        if method == "agents.cleanup" { return try await cleanup(params, connection: connection) }
         let plan = try ActionPolicy.plan(method, base: connection.url, params: params)
         guard let confirm = plan.confirm else { return try await write(plan.request, connection: connection) }
         guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
@@ -296,6 +300,53 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         let recheck = try await api.get(confirm.precheck, token: currentToken)
         try ActionPolicy.checkPrecheck(recheck.status)
         return try await write(plan.request, connection: current)
+    }
+
+    /// Fetch confirmation copy natively; renderer-provided text is untrusted.
+    private func cleanup(_ params: [String: Any], connection: Connection) async throws -> Any {
+        let apply = try ActionPolicy.plan("agents.cleanup", base: connection.url, params: params)
+        let preview = try ActionPolicy.plan("agents.cleanupPreview", base: connection.url, params: params)
+        let agent = try MessagePolicy.agent(params["agent"])
+        let createdAt = try ActionPolicy.createdAt(params["createdAt"])
+        guard let suppliedToken = params["token"] as? String else { throw PolicyError("invalid token") }
+        let force = try ActionPolicy.boolean(params["force"], "invalid force")
+        guard let token = store.token(for: connection.id) else { throw PolicyError("This connection has no saved token") }
+        let revision = store.revision(for: connection.id)
+        let first = try await api.send(preview.request, token: token)
+        guard (200..<300).contains(first.status) else { return response(first) }
+        let plan = try CleanupPlan(body: first.body, expectedName: agent.split(separator: ":", omittingEmptySubsequences: false).last.map(String.init) ?? agent)
+        guard plan.createdAt == createdAt, plan.token == suppliedToken else { throw PolicyError("The cleanup preview is stale; preview again") }
+        if plan.blockers.contains(where: { !$0.forceable }) {
+            throw PolicyError("Cleanup is blocked by an item that cannot be forced")
+        }
+        if !plan.blockers.isEmpty && !force { throw PolicyError("Cleanup has blockers; explicitly choose force or cancel") }
+        if force && plan.blockers.isEmpty { throw PolicyError("Force is only allowed when the preview has forceable blockers") }
+
+        try confirmation.reserve()
+        let accepted: Bool
+        do {
+            accepted = try await confirmation.ask(plan.confirmation(target: agent, server: connection.name, url: connection.url, force: force))
+        } catch {
+            confirmation.release()
+            throw error
+        }
+        confirmation.release()
+        guard accepted else { return ["cancelled": true] }
+        guard let current = store.get(connection.id), current.url == connection.url,
+              store.revision(for: connection.id) == revision else {
+            throw PolicyError("The connection changed; preview again")
+        }
+        guard let currentToken = store.token(for: current.id) else { throw PolicyError("This connection has no saved token") }
+        let recheck = try await api.send(preview.request, token: currentToken)
+        guard (200..<300).contains(recheck.status) else { return response(recheck) }
+        let currentPlan = try CleanupPlan(body: recheck.body, expectedName: agent.split(separator: ":", omittingEmptySubsequences: false).last.map(String.init) ?? agent)
+        guard currentPlan == plan else { throw PolicyError("The cleanup preview is stale; preview again") }
+        return try await write(apply.request, connection: current)
+    }
+
+    private func response(_ response: APIClient.Response) -> [String: Any] {
+        let body = (try? JSONSerialization.jsonObject(with: response.body, options: [.fragmentsAllowed])) ?? NSNull()
+        return ["status": response.status, "body": body]
     }
 
     private func makeStream(_ id: String) -> EventStream {

@@ -462,6 +462,27 @@ export function buildRoutes(fx: Fx): {
       }),
     },
     {
+      method: "POST", path: "/api/agents/:key/cleanup", handler: withTarget((ctx, target) => {
+        const row = agentOf(target);
+        if (row instanceof Response) return row;
+        if (!isObject(ctx.body)) return json({ error: "invalid cleanup request" }, 400);
+        const plan = {
+          name: row.name,
+          createdAt: row.createdAt,
+          token: "a".repeat(64),
+          remove: [`/Users/fixture/.agent-manager/worktrees/${row.name}`, `private database producthunt_dev_${row.name.replace(/[^a-zA-Z0-9_]/g, "_")} (all data)`],
+          keep: ["Conversation transcript", "Branch cleanup-ui"],
+          blockers: [{ reason: "The fixture checkout has uncommitted changes", forceable: true }],
+          branch: "cleanup-ui",
+          prs: ["#42"],
+        };
+        if (ctx.body.dryRun === true && Object.keys(ctx.body).length === 1) return json(plan);
+        if (ctx.body.createdAt !== plan.createdAt || ctx.body.token !== plan.token) return json({ error: "cleanup preview is stale" }, 409);
+        if (ctx.body.force !== true) return json({ error: "cleanup has forceable blockers" }, 409);
+        return json({ ok: true });
+      }),
+    },
+    {
       method: "DELETE", path: "/api/agents/:key", handler: withTarget((_ctx, target) => {
         const row = agentOf(target);
         if (row instanceof Response) return row;

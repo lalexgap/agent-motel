@@ -131,18 +131,18 @@ describe("parity with the browser UI", () => {
 
 describe("what the menu and header offer", () => {
   const row = (over: Partial<ActionSubject>): ActionSubject => ({ name: "keeper-log", status: "idle", provider: "claude", ...over });
-  const offered = (subject: ActionSubject) => ["handover", "rename", "move", "resume", "restart", "interrupt", "stop", "delete"].filter((action) => actionAvailable(subject, action));
+  const offered = (subject: ActionSubject) => ["handover", "rename", "move", "resume", "restart", "interrupt", "stop", "cleanup", "delete"].filter((action) => actionAvailable(subject, action));
 
   test("by status, provider and identity", () => {
-    expect(offered(row({ status: "working" }))).toEqual(["handover", "rename", "move", "restart", "interrupt", "stop", "delete"]);
-    expect(offered(row({ status: "idle" }))).toEqual(["handover", "rename", "move", "restart", "stop", "delete"]);
-    expect(offered(row({ status: "exited" }))).toEqual(["handover", "rename", "move", "resume", "delete"]);
-    expect(offered(row({ status: "dead" }))).toEqual(["handover", "rename", "move", "resume", "delete"]);
+    expect(offered(row({ status: "working" }))).toEqual(["handover", "rename", "move", "restart", "interrupt", "stop", "cleanup", "delete"]);
+    expect(offered(row({ status: "idle" }))).toEqual(["handover", "rename", "move", "restart", "stop", "cleanup", "delete"]);
+    expect(offered(row({ status: "exited" }))).toEqual(["handover", "rename", "move", "resume", "cleanup", "delete"]);
+    expect(offered(row({ status: "dead" }))).toEqual(["handover", "rename", "move", "resume", "cleanup", "delete"]);
     // Antigravity rows have no capabilities, so the provider fallback hides the native controls.
-    expect(offered(row({ status: "working", provider: "antigravity" }))).toEqual(["restart", "stop", "delete"]);
+    expect(offered(row({ status: "working", provider: "antigravity" }))).toEqual(["restart", "stop", "cleanup", "delete"]);
     // The concierge can be moved and removed, as in the browser UI.
-    expect(offered(row({ name: "concierge", role: "concierge" }))).toEqual(["move", "restart", "stop", "delete"]);
-    expect(offered(row({ name: "front-desk", role: { name: "concierge" } }))).toEqual(["rename", "move", "restart", "stop", "delete"]);
+    expect(offered(row({ name: "concierge", role: "concierge" }))).toEqual(["move", "restart", "stop", "cleanup", "delete"]);
+    expect(offered(row({ name: "front-desk", role: { name: "concierge" } }))).toEqual(["rename", "move", "restart", "stop", "cleanup", "delete"]);
   });
 
   test("a detail's capabilities can take actions away", () => {

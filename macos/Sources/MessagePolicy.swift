@@ -259,12 +259,91 @@ struct ActionPlan {
     let confirm: Confirm?
 }
 
+struct CleanupPlan: Equatable {
+    private static let tokenCharacters = Set("0123456789abcdef".unicodeScalars)
+    struct Blocker: Equatable {
+        let reason: String
+        let forceable: Bool
+    }
+
+    let name: String
+    let createdAt: String
+    let token: String
+    let remove: [String]
+    let keep: [String]
+    let blockers: [Blocker]
+    let branch: String?
+    let prs: [String]
+
+    init(body: Data, expectedName: String) throws {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let name = json["name"] as? String, name == expectedName,
+              let createdAt = json["createdAt"] as? String,
+              ActionPolicy.isText(createdAt, maxBytes: 128, singleLine: true), !createdAt.isEmpty,
+              let token = json["token"] as? String, token.unicodeScalars.count == 64,
+              token.unicodeScalars.allSatisfy(Self.tokenCharacters.contains),
+              let remove = Self.strings(json["remove"]), let keep = Self.strings(json["keep"]),
+              let prs = Self.strings(json["prs"]),
+              (json["branch"] is NSNull || (json["branch"] as? String).map { ActionPolicy.isText($0, maxBytes: 4096, singleLine: true) } == true),
+              let rawBlockers = json["blockers"] as? [[String: Any]], rawBlockers.count <= 500 else {
+            throw PolicyError("The server returned an invalid cleanup preview")
+        }
+        var blockers: [Blocker] = []
+        for raw in rawBlockers {
+            guard let reason = raw["reason"] as? String,
+                  ActionPolicy.isText(reason, maxBytes: 4096, singleLine: true),
+                  let forceable = raw["forceable"] as? NSNumber,
+                  CFGetTypeID(forceable) == CFBooleanGetTypeID() else {
+                throw PolicyError("The server returned an invalid cleanup preview")
+            }
+            blockers.append(Blocker(reason: reason, forceable: forceable.boolValue))
+        }
+        self.name = name
+        self.createdAt = createdAt
+        self.token = token
+        self.remove = remove
+        self.keep = keep
+        self.blockers = blockers
+        self.branch = json["branch"] as? String
+        self.prs = prs
+    }
+
+    private static func strings(_ value: Any?) -> [String]? {
+        guard let values = value as? [String], values.count <= 500,
+              values.allSatisfy({ ActionPolicy.isText($0, maxBytes: 4096, singleLine: true) }) else { return nil }
+        return values
+    }
+
+    func confirmation(target: String? = nil, server: String, url: String, force: Bool) -> ConfirmationText {
+        let clean = ActionPolicy.displayText
+        let bullets: ([String], String) -> String = { values, empty in
+            values.isEmpty ? "• \(empty)" : values.map { "• \(clean($0))" }.joined(separator: "\n")
+        }
+        var sections = [
+            "REMOVE\n\(bullets(remove, "Nothing"))",
+            "KEEP\n\(bullets(keep, "Nothing"))",
+            "BRANCH\n• \(branch.map(clean) ?? "No branch attached")",
+            "PULL REQUESTS\n\(bullets(prs, "None attached"))",
+        ]
+        if !blockers.isEmpty {
+            sections.append("BLOCKERS\n" + blockers.map {
+                "• \(clean($0.reason)) (\($0.forceable ? "can be forced" : "cannot be forced"))"
+            }.joined(separator: "\n"))
+        }
+        sections.append("Cleanup permanently deletes the items under REMOVE. Resume can recreate the checkout, but deleted uncommitted changes and the private database are not restored.")
+        sections.append("Server: \(clean(server)) (\(ActionPolicy.host(fromURL: url)))")
+        return ConfirmationText(title: "\(force ? "Force clean up" : "Clean up") \(clean(target ?? name))?",
+                                message: sections.joined(separator: "\n\n"),
+                                button: force ? "Force clean up" : "Clean up", destructive: true)
+    }
+}
+
 /// Validation and request building for every other write. Each method takes values; the path,
 /// method, body keys and timeout are fixed here. Validation order: agent, then the remaining
 /// params in the order the contract lists them (the connection is checked by the bridge first).
 enum ActionPolicy {
     static let methods: Set<String> = [
-        "agents.resume", "agents.restart", "agents.interrupt", "agents.stop", "agents.remove", "agents.rename",
+        "agents.resume", "agents.restart", "agents.interrupt", "agents.stop", "agents.cleanupPreview", "agents.cleanup", "agents.remove", "agents.rename",
         "agents.move", "agents.model", "agents.handoff", "agents.create", "permissions.answer", "prompt.answer",
         "files.upload", "concierge.ensure", "search.query",
     ]
@@ -321,6 +400,16 @@ enum ActionPolicy {
             let agent = try MessagePolicy.agent(params["agent"])
             return ActionPlan(request: try post(agent, "stop", timeout: 60), confirm: try confirm(
                 agent, "Stop \(agent)?", "This interrupts its current work and ends its session. It can be resumed later.", "Stop"))
+        case "agents.cleanupPreview":
+            let agent = try MessagePolicy.agent(params["agent"])
+            return ActionPlan(request: try post(agent, "cleanup", ["dryRun": true], timeout: 60), confirm: nil)
+        case "agents.cleanup":
+            let agent = try MessagePolicy.agent(params["agent"])
+            let createdAt = try Self.createdAt(params["createdAt"])
+            guard let token = params["token"] as? String, token.unicodeScalars.count == 64,
+                  token.unicodeScalars.allSatisfy(hexCharacters.contains) else { throw PolicyError("invalid token") }
+            let force = try boolean(params["force"], "invalid force")
+            return ActionPlan(request: try post(agent, "cleanup", ["createdAt": createdAt, "token": token, "force": force], timeout: 120), confirm: nil)
         case "agents.remove":
             let agent = try MessagePolicy.agent(params["agent"])
             let request = WriteRequest(method: .delete, url: try agentURL(agent), body: nil, contentType: nil, timeout: 60)

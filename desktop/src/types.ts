@@ -174,6 +174,17 @@ export type RunningStatus = "starting" | "idle" | "waiting" | "working" | "needs
 export type ImageType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 export type DecisionAction = "answer" | "withdraw";
 
+export interface CleanupPlan {
+  name: string;
+  createdAt: string;
+  token: string;
+  remove: string[];
+  keep: string[];
+  blockers: { reason: string; forceable: boolean }[];
+  branch: string | null;
+  prs: string[];
+}
+
 type AgentParams = { connection: string; agent: string };
 
 export interface BridgeMethods {
@@ -195,6 +206,8 @@ export interface BridgeMethods {
   "agents.restart": { params: AgentParams; result: ConfirmedResult };
   "agents.interrupt": { params: AgentParams; result: ConfirmedResult };
   "agents.stop": { params: AgentParams; result: ConfirmedResult };
+  "agents.cleanupPreview": { params: AgentParams; result: ApiResponse };
+  "agents.cleanup": { params: AgentParams & { createdAt: string; token: string; force: boolean }; result: ConfirmedResult };
   "agents.remove": { params: AgentParams; result: ConfirmedResult };
   "agents.rename": { params: AgentParams & { name: string }; result: ApiResponse };
   "agents.move": { params: AgentParams & { host: string; dir?: string }; result: ConfirmedResult };
