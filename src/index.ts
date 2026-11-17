@@ -80,7 +80,7 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg | -m - | --file path] [--dir path] [--claude|--codex|--antigravity]
+  am new <name> [-m msg | -m - | --file path] [--dir path] [--claude|--codex|--antigravity|--amp]
                 [--remote | --no-remote] [--model <m>] [--effort <level>]
                 [--role <name>]
                               spawn a new agent in tmux and jump into it
@@ -107,6 +107,8 @@ usage:
                               exact model pin defaults to gemini-4-argon-high;
                               no permission bypass/approval relay or --now;
                               see docs/antigravity.md for limits and live checks
+                              Amp: --model/--effort pick an Amp mode; no --now,
+                              transcript or switch-model; see docs/amp.md
   am run <name> -m msg [--dir path] [--worktree b [--base ref] | --in-place] [--claude|--codex|--antigravity]
                        [--role name] [--timeout secs] [--rm] [--json] [--no-plan]
                               spawn a real agent, wait for its turn, print its
@@ -162,7 +164,7 @@ usage:
                               Created on first use, revived automatically
                               (press c in the hub; --no-jump queues the
                               question and stays)
-  am models [--json] [--claude|--codex|--antigravity]
+  am models [--json] [--claude|--codex|--antigravity|--amp]
                               models and reasoning-effort levels the installed
                               providers actually offer (what --model / --effort
                               accept; -H <host> asks that machine)

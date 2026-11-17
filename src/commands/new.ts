@@ -18,6 +18,7 @@ import {
   scrubNestedSessionEnv,
 } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { ampAgentEnv, ensureAmpPlugin } from "../ampPlugin";
 import {
   amTrustedCodexDir,
   CODEX_LAUNCH_BUDGET_MS,
@@ -130,6 +131,7 @@ export function agentEnv(name: string, provider?: Provider): Record<string, stri
     // Tells SessionStart this process loaded the inbound-accepting settings.
     AGENTMGR_PEER_INBOX: provider === "antigravity" ? "0" : "1",
     ...(provider === "antigravity" ? Object.fromEntries(["PATH", "HOME"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : [])) : {}),
+    ...(provider === "amp" ? ampAgentEnv(name) : {}),
     ...(process.env.AGENTMGR_HOME ? { AGENTMGR_HOME: process.env.AGENTMGR_HOME } : {}),
   };
 }
@@ -228,7 +230,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.
   if (!Bun.which(providerBinary(provider), { PATH: process.env.PATH })) {
-    throw new Error(`${providerBinary(provider)} is not installed on this machine — ${provider === "antigravity" ? "install Antigravity CLI and sign in with agy first; see docs/antigravity.md" : "install it or choose --claude / --codex / --antigravity"}`);
+    throw new Error(`${providerBinary(provider)} is not installed on this machine — ${provider === "antigravity" ? "install Antigravity CLI and sign in with agy first; see docs/antigravity.md" : "install it or choose --claude / --codex / --antigravity / --amp"}`);
   }
   // A bogus --model/--effort otherwise reaches the provider as a flag it
   // rejects, and the session dies before anyone sees the message.
@@ -258,6 +260,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
 
   let hooksChanged = false;
   if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
+  if (provider === "amp") ensureAmpPlugin();
   // Same idea for the roles: the providers' agent files must match the
   // registry before a session that might delegate to them starts.
   if (provider !== "antigravity") ensureSubagentRoles();

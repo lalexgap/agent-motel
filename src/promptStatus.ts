@@ -73,7 +73,7 @@ export function promptStillWaiting(
 
 // The hook that sets the status runs as the dialog goes up (Claude) or just
 // before it (Codex shows its dialog once the hook returns).
-const SETTLE_MS: Record<Provider, number> = { claude: 2000, codex: 5000, antigravity: 5000 };
+const SETTLE_MS: Record<Provider, number> = { claude: 2000, codex: 5000, antigravity: 5000, amp: 5000 };
 const WORKING_SAMPLES = 2;
 // Ending a turn on the pane's word takes more than resuming one.
 const IDLE_SAMPLES = 3;

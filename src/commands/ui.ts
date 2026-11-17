@@ -52,7 +52,7 @@ export function roleOptionsForHost(
         .map((role) => ({
           name: role.name,
           ...(typeof role.description === "string" && role.description ? { description: role.description } : {}),
-          ...(role.provider === "claude" || role.provider === "codex" || role.provider === "antigravity" ? { provider: role.provider } : {}),
+          ...(role.provider === "claude" || role.provider === "codex" || role.provider === "antigravity" || role.provider === "amp" ? { provider: role.provider } : {}),
         }));
     } catch {
       throw new Error(`could not load roles from ${host}: invalid JSON response`);

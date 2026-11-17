@@ -7,6 +7,7 @@ import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { ensureDaemon } from "../daemon";
 import { buildResumeCommand, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { ensureAmpPlugin } from "../ampPlugin";
 import { queueDeferredMessage } from "../queue";
 import { checkSelection, providerCatalog } from "../catalog";
 import { agentEnv } from "./new";
@@ -68,6 +69,7 @@ function restartAudited(agent: AgentState, opts: RestartOpts, expected?: Restart
   // Re-checked on the re-read agent: a concurrent restart may have changed the half this one keeps.
   validateChange(agent, opts);
   if (provider === "codex") ensureCodexHooks();
+  if (provider === "amp") ensureAmpPlugin();
   ensureAgentPlan(agent);
   const previous = { model: agent.model, effort: agent.effort, status: agent.status, reason: agent.statusReason };
   // Saved on the agent, so every later resume launches with them too.

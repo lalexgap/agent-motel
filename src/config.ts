@@ -17,7 +17,7 @@ export interface Config {
   // PR lifecycle polling interval; 0 disables. Positive values have a 30s floor.
   prPollSeconds: number;
   // Provider a new agent runs on when no provider flag is given
-  // (and, in the create form, the preselected provider). "codex", "claude", or "antigravity".
+  // (and, in the create form, the preselected provider). "codex", "claude", "antigravity", or "amp".
   defaultProvider: Provider;
   // Notify when an agent goes idle (in addition to the always-on
   // needs-attention notifications).

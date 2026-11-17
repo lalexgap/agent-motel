@@ -35,9 +35,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 // Validate before dispatch or SSH forwarding so every command has the same rule.
 export function selectedProvider(flags: Record<string, string | boolean>): Provider | undefined {
-  const selected = (["claude", "codex", "antigravity"] as const).filter(provider => flags[provider] === true);
+  const selected = (["claude", "codex", "antigravity", "amp"] as const).filter(provider => flags[provider] === true);
   if (flags.provider !== undefined) {
-    if (!isProvider(flags.provider)) throw new Error("unknown provider (expected claude, codex, or antigravity)");
+    if (!isProvider(flags.provider)) throw new Error("unknown provider (expected claude, codex, antigravity, or amp)");
     if (selected.some(provider => provider !== flags.provider)) throw new Error("select only one provider");
   }
   if (selected.length > 1) throw new Error("select only one provider");

@@ -70,7 +70,7 @@ am pick                                 # open the classic picker
 am peek <name>                          # print the current screen
 ```
 
-Agents run on Codex by default. `--claude` or `--codex` picks the provider for one agent; `"defaultProvider": "claude" | "codex"` in `~/.agent-manager/config.json` changes the default for all of them.
+Agents run on Codex by default. `--claude` or `--codex` picks the provider for one agent; `"defaultProvider": "claude" | "codex"` in `~/.agent-manager/config.json` changes the default for all of them. `--amp` runs [Amp](https://ampcode.com) through an am plugin; see [docs/amp.md](docs/amp.md) for what it supports.
 
 In the hub, use `↑`/`↓` or `j`/`k` to select an agent, `Enter` or `→` to control it, `ctrl-q` to return to the sidebar, `ctrl-n` to create an agent, `r` to filter by role, `s` to cycle status/recent/role sorting, and `Esc` to detach. Inside an attached session, `ctrl-q` returns to the hub without stopping the agent.
 

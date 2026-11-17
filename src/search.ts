@@ -408,7 +408,7 @@ function searchLocal(query: string, opts: SearchOptions, ctx: SearchContext): Se
 }
 
 function validResult(row: any): row is SearchResult {
-  return row && ["claude", "codex", "antigravity"].includes(row.provider)
+  return row && ["claude", "codex", "antigravity", "amp"].includes(row.provider)
     && ["agent", "trash", "history"].includes(row.scope)
     && ["jump", "resume", "restore", "adopt"].includes(row.action)
     && typeof row.command === "string" && Number.isFinite(row.matchCount) && Number.isFinite(row.updatedAt)

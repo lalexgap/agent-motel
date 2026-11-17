@@ -489,7 +489,7 @@ export function fleetPickerItem(r: FleetRow): PickerItem {
     label: concierge?.label ?? r.name,
     labelStyle: concierge?.labelStyle ?? (r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG),
     role: r.role,
-    badge: `${spawnedBy ? "am · " : ""}${r.provider === "codex" ? "cdx" : r.provider === "antigravity" ? "agy" : "cld"}`,
+    badge: `${spawnedBy ? "am · " : ""}${r.provider === "codex" ? "cdx" : r.provider === "antigravity" ? "agy" : r.provider === "amp" ? "amp" : "cld"}`,
     badgeStyle: r.provider === "codex" ? MUTED : PURPLE,
     badgeSelectedStyle: r.provider === "codex" ? BLUE : PURPLE,
     queueDepth: r.queued,

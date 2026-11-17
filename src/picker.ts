@@ -976,7 +976,7 @@ export function preservedFieldIndex(previous: string[], index: number, next: str
 }
 
 // Provider cycle (mirrors the Where field). The first entry is the default.
-export const PROVIDER_OPTIONS = ["claude", "codex", "antigravity"];
+export const PROVIDER_OPTIONS = ["claude", "codex", "antigravity", "amp"];
 
 // A role offered by the create form. `provider` is the role's pin: selecting
 // the role moves the form's provider strip to it, the way a CLI spawn without

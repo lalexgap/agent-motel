@@ -17,10 +17,10 @@ export type AgentStatus =
 // pane (a permission request, a question), which the pane also shows gone.
 export type StatusKind = "prompt";
 
-export type Provider = "claude" | "codex" | "antigravity";
+export type Provider = "claude" | "codex" | "antigravity" | "amp";
 
 export function isProvider(value: unknown): value is Provider {
-  return value === "claude" || value === "codex" || value === "antigravity";
+  return value === "claude" || value === "codex" || value === "antigravity" || value === "amp";
 }
 
 export function providerBinary(provider: Provider): string {

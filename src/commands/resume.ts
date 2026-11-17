@@ -9,6 +9,7 @@ import { ensureDaemon } from "../daemon";
 import { queueDeferredMessage } from "../queue";
 import { buildResumeCommand, CONCIERGE_NAME, scrubNestedSessionEnv } from "../providers";
 import { ensureCodexHooks } from "../codexHooks";
+import { ensureAmpPlugin } from "../ampPlugin";
 import {
   amTrustedCodexDir,
   CODEX_LAUNCH_BUDGET_MS,
@@ -104,6 +105,7 @@ async function reviveAgentLocked(agent: AgentState, opts: ResumeOpts): Promise<v
   const provider = agentProvider(agent);
   await ensureDaemon();
   if (provider === "codex") ensureCodexHooks();
+  if (provider === "amp") ensureAmpPlugin();
   claudeResumeTrust(agent);
   ensureAgentPlan(agent);
 

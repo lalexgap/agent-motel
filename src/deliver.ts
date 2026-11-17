@@ -284,6 +284,9 @@ export async function deliverNext(name: string): Promise<DeliveryResult> {
     // started now would be cut off. The messages wait for the new session.
     if (agent.pendingModelSwitch?.triggeredAt) return { status: "queued", reason: "locked" };
     const provider = agentProvider(agent);
+    // Amp's TUI isn't typed into: am's plugin in the session hands queued
+    // messages over itself, at turn end or while the thread is idle.
+    if (provider === "amp") return { status: "queued", reason: "unavailable" };
     if (provider === "antigravity") {
       const head = queueHead(name);
       if (!head) return { status: "queued", reason: "empty" };

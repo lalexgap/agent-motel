@@ -94,7 +94,7 @@ test("role pins and models preserve all provider entries; export fails before wr
 test("explicit antigravity quota-only usage fails without probes; token usage works; picker includes third option", async () => {
   await expect(usageCommand({ provider: "antigravity", quotaOnly: true })).rejects.toThrow(/antigravity.*unsupported/i);
   await expect(usageCommand({ provider: "antigravity" })).resolves.toBeUndefined();
-  expect(PROVIDER_OPTIONS).toEqual(["claude", "codex", "antigravity"]);
+  expect(PROVIDER_OPTIONS).toEqual(["claude", "codex", "antigravity", "amp"]);
 });
 
 test("API validates provider and legacy selection before any remote forwarding", async () => {

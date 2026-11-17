@@ -104,6 +104,7 @@ export async function sendCommand(
   const body = att.body;
 
   if (opts.now && agentProvider(agent) === "antigravity") throw new Error("Antigravity mid-turn steering (--now) is unsupported; queue a normal send");
+  if (opts.now && agentProvider(agent) === "amp") throw new Error("Amp mid-turn steering (--now) is unsupported; queue a normal send");
   if (opts.now) {
     if (!acquireDeliverLock(agent.name)) throw new Error(`agent "${agent.name}" mailbox is busy — retry the message`);
     // Inject immediately; the TUI's native mid-turn steering handles the rest.

@@ -12,6 +12,8 @@ import { isProvider, providerBinary, type Provider } from "./state";
 //           and the model list is the documented aliases plus whatever extra
 //           options the CLI has cached from the API in ~/.claude.json.
 //   agy     `agy models` — a plain slug/display-label catalog.
+//   amp     no catalog command; its built-in modes (see ampCatalog). Any
+//           provider/name model also works, so the list isn't exhaustive.
 
 export interface ModelOption {
   // What goes on the command line (--model); "" is the provider's default.
@@ -184,7 +186,23 @@ export function parseAntigravityCatalog(output: string): ProviderCatalog | null 
   };
 }
 
+// Amp picks model and effort by mode (`-m low|medium|high|ultra`); efforts
+// map onto those modes (see ampModeArgs).
+export const AMP_MODES = ["low", "medium", "high", "ultra", "claude-code"];
+export const AMP_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+export function ampCatalog(): ProviderCatalog {
+  return {
+    provider: "amp",
+    models: AMP_MODES.map((id) => ({ id, label: `${id} mode`, efforts: [] })),
+    efforts: [...AMP_EFFORTS],
+    modelsExhaustive: false,
+    effortsExhaustive: true,
+  };
+}
+
 function probeCatalog(provider: Provider, run: ProbeRunner): ProviderCatalog | null {
+  if (provider === "amp") return ampCatalog();
   if (provider === "antigravity") {
     const result = run([providerBinary(provider), "models"]);
     return result.exitCode === 0 ? parseAntigravityCatalog(result.stdout) : null;

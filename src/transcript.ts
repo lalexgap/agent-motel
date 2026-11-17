@@ -690,6 +690,10 @@ function readLegacyTranscript(file: string, maxBytes?: number): string {
 // include transcript_path; reject a known wrong-provider file left by a
 // stale hook before falling back to the recorded session id.
 export function locateTranscript(agent: AgentState, opts: { maxLegacyBytes?: number } = {}): string {
+  if (agentProvider(agent) === "amp") {
+    const thread = agentSessionId(agent);
+    throw new Error(`Amp transcripts aren't readable by am yet${thread ? ` — use \`amp threads markdown ${thread}\`` : ""}`);
+  }
   if (agentProvider(agent) === "antigravity") {
     if (!agent.sessionId && !agent.antigravityRunId) {
       Object.assign(agent, reconcileAntigravityAgent(agent));

@@ -4,6 +4,7 @@ import { loadConfig, localHostIdentity } from "./config";
 import { type AgentState, type Provider, agentSessionId } from "./state";
 import { codexDaemonArgs } from "./codexDaemon";
 import { CONCIERGE_ROLE, getRole, roleForAgent } from "./roles";
+import { AMP_MODES } from "./catalog";
 export { nestedSessionVars, scrubNestedSessionEnv } from "./nestedSession";
 
 // The fleet concierge: a reserved singleton agent whose only job is answering
@@ -176,7 +177,53 @@ function claudeCommand(name: string, conversation: string[], opts: LaunchOpts): 
   };
 }
 
+// Amp selects model and effort together, by mode. A mode name passed as the
+// model is used as-is; any other model is a provider/name for --model, where
+// --effort applies. A bare effort picks the closest mode.
+export function ampModeForEffort(effort: string): string {
+  return effort === "low" || effort === "medium" || effort === "high" ? effort : "ultra";
+}
+
+export function ampModelArgs(opts: { model?: string; effort?: string }): string[] {
+  if (opts.model && AMP_MODES.includes(opts.model)) return ["-m", opts.model];
+  if (opts.model) {
+    const effort = opts.effort && opts.effort !== "ultra" ? ["--effort", opts.effort] : [];
+    return ["--model", opts.model, ...effort];
+  }
+  return opts.effort ? ["-m", ampModeForEffort(opts.effort)] : [];
+}
+
+// Amp's TUI has no prompt argument or system-prompt flag: it reads an initial
+// message from piped stdin and keeps the terminal for input, so the primer and
+// task go in that way (as Codex's do, prepended). It never asks for approvals,
+// so there is no permission flag to pass. The am plugin (ampPlugin.ts) carries
+// the hooks.
+const AMP_BASE_ARGS = ["--no-ide"];
+
+export function ampLaunchCommand(args: string[], firstMessage?: string): string[] {
+  const amp = ["amp", ...AMP_BASE_ARGS, ...args];
+  if (!firstMessage) return amp;
+  return ["sh", "-c", 'm=$1; shift; printf "%s" "$m" | exec "$@"', "am-amp", firstMessage, ...amp];
+}
+
 export function buildLaunchCommand(provider: Provider, name: string, opts: LaunchOpts): LaunchPlan {
+  if (provider === "amp") {
+    if (opts.resume === true) throw new Error("amp needs a thread id to resume: use --resume <T-id>, or --continue for the last thread here");
+    const prompt = () => agentSystemPrompt(name, { ...opts, provider: "amp" });
+    if (typeof opts.resume === "string" || opts.continue) {
+      const thread = typeof opts.resume === "string" ? [opts.resume] : ["--last"];
+      // A continued thread keeps its own mode; a message waits in the queue
+      // for the plugin to hand over once the thread is up.
+      return {
+        command: ampLaunchCommand(["threads", "continue", ...thread]),
+        ...(opts.message ? { deferredMessage: opts.message } : opts.role ? { deferredMessage: prompt() } : {}),
+      };
+    }
+    const first = opts.message
+      ? `${prompt()}\n\n# Your task\n\n${opts.message}`
+      : (opts.role || opts.reportTo ? prompt() : undefined);
+    return { command: ampLaunchCommand(ampModelArgs(opts), first) };
+  }
   if (provider === "antigravity") {
     const initialPrompt = !opts.resume && !opts.continue
       ? (opts.message
@@ -219,6 +266,12 @@ export function buildResumeCommand(
   opts: { message?: string; remote?: boolean; codexDaemon?: boolean },
 ): LaunchPlan {
   const sessionId = agentSessionId(agent);
+  if (provider === "amp") {
+    return {
+      command: ampLaunchCommand(["threads", "continue", ...(sessionId ? [sessionId] : ["--last"])]),
+      ...(opts.message ? { deferredMessage: opts.message } : {}),
+    };
+  }
   if (provider === "antigravity") {
     if (!sessionId) throw new Error("Antigravity resume requires a saved conversation ID; refusing to guess the latest session");
     return antigravityTuiCommand(agent.name, {
