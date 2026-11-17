@@ -120,8 +120,6 @@ export interface AgentState {
   spawnedBy?: string;
   // Created with --no-plan: never give it a plan file, even on resume.
   noPlan?: boolean;
-  // Set after `am cleanup` removes the managed checkout. Resume recreates the
-  // checkout from worktreeBranch before relaunching the retained conversation.
   cleanedAt?: string;
   // Set at every main-session start (startup, resume, compaction, /clear): the
   // next prompt injects the plan head once, then clears it.

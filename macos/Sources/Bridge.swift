@@ -302,9 +302,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         return try await write(plan.request, connection: current)
     }
 
-    /// Cleanup is different from the other confirmed actions: the native bridge fetches and validates
-    /// the destructive plan itself, then puts that exact remove/keep/branch/PR state in the sheet. The
-    /// renderer supplies only the plan timestamp and force choice, never confirmation copy.
+    /// Fetch confirmation copy natively; renderer-provided text is untrusted.
     private func cleanup(_ params: [String: Any], connection: Connection) async throws -> Any {
         let apply = try ActionPolicy.plan("agents.cleanup", base: connection.url, params: params)
         let preview = try ActionPolicy.plan("agents.cleanupPreview", base: connection.url, params: params)
