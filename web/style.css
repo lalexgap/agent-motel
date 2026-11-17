@@ -1054,6 +1054,18 @@ dialog p.muted {
 #handover-dialog { max-width: min(480px, calc(100vw - 32px)); }
 #handover-source, #handover-error { overflow-wrap: anywhere; }
 #model-dialog { max-width: min(480px, calc(100vw - 32px)); }
+#cleanup-dialog { width: min(620px, calc(100vw - 32px)); max-width: min(620px, calc(100vw - 32px)); }
+#cleanup-dialog form { display: grid; gap: 12px; }
+#cleanup-dialog h3 { margin: 0 0 5px; font-size: 13px; }
+#cleanup-dialog section { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+#cleanup-dialog ul { margin: 0; padding-left: 20px; max-height: 130px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+#cleanup-dialog section p { margin: 0; line-height: 1.45; }
+.cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger-text); background: var(--danger-soft); font-size: 13.5px; line-height: 1.45; }
+.cleanup-ack { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
+.cleanup-ack input { margin-top: 2px; }
+.danger-ack { color: var(--danger-text); font-weight: 600; }
+.cleanup-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.cleanup-actions .danger { background: var(--danger-text); color: white; border-color: var(--danger-text); }
 #model-agent-name { overflow-wrap: anywhere; }
 #model-dialog .model-warning { margin: 12px 0 4px; padding: 10px 12px; border-left: 3px solid var(--warning-text); background: var(--warning-soft); font-size: 13.5px; line-height: 1.45; }
 #model-dialog .model-observed-note { text-align: left; line-height: 1.45; }

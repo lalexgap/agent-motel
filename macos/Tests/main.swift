@@ -271,6 +271,19 @@ _ = expectRequest("agents.restart", ["agent": "keeper-log"], .post, "/api/agents
 _ = expectRequest("agents.interrupt", ["agent": "annex:kelp-forest", "text": "x"], .post, "/api/agents/annex%3Akelp-forest/interrupt", [],
                   timeout: 60, confirmed: true)
 _ = expectRequest("agents.stop", ["agent": "tide-pilot", "ifIdle": true], .post, "/api/agents/tide-pilot/stop", [], timeout: 60, confirmed: true)
+let cleanupPreview = expectRequest("agents.cleanupPreview", ["agent": "tide-pilot"], .post, "/api/agents/tide-pilot/cleanup", ["dryRun"], timeout: 60, confirmed: false)
+check(cleanupPreview["dryRun"] as? Bool == true, "cleanup preview body")
+let cleanupToken = String(repeating: "a", count: 64)
+let cleanupApply = expectRequest("agents.cleanup", ["agent": "tide-pilot", "createdAt": "created-1", "token": cleanupToken, "force": true],
+                                 .post, "/api/agents/tide-pilot/cleanup", ["createdAt", "token", "force"], timeout: 120, confirmed: false)
+check(cleanupApply["createdAt"] as? String == "created-1" && cleanupApply["token"] as? String == cleanupToken
+      && cleanupApply["force"] as? Bool == true, "cleanup apply body \(cleanupApply)")
+for value in ["", "a\nb", String(repeating: "a", count: 63), String(repeating: "A", count: 64)] {
+    check(planError("agents.cleanup", ["agent": "tide-pilot", "createdAt": "c", "token": value, "force": false]) == "invalid token",
+          "cleanup token \(value.prefix(10).debugDescription)")
+}
+check(planError("agents.cleanup", ["agent": "tide-pilot", "createdAt": "c", "token": cleanupToken, "force": 1]) == "invalid force",
+      "cleanup force must be boolean")
 _ = expectRequest("agents.remove", ["agent": "errand-runner"], .delete, "/api/agents/errand-runner", [], timeout: 60, confirmed: true)
 
 let renamed = expectRequest("agents.rename", ["agent": "crease-check", "name": "crease-fold"], .post, "/api/agents/crease-check/rename",
@@ -552,7 +565,20 @@ check(removal.httpMethod == "DELETE" && removal.httpBody == nil && removal.value
 let move = APIClient.request(try! plan("agents.move", ["agent": "ebb-report", "host": "annex"]).request, token: "fixture-token")
 check(move.httpMethod == "POST" && move.timeoutInterval == 600 && move.value(forHTTPHeaderField: "Content-Type") == "application/json"
       && move.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token", "move request")
-print("PASS action policy (15 methods: rules, rejection strings, paths, bodies, timeouts, confirmation text, upload decoding)")
+let cleanupJSON = Data("{\"name\":\"tide-pilot\",\"createdAt\":\"created-1\",\"token\":\"\(cleanupToken)\",\"remove\":[\"checkout\",\"private.sqlite\"],\"keep\":[\"transcript\"],\"blockers\":[{\"reason\":\"dirty worktree\",\"forceable\":true}],\"branch\":\"cleanup-ui\",\"prs\":[\"#42\"]}".utf8)
+let cleanup = try! CleanupPlan(body: cleanupJSON, expectedName: "tide-pilot")
+check(cleanup.remove == ["checkout", "private.sqlite"] && cleanup.blockers == [.init(reason: "dirty worktree", forceable: true)],
+      "cleanup preview parsing")
+let cleanupText = cleanup.confirmation(server: "Fixture", url: "https://fixture.example", force: true)
+check(cleanupText.destructive && cleanupText.button == "Force clean up" && cleanupText.message.contains("REMOVE\n• checkout\n• private.sqlite")
+      && cleanupText.message.contains("KEEP\n• transcript") && cleanupText.message.contains("BRANCH\n• cleanup-ui")
+      && cleanupText.message.contains("PULL REQUESTS\n• #42") && cleanupText.message.contains("BLOCKERS\n• dirty worktree (can be forced)"),
+      "cleanup confirmation must show the trusted plan: \(cleanupText)")
+check((try? CleanupPlan(body: cleanupJSON, expectedName: "another-agent")) == nil, "cleanup preview is bound to exact agent")
+check((try? CleanupPlan(body: Data(#"{"name":"tide-pilot","createdAt":"c","remove":[],"keep":[],"blockers":[],"branch":null,"prs":[]}"#.utf8), expectedName: "tide-pilot")) == nil,
+      "cleanup preview requires token")
+
+print("PASS action policy (17 methods: rules, rejection strings, paths, bodies, timeouts, confirmation text, cleanup preview, upload decoding)")
 
 func parse(_ chunks: [String]) -> [SSEEvent] {
     var parser = SSEParser()

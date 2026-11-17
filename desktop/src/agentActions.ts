@@ -4,6 +4,7 @@
 // confirmed by the bridge's native sheet; nothing here asks again.
 import { actionAvailable, AGENT_CHANGED, LIFECYCLE, selectionAfterRemove, type ActionSubject, type LifecycleAction } from "./actions";
 import { openHandover, openModel, openMove, openRename } from "./actionDialogs";
+import { openCleanup } from "./cleanupDialog";
 import {
   activationReleased,
   callOutcome,
@@ -68,6 +69,7 @@ function registerMenu(): void {
   for (const action of ["resume", "restart", "interrupt", "stop"] as const) {
     add(action, action[0]!.toUpperCase() + action.slice(1), "lifecycle", action, (key) => void runLifecycle(key, action, () => findRow(key)));
   }
+  add("cleanup", "Clean up…", "danger", "cleanup", (key) => void openCleanup(key), true);
   add("delete", "Remove…", "danger", "delete", (key) => void runLifecycle(key, "delete", () => findRow(key)), true);
 }
 
@@ -110,7 +112,7 @@ function buildBar(): HTMLElement {
   summary.setAttribute("aria-label", "More agent actions");
   summary.title = "More actions";
   const menu = h("div", "more-menu");
-  menu.append(actionButton("model", "Change model…"), actionButton("handover", "Handover…"), actionButton("stop", "Stop"), actionButton("delete", "Remove…", "danger"));
+  menu.append(actionButton("model", "Change model…"), actionButton("handover", "Handover…"), actionButton("stop", "Stop"), actionButton("cleanup", "Clean up…", "danger"), actionButton("delete", "Remove…", "danger"));
   more.append(summary, menu);
   box.append(actionButton("resume", "Resume"), actionButton("interrupt", "Interrupt"), actionButton("restart", "Restart"), more);
   box.addEventListener("click", (event) => {
@@ -124,6 +126,7 @@ function buildBar(): HTMLElement {
     const returnTo = inMenu ? summary : button;
     if (action === "model") openModel(key, returnTo);
     else if (action === "handover") openHandover(key, returnTo);
+    else if (action === "cleanup") void openCleanup(key, returnTo);
     else void runLifecycle(key, action as LifecycleAction, () => headerSubject(key));
   });
   more.addEventListener("toggle", () => {

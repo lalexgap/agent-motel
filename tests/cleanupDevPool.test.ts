@@ -88,3 +88,23 @@ test("successful release and drop verifies both resources before returning", () 
   expect(plan.blockers).toEqual([]);
   expect(() => applyDevPoolCleanup(plan)).not.toThrow();
 });
+
+test("another worktree's database reference prevents cleanup", () => {
+  database();
+  const other = join(root, "other-checkout"); mkdirSync(join(other, "tmp"), { recursive: true });
+  writeFileSync(join(other, "tmp", ".dev-stack-db"), "DB_NAME=producthunt_dev_fixture\n");
+  agent.repoRoot = root;
+  command("git", `printf 'worktree ${agent.dir}\\0\\0worktree ${other}\\0\\0'`);
+  command("psql", "echo 1"); command("dev-pool", "exit 99");
+  expect(planDevPoolCleanup(agent).blockers.join()).toContain("referenced by another worktree");
+});
+
+test("lease heartbeats do not invalidate a confirmation but a new lease does", () => {
+  const lease = { worktree: agent.dir, agentName: agent.name, leaseId: "lease-one", lastSyncedAt: "before" };
+  slot(lease); command("dev-pool", "exit 99");
+  const first = planDevPoolCleanup(agent);
+  slot({ ...lease, lastSyncedAt: "after" });
+  expect(planDevPoolCleanup(agent).fingerprint).toBe(first.fingerprint);
+  slot({ ...lease, leaseId: "lease-two" });
+  expect(planDevPoolCleanup(agent).fingerprint).not.toBe(first.fingerprint);
+});

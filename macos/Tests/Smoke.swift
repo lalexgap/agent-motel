@@ -267,6 +267,22 @@ final class SmokeRunner {
         print("SCREENSHOT \(screenshot.path)")
     }
 
+    func cleanupScreenshot(_ path: String) throws {
+        // The smoke app is sandboxed and cannot launch /usr/sbin/screencapture. The outer isolated
+        // smoke harness captures this window after seeing a marker in the app's sandbox temp directory.
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+        let marker = destination.appendingPathExtension("ready")
+        try String(delegate.window.windowNumber).write(to: marker, atomically: true, encoding: .utf8)
+        print("CLEANUP_SCREENSHOT_READY \(delegate.window.windowNumber) \(destination.path)")
+        fflush(stdout)
+        let deadline = Date().addingTimeInterval(20)
+        while !FileManager.default.fileExists(atPath: destination.path) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        try expect(FileManager.default.fileExists(atPath: destination.path), "cleanup sheet screenshot failed")
+        print("CLEANUP_SCREENSHOT \(destination.path)")
+    }
+
     /// Restores the fixture's initial state (outside /api/, so only the smoke test can reach it).
     func resetFixture() async throws {
         guard let url = URL(string: server + "/__fixture/reset") else { throw SmokeFailure("bad fixture URL") }
@@ -840,6 +856,42 @@ final class SmokeRunner {
                                       agentStatus: stopStatus, button: "Stop", answer: .accept)
         try expect(outcome["status"] as? Int == 200, "stop: \(outcome)")
         record("POST", "/api/agents/tide-pilot/stop")
+
+        let previewResult = try await call("agents.cleanupPreview", ["connection": id, "agent": "fold-line"])
+        let (previewStatus, previewBody) = try status(previewResult, "cleanup preview")
+        guard previewStatus == 200, let cleanupCreatedAt = previewBody["createdAt"] as? String,
+              let cleanupToken = previewBody["token"] as? String else { throw SmokeFailure("cleanup preview: \(previewStatus) \(previewBody)") }
+        record("POST", "/api/agents/fold-line/cleanup", ["dryRun": true])
+        let cleanupParams: [String: Any] = ["connection": id, "agent": "fold-line", "createdAt": cleanupCreatedAt,
+                                                   "token": cleanupToken, "force": true]
+        let cleanupPending = Task { @MainActor () throws -> Data in
+            try JSONSerialization.data(withJSONObject: try await self.call("agents.cleanup", cleanupParams) ?? NSNull(), options: [.fragmentsAllowed])
+        }
+        let cleanupSheet = try await waitForSheet()
+        let cleanupShown = views(cleanupSheet.contentView!).compactMap { ($0 as? NSTextField)?.stringValue }
+        try expect(cleanupShown.contains("Force clean up fold-line?"), "cleanup title: \(cleanupShown)")
+        try expect(cleanupShown.contains { $0.contains("REMOVE\n• /Users/fixture/.agent-manager/worktrees/fold-line")
+            && $0.contains("KEEP\n• Conversation transcript") && $0.contains("BRANCH\n• cleanup-ui")
+            && $0.contains("PULL REQUESTS\n• #42") && $0.contains("BLOCKERS\n• The fixture checkout has uncommitted changes (can be forced)")
+            && $0.contains("deleted uncommitted changes and the private database are not restored") },
+            "cleanup sheet must show the native trusted plan: \(cleanupShown)")
+        if let path = ProcessInfo.processInfo.environment["SMOKE_CLEANUP_SCREENSHOT"], !path.isEmpty { try cleanupScreenshot(path) }
+        try button("Cancel", in: cleanupSheet).performClick(nil)
+        let cleanupCancelled = try object(try JSONSerialization.jsonObject(with: try await cleanupPending.value), "agents.cleanup")
+        try expect(cleanupCancelled["cancelled"] as? Bool == true, "cancelled cleanup: \(cleanupCancelled)")
+        record("POST", "/api/agents/fold-line/cleanup", ["dryRun": true])
+
+        let appliedPending = Task { @MainActor () throws -> Data in
+            try JSONSerialization.data(withJSONObject: try await self.call("agents.cleanup", cleanupParams) ?? NSNull(), options: [.fragmentsAllowed])
+        }
+        let applySheet = try await waitForSheet()
+        try button("Force clean up", in: applySheet).performClick(nil)
+        let cleanupApplied = try object(try JSONSerialization.jsonObject(with: try await appliedPending.value), "agents.cleanup")
+        try expect(cleanupApplied["status"] as? Int == 200, "cleanup apply: \(cleanupApplied)")
+        record("POST", "/api/agents/fold-line/cleanup", ["dryRun": true])
+        record("POST", "/api/agents/fold-line/cleanup", ["dryRun": true])
+        record("POST", "/api/agents/fold-line/cleanup", ["createdAt": cleanupCreatedAt, "token": cleanupToken, "force": true])
+        print("PASS cleanup: native bridge fetched and displayed its own trusted remove/keep/branch/PR/blocker plan; cancel sent no apply; force sent the bound token")
 
         let removeStatus = try await agentStatus(id, "errand-runner")
         outcome = try await confirmed("agents.remove", ["connection": id, "agent": "errand-runner"], title: "Remove errand-runner?",

@@ -67,6 +67,7 @@ launch() {
   writer_pid=$!
   local env_args=(--env "SMOKE_URL=$SMOKE_URL")
   [[ "${SMOKE_BRIDGE_ONLY:-}" == 1 ]] && env_args+=(--env SMOKE_BRIDGE_ONLY=1)
+  [[ -n "${SMOKE_CLEANUP_SCREENSHOT:-}" ]] && env_args+=(--env "SMOKE_CLEANUP_SCREENSHOT=$SMOKE_CLEANUP_SCREENSHOT")
   tail -f "$log" &
   local tail_pid=$!
   open -W -n -g --stdin "$work/token" --stdout "$log" --stderr "$log" "${env_args[@]}" "$@" "$app"

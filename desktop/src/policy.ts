@@ -214,10 +214,11 @@ export interface ActionRequest {
   precheckPath?: string;
 }
 
-export const CONFIRM_METHODS = ["agents.restart", "agents.interrupt", "agents.stop", "agents.remove", "agents.move", "agents.model"] as const;
+export const CONFIRM_METHODS = ["agents.restart", "agents.interrupt", "agents.stop", "agents.cleanup", "agents.remove", "agents.move", "agents.model"] as const;
 export type ConfirmMethod = (typeof CONFIRM_METHODS)[number];
 export const ACTION_METHODS = [
   "agents.resume",
+  "agents.cleanupPreview",
   ...CONFIRM_METHODS,
   "agents.rename",
   "agents.handoff",
@@ -419,6 +420,24 @@ function build(method: string, params: Record<string, unknown>): ActionRequest {
       return lifecycle(agent, "interrupt", 60 * SECOND, confirm(`Interrupt ${agent}?`, "This interrupts its current work.", "Interrupt"));
     case "agents.stop":
       return lifecycle(agent, "stop", 60 * SECOND, confirm(`Stop ${agent}?`, "This interrupts its current work and ends its session. It can be resumed later.", "Stop"));
+    case "agents.cleanupPreview":
+      return json(agentPath(agent, "/cleanup"), { dryRun: true }, 60 * SECOND);
+    case "agents.cleanup": {
+      const createdAt = freeText(params.createdAt, 128, true);
+      if (!createdAt) fail("invalid createdAt");
+      const token = matching(params.token, /^[a-f0-9]{64}$/, "token");
+      if (typeof params.force !== "boolean") fail("invalid force");
+      return {
+        ...json(agentPath(agent, "/cleanup"), { createdAt, token, force: params.force }, 120 * SECOND),
+        confirm: confirm(
+          `${params.force ? "Force clean up" : "Clean up"} ${agent}?`,
+          "Cleanup permanently deletes the previewed files. Resume can recreate the checkout, but deleted uncommitted changes and the private database are not restored.",
+          params.force ? "Force clean up" : "Clean up",
+          true,
+        ),
+        precheckPath: agentPath(agent),
+      };
+    }
     case "agents.remove":
       return {
         method: "DELETE",

@@ -19,7 +19,7 @@ export function capabilityAvailable(row: ActionSubject | null | undefined, capab
 
 const roleName = (role: ActionSubject["role"]): unknown => (role && typeof role === "object" ? role.name : undefined) || role;
 
-// `delete` is Remove. Anything not listed (open, move, delete) is always offered.
+// `delete` is Remove. Anything not listed (open, move, cleanup, delete) is always offered.
 export function actionAvailable(row: ActionSubject | null | undefined, action: string): boolean {
   if (!row) return false;
   const capability = ({ handover: "handoff", interrupt: "interruptByReceipt", model: "restart" } as Record<string, string>)[action] || action;
