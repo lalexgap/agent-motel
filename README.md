@@ -194,6 +194,9 @@ am transcript api                  # render the conversation as Markdown
 am search "rate limit"             # search agent conversations
 am handoff api --to codex          # continue with the other provider
 am stop api                        # stop but keep resumable state
+am cleanup api --dry-run           # preview resources, retained history and blockers
+am cleanup api                     # stop and free owned worktree/dev resources
+am cleanup api --force             # explicitly discard dirty work or allow unpushed commits
 am resume api                      # resume an exited agent
 am restart api                     # reload Claude/Codex and resume the same conversation
 am rename api api-v2               # rename live or stopped; old name stays an alias
@@ -206,11 +209,15 @@ am gc --restore my-worktree        # recreate a worktree gc removed
 
 Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or choosing **Restart** in the command palette. Restart interrupts its current turn and loads the installed provider binary; update Claude/Codex first to pick up a newer version. The conversation, working directory, and queued messages are preserved.
 
-### Cleanup
+Cleanup retains the agent, branch, conversation, plan, decisions and handoff history. `am resume <name>` recreates its removed worktree from the retained branch. Uncommitted files and private database contents deleted by cleanup cannot be recovered by resume. Cleanup reports known PR state and keeps the branch even when its PR is open. It refuses unsafe ownership or unknown Git registration even with `--force`.
+
+The web and macOS **Clean up** actions show the dry-run removal and retention list before confirmation. Dev-pool cleanup requires the installed `dev-pool` command; a database is only dropped when its private record and server can be verified and no other worktree or slot references it. Unattributed databases are retained rather than guessed from an agent name.
+
+### Automatic cleanup
 
 The daemon runs the cleanup on its own, nightly at 04:00 (or at the next moment no agent is working, after a missed night). It applies the same policy as `am gc --apply`. After an upgrade it only reports, over as many runs as it takes to look at every worktree once, and starts removing after that; check `am gc --auto status` to see what it would take. `am summary` ends with the last run ("gc: freed 12 worktrees (9.1 GB); kept 3 dirty").
 
-A worktree that a registered agent owns is never removed, running or exited. An agent owns its `dir` and worktree, the worktree named after it, and any managed worktree its session has worked in that no other agent (or restorable agent still holding it) is registered in. The others go as follows (the ages are `gc*` keys in `~/.agent-manager/config.json`):
+Automatic cleanup never removes a worktree that a registered agent owns, running or exited. An agent owns its `dir` and worktree, the worktree named after it, and any managed worktree its session has worked in that no other agent (or restorable agent still holding it) is registered in. The others go as follows (the ages are `gc*` keys in `~/.agent-manager/config.json`):
 
 | What | When | Key |
 | --- | --- | --- |
