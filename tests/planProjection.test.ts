@@ -69,6 +69,58 @@ describe("legacy plan projection", () => {
     expect(readPlanProjection("absent")).toMatchObject({ state: "missing" });
   });
 
+  test("rejects a plans directory symlink even when its files resolve cleanly", () => {
+    const root = home();
+    const outside = join(root, "outside");
+    rmSync(join(root, "plans"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "worker.md"), plan("outside secret"));
+    symlinkSync(outside, join(root, "plans"));
+
+    expect(readPlanProjection("worker")).toMatchObject({ state: "unavailable", reason: "unsafe-path" });
+    expect(readPlanProjection("worker")).not.toHaveProperty("currentStatus");
+  });
+
+  test("a FIFO replacement during open is rejected without blocking", () => {
+    const script = `
+      import assert from "node:assert/strict";
+      import * as fs from "node:fs";
+      import { mock } from "bun:test";
+      const actualOpenSync = fs.openSync;
+      const root = process.env.AGENTMGR_HOME;
+      const target = root + "/plans/worker.md";
+      fs.mkdirSync(root + "/plans", { recursive: true });
+      fs.writeFileSync(target, ${JSON.stringify(plan())});
+      let swapped = false;
+      mock.module("node:fs", () => ({
+        ...fs,
+        openSync(path, flags, mode) {
+          if (!swapped && path === target) {
+            swapped = true;
+            fs.unlinkSync(target);
+            const made = Bun.spawnSync(["mkfifo", target]);
+            assert.equal(made.exitCode, 0);
+          }
+          return actualOpenSync(path, flags, mode);
+        },
+      }));
+      const { readPlanProjection } = await import("./src/planProjection.ts?fifo-transition");
+      assert.deepEqual(readPlanProjection("worker"), {
+        source: "legacy-plan", state: "unavailable", freshness: "unknown", reason: "unsafe-path",
+      });
+    `;
+    const root = home();
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { ...process.env, AGENTMGR_HOME: root },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 2_000,
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(0);
+  });
+
   test("refuses a large plan without reading or projecting its contents", () => {
     const root = home();
     writeFileSync(join(root, "plans", "large.md"), plan("secret") + "x".repeat(PLAN_PROJECTION_FILE_MAX_BYTES));

@@ -1024,6 +1024,12 @@ function markDisplayedDetailSeen(chatAtLatest) {
   }
   markDetailSeen(snapshot.agent, snapshot.updatedAt, chatAtLatest);
 }
+function renderSelectedAgentStatus() {
+  const snapshot = state.detailCapabilities;
+  if (!snapshot || snapshot.name !== state.selected) return;
+  const fleetRow = state.rows.find(row => key(row) === state.selected);
+  renderAgentStatus({ ...(fleetRow || {}), ...snapshot.detail, statusProjection: fleetRow?.statusProjection });
+}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -1043,8 +1049,7 @@ async function refreshDetail() {
   )
     return;
   state.detailCapabilities = { name, detail };
-  const fleetRow = state.rows.find(row => key(row) === name);
-  renderAgentStatus({ ...(fleetRow || {}), ...detail, statusProjection: fleetRow?.statusProjection });
+  renderSelectedAgentStatus();
   const view = $("transcript"), restoreScroll = preserveConversationScroll(view, 90);
   $("detail-status").replaceWith(
     Object.assign(badge(detail.status), { id: "detail-status" }),
@@ -1682,6 +1687,7 @@ async function refresh() {
     state.rows = fleet.rows;
 
     renderFleet();
+    renderSelectedAgentStatus();
     $("connection").textContent = "● Connected · updated just now";
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "), "refresh");

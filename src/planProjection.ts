@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, sep } from "node:path";
-import { planFile, plansDir } from "./paths";
+import { basename, dirname, join, sep } from "node:path";
+import { baseDir, planFile, plansDir } from "./paths";
 
 export const PLAN_PROJECTION_FILE_MAX_BYTES = 64 * 1024;
 export const PLAN_PROJECTION_SECTION_MAX_BYTES = 2_000;
@@ -79,9 +79,43 @@ export function parseLegacyPlanProjection(text: string, modifiedAt?: string): Pl
   });
 }
 
-function safePlan(name: string): { path: string; stat: ReturnType<typeof statSync> } | PlanProjection {
+interface SafePlan {
+  path: string;
+  stat: ReturnType<typeof statSync>;
+  root: { path: string; stat: ReturnType<typeof statSync> };
+}
+
+function rootStillMatches(root: SafePlan["root"]): boolean {
+  try {
+    const current = lstatSync(root.path);
+    return current.isDirectory() && !current.isSymbolicLink() &&
+      current.dev === root.stat.dev && current.ino === root.stat.ino &&
+      realpathSync(root.path) === root.path;
+  } catch {
+    return false;
+  }
+}
+
+function safePlan(name: string): SafePlan | PlanProjection {
   if (!AGENT_NAME_RE.test(name)) return result("unavailable", { reason: "unsafe-path" });
   const path = planFile(name);
+  let root: SafePlan["root"];
+  try {
+    const configuredRoot = plansDir();
+    const link = lstatSync(configuredRoot);
+    if (!link.isDirectory() || link.isSymbolicLink()) return result("unavailable", { reason: "unsafe-path" });
+    const canonicalRoot = realpathSync(configuredRoot);
+    const expectedRoot = join(realpathSync(baseDir()), "plans");
+    const stat = statSync(canonicalRoot);
+    if (canonicalRoot !== expectedRoot || !stat.isDirectory() || stat.dev !== link.dev || stat.ino !== link.ino) {
+      return result("unavailable", { reason: "unsafe-path" });
+    }
+    root = { path: canonicalRoot, stat };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? result("missing")
+      : result("unavailable", { reason: "unreadable" });
+  }
   let link: ReturnType<typeof lstatSync>;
   try {
     link = lstatSync(path);
@@ -92,12 +126,13 @@ function safePlan(name: string): { path: string; stat: ReturnType<typeof statSyn
   }
   if (!link.isFile() || link.isSymbolicLink()) return result("unavailable", { reason: "unsafe-path" });
   try {
-    const root = realpathSync(plansDir());
     const resolved = realpathSync(path);
-    if (dirname(resolved) !== root || !resolved.startsWith(root + sep) || basename(resolved) !== `${name}.md`) {
+    if (dirname(resolved) !== root.path || !resolved.startsWith(root.path + sep) || basename(resolved) !== `${name}.md`) {
       return result("unavailable", { reason: "unsafe-path" });
     }
-    return { path: resolved, stat: statSync(resolved) };
+    const stat = statSync(resolved);
+    if (!stat.isFile() || !rootStillMatches(root)) return result("unavailable", { reason: "unsafe-path" });
+    return { path: resolved, stat, root };
   } catch {
     return result("unavailable", { reason: "unreadable" });
   }
@@ -113,9 +148,10 @@ export function readPlanProjection(name: string): PlanProjection {
   let value: PlanProjection;
   let fd: number | undefined;
   try {
-    fd = openSync(safe.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    if (!rootStillMatches(safe.root)) return result("unavailable", { reason: "unsafe-path" });
+    fd = openSync(safe.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== safe.stat.dev || opened.ino !== safe.stat.ino) {
+    if (!rootStillMatches(safe.root) || !opened.isFile() || opened.dev !== safe.stat.dev || opened.ino !== safe.stat.ino) {
       value = result("unavailable", { reason: "unsafe-path" });
     } else if (opened.size > PLAN_PROJECTION_FILE_MAX_BYTES) {
       value = result("invalid", { modifiedAt: opened.mtime.toISOString(), reason: "too-large" });

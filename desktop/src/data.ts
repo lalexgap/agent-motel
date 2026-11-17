@@ -205,11 +205,11 @@ export function onStreamMessage(payload: BridgeEvents["events.message"]): void {
   scheduleRefresh(payload.connection);
 }
 
-// The polls behind the stream: the fleet while the stream is down, and the open
-// agent while it is busy or has messages outstanding.
+// Bounded fleet polling covers data the stream does not watch, including plan edits.
+// The open agent also polls while it is busy or has messages outstanding.
 export function poll(now: number): void {
   for (const conn of state.conns.values()) {
-    if (conn.stream !== "open" && now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);
+    if (now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);
   }
   const row = state.selected ? findRow(state.selected) : null;
   const status = row?.status ?? state.detail?.detail?.status ?? "";
