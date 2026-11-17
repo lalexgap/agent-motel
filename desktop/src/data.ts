@@ -205,11 +205,10 @@ export function onStreamMessage(payload: BridgeEvents["events.message"]): void {
   scheduleRefresh(payload.connection);
 }
 
-// The polls behind the stream: the fleet while the stream is down, and the open
-// agent while it is busy or has messages outstanding.
+// Remote fleet cache updates do not emit local stream events.
 export function poll(now: number): void {
   for (const conn of state.conns.values()) {
-    if (conn.stream !== "open" && now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);
+    if (now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);
   }
   const row = state.selected ? findRow(state.selected) : null;
   const status = row?.status ?? state.detail?.detail?.status ?? "";
