@@ -26,7 +26,6 @@ import { parseSubagentKey, runningOf, subagentKey, subagentLabel } from "./subag
 import { openSubagent } from "./subagentView";
 import type { AgentRow } from "./types";
 import { mainView, onMainViewChange, registerMainView } from "./views";
-import { statusSummary } from "./statusModel";
 
 interface Entry {
   fleet: ConnectionFleet;
@@ -75,9 +74,7 @@ function cardNode(entry: Entry, all: readonly AgentRow[], multi: boolean, now: n
     tag.title = decisionsName(row);
     identity.append(tag);
   }
-  const summary = h("p", "", statusSummary(row));
-  summary.dataset.statusSummary = "";
-  identity.append(summary);
+  identity.append(h("p", "", row.task || "No task"));
   if (row.spawnedBy) identity.append(h("small", "parent-label", "↳ " + row.spawnedBy));
   const id = agentId(row);
   const children = all.filter((child) => parentId(child) === id).length;

@@ -187,82 +187,6 @@ const sidebarStatusName = (row) =>
   row.status === "waiting" || (row.status === "working" && (row.busyWith?.subagents || 0) > 0)
     ? "Waiting"
     : statusName(row.status);
-function statusSummary(row) {
-  const projection = row?.statusProjection;
-  if (projection?.state === "available" && projection.currentStatus) return projection.currentStatus.split("\n").find(line => line.trim())?.trim() || "Status unavailable";
-  if (projection?.state === "placeholder") return row?.task ? `Plan says not started · Original task: ${row.task.split("\n")[0]}` : "Plan says not started";
-  if (projection?.state === "missing") return row?.task ? `Original task: ${row.task.split("\n")[0]}` : "No plan available";
-  if (!projection) return "Status unavailable on this host";
-  return row?.task ? `Original task: ${row.task.split("\n")[0]}` : "Status unavailable";
-}
-function observationAge(iso) {
-  const at = Date.parse(iso || "");
-  return Number.isFinite(at) ? `${elapsed(Math.max(0, Date.now() - at))} ago` : "age unknown";
-}
-function renderAgentStatus(row) {
-  const projection = row?.statusProjection;
-  const content = $("agent-status-content");
-  const freshness = $("agent-status-freshness");
-  content.replaceChildren();
-  const copy = el("div", "agent-status-copy");
-  if (projection?.state === "available") {
-    const now = el("div");
-    now.append(el("h3", "", "Current status"), el("p", "", projection.currentStatus || "Status unavailable"));
-    copy.append(now);
-    if (projection.nextSteps) {
-      const next = el("div");
-      next.append(el("h3", "", "Next steps"), el("p", "", projection.nextSteps));
-      copy.append(next);
-    }
-  } else {
-    const messages = {
-      missing: "No running plan was found for this agent.", placeholder: "The running plan still says this task has not started.",
-      invalid: projection?.reason === "too-large" ? "The running plan is too large to project safely." : projection?.reason === "duplicate-headings" ? "The running plan has duplicate status headings." : "The running plan does not have readable status headings.",
-      unavailable: projection?.reason === "unsafe-path" ? "The running plan was refused because its path is unsafe." : "The running plan could not be read.",
-    };
-    copy.append(el("p", "agent-status-fallback", messages[projection?.state] || "This host does not provide a plan status projection."));
-    if (row?.task) {
-      const fallback = el("p", "agent-status-fallback");
-      fallback.append(el("strong", "", "Original task — not current status"), document.createTextNode(row.task));
-      copy.append(fallback);
-    }
-  }
-  content.append(copy);
-  freshness.textContent = projection?.modifiedAt
-    ? `Plan file modified ${observationAge(projection.modifiedAt)} · summary freshness unknown`
-    : "Summary freshness unknown";
-
-  const signals = $("agent-status-signals");
-  signals.replaceChildren();
-  const runtime = el("span", "agent-status-signal", `${statusName(row?.status)} · state since ${observationAge(row?.statusChangedAt || row?.updatedAt)}`);
-  runtime.title = row?.statusReason || "Runtime state is separate from task completion";
-  signals.append(runtime);
-  const subagents = activeSubagentCount(row || {});
-  const subagentsKnown = row?.capabilities?.subagents === true || row?.subagents !== undefined || row?.busyWith !== undefined;
-  signals.append(el("span", "agent-status-signal", subagents ? `${subagents} active subagent${subagents === 1 ? "" : "s"}` : subagentsKnown ? "No active subagents reported" : "Subagent availability unknown"));
-  if ((row?.openDecisions ?? 0) > 0) {
-    const decisions = el("button", "agent-status-signal", `${row.openDecisions} open decision${row.openDecisions === 1 ? "" : "s"}`);
-    decisions.type = "button";
-    decisions.onclick = () => $("decisions-nav").click();
-    signals.append(decisions);
-  } else signals.append(el("span", "agent-status-signal", row?.openDecisions === 0 ? "No open decisions reported" : "Decision state unavailable"));
-  const prs = Array.isArray(row?.prStatus) ? row.prStatus : [];
-  const monitoredPrs = Array.isArray(row?.prMonitor?.pullRequests) ? row.prMonitor.pullRequests : [];
-  if (prs.length) {
-    const button = el("button", "agent-status-signal", `${prs.length} registered PR${prs.length === 1 ? "" : "s"} · observed ${observationAge(row.prMonitor?.checkedAt)}`);
-    button.type = "button";
-    button.title = prs.map(pr => `#${pr.number} ${pr.state}: ${pr.reason}`).join("\n");
-    button.onclick = showPrs;
-    signals.append(button);
-  } else if (monitoredPrs.length) {
-    const button = el("button", "agent-status-signal", `${monitoredPrs.length} registered PR${monitoredPrs.length === 1 ? "" : "s"} · detailed state unavailable`);
-    button.type = "button";
-    button.title = monitoredPrs.map(pr => `#${pr.number} ${String(pr.state || "state unknown").toLowerCase()}`).join("\n");
-    button.onclick = showPrs;
-    signals.append(button);
-  } else if (row?.prMonitor) signals.append(el("span", "agent-status-signal", `No registered PRs · checked ${observationAge(row.prMonitor.checkedAt)}`));
-  else signals.append(el("span", "agent-status-signal", "Registered PR state unavailable"));
-}
 function badge(status) {
   const node = el("span", "badge");
   node.append(dot(status), document.createTextNode(statusName(status)));
@@ -580,9 +504,7 @@ function renderFleet() {
       subagents ? `${subagents} active subagent${subagents === 1 ? "" : "s"}` : "", provider,
       reason, row.queued ? `${row.queued} queued` : "", row.openDecisions > 0 ? decisionsBadgeLabel(row) : "",
       Number.isFinite(age) ? `Last updated ${new Date(age).toLocaleString()}` : ""].filter(Boolean).join(", "));
-    const summary = el("span", "side-agent-summary", statusSummary(row));
-    summary.dataset.statusSummary = "";
-    button.append(heading, metadata, summary);
+    button.append(heading, metadata);
     button.classList.toggle("selected", key(row) === state.selected);
     if (key(row) === state.selected) button.setAttribute("aria-current", "page");
     button.dataset.agentKey = key(row);
@@ -635,9 +557,7 @@ function renderFleet() {
     }
     const card = el("button", "agent-card");
     const identity = el("div", "agent-identity");
-    const summary = el("p", "", statusSummary(row));
-    summary.dataset.statusSummary = "";
-    identity.append(el("h3", "", row.name), summary);
+    identity.append(el("h3", "", row.name), el("p", "", row.task || "No task"));
     if (row.spawnedBy)
       identity.append(el("small", "parent-label", "↳ " + row.spawnedBy));
     const children = state.rows.filter(
@@ -1024,12 +944,6 @@ function markDisplayedDetailSeen(chatAtLatest) {
   }
   markDetailSeen(snapshot.agent, snapshot.updatedAt, chatAtLatest);
 }
-function renderSelectedAgentStatus() {
-  const snapshot = state.detailCapabilities;
-  if (!snapshot || snapshot.name !== state.selected) return;
-  const fleetRow = state.rows.find(row => key(row) === state.selected);
-  renderAgentStatus({ ...(fleetRow || {}), ...snapshot.detail, statusProjection: fleetRow?.statusProjection });
-}
 async function refreshDetail() {
   const name = state.selected,
     version = state.detailVersion;
@@ -1049,7 +963,6 @@ async function refreshDetail() {
   )
     return;
   state.detailCapabilities = { name, detail };
-  renderSelectedAgentStatus();
   const view = $("transcript"), restoreScroll = preserveConversationScroll(view, 90);
   $("detail-status").replaceWith(
     Object.assign(badge(detail.status), { id: "detail-status" }),
@@ -1795,7 +1708,6 @@ async function refresh() {
     state.rows = fleet.rows;
 
     renderFleet();
-    renderSelectedAgentStatus();
     $("connection").textContent = "● Connected · updated just now";
     if (fleet.unreachable.length)
       notice("Unreachable hosts: " + fleet.unreachable.join(", "), "refresh");

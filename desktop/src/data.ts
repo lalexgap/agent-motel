@@ -205,8 +205,7 @@ export function onStreamMessage(payload: BridgeEvents["events.message"]): void {
   scheduleRefresh(payload.connection);
 }
 
-// Bounded fleet polling covers data the stream does not watch, including plan edits.
-// The open agent also polls while it is busy or has messages outstanding.
+// Remote fleet cache updates do not emit local stream events.
 export function poll(now: number): void {
   for (const conn of state.conns.values()) {
     if (now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);

@@ -194,34 +194,6 @@ export function buildRows(now: number): FixtureRow[] {
       row.oldestDecisionAt = ago(now, seed.decisions.oldest);
       row.firstDecision = seed.decisions.first;
     }
-    if (!seed.host) {
-      const modifiedAt = ago(now, Math.max(1, seed.updated + 2));
-      if (seed.name === "origami-docs") {
-        row.statusProjection = { source: "legacy-plan", state: "placeholder", freshness: "unknown", modifiedAt };
-      } else if (seed.name === "errand-runner") {
-        row.statusProjection = { source: "legacy-plan", state: "missing", freshness: "unknown" };
-      } else if (seed.name === "paper-trail") {
-        row.statusProjection = { source: "legacy-plan", state: "invalid", freshness: "unknown", modifiedAt, reason: "too-large" };
-      } else if (seed.name !== "concierge") {
-        const currentStatus = seed.name === "harbor-lights"
-          ? "Retry budget and jitter are implemented; wiring the paused-station state into /status."
-          : seed.status === "exited" || seed.status === "dead"
-            ? "Work stopped; review the runtime state before relying on this summary."
-            : seed.task?.split("\n")[0] || "Reviewing the assigned work.";
-        const nextSteps = seed.name === "harbor-lights"
-          ? "- Add the status response fields\n- Run the worker and API tests\n- Hand the change to review"
-          : "- Verify the current result\n- Report the next meaningful checkpoint";
-        row.statusProjection = { source: "legacy-plan", state: "available", freshness: "unknown", modifiedAt, currentStatus, nextSteps };
-      }
-    }
-    if (row.prMonitor) {
-      row.prMonitor.checkedAt = ago(now, 3);
-      row.prStatus = (row.prMonitor.pullRequests ?? []).map((pr) => ({
-        number: pr.number,
-        state: pr.state === "MERGED" ? "merged" : "shepherding",
-        reason: pr.state === "MERGED" ? "merged" : "review and CI are in progress",
-      }));
-    }
     // am clears workingSince at turn end, so an agent shown working only for its subagents has none.
     if (row.rawStatus === "working" || row.rawStatus === "waiting") row.workingSince = row.statusChangedAt;
     return row;
