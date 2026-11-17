@@ -1,5 +1,6 @@
 // Agent Motel desktop frontend: wires the views together and starts the app.
 // All server traffic goes through the bridge.
+import { initActivity } from "./activity";
 import { initAgentActions, registerAgentHeader } from "./agentActions";
 import { call, isNative, on, startBridge } from "./bridge";
 import { initChat, selectAgent, tickWorking } from "./chat";
@@ -70,9 +71,17 @@ function wire(): void {
       .then(() => { if (!isNative()) window.open(link.href, "_blank", "noopener"); })
       .catch((error: unknown) => console.warn("open.external failed", error));
   });
+  // Shown again, or focused again after the slower unfocused polls: catch up at once.
+  let reloadedAt = 0;
+  const catchUp = () => {
+    if (Date.now() - reloadedAt < 1000) return;
+    reloadedAt = Date.now();
+    void reloadAll();
+  };
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) void reloadAll();
+    if (!document.hidden) catchUp();
   });
+  initActivity(catchUp);
 
   on("events.state", onStreamState);
   on("events.message", onStreamMessage);
@@ -83,11 +92,11 @@ function wire(): void {
 // One clock: relative times, the working indicator, and the polls that cover
 // what the fleet stream does not (transcript appends, a stream that is down).
 function tick(): void {
+  if (document.hidden) return;
   const now = Date.now();
   tickTimes(now);
   tickWorking();
   tickOverview(now);
-  if (document.hidden) return;
   poll(now);
   tickSubagent(now);
 }

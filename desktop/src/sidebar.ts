@@ -2,7 +2,7 @@
 // toggle, keyboard navigation and the resizable divider.
 import { markSelection, selectAgent } from "./chat";
 import { copyNameText, openAgentMenu, registerAgentMenuItem } from "./contextMenu";
-import { $, composerInput, copyText, dot, h } from "./dom";
+import { $, composerInput, copyText, dot, h, reconcileChildren } from "./dom";
 import {
   buildTree,
   conciergeTarget,
@@ -199,7 +199,12 @@ function renderTree(): void {
       : "No agents on this server yet. Start one with am new.";
     nodes.push(h("div", "am-tree-empty", message));
   }
-  tree.replaceChildren(...nodes);
+  reconcileChildren(tree, nodes, (node) => (node as HTMLElement).dataset.itemId, ["tabindex", "aria-selected"]);
+  // Kept rows keep their old tabindex: move the roving tab stop to the cursor.
+  for (const node of tree.querySelectorAll<HTMLElement>("[data-item-id]")) {
+    if (node.dataset.itemId === state.cursor) node.tabIndex = 0;
+    else if (node.getAttribute("tabindex") === "0") node.tabIndex = -1;
+  }
   markSelection();
   // Background refreshes keep focus on the cursor row without yanking the scroll position.
   if (hadFocus) focusCursor(false);

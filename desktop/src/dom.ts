@@ -27,6 +27,61 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, className = "",
   return node;
 }
 
+// Whether two rendered nodes look the same, ignoring the named attributes
+// (ones the caller sets again after rendering) and a status dot's spin phase.
+function sameNode(a: Node, b: Node, ignore: ReadonlySet<string>): boolean {
+  if (a.nodeType !== b.nodeType) return false;
+  if (!(a instanceof Element) || !(b instanceof Element)) return a.isEqualNode(b);
+  if (a.tagName !== b.tagName) return false;
+  const skip = (name: string) => ignore.has(name) || (name === "style" && a.classList.contains("dot"));
+  const names = (node: Element) => node.getAttributeNames().filter((name) => !skip(name));
+  const attributes = names(a);
+  if (attributes.length !== names(b).length || attributes.some((name) => a.getAttribute(name) !== b.getAttribute(name))) return false;
+  if (a.childNodes.length !== b.childNodes.length) return false;
+  for (let index = 0; index < a.childNodes.length; index++) {
+    if (!sameNode(a.childNodes[index]!, b.childNodes[index]!, ignore)) return false;
+  }
+  return true;
+}
+
+// Replaces `parent`'s children with `next` but keeps each current child that
+// renders the same, matched by `key`, so a refresh that changes one row leaves
+// the others' layout and running animations alone. Only for nodes without
+// listeners of their own: a kept node keeps its old ones.
+export function reconcileChildren(parent: Element, next: readonly Element[], key: (node: Element) => string | undefined,
+                                  ignore: readonly string[] = []): void {
+  const skip = new Set(ignore);
+  const current = [...parent.children];
+  const byKey = new Map<string, Element>();
+  for (const node of current) {
+    const id = key(node);
+    if (id !== undefined && !byKey.has(id)) byKey.set(id, node);
+  }
+  const unkeyed = current.filter((node) => key(node) === undefined);
+  const kept = new Set<Element>();
+  const plan = next.map((node) => {
+    const id = key(node);
+    const match = id !== undefined ? byKey.get(id) : unkeyed.find((old) => !kept.has(old) && sameNode(old, node, skip));
+    if (match && !kept.has(match) && sameNode(match, node, skip)) {
+      kept.add(match);
+      return match;
+    }
+    return node;
+  });
+  for (const node of current) if (!kept.has(node)) node.remove();
+  let cursor = parent.firstElementChild;
+  for (const node of plan) {
+    if (node === cursor) cursor = cursor.nextElementSibling;
+    else parent.insertBefore(node, cursor);
+  }
+  // Text nodes are not rendered children here; anything left after the plan goes.
+  while (cursor) {
+    const after = cursor.nextElementSibling;
+    cursor.remove();
+    cursor = after;
+  }
+}
+
 export const composerInput = () => $<HTMLTextAreaElement>("composer-input");
 
 export const isTyping = (target: EventTarget | null): boolean =>

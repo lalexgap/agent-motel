@@ -10,6 +10,7 @@ import { firstLine } from "./format";
 import { agentComposer, agentSource, changed, composer, findRow, isConcierge, newDetailState, persist, state, subscribe, unread } from "./state";
 import type { AgentViewMode } from "./terminalModel";
 import { mainView, registerMainView, showMainView } from "./views";
+import { appendedEntries, type RenderedEntries } from "./transcriptAppend";
 import { workingIndicator, workingText } from "./working";
 
 // Per-agent parts other modules add to the chat pane: actions in the header's
@@ -135,6 +136,9 @@ function renderHeader(): void {
   fillSlot(cards, "am-cards", (box) => $("am-composer").before(box), key);
 }
 
+// What the transcript view shows, to tell a poll that only added entries.
+let renderedEntries: RenderedEntries | null = null;
+
 // Entries re-render only when they change; the pending/queued bubbles after
 // them re-render on their own fingerprint so a poll never rebuilds either for nothing.
 export function renderTranscript(pin = false): void {
@@ -166,11 +170,23 @@ export function renderTranscript(pin = false): void {
   const restore = firstRender ? null : window.agentTranscript.preserveConversationScroll(view, 90);
   const focusedCancel = (document.activeElement as HTMLElement | null)?.dataset?.cancelMessage;
   if (entriesChanged) {
-    view.replaceChildren();
+    const prints = entries.map((entry) => JSON.stringify(entry));
+    const options = { agentName: detailState.detail?.name ?? "", readBoundary: state.readBoundary };
+    const added = firstRender || view.querySelector(":scope > .am-transcript-note") ? null : appendedEntries(renderedEntries, { key: detailState.key, ...options, prints }, entries);
+    if (added) {
+      // Only new entries: render them after the old ones instead of rebuilding a long transcript.
+      const fragment = document.createDocumentFragment();
+      const marked = !!view.querySelector(":scope > .unread-marker");
+      window.agentTranscript.renderEntries(fragment as unknown as HTMLElement, added, { ...options, readBoundary: marked ? null : options.readBoundary });
+      view.insertBefore(fragment, view.querySelector(":scope > .am-outbox"));
+    } else {
+      view.replaceChildren();
+      if (!entries.length) view.append(h("p", "am-transcript-note", "No messages yet."));
+      else window.agentTranscript.renderEntries(view, entries, options);
+    }
+    renderedEntries = { key: detailState.key, ...options, prints };
     view.dataset.content = fingerprint;
     view.dataset.agent = detailState.key;
-    if (!entries.length) view.append(h("p", "am-transcript-note", "No messages yet."));
-    else window.agentTranscript.renderEntries(view, entries, { agentName: detailState.detail?.name ?? "", readBoundary: state.readBoundary });
   }
   snapshot();
   let box = view.querySelector<HTMLElement>(":scope > .am-outbox");
