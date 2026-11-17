@@ -1348,6 +1348,21 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .view-switch.segmented button { padding: 4px 12px; }
 .detail-summary { margin-bottom: 14px; }
 .detail-summary p { margin: 0; font-size: 14.5px; color: var(--fg-muted); }
+.agent-status-panel { margin: 0 0 18px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.agent-status-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 12px; }
+.agent-status-head h2 { margin: 0; font-size: 15px; }
+.agent-status-head .muted { font-size: 11.5px; }
+.agent-status-copy { display: grid; gap: 12px; }
+.agent-status-copy h3 { margin: 0 0 3px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-subtle); }
+.agent-status-copy p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-strong); line-height: 1.45; }
+.agent-status-fallback { color: var(--fg-muted); }
+.agent-status-fallback strong { display: block; margin-bottom: 3px; color: var(--fg-subtle); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.agent-status-signals { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.agent-status-signal { min-height: 28px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--fg-muted); font-size: 12px; }
+button.agent-status-signal { cursor: pointer; }
+button.agent-status-signal:hover { color: var(--fg-strong); border-color: var(--border-strong); }
+.side-agent-summary { display: block; overflow: hidden; color: var(--fg-subtle); font-size: 11.5px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.agent-card [data-status-summary] { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .conversation { border: 0; background: none; overflow: visible; }
 #terminal-panel:not([hidden]) {
   border: 1px solid var(--border);

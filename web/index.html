@@ -373,6 +373,14 @@
               <p id="detail-meta"></p>
               <button id="detail-meta-toggle" class="text-button" type="button" aria-controls="detail-meta" aria-expanded="false" hidden>Show full task</button>
             </div>
+            <section id="agent-status-panel" class="agent-status-panel" aria-labelledby="agent-status-title">
+              <div class="agent-status-head">
+                <h2 id="agent-status-title">Task status</h2>
+                <span id="agent-status-freshness" class="muted"></span>
+              </div>
+              <div id="agent-status-content"></div>
+              <div id="agent-status-signals" class="agent-status-signals" aria-label="Observed operational state"></div>
+            </section>
             <div id="permissions"></div>
             <div class="conversation-layout">
               <div class="conversation">
