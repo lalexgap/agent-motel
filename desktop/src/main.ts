@@ -20,7 +20,6 @@ import { initSearch } from "./searchView";
 import { applySidebarWidth, focusFilter, initSidebar, tickTimes } from "./sidebar";
 import { changed, newConnState, state } from "./state";
 import { initStatusbar } from "./statusbar";
-import { initStatusSection } from "./statusSection";
 import { initSubagentView, tickSubagent } from "./subagentView";
 import { initTerminal, showAgentView } from "./terminalView";
 import { initUsage } from "./usageView";
@@ -61,7 +60,6 @@ function wire(): void {
   initSearch();
   initPrs();
   initDecisionsPage();
-  initStatusSection();
   initRelatedSection();
   // Links in chat open in the user's browser, never inside the app's web view.
   document.addEventListener("click", (event) => {

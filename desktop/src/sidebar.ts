@@ -31,7 +31,6 @@ import { fleets, loadProblem, persist, state, subscribe, unread } from "./state"
 import { flashStatus } from "./statusbar";
 import { itemKey } from "./subagents";
 import { openSubagent } from "./subagentView";
-import { statusSummary } from "./statusModel";
 
 const SIDEBAR_MIN = 200;
 
@@ -111,9 +110,6 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   const age = timestampNode(row.updatedAt, parts.age);
   if (age) meta.append(document.createTextNode(" · "), age);
   text.append(line, meta);
-  const summary = h("div", "am-agent-summary", statusSummary(row));
-  summary.dataset.statusSummary = "";
-  text.append(summary);
   node.append(dot(row.status), text);
   node.title = rowTooltip(item, provider);
   node.setAttribute("aria-label", node.title.replace("\n", ", "));

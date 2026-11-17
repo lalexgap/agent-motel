@@ -13,23 +13,6 @@ export interface Connection {
 export type AgentStatus = "starting" | "idle" | "working" | "waiting" | "needs-attention" | "exited" | "dead";
 export type Provider = "claude" | "codex" | "antigravity";
 
-export interface PlanProjection {
-  source: "legacy-plan";
-  state: "available" | "missing" | "placeholder" | "invalid" | "unavailable";
-  freshness: "unknown";
-  modifiedAt?: string;
-  currentStatus?: string;
-  nextSteps?: string;
-  reason?: "duplicate-headings" | "missing-headings" | "too-large" | "unsafe-path" | "unreadable";
-}
-
-export interface AgentPrStatus {
-  number: number;
-  state: string;
-  reason: string;
-  url?: string;
-}
-
 export interface AgentRow {
   name: string;
   host?: string;
@@ -51,9 +34,7 @@ export interface AgentRow {
   workingSince?: string | null;
   promptAt?: string | null;
   spawnedBy?: string;
-  prMonitor?: { pullRequests?: { number: number; state: string }[]; checkedAt?: string };
-  prStatus?: AgentPrStatus[];
-  statusProjection?: PlanProjection;
+  prMonitor?: { pullRequests?: { number: number; state: string }[] };
   subagents?: SubagentSummary;
   // The stored status where `status` is how the agent is shown: an agent idle
   // at its prompt with live subagents shows `working` here and `idle` there.

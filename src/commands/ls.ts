@@ -31,7 +31,6 @@ import {
   type DecisionSummary,
 } from "../decisions";
 import { loadConfig } from "../config";
-import { readPlanProjection, type PlanProjection } from "../planProjection";
 
 export type DisplayStatus = AgentState["status"] | "dead" | "waiting";
 
@@ -464,7 +463,6 @@ export interface AgentRow {
   // would be answered first (blocking, then oldest).
   oldestDecisionAt?: string;
   firstDecision?: string;
-  statusProjection?: PlanProjection;
 }
 
 export interface DiffSummary {
@@ -612,7 +610,6 @@ export function agentRows(): AgentRow[] {
           ? clipDetail(presence.reason ?? "")
           : subagents && clipDetail(subagents.detail),
       ...decisionFields(showDecisions ? storeSummary(storeText(a.name)) : undefined),
-      statusProjection: readPlanProjection(a.name),
     };
   });
 }
