@@ -8,7 +8,8 @@
 // Claude-shaped JSON it reads on stdin:
 //   session.start  -> am hook session-start
 //   agent.start    -> am hook user-prompt-submit (its context is appended to the prompt)
-//   agent.end      -> am hook stop (a block becomes a `continue` turn)
+//   agent.end      -> am hook stop (a block becomes a `continue` turn, while
+//                     Amp would still honour one)
 //   tool.call      -> am hook pre-tool-use, or subagent-start for Task
 //   tool.result    -> am hook post-tool-use, or subagent-stop for Task
 // It also hands queued am messages to the thread while it is idle (am hook
@@ -136,9 +137,21 @@ export function lastAssistantText(messages: unknown): string | undefined {
   return undefined;
 }
 
+// Amp ignores a plugin's `continue` after this many in a row with no user
+// message between them (AgentEndResult.maxContinuations' default).
+export const AMP_MAX_CONTINUATIONS = 5;
+
+// Whether this turn end may become a `continue`: only a turn that finished
+// (not one the operator cancelled or that failed) and only while Amp would
+// still honour one. Otherwise am must not block, or it would take the queue
+// for a turn that never comes.
+export function mayContinue(status: unknown, continuations: number): boolean {
+  return status === "done" && continuations < AMP_MAX_CONTINUATIONS;
+}
+
 // stop_hook_active mirrors Claude's: this stop follows a turn a stop block
-// started.
-export function agentEndHook(thread: string, cwd: string, messages: unknown, continued: boolean): HookCall {
+// started. am_plain_stop asks am not to block it (see mayContinue).
+export function agentEndHook(thread: string, cwd: string, messages: unknown, continued: boolean, plain = false): HookCall {
   const reply = lastAssistantText(messages);
   return {
     sub: "stop",
@@ -146,6 +159,7 @@ export function agentEndHook(thread: string, cwd: string, messages: unknown, con
       session_id: thread,
       cwd,
       stop_hook_active: continued,
+      ...(plain ? { am_plain_stop: true } : {}),
       ...(reply !== undefined ? { last_assistant_message: reply } : {}),
       hook_event_name: "Stop",
     },
@@ -189,32 +203,37 @@ export function drainMessage(stdout: string): string | undefined {
 export const IDLE_POLL_MS = 3000;
 const HOOK_TIMEOUT_MS = 30_000;
 
-function runHook(command: string[], sub: string, payload: HookPayload): Promise<string> {
+// `complete`: am ran and exited 0, so stdout is all it had to say.
+function runHookResult(command: string[], sub: string, payload: HookPayload): Promise<{ stdout: string; complete: boolean }> {
   return new Promise((resolve) => {
     let stdout = "";
     let done = false;
-    const finish = () => {
+    const finish = (complete: boolean) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      resolve(stdout);
+      resolve({ stdout, complete });
     };
     let child;
     try {
       child = spawn(command[0]!, [...command.slice(1), "hook", sub], { stdio: ["pipe", "pipe", "ignore"], env: process.env });
     } catch {
-      return resolve("");
+      return resolve({ stdout: "", complete: false });
     }
     const timer = setTimeout(() => {
       child.kill();
-      finish();
+      finish(false);
     }, HOOK_TIMEOUT_MS);
     child.stdout?.on("data", (chunk) => (stdout += chunk.toString()));
-    child.on("error", finish);
-    child.on("close", finish);
+    child.on("error", () => finish(false));
+    child.on("close", (code) => finish(code === 0));
     child.stdin?.on("error", () => {});
     child.stdin?.end(JSON.stringify(payload));
   });
+}
+
+async function runHook(command: string[], sub: string, payload: HookPayload): Promise<string> {
+  return (await runHookResult(command, sub, payload)).stdout;
 }
 
 // Amp's plugin API, as far as this plugin uses it. Typed loosely so the file
@@ -250,11 +269,12 @@ export default function agentMotel(amp: AmpApi): void {
   if (!agent) return;
   const command = amCommand(process.env);
   const cwd = workspaceDir(amp);
-  // The thread this agent is on: the one a session last started. Events from
-  // any other thread (a subagent's, say) aren't the agent's own turn.
+  // The thread this agent is on: the first one this process sees, which am
+  // records as the agent's session. Events from any other thread (a
+  // subagent's, or one the operator switches to) aren't the agent's turn.
   let current: string | null = null;
-  // Threads whose running turn a stop block started.
-  const continued = new Set<string>();
+  // Consecutive continue turns per thread (Amp caps them).
+  const continuations = new Map<string, number>();
   const own = (thread: string | undefined): thread is string => {
     if (!thread) return false;
     current ??= thread;
@@ -263,8 +283,7 @@ export default function agentMotel(amp: AmpApi): void {
 
   amp.on("session.start", async (event) => {
     const thread = event?.thread?.id as string | undefined;
-    if (!thread) return;
-    current = thread;
+    if (!own(thread)) return;
     const call = sessionStartHook(thread, cwd);
     await runHook(command, call.sub, call.payload);
   });
@@ -279,10 +298,13 @@ export default function agentMotel(amp: AmpApi): void {
   amp.on("agent.end", async (event) => {
     const thread = event?.thread?.id as string | undefined;
     if (!own(thread)) return undefined;
-    const call = agentEndHook(thread, cwd, event.messages, continued.has(thread));
-    const result = agentEndResult(await runHook(command, call.sub, call.payload));
-    if (result) continued.add(thread);
-    else continued.delete(thread);
+    const count = continuations.get(thread) ?? 0;
+    const plain = !mayContinue(event.status, count);
+    const call = agentEndHook(thread, cwd, event.messages, count > 0, plain);
+    const stdout = await runHook(command, call.sub, call.payload);
+    const result = plain ? undefined : agentEndResult(stdout);
+    if (result) continuations.set(thread, count + 1);
+    else continuations.delete(thread);
     return result;
   });
 
@@ -314,8 +336,19 @@ export default function agentMotel(amp: AmpApi): void {
     try {
       const handle = amp.threads.get(thread);
       if ((await handle.state.get()) !== "idle") return;
-      const message = drainMessage(await runHook(command, "amp-drain", { session_id: thread, cwd }));
-      if (message) await handle.appendUserMessage({ type: "user-message", content: message });
+      // Names this drain, so am returns exactly what it took if the
+      // hand-over fails.
+      const payload = { session_id: thread, cwd, handover: `${Date.now()}-${Math.random().toString(36).slice(2)}` };
+      const drained = await runHookResult(command, "amp-drain", payload);
+      // am may have taken the queue and then been cut off: give it all back.
+      const message = drained.complete ? drainMessage(drained.stdout) : undefined;
+      try {
+        if (!drained.complete) throw new Error("am hook amp-drain did not finish");
+        if (message) await handle.appendUserMessage({ type: "user-message", content: message });
+      } catch (error) {
+        amp.logger?.log("agent-motel: idle delivery failed, returning it to am's queue", String(error));
+        await runHook(command, "amp-requeue", payload);
+      }
     } catch (error) {
       amp.logger?.log("agent-motel: idle delivery failed", String(error));
     } finally {

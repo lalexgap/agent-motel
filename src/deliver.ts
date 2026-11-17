@@ -1,7 +1,7 @@
 import { providerMessageError } from "./providerLimits";
 import { antigravityRequest } from "./antigravity";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, rmSync } from "node:fs";
+import { closeSync, existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, agentSessionId, noteHandoff, readAgent, updateAgentIf, updateAgentStatus, type AgentState, type Provider } from "./state";
 import { queueClearEntries, queueDepth, queueHead, queuePopId, queueRestoreLocked, type QueueHead } from "./queue";
@@ -509,6 +509,75 @@ const CODEX_HANDOFFS_KEPT = 50;
 const RECLAIM_RETRIES = 8;
 const RECLAIM_BACKOFF_MS = 15_000;
 const RECLAIM_BACKOFF_MAX_MS = 10 * 60_000;
+
+// Amp's idle drain (am hook amp-drain) hands the queue to the plugin, which
+// passes it to Amp with appendUserMessage. What the drain took is kept until
+// the next drain, under the plugin's token for that drain, so a hand-over the
+// plugin couldn't make (am hook amp-requeue, same token) goes back in the
+// queue under its old ids, with the provenance am recorded for it, never
+// anything read back from the text.
+function ampHandoverPath(name: string): string {
+  return join(queueDir(), name, ".amp-handover");
+}
+
+function ampReturnedPath(name: string): string {
+  return join(queueDir(), name, ".amp-handover.returned");
+}
+
+interface AmpHandover {
+  token: string;
+  entries: { id: string; message: string; provenance?: MessageProvenance }[];
+}
+
+// Callers hold the delivery lock.
+export function noteAmpHandover(name: string, token: string, taken: QueueHead[]): void {
+  if (!token || !taken.length) return rmSync(ampHandoverPath(name), { force: true });
+  const entries = taken.map((h) => ({ id: h.id, message: h.message, ...(h.provenance ? { provenance: h.provenance } : {}) }));
+  writeJsonAtomic(ampHandoverPath(name), { token, entries } satisfies AmpHandover, { pretty: false });
+}
+
+export function ampHandoverReturned(name: string): boolean {
+  return existsSync(ampReturnedPath(name));
+}
+
+// Put a returned hand-over back at the front of the queue, its receipts
+// queued again. Callers hold the delivery lock.
+export function restoreAmpHandover(name: string): number {
+  const returned = readJsonOrNull<AmpHandover>(ampReturnedPath(name))?.entries ?? [];
+  for (const h of returned) {
+    try {
+      queueRestoreLocked(name, h.id, h.message, h.provenance);
+    } catch {
+      continue; // not an entry id
+    }
+    try {
+      requeueDelivered(name, h.id, true);
+    } catch {
+      // a receipt must not keep the message from being delivered
+    }
+  }
+  rmSync(ampReturnedPath(name), { force: true });
+  return returned.length;
+}
+
+// The plugin couldn't hand over the drain `token` names. Marked returned
+// first, so if the queue is busy now the next drain puts it back before
+// taking more. The plugin runs one drain at a time.
+export function returnAmpHandover(name: string, token: string): number {
+  if (token && readJsonOrNull<AmpHandover>(ampHandoverPath(name))?.token === token) {
+    try {
+      renameSync(ampHandoverPath(name), ampReturnedPath(name));
+    } catch {
+      // taken back already
+    }
+  }
+  if (!ampHandoverReturned(name) || !acquireDeliverLock(name)) return 0;
+  try {
+    return restoreAmpHandover(name);
+  } finally {
+    releaseDeliverLock(name);
+  }
+}
 
 function codexHandoffsPath(name: string): string {
   return join(queueDir(), name, ".codex-handoffs");

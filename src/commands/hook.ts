@@ -13,18 +13,22 @@ import {
   type AgentState,
   type AgentStatus,
 } from "../state";
-import { queueAppendForAgent, queueDepth, queueHead, queuePopId } from "../queue";
+import { queueAppendForAgent, queueDepth, queueHead, queuePopId, type QueueHead } from "../queue";
 import {
   acquireDeliverLock,
+  ampHandoverReturned,
   confirmInboxDelivery,
   deliverNext,
   dropCodexHandoff,
   finishConfirmedDelivery,
   inboxDeliveryIn,
   needsCodexRecovery,
+  noteAmpHandover,
   pendingDeliveryId,
   releaseDeliverLock,
   releaseEscapeHold,
+  restoreAmpHandover,
+  returnAmpHandover,
   spawnDeliver,
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -334,9 +338,10 @@ function surfaceInbox(
 }
 
 // Pop everything queued, receipts and all, under the delivery lock (held by
-// the caller). Stops at a message another deliverer has in flight.
-function drainQueued(name: string): InboxMessage[] {
-  const pending: InboxMessage[] = [];
+// the caller). Stops at a message another deliverer has in flight. `taking`
+// sees what is taken so far before each pop.
+function drainQueued(name: string, taking?: (taken: QueueHead[]) => void): InboxMessage[] {
+  const pending: QueueHead[] = [];
   let head;
   const receipts = drainReceipts(name);
   while ((head = queueHead(name)) !== null) {
@@ -344,6 +349,7 @@ function drainQueued(name: string): InboxMessage[] {
       if (finishConfirmedDelivery(name, head.id)) continue;
       break;
     }
+    taking?.([...pending, head]);
     const mark = receipts.mark(head.id);
     queuePopId(name, head.id);
     receipts.delivered(head.id, mark);
@@ -354,11 +360,15 @@ function drainQueued(name: string): InboxMessage[] {
 }
 
 // Amp's plugin asks while its thread sits idle (no turn will end to drain
-// the queue): the inbox text for it to send as a new prompt, or "".
-export function ampIdleDrain(name: string): string {
-  if (queueDepth(name) === 0 || !acquireDeliverLock(name)) return "";
+// the queue): the inbox text for it to send as a new prompt, or "". What it
+// takes is noted (before each pop) under the plugin's handover token, so the
+// plugin can return it with amp-requeue if the hand-over fails.
+export function ampIdleDrain(name: string, token: string): string {
+  if ((queueDepth(name) === 0 && !ampHandoverReturned(name)) || !acquireDeliverLock(name)) return "";
   try {
-    const pending = drainQueued(name);
+    restoreAmpHandover(name);
+    noteAmpHandover(name, token, []);
+    const pending = drainQueued(name, (taken) => noteAmpHandover(name, token, taken));
     return pending.length ? formatInbox(pending, { idle: true }) : "";
   } finally {
     releaseDeliverLock(name);
@@ -705,7 +715,14 @@ export async function hookCommand(event: string): Promise<void> {
   if (ampThread && typeof payload.session_id === "string" && payload.session_id !== ampThread
       && !(event === "session-start" && agent.status === "starting")) return;
   if (event === "amp-drain") {
-    if (agentProvider(agent) === "amp" && agent.status !== "exited") process.stdout.write(ampIdleDrain(agent.name));
+    if (agentProvider(agent) === "amp" && agent.status !== "exited") {
+      process.stdout.write(ampIdleDrain(agent.name, typeof payload.handover === "string" ? payload.handover : ""));
+    }
+    return;
+  }
+  // The plugin couldn't hand the last amp-drain over to Amp: put it back.
+  if (event === "amp-requeue") {
+    if (agentProvider(agent) === "amp" && typeof payload.handover === "string") returnAmpHandover(agent.name, payload.handover);
     return;
   }
   // Daemon threads already have an identity assigned at launch. A retiring
@@ -750,7 +767,11 @@ export async function hookCommand(event: string): Promise<void> {
   // finishing — it never goes idle sitting on unread mail. Cleaner than typing
   // them into the pane (no Enter-swallow); the idle-drain still covers agents
   // that are already idle when a message arrives.
-  if (event === "stop" && !fromSubagent) {
+  // Amp's plugin asks for a plain stop when Amp would ignore a continue (its
+  // continuation cap) or shouldn't get one (a cancelled or failed turn): the
+  // queue stays for the idle drain and the decisions check is skipped.
+  const plainStop = agentProvider(agent) === "amp" && payload.am_plain_stop === true;
+  if (event === "stop" && !fromSubagent && !plainStop) {
     const gate = stopGate(name, agentProvider(agent) === "claude");
     if (gate) {
       // The queue lock was released by stopGate; a rename could have landed

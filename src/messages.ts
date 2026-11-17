@@ -314,11 +314,13 @@ export function markDelivered(
 
 // A delivered message the agent never started, taken back to be handed over
 // again: queued as it was before its handover. Callers hold the delivery lock.
-export function requeueDelivered(name: string, entryId: string): void {
+// `absorbed` also takes back one a drain marked started as it handed it over
+// (via "absorbed"), when that hand-over is known to have failed.
+export function requeueDelivered(name: string, entryId: string, absorbed = false): void {
   const id = entryMessageId(entryId);
   if (!ID_RE.test(id) || !existsSync(recordFile(name, id))) return;
   updateRecord(name, id, (r) => {
-    if (r.state !== "delivered" || r.startedAt) return null;
+    if (r.state !== "delivered" || (r.startedAt && !(absorbed && r.via === "absorbed"))) return null;
     const { handedAt: _h, via: _v, interrupted: _x, ...rest } = r;
     return { ...rest, state: "queued", deliveredAt: null, doneAt: null, transcriptIndex: null };
   });

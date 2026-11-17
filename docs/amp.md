@@ -16,20 +16,20 @@ Amp has no settings-file hooks, so am installs a system plugin at `~/.config/amp
 
 | Amp event | am hook | Notes |
 |---|---|---|
-| `session.start` | `session-start` | Records the thread ID. |
+| `session.start` | `session-start` | Records the thread ID. Only the first thread the Amp process sees is the agent's. |
 | `agent.start` | `user-prompt-submit` | `additionalContext` (plan, decisions, operator notes, inbox) is appended to the prompt. |
-| `agent.end` | `stop` | A block (`{decision:"block", reason}`) becomes `{action:"continue", userMessage: reason}`, which delivers the inbox at turn end. |
+| `agent.end` | `stop` | A block (`{decision:"block", reason}`) becomes `{action:"continue", userMessage: reason}`, which delivers the inbox at turn end. A cancelled or failed turn, or one past Amp's continuation cap, is a plain stop (see below). |
 | `tool.call` | `pre-tool-use`, or `subagent-start` for `Task` | |
 | `tool.result` | `post-tool-use`, or `subagent-stop` for `Task` | |
 
-Hooks for any thread other than the agent's recorded one are ignored (a launch or resume may adopt a new one). This keeps an `amp -x` run by the agent, which inherits its environment, from reporting as the agent.
+Hooks for any thread other than the agent's recorded one are ignored (a launch or resume may adopt a new one). The plugin follows the same rule: it keeps the first thread it sees and ignores later `session.start` events for other threads. This keeps an `amp -x` run by the agent, which inherits its environment, from reporting as the agent.
 
 ## Message delivery
 
 am doesn't type into Amp's TUI. Messages are delivered in two ways:
 
-- **At turn end**, the stop hook's inbox block becomes a `continue` turn. Amp allows 5 consecutive plugin continuations before ignoring more, and any user message resets that count.
-- **While idle**, the plugin checks the thread every 3 seconds. When the thread is idle it runs `am hook amp-drain`, which takes the queue under the delivery lock and returns one `[am inbox]` prompt, and the plugin sends that prompt with `appendUserMessage`. Delivery can therefore lag by up to 3 seconds, and costs one short `am` process per idle Amp agent per poll.
+- **At turn end**, the stop hook's inbox block becomes a `continue` turn. Amp allows 5 consecutive plugin continuations before ignoring more, and any user message resets that count. The plugin counts them per thread, and once a sixth would be ignored, or when the turn was cancelled (Esc) or failed, it sends a plain stop (`am_plain_stop`): am skips the inbox and decisions blocks, the agent goes idle and its queue stays for the idle drain.
+- **While idle**, the plugin checks the thread every 3 seconds. When the thread is idle it runs `am hook amp-drain`, which takes the queue under the delivery lock and returns one `[am inbox]` prompt, and the plugin sends that prompt with `appendUserMessage`. Delivery can therefore lag by up to 3 seconds, and costs one short `am` process per idle Amp agent per poll. am keeps what each drain took under a token the plugin chose for it; if `amp-drain` doesn't finish or `appendUserMessage` fails, the plugin runs `am hook amp-requeue` with that token and am puts the messages back at the front of the queue with the ids and provenance it recorded, so their receipts read queued again.
 
 `am send --now` (mid-turn steering) is refused for Amp agents.
 
@@ -39,4 +39,4 @@ am doesn't type into Amp's TUI. Messages are delivered in two ways:
 - `am switch-model`. `am restart --model` relaunches with `threads continue`, and the thread keeps its own mode.
 - `am handoff` to or from Amp.
 - Subagent ledger: Amp 0.0.1792680614 doesn't send a `tool.call` for `Task` itself (only for the tools the subagent runs, under the parent's thread), so `am subagents` stays empty.
-- If the operator switches threads inside the TUI, am keeps following the original thread.
+- If the operator switches threads inside the TUI, am keeps following the original thread: turns on the new thread don't report to am, and queued messages still go to the original thread.
