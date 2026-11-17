@@ -194,8 +194,6 @@ export function buildRows(now: number): FixtureRow[] {
       row.oldestDecisionAt = ago(now, seed.decisions.oldest);
       row.firstDecision = seed.decisions.first;
     }
-    // Synthetic plan projections cover the screenshot states. Remote rows
-    // deliberately omit the field to represent an older host.
     if (!seed.host) {
       const modifiedAt = ago(now, Math.max(1, seed.updated + 2));
       if (seed.name === "origami-docs") {

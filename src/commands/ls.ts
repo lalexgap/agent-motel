@@ -464,8 +464,6 @@ export interface AgentRow {
   // would be answered first (blocking, then oldest).
   oldestDecisionAt?: string;
   firstDecision?: string;
-  // Bounded, read-only projection of this identity's plan. Missing on remote
-  // rows from older am versions; never contains a filesystem path.
   statusProjection?: PlanProjection;
 }
 
