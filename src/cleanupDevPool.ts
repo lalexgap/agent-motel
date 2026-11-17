@@ -15,6 +15,8 @@ export interface DevPoolCleanupPlan {
   repoRoot?: string;
 }
 
+export interface DevPoolCleanupResult { removed: string[] }
+
 type Slot = { id: number; lease: null | { worktree: string; agentName?: string; leaseId?: string; owner?: { pid?: number; startTime?: string } }; dbName?: string; lastWorktree?: string };
 const privateName = /^producthunt_dev_[a-zA-Z0-9_]+$/;
 
@@ -70,7 +72,7 @@ function dbRecord(worktree: string) {
 function verifyDatabaseServer(worktree: string, repoRoot: string | undefined, expected: URL): void {
   for (const root of [worktree, repoRoot]) {
     if (!root) continue;
-    let values: Record<string, string> = {};
+    let values: Record<string, string | undefined> = {};
     for (const file of [".env", ".env.development", ".env.local", ".env.development.local"]) {
       try { values = { ...values, ...parseEnv(readFileSync(join(root, file), "utf8")) }; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("cannot inspect dev-pool database configuration"); }
@@ -151,9 +153,10 @@ export function planDevPoolCleanup(agent: AgentState): DevPoolCleanupPlan {
   return plan;
 }
 
-export function applyDevPoolCleanup(plan: DevPoolCleanupPlan): void {
+export function applyDevPoolCleanup(plan: DevPoolCleanupPlan): DevPoolCleanupResult {
   if (plan.blockers.length) throw new Error(plan.blockers.join("; "));
-  if (!plan.worktree || (!plan.remove.length && !plan.dbName)) return;
+  if (!plan.worktree || (!plan.remove.length && !plan.dbName)) return { removed: [] };
+  let removed: string[] = [];
   const lockError = withWorktreeDeletionLock(() => {
     // Preserve the identity check while the pool cannot assign this checkout elsewhere.
     const records = slots();
@@ -166,15 +169,24 @@ export function applyDevPoolCleanup(plan: DevPoolCleanupPlan): void {
       verifyOtherDatabaseReferences(plan.worktree!, plan.repoRoot, record.name);
     }
     if (plan.dbName && records.some(s => s.dbName === plan.dbName && !held.includes(s))) throw new Error("private database acquired by another slot");
-    try {
     const result = run(["dev-pool", "-C", plan.worktree!, "down", ...(plan.dbName ? ["--drop-db"] : [])]);
-    if (result.exitCode !== 0) throw new Error("dev-pool cleanup failed; worktree retained");
-    if (slots().some(s => s.lease && canonicalPath(s.lease.worktree) === plan.worktree)) throw new Error("dev-pool lease was not released; worktree retained");
-    if (plan.dbName && record?.url && databaseExists(record.url, plan.dbName)) throw new Error(`private database ${plan.dbName} still exists; worktree retained`);
-    } catch (error) {
-      if (record?.url) writeFileSync(join(plan.worktree!, "tmp", ".dev-stack-db"), record.raw, { mode: 0o600 });
-      throw error;
+    const leaseReleased = !slots().some(s => s.lease && canonicalPath(s.lease.worktree) === plan.worktree);
+    let databaseDropped = !plan.dbName;
+    let databaseVerificationError: Error | null = null;
+    if (plan.dbName && record?.url) {
+      try { databaseDropped = !databaseExists(record.url, plan.dbName); }
+      catch (error) { databaseVerificationError = error as Error; }
+    }
+    removed = plan.remove.filter((item) => item.startsWith("dev-pool slot-") ? leaseReleased : item.startsWith("private database ") ? databaseDropped : false);
+    if (result.exitCode !== 0 || !leaseReleased || !databaseDropped || databaseVerificationError) {
+      if (record?.url && !databaseDropped) writeFileSync(join(plan.worktree!, "tmp", ".dev-stack-db"), record.raw, { mode: 0o600 });
+      const failure = result.exitCode !== 0 ? "dev-pool cleanup failed"
+        : !leaseReleased ? "dev-pool lease was not released"
+        : databaseVerificationError?.message ?? `private database ${plan.dbName} still exists`;
+      const partial = removed.length ? `; verified removed: ${removed.join(", ")}` : "";
+      throw new Error(`${failure}${partial}; worktree retained`);
     }
   });
   if (lockError) throw new Error(lockError);
+  return { removed };
 }

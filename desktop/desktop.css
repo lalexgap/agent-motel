@@ -2113,7 +2113,7 @@ button.am-rel-item:hover {
 .am-cleanup-dialog ul { margin: 0; padding-left: 20px; max-height: 130px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .am-cleanup-dialog section p { margin: 0; line-height: 1.45; }
 .am-cleanup-dialog .cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger); background: var(--danger-soft); font-size: 13px; line-height: 1.45; }
-.am-cleanup-dialog .cleanup-ack { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
+.am-cleanup-dialog .cleanup-ack { display: flex; justify-content: flex-start; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
 .am-cleanup-dialog .cleanup-ack input { margin-top: 2px; }
 .am-cleanup-dialog .danger-ack { color: var(--danger); font-weight: 600; }
 /* Open decisions the agent registered for the owner: a count, warning-toned when any blocks. */

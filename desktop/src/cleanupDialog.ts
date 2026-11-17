@@ -93,7 +93,7 @@ function build(): CleanupDialog {
   form.append(header, source, warning, loading, preview, error, actions);
   dialog.append(form);
   document.body.append(dialog);
-  const built = { dialog, form, source, loading, preview, remove, keep, git, blockersSection, blockers, confirmed, forceField, force, error, close, cancel, submit, key: null, plan: null, busy: false, returnTo: null };
+  const built: CleanupDialog = { dialog, form, source, loading, preview, remove, keep, git, blockersSection, blockers, confirmed, forceField, force, error, close, cancel, submit, key: null, plan: null, busy: false, returnTo: null };
   for (const input of [confirmed, force]) input.addEventListener("change", updateSubmit);
   for (const button of [close, cancel]) button.addEventListener("click", () => { if (!built.busy) dialog.close(); });
   dialog.addEventListener("cancel", (event) => { if (built.busy) event.preventDefault(); });

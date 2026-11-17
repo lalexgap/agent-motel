@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { stopAgent } from "./commands/rm";
 import { applyDevPoolCleanup, planDevPoolCleanup, type DevPoolCleanupPlan } from "./cleanupDevPool";
 import { acquireDeliverLock, releaseDeliverLock } from "./deliver";
@@ -106,6 +106,16 @@ function registrationBlocker(agent: AgentState): string | null {
   return null;
 }
 
+function managedAgentDirBlocker(agent: AgentState): string | null {
+  if (!agent.worktreePath) return null;
+  try {
+    if (!isAbsolute(agent.dir) || !isAbsolute(agent.worktreePath)) return "agent directory is outside its managed worktree";
+    const rel = relative(canonicalPath(agent.worktreePath), canonicalPath(agent.dir));
+    if (rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return null;
+  } catch { /* invalid or unreadable paths fail closed */ }
+  return "agent directory is outside its managed worktree";
+}
+
 function addBlocker(plan: CleanupPlan, reason: string, forceable: boolean, files?: string[]): void {
   if (plan.blockers.some((blocker) => blocker.reason === reason)) return;
   plan.blockers.push({ reason, forceable, ...(files?.length ? { files } : {}) });
@@ -169,6 +179,8 @@ function planCore(agent: AgentState, devPool?: DevPoolCleanupPlan): CleanupPlan 
     return plan;
   }
   const path = agent.worktreePath!;
+  const agentDir = managedAgentDirBlocker(agent);
+  if (agentDir) addBlocker(plan, agentDir, false);
   if (!existsSync(path)) {
     plan.keep.push(`${path} (already absent)`);
     return plan;
@@ -217,16 +229,17 @@ function mergeDevPool(plan: CleanupPlan, devPool: DevPoolCleanupPlan): CleanupPl
   return plan;
 }
 
-function gitSnapshot(path: string): unknown {
+function gitSnapshot(path: string, excludes: string[] = []): unknown {
   if (!existsSync(path)) return { absent: true };
+  const excluded = new Set(excludes);
   const command = (...args: string[]) => {
     const result = git(path, ...args);
     return result.ok ? result.out : { error: result.err || "git command failed" };
   };
-  const files = [
-    command("ls-files", "--others", "--exclude-standard", "-z"),
-    command("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
-  ].flatMap((value) => typeof value === "string" ? value.split("\0").filter(Boolean) : []);
+  const listed = (value: unknown) => typeof value === "string" ? value.split("\0").filter((file) => file && !excluded.has(file)) : value;
+  const untracked = listed(command("ls-files", "--others", "--exclude-standard", "-z"));
+  const ignored = listed(command("ls-files", "--others", "--ignored", "--exclude-standard", "-z"));
+  const files = [untracked, ignored].flatMap((value) => Array.isArray(value) ? value : []);
   const metadata = files.sort().map((file) => {
     try {
       const stat = statSync(join(path, file));
@@ -238,14 +251,29 @@ function gitSnapshot(path: string): unknown {
   return {
     head: command("rev-parse", "HEAD"),
     index: command("ls-files", "--stage", "-z"),
-    status: command("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"),
+    status: (() => {
+      const value = command("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored");
+      return typeof value === "string"
+        ? value.split("\0").filter((entry) => entry && !(["?? ", "!! "].includes(entry.slice(0, 3)) && excluded.has(entry.slice(3))))
+        : value;
+    })(),
     tracked: command("diff", "--binary", "--no-ext-diff"),
     staged: command("diff", "--cached", "--binary", "--no-ext-diff"),
+    untracked,
+    ignored,
     metadata,
   };
 }
 
-function finalizePlan(agent: AgentState, plan: CleanupPlan): CleanupPlan {
+interface ConfirmedGitState { snapshot: unknown; excludes: string[] }
+
+function confirmedGitState(agent: AgentState, plan: CleanupPlan): ConfirmedGitState | undefined {
+  if (!agent.worktreePath) return undefined;
+  const excludes = plan.devPool?.dbName ? ["tmp/.dev-stack-db"] : [];
+  return { snapshot: gitSnapshot(agent.worktreePath, excludes), excludes };
+}
+
+function finalizePlan(agent: AgentState, plan: CleanupPlan, confirmedGit = confirmedGitState(agent, plan)): CleanupPlan {
   const resources = plan.remove.flatMap((item) => {
     try {
       const stat = statSync(item);
@@ -264,7 +292,7 @@ function finalizePlan(agent: AgentState, plan: CleanupPlan): CleanupPlan {
     remove: resources,
     queue: queueList(agent.name).map((entry) => [entry.msgId, entry.queuedAt]),
     devPool: plan.devPool ? { remove: plan.devPool.remove, blockers: plan.devPool.blockers, fingerprint: plan.devPool.fingerprint } : undefined,
-    git: agent.worktreePath ? gitSnapshot(agent.worktreePath) : undefined,
+    git: confirmedGit?.snapshot,
   })).digest("hex");
   return plan;
 }
@@ -284,7 +312,7 @@ function blockerError(plan: CleanupPlan, force: boolean): Error {
   return new Error(`cleanup blocked: ${blocking(plan, force).map((blocker) => blocker.reason).join("; ")}`);
 }
 
-function removeWorktree(agent: AgentState, force: boolean): void {
+function removeWorktree(agent: AgentState, force: boolean, confirmedGit: ConfirmedGitState | undefined): void {
   const path = agent.worktreePath;
   if (!path || !existsSync(path)) return;
   let failure: string | null = null;
@@ -303,6 +331,10 @@ function removeWorktree(agent: AgentState, force: boolean): void {
     const nested = nestedRepositoryReason(path);
     if (registration || branchFailure || owner || nested || (safety && (!force || safety.kind !== "dirty")) || (commit && (!force || commit.kind !== "unpushed"))) {
       failure = registration ?? branchFailure ?? owner ?? nested ?? safety?.reason ?? commit?.reason ?? "worktree cleanup became unsafe";
+      return;
+    }
+    if (!confirmedGit || JSON.stringify(gitSnapshot(path, confirmedGit.excludes)) !== JSON.stringify(confirmedGit.snapshot)) {
+      failure = "worktree changed after cleanup confirmation; worktree retained";
       return;
     }
     const result = Bun.spawnSync([
@@ -345,14 +377,13 @@ export async function cleanupAgent(
     agent = currentLifecycleAgent(agent);
 
     const devPool = planDevPoolCleanup(agent);
-    const plan = finalizePlan(agent, mergeDevPool(planCore(agent, devPool), devPool));
+    const pendingPlan = mergeDevPool(planCore(agent, devPool), devPool);
+    const confirmedGit = confirmedGitState(agent, pendingPlan);
+    const plan = finalizePlan(agent, pendingPlan, confirmedGit);
     if (plan.token !== preflight.token) throw new Error("cleanup plan changed while stopping the agent — worktree retained");
     if (blocking(plan, !!opts.force).length) throw blockerError(plan, !!opts.force);
 
-    applyDevPoolCleanup(plan.devPool!);
-    closeOpenSubagents(agent.name);
-    queueClearEntries(agent.name);
-    outboxTake(agentNamesAndAliases(agent));
+    const devPoolResult = applyDevPoolCleanup(plan.devPool!);
 
     const cleanedAt = new Date().toISOString();
     agent.cleanedAt = cleanedAt;
@@ -361,12 +392,28 @@ export async function cleanupAgent(
     writeAgent(agent);
 
     try {
-      removeWorktree(agent, !!opts.force);
+      removeWorktree(agent, !!opts.force, confirmedGit);
     } catch (error) {
       delete agent.cleanedAt;
-      updateAgentStatus(agent, "exited", "cleanup failed; worktree retained");
+      const removed = devPoolResult.removed;
+      updateAgentStatus(agent, "exited", removed.length
+        ? `cleanup partially completed; removed ${removed.join(", ")}; worktree and messages retained`
+        : "cleanup failed; worktree and messages retained");
       writeAgent(agent);
+      if (removed.length) throw new Error(`cleanup partially completed: removed ${removed.join(", ")}; worktree and messages retained: ${(error as Error).message}`);
       throw error;
+    }
+    try {
+      closeOpenSubagents(agent.name);
+      queueClearEntries(agent.name);
+      const names = agentNamesAndAliases(agent);
+      outboxTake(names);
+      const remaining = names.map(outboxFile).filter(existsSync);
+      if (remaining.length) throw new Error(`outbox files remain: ${remaining.join(", ")}`);
+    } catch (error) {
+      updateAgentStatus(agent, "exited", "cleaned; mailbox cleanup incomplete; resume recreates the worktree");
+      writeAgent(agent);
+      throw new Error(`worktree cleaned but mailbox cleanup failed: ${(error as Error).message}`);
     }
     return { ...plan, applied: true, forced: !!opts.force, cleanedAt };
   } finally {

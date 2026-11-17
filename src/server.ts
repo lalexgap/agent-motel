@@ -395,7 +395,12 @@ async function interruptBody(req: Request): Promise<Response | string> {
 }
 
 async function cleanupBody(req: Request): Promise<{ dryRun: boolean; force: boolean; createdAt?: string; token?: string } | Response> {
-  const body = await req.json().catch(() => null);
+  const body = await req.json().catch(() => null) as {
+    dryRun?: unknown;
+    force?: unknown;
+    createdAt?: unknown;
+    token?: unknown;
+  } | null;
   if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "JSON object required" }, 400);
   if (Object.keys(body).some(key => !["dryRun", "force", "createdAt", "token"].includes(key))) return json({ error: "unsupported cleanup field" }, 400);
   if ((body.dryRun !== undefined && typeof body.dryRun !== "boolean") || (body.force !== undefined && typeof body.force !== "boolean"))

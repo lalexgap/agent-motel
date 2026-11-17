@@ -1061,7 +1061,7 @@ dialog p.muted {
 #cleanup-dialog ul { margin: 0; padding-left: 20px; max-height: 130px; overflow: auto; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 #cleanup-dialog section p { margin: 0; line-height: 1.45; }
 .cleanup-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--danger-text); background: var(--danger-soft); font-size: 13.5px; line-height: 1.45; }
-.cleanup-ack { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
+.cleanup-ack { display: flex; justify-content: flex-start; gap: 8px; align-items: flex-start; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
 .cleanup-ack input { margin-top: 2px; }
 .danger-ack { color: var(--danger-text); font-weight: 600; }
 .cleanup-actions { display: flex; justify-content: flex-end; gap: 8px; }

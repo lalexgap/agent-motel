@@ -30,7 +30,6 @@ export interface AgentRow {
   task?: string;
   queued?: number;
   createdAt: string;
-  token: string;
   updatedAt: string;
   workingSince?: string | null;
   promptAt?: string | null;
@@ -159,6 +158,7 @@ export type DecisionAction = "answer" | "withdraw";
 export interface CleanupPlan {
   name: string;
   createdAt: string;
+  token: string;
   remove: string[];
   keep: string[];
   blockers: { reason: string; forceable: boolean }[];

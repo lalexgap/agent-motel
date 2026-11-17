@@ -173,6 +173,44 @@ describe("cleanup", () => {
     expect(readAgent(agent.name)?.statusReason).toBeUndefined();
   });
 
+  test("retains the checkout and messages when dev-pool cleanup changes the confirmed git snapshot", async () => {
+    const oldPath = process.env.PATH;
+    const bin = join(home, "bin");
+    mkdirSync(bin);
+    try {
+      const agent = makeAgent();
+      queueAppend(agent.name, "still pending");
+      const stateDir = join(process.env.DEV_POOL_ROOT!, "state");
+      mkdirSync(stateDir, { recursive: true });
+      const slot = join(stateDir, "slot-1.json");
+      writeFileSync(slot, JSON.stringify({ lease: { worktree, agentName: agent.name } }));
+      writeFileSync(join(bin, "dev-pool"), `#!/bin/sh\nprintf '%s' changed > '${join(worktree, "late.txt")}'\nprintf '%s' '{"lease":null}' > '${slot}'\n`);
+      chmodSync(join(bin, "dev-pool"), 0o755);
+      process.env.PATH = `${bin}:${oldPath}`;
+
+      const preview = await planCleanup(agent);
+      await expect(cleanupAgent(agent, { force: true, expectedToken: preview.token })).rejects.toThrow(/partially completed.*slot-1.*worktree and messages retained/);
+      expect(existsSync(join(worktree, "late.txt"))).toBe(true);
+      expect(queueDepth(agent.name)).toBe(1);
+      expect(readAgent(agent.name)?.cleanedAt).toBeUndefined();
+      expect(readAgent(agent.name)?.statusReason).toContain("removed dev-pool slot-1 lease");
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
+  test("rejects a managed agent directory outside its worktree", async () => {
+    const agent = makeAgent();
+    agent.dir = join(home, "external");
+    mkdirSync(agent.dir);
+    writeAgent(agent);
+
+    const preview = await planCleanup(agent);
+    expect(preview.blockers).toContainEqual(expect.objectContaining({ reason: "agent directory is outside its managed worktree", forceable: false }));
+    await expect(cleanupAgent(agent, { force: true })).rejects.toThrow(/outside its managed worktree/);
+    expect(existsSync(worktree)).toBe(true);
+  });
+
   test("refuses deletion when a Codex daemon turn cannot be stopped", async () => {
     const oldCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = join(home, "codex-home");
@@ -210,6 +248,34 @@ describe("cleanup", () => {
       expect(existsSync(worktree)).toBe(true);
       expect(readAgent(agent.name)?.cleanedAt).toBeUndefined();
       expect(readAgent(agent.name)?.status).toBe("starting");
+    } finally {
+      daemon?.stop();
+      process.env.PATH = oldPath;
+    }
+  });
+
+  test("resume recreates a cleaned worktree when the agent directory is a checkout subdirectory", async () => {
+    const oldPath = process.env.PATH;
+    let daemon: DaemonHandle | undefined;
+    try {
+      mkdirSync(join(worktree, "packages", "app"), { recursive: true });
+      writeFileSync(join(worktree, "packages", "app", "README.md"), "fixture\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-qm", "add app directory");
+      const agent = makeAgent("cleanup-subdir");
+      agent.dir = join(worktree, "packages", "app");
+      writeAgent(agent);
+      await cleanupAgent(agent);
+      writeFileSync(join(home, "tmux"), `#!/bin/sh\ncase " $* " in *" has-session "*) exit 1;; *" new-session "*) exit 0;; esac\n`);
+      writeFileSync(join(home, "claude"), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(home, "tmux"), 0o755);
+      chmodSync(join(home, "claude"), 0o755);
+      process.env.PATH = `${home}:${oldPath}`;
+      daemon = startDaemonServer();
+
+      await reviveAgent(readAgent(agent.name)!);
+      expect(existsSync(join(worktree, "packages", "app"))).toBe(true);
+      expect(readAgent(agent.name)?.cleanedAt).toBeUndefined();
     } finally {
       daemon?.stop();
       process.env.PATH = oldPath;

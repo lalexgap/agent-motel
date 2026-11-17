@@ -2,7 +2,7 @@ import { reserveAntigravityLaunch, stopAntigravity, failAntigravityLaunch } from
 import { acquireLifecycleLock, currentLifecycleAgent, lifecycleLockHeld, releaseLifecycleLock } from "../lifecycle";
 import { acquireDeliverLock, releaseDeliverLock } from "../deliver";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { agentProvider, agentSessionId, resolveAgent, updateAgentStatus, writeAgent, type AgentState, providerBinary } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
@@ -22,6 +22,7 @@ import {
 import { agentEnv } from "./new";
 import { pretrustClaudeAgentDir } from "../claudeTrust";
 import { ensureAgentPlan } from "../plan";
+import { canonicalPath } from "../worktreeOwnership";
 
 export interface ResumeOpts {
   message?: string;
@@ -66,9 +67,20 @@ function requireCapturedConciergeSession(agent: AgentState): void {
 // Bring an exited/dead agent back to life, resuming its conversation. Quiet
 // (no console output) so the picker and sidebar can call it too.
 function restoreCleanedWorktree(agent: AgentState): void {
-  if (!agent.cleanedAt || existsSync(agent.dir)) return;
-  if (!agent.worktreePath || !agent.worktreeBranch || !agent.repoRoot || agent.dir !== agent.worktreePath || !existsSync(agent.repoRoot)) {
+  if (!agent.cleanedAt) return;
+  if (!agent.worktreePath || !agent.worktreeBranch || !agent.repoRoot ||
+      !isAbsolute(agent.dir) || !isAbsolute(agent.worktreePath) || !isAbsolute(agent.repoRoot) || !existsSync(agent.repoRoot)) {
     throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  let rel: string;
+  try { rel = relative(canonicalPath(agent.worktreePath), canonicalPath(agent.dir)); }
+  catch { throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`); }
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`cleaned agent worktree cannot be recreated safely: ${agent.dir}`);
+  }
+  if (existsSync(agent.worktreePath)) {
+    if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
+    return;
   }
   mkdirSync(dirname(agent.worktreePath), { recursive: true });
   const result = Bun.spawnSync(["git", "-C", agent.repoRoot, "worktree", "add", agent.worktreePath, agent.worktreeBranch], {
@@ -76,6 +88,7 @@ function restoreCleanedWorktree(agent: AgentState): void {
     killSignal: "SIGKILL",
   });
   if (result.exitCode !== 0) throw new Error(`could not recreate cleaned worktree: ${result.stderr.toString().trim()}`);
+  if (!existsSync(agent.dir)) throw new Error(`agent directory no longer exists: ${agent.dir}`);
 }
 
 async function reviveAgentLocked(agent: AgentState, opts: ResumeOpts): Promise<void> {

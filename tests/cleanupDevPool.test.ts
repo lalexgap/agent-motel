@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyDevPoolCleanup, planDevPoolCleanup } from "../src/cleanupDevPool";
@@ -65,6 +65,15 @@ test("failed database drop is detected despite successful dev-pool exit", () => 
   expect(plan.blockers).toEqual([]);
   expect(() => applyDevPoolCleanup(plan)).toThrow("still exists");
   expect(readFileSync(join(agent.dir, "tmp", ".dev-stack-db"), "utf8")).toContain("DB_NAME=producthunt_dev_fixture");
+});
+test("does not restore the database marker after absence is verified", () => {
+  database();
+  const exists = join(root, "db-exists"); writeFileSync(exists, "1");
+  command("psql", `if [ -f '${exists}' ]; then echo 1; fi`);
+  command("dev-pool", `/bin/rm '${exists}' '${join(agent.dir, "tmp", ".dev-stack-db")}'\nexit 99`);
+  const plan = planDevPoolCleanup(agent);
+  expect(() => applyDevPoolCleanup(plan)).toThrow(/verified removed: private database producthunt_dev_fixture/);
+  expect(existsSync(join(agent.dir, "tmp", ".dev-stack-db"))).toBe(false);
 });
 test("lease reassignment invalidates preview before invoking cleanup", () => {
   slot({ worktree: agent.dir, agentName: agent.name }); command("dev-pool", "exit 99");
