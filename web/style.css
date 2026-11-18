@@ -1442,7 +1442,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .message-disclosure[open] .message-disclosure-collapse { display: block; }
 .message-disclosure > .turn-text { padding: 0 12px 12px; color: var(--chat-text); }
 .turn.user.queued > .turn-text { background: transparent; border: 1px dashed var(--border-strong); opacity: 0.72; }
-.turn.peer.queued > .turn-text { border-style: dashed; opacity: 0.82; }
+.turn.peer.queued > .message-disclosure { border-style: dashed; opacity: 0.82; }
 .turn.notice.queued { opacity: 0.82; }
 .queued-meta { display: flex; align-items: center; gap: 10px; padding: 0 4px; font-size: 12px; color: var(--fg-subtle); }
 .queued-meta .text-button { padding: 0; font-size: 12px; }
@@ -2418,10 +2418,9 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.turn.peer > .turn-text {
+.turn.peer > .message-disclosure {
   width: fit-content;
   max-width: 85%;
-  padding: 12px;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: var(--chat-bubble);

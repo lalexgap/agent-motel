@@ -263,8 +263,17 @@ window.agentTranscript = (() => {
       return body;
     };
     const label = peer || disclosure?.label || (user ? "You" : agentName);
-    turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
-    if (!disclosure || peer) turn.append(turnText(peer ? disclosure.body : entry.text));
+    if (!peer) turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
+    if (peer) {
+      const message = el("details", "message-disclosure");
+      message.dataset.scrollKey = "peer:" + entry.index;
+      const summary = el("summary", "message-disclosure-summary", "Message from " + peer);
+      summary.dataset.scrollKey = "peer-summary:" + entry.index;
+      const body = turnText(disclosure.body);
+      body.dataset.scrollKey = "peer-body:" + entry.index;
+      message.append(summary, body);
+      turn.append(message);
+    } else if (!disclosure) turn.append(turnText(entry.text));
     else {
       if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
       if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));
