@@ -22,6 +22,14 @@ function render(text: string, clipboard?: { writeText: (text: string) => unknown
     runInNewContext(readFileSync(new URL("../web/" + file, import.meta.url), "utf8"), { window, document, URL });
   return window.agentMarkdown.render(new Node("div"), text, renderKey) as Node;
 }
+
+function codeTokens(text: string, tokens: string[]) {
+  const window: any = { navigator: {} };
+  const document = { createElement: (tag: string) => new Node(tag), createTextNode: (value: string) => Object.assign(new Node("text"), { textContent: value }) };
+  for (const file of ["links.js", "markdown.js"])
+    runInNewContext(readFileSync(new URL("../web/" + file, import.meta.url), "utf8"), { window, document, URL });
+  return [...window.agentMarkdown.codeTokens(text, tokens)];
+}
 const html = (node: Node): string => node.tag === "text" ? node.textContent :
   node.tag === "a" ? `<a href="${node.href}">${node.textContent}</a>` :
   `<${node.tag}>${node.textContent}${node.children.map(html).join("")}</${node.tag}>`;
@@ -32,6 +40,12 @@ test("renders inline emphasis, code and safe links", () => {
   expect(body("see [PR](https://github.com/a/b/pull/1) or https://x.dev/y.")).toBe('<p>see <a href="https://github.com/a/b/pull/1">PR</a> or <a href="https://x.dev/y">https://x.dev/y</a>.</p>');
   expect(body("[bad](javascript:alert(1))")).toBe("<p>[bad](javascript:alert(1))</p>");
   expect(body("snake_case_name and 2*3*4")).toBe("<p>snake_case_name and 2*3*4</p>");
+});
+
+test("reports token positions using the same code scopes it renders", () => {
+  const tokens = ["TOKEN0", "TOKEN1", "TOKEN2", "TOKEN3"];
+  const text = `> ~~~\n> ${tokens[0]}\n> ~~~\n\n- item\n  \`\`\`\n  ${tokens[1]}\n  \`\`\`\n\n\`${tokens[2]}\`\n\n\`unclosed\n\n${tokens[3]}\``;
+  expect(codeTokens(text, tokens)).toEqual([0, 1, 2]);
 });
 
 test("never creates elements from agent-supplied markup", () => {

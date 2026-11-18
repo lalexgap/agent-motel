@@ -84,6 +84,46 @@ window.agentTranscript = (() => {
     search: ["Searched", "time", "times"],
     other: ["Used", "tool", "tools"],
   };
+  const pastedContentParts = (text) => {
+    if (text.length > 100000 || !text.includes("<pasted_content")) return null;
+    const quoteMatches = (opening, closing) => opening === "\"" || opening === "“"
+      ? closing === "\"" || closing === "”"
+      : closing === "'" || closing === "’";
+    const opening = /^<pasted_content[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’])[ \t]*>$/;
+    const closing = /^<\/pasted_content(?:[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’]))?[ \t]*>$/;
+    const tags = /<\/?pasted_content\b[^<>\r\n]{0,300}>/g;
+    const matches = [...text.matchAll(tags)];
+    // Markdown in the pasted body cannot hide extra in-band boundaries.
+    if (!matches.length || matches.length > 2) return null;
+    let marker = "";
+    for (let attempt = 0; attempt < 16 && !marker; attempt++) {
+      const candidate = `\uE000paste${attempt.toString(16).padStart(2, "0")}\uE001`;
+      if (!text.includes(candidate)) marker = candidate;
+    }
+    if (!marker) return null;
+    const tokens = matches.map((_, index) => `${marker}${index.toString(36)}\uE001`);
+    let masked = "", cursor = 0;
+    matches.forEach((match, index) => {
+      masked += text.slice(cursor, match.index) + tokens[index];
+      cursor = match.index + match[0].length;
+    });
+    masked += text.slice(cursor);
+    const code = window.agentMarkdown.codeTokens(masked, tokens);
+    if (code.size) return null;
+    const active = matches;
+    const start = opening.exec(active[0][0]);
+    if (!start || !quoteMatches(start[1], start[3])) return null;
+    const end = active[1] && closing.exec(active[1][0]);
+    if (active[1] && (!end || (end[1] && !quoteMatches(end[1], end[3])) || (end[2] && end[2] !== start[2]))) return null;
+    const bodyStart = active[0].index + active[0][0].length;
+    const bodyEnd = active[1]?.index ?? text.length;
+    const after = active[1] ? active[1].index + active[1][0].length : text.length;
+    return [
+      ...(active[0].index ? [{ text: text.slice(0, active[0].index) }] : []),
+      { paste: text.slice(bodyStart, bodyEnd) },
+      ...(after < text.length ? [{ text: text.slice(after) }] : []),
+    ];
+  };
   function toolGroup(entry) {
     const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
     const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");
@@ -257,14 +297,47 @@ window.agentTranscript = (() => {
     const peer = disclosure?.peer;
     const turn = el("article", `turn ${peer ? "peer" : disclosure ? "notice" : user ? "user" : "assistant"}`);
     turn.dataset.scrollKey = "turn:" + entry.index;
-    const turnText = (text, suffix = "") => {
+    const turnText = (text, suffix = "", collapsePastes = false) => {
       const body = el("div", "turn-text");
-      window.agentMarkdown.render(body, text, `turn:${entry.index}${suffix}`);
+      const renderKey = `turn:${entry.index}${suffix}`;
+      const parts = collapsePastes && pastedContentParts(String(text));
+      if (!parts) window.agentMarkdown.render(body, text, renderKey);
+      else {
+        let pasteIndex = 0;
+        parts.forEach((part, partIndex) => {
+          if ("text" in part) {
+            if (!part.text) return;
+            const context = el("div", "pasted-content-context");
+            window.agentMarkdown.render(context, part.text, `${renderKey}:part:${partIndex}`);
+            body.append(context);
+            return;
+          }
+          const key = `paste:${entry.index}:${pasteIndex++}`;
+          const paste = el("details", "pasted-content");
+          paste.dataset.scrollKey = key;
+          const summary = el("summary", "pasted-content-summary", "Pasted content");
+          summary.dataset.scrollKey = `${key}:summary`;
+          const content = el("div", "pasted-content-body");
+          content.dataset.scrollKey = `${key}:body`;
+          window.agentMarkdown.render(content, part.paste, `${renderKey}:paste:${pasteIndex - 1}`);
+          paste.append(summary, content);
+          body.append(paste);
+        });
+      }
       return body;
     };
     const label = peer || disclosure?.label || (user ? "You" : agentName);
-    turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
-    if (!disclosure || peer) turn.append(turnText(peer ? disclosure.body : entry.text));
+    if (!peer) turn.append(el("span", disclosure ? "turn-label notice-label" : "turn-label sr-only", label));
+    if (peer) {
+      const message = el("details", "message-disclosure");
+      message.dataset.scrollKey = "peer:" + entry.index;
+      const summary = el("summary", "message-disclosure-summary", "Message from " + peer);
+      summary.dataset.scrollKey = "peer-summary:" + entry.index;
+      const body = turnText(disclosure.body, "", true);
+      body.dataset.scrollKey = "peer-body:" + entry.index;
+      message.append(summary, body);
+      turn.append(message);
+    } else if (!disclosure) turn.append(turnText(entry.text, "", user));
     else {
       if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
       if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));

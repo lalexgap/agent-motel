@@ -143,6 +143,20 @@ describe("preserveConversationScroll", () => {
     expect(view.querySelectorAll("[data-wrap-key]")[0]!.dataset.wrapped).toBe("true");
   });
 
+  test("restores an expanded pasted-content disclosure by its stable key", () => {
+    const entries = (open: boolean): Entry[] => [{ key: "turn:42", height: 40, children: [
+      { key: "paste:42:0", tagName: "DETAILS", height: 30, open, children: [
+        { key: "paste:42:0:summary", height: 20 },
+        { key: "paste:42:0:body", height: 180 },
+      ] },
+    ] }];
+    const view = new View(entries(true));
+    const restore = load()(view, 90);
+    view.replace(entries(false));
+    restore(false);
+    expect(view.node("paste:42:0").open).toBe(true);
+  });
+
   test("appending while scrolled up preserves the partially visible turn", () => {
     const view = new View(turns(0, 10), 235);
     const offset = view.offset("turn:2");
