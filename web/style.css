@@ -1398,10 +1398,15 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .side-agent:hover { background: var(--surface); color: var(--fg); }
 .side-agent.selected { background: var(--surface-raised); color: var(--fg-strong); }
 .workspace, .side-heading { color: var(--fg-subtle); }
+/* Sixteen steps a turn still reads as spinning, at a fraction of the frames a
+   smooth spin costs: every frame recomposites the whole window. */
 @media (prefers-reduced-motion: no-preference) {
-  .dot.working, .dot.waiting { animation: working-spin 1.6s linear infinite; }
+  .dot.working, .dot.waiting { animation: working-spin 1.6s steps(16) infinite; }
 }
 @keyframes working-spin { to { transform: rotate(1turn); } }
+/* A running animation wakes the renderer every frame, so none run while the
+   window is hidden or unfocused (the app sets data-inactive on the root). */
+:root[data-inactive] .dot, :root[data-inactive] .working-text { animation: none; }
 
 /* Chat timeline: a 736px lane, right-aligned user bubbles, plain assistant prose. */
 .sr-only {
@@ -1532,7 +1537,7 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
   overflow-wrap: anywhere;
 }
 
-/* The local elapsed clock shares a subtle sweep with the desktop app. */
+/* The local elapsed clock shares a subtle pulse with the desktop app. */
 .working-indicator {
   margin: 0 max(var(--chat-lane-pad), calc((100% - var(--chat-lane)) / 2));
   padding: 4px 4px 8px;
@@ -1543,21 +1548,12 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 }
 #dock-working { margin: 0; padding: 4px 16px 8px; }
 .working-text { display: inline-block; }
-@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-  .working-text {
-    color: transparent;
-    background-image: linear-gradient(to right, transparent, var(--fg-strong), transparent), linear-gradient(var(--fg-muted), var(--fg-muted));
-    background-size: 4.5rem 100%, 100% 100%;
-    background-repeat: no-repeat;
-    -webkit-background-clip: text;
-    background-clip: text;
-    animation: working-shine 2.2s steps(30) infinite;
-  }
+/* Opacity only: the compositor animates it without repainting the text, where
+   a background-clip: text sweep repainted it on every step. */
+@media (prefers-reduced-motion: no-preference) {
+  .working-text { animation: working-pulse 2.2s ease-in-out infinite; }
 }
-@keyframes working-shine {
-  from { background-position: -4.5rem 0, 0 0; }
-  to { background-position: calc(100% + 4.5rem) 0, 0 0; }
-}
+@keyframes working-pulse { 50% { opacity: 0.55; } }
 
 /* Composer. */
 #message-form {
@@ -2662,8 +2658,4 @@ button.question-option:hover:not(:disabled) { background: var(--chat-hover); }
   #decisions-status { width: 100%; margin-left: 0; }
 }
 
-.working-indicator[data-attention="true"] .working-text {
-  animation: none;
-  background: none;
-  color: var(--fg-muted);
-}
+.working-indicator[data-attention="true"] .working-text { animation: none; }

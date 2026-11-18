@@ -1,7 +1,7 @@
 import { showDecisions } from "./decisionsView";
 import { selectAgent } from "./chat";
 import { agentsWaitingOnDecisions, blockingDecisions, decisionsName, rowDecisionsLabel } from "./decisions";
-import { $, decisionsBadge, dot, h } from "./dom";
+import { $, decisionsBadge, dot, h, reconcileChildren } from "./dom";
 import { agentId, agentKey, conciergeRow, fleetRows, rowStatusLabel, type ConnectionFleet } from "./fleet";
 import { registerShortcut } from "./keyboard";
 import { focusAgentInput } from "./terminalView";
@@ -201,7 +201,7 @@ function renderOverview(): void {
     }
     nodes.push(cardNode(entry, entry.fleet.rows, multi, now), ...subagentNodes(entry.key, entry.row));
   }
-  grid.replaceChildren(...nodes);
+  reconcileChildren(grid, nodes, (node) => (node as HTMLElement).dataset.cardKey, ["tabindex"]);
   const cards = cardList();
   if (!cards.some((card) => card.dataset.cardKey === cardCursor)) cardCursor = cards[0]?.dataset.cardKey ?? null;
   for (const card of cards) card.tabIndex = card.dataset.cardKey === cardCursor ? 0 : -1;

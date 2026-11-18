@@ -16,6 +16,9 @@ final class ConnectionStore {
     private let defaults: UserDefaults
     private let service: String
     private var revisions: [String: UInt64] = [:]
+    /// Tokens already read from the Keychain. Every API request needs one, and a Keychain read is a
+    /// round trip to securityd, so each is read once and kept until this app changes or removes it.
+    private var tokens: [String: String] = [:]
 
     init(defaults: UserDefaults = .standard, service: String = Bundle.main.bundleIdentifier ?? "ca.alexgap.agent-motel") {
         self.defaults = defaults
@@ -87,15 +90,19 @@ final class ConnectionStore {
     }
 
     func token(for id: String) -> String? {
+        if let token = tokens[id] { return token }
         var query = baseQuery(id)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data,
+              let token = String(data: data, encoding: .utf8) else { return nil }
+        tokens[id] = token
+        return token
     }
 
     private func setToken(_ token: String, for id: String, label: String) throws {
+        tokens.removeValue(forKey: id)
         let data = Data(token.utf8)
         var add = baseQuery(id)
         add[kSecValueData as String] = data
@@ -109,6 +116,7 @@ final class ConnectionStore {
     }
 
     private func deleteToken(for id: String) throws {
+        tokens.removeValue(forKey: id)
         let status = SecItemDelete(baseQuery(id) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PolicyError("Couldn’t remove the token from the Keychain (\(Self.describe(status)))")

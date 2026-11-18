@@ -1,5 +1,6 @@
 // Loading and refreshing fleet and agent data: the initial loads, the fleet
 // stream's events, and the polls that cover what the stream does not.
+import { currentActivity, pollIntervals } from "./activity";
 import { ApiError, apiGet } from "./api";
 import { call } from "./bridge";
 import { agentPath, BUSY, parseAgentKey } from "./fleet";
@@ -8,8 +9,6 @@ import { parseRecords, subagentsAvailable } from "./subagents";
 import type { AgentDetail, AgentsResponse, BridgeEvents, Connection, HostsResponse, Transcript } from "./types";
 
 const AGENTS_DEBOUNCE_MS = 150;
-const DETAIL_POLL_MS = 4000;
-const FLEET_POLL_MS = 5000;
 
 async function loadHosts(id: string): Promise<void> {
   try {
@@ -84,6 +83,8 @@ export function noteError(id: string, error: unknown): void {
 function scheduleRefresh(id: string): void {
   const conn = state.conns.get(id);
   if (!conn) return;
+  // A hidden window reloads everything when it is shown again.
+  if (document.hidden) return;
   if (conn.debounce) clearTimeout(conn.debounce);
   conn.debounce = setTimeout(() => {
     conn.debounce = null;
@@ -207,12 +208,14 @@ export function onStreamMessage(payload: BridgeEvents["events.message"]): void {
 
 // Remote fleet cache updates do not emit local stream events.
 export function poll(now: number): void {
+  const intervals = pollIntervals(currentActivity());
+  if (!intervals) return;
   for (const conn of state.conns.values()) {
-    if (now - conn.agentsFetchedAt >= FLEET_POLL_MS) void loadAgents(conn.conn.id);
+    if (now - conn.agentsFetchedAt >= intervals.fleetMs) void loadAgents(conn.conn.id);
   }
   const row = state.selected ? findRow(state.selected) : null;
   const status = row?.status ?? state.detail?.detail?.status ?? "";
   // Pending and queued bubbles also need the poll: delivery need not change the agent's status.
   const outstanding = !!state.selected && (agentComposer(state.selected).pending.length > 0 || (state.detail?.detail?.queue?.length ?? 0) > 0);
-  if (state.selected && (BUSY.has(status) || outstanding) && !state.detailInFlight && now - state.detailFetchedAt >= DETAIL_POLL_MS) void loadDetail();
+  if (state.selected && (BUSY.has(status) || outstanding) && !state.detailInFlight && now - state.detailFetchedAt >= intervals.detailMs) void loadDetail();
 }

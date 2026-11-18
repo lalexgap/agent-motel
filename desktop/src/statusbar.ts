@@ -1,6 +1,6 @@
 // The status bar: each connection's stream and errors, fleet counts, version.
 import { openSetup } from "./connections";
-import { $, dot, h } from "./dom";
+import { $, dot, h, reconcileChildren } from "./dom";
 import { countStatuses, statusLabel } from "./fleet";
 import { allRows, state, subscribe, type ConnState } from "./state";
 
@@ -48,7 +48,7 @@ function renderStatusbar(): void {
     item.append(dot(status), document.createTextNode(String(counts[status])), h("span", "am-count-label", label));
     parts.push(item);
   }
-  $("am-sb-counts").replaceChildren(...(state.conns.size ? parts : []));
+  reconcileChildren($("am-sb-counts"), state.conns.size ? parts : [], () => undefined);
   $("am-sb-version").textContent = state.info ? `v${state.info.version}${state.info.build && state.info.build !== state.info.version ? ` (${state.info.build})` : ""}` : "";
 }
 

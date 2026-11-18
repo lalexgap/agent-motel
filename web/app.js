@@ -1874,6 +1874,12 @@ document.addEventListener("keydown", event => {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();
 });
+// Animations stop while the window is hidden or unfocused (see style.css).
+const markActivity = () => document.documentElement.toggleAttribute("data-inactive", document.hidden || !document.hasFocus());
+window.addEventListener("focus", markActivity);
+window.addEventListener("blur", markActivity);
+document.addEventListener("visibilitychange", markActivity);
+markActivity();
 setInterval(() => {
   if (!document.hidden) refresh();
 }, 4000);
