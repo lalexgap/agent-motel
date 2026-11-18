@@ -211,6 +211,8 @@ Restart an agent from the sidebar by selecting it and pressing `e`, then `s`, or
 
 Cleanup retains the agent, branch, conversation, plan, decisions and handoff history. `am resume <name>` recreates its removed worktree from the retained branch. Uncommitted files and private database contents deleted by cleanup cannot be recovered by resume. Cleanup reports known PR state and keeps the branch even when its PR is open. It refuses unsafe ownership or unknown Git registration even with `--force`.
 
+Ignored files inside a `node_modules` path component remain a forceable blocker, but cleanup previews bind their path and filesystem metadata instead of hashing generated dependency contents. Tracked or non-ignored `node_modules` files receive the normal Git and loose-file checks; `.env` and other ignored user files keep strict content verification.
+
 The web and macOS **Clean up** actions show the dry-run removal and retention list before confirmation. Dev-pool cleanup requires the installed `dev-pool` command; a database is only dropped when its private record and server can be verified and no other worktree or slot references it. Unattributed databases are retained rather than guessed from an agent name.
 
 ### Automatic cleanup
