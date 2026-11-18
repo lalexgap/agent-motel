@@ -941,7 +941,8 @@ body.am-resizing {
 #am-composer.blocked .am-composer-box {
   opacity: 0.6;
 }
-#composer-input {
+#composer-input,
+#composer-sizer {
   display: block;
   width: 100%;
   min-height: 44px;
@@ -953,8 +954,21 @@ body.am-resizing {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.55;
-  color: var(--fg-strong);
   resize: none;
+}
+#composer-sizer {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+}
+#composer-input {
+  color: var(--fg-strong);
   outline: none;
   overflow-y: hidden;
   -webkit-user-select: text;

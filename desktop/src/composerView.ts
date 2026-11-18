@@ -18,7 +18,7 @@ import {
 } from "./composer";
 import { loadDetail } from "./data";
 import { $, composerInput, h } from "./dom";
-import { autosize, onComposerInput, saveDrafts, stashDraft } from "./drafts";
+import { autosize, initDraftSizing, onComposerInput, saveDrafts, stashDraft } from "./drafts";
 import { parseAgentKey, STOPPED } from "./fleet";
 import { checkMessageText, MESSAGE_EMPTY, type SendMode } from "./policy";
 import { focusCursor } from "./sidebar";
@@ -202,6 +202,7 @@ async function cancelQueued(key: string, id: string): Promise<void> {
 
 export function initComposer(): void {
   subscribe("agent", renderComposer);
+  initDraftSizing();
   const input = composerInput();
   input.addEventListener("input", onComposerInput);
   input.addEventListener("keydown", (event) => {

@@ -67,6 +67,7 @@ launch() {
   writer_pid=$!
   local env_args=(--env "SMOKE_URL=$SMOKE_URL")
   [[ "${SMOKE_BRIDGE_ONLY:-}" == 1 ]] && env_args+=(--env SMOKE_BRIDGE_ONLY=1)
+  [[ "${SMOKE_COMPOSER_BENCHMARK:-}" == 1 ]] && env_args+=(--env SMOKE_COMPOSER_BENCHMARK=1)
   [[ -n "${SMOKE_CLEANUP_SCREENSHOT:-}" ]] && env_args+=(--env "SMOKE_CLEANUP_SCREENSHOT=$SMOKE_CLEANUP_SCREENSHOT")
   tail -f "$log" &
   local tail_pid=$!
@@ -83,6 +84,10 @@ launch() {
 }
 
 launch "$PWD/build/smoke.log"
+if [[ "${SMOKE_COMPOSER_BENCHMARK:-}" == 1 ]]; then
+  echo "Composer benchmark passed."
+  exit 0
+fi
 captured="$(sed -n 's/^SCREENSHOT //p' build/smoke.log | tail -1)"
 if [[ -n "$captured" && -f "$captured" ]]; then
   mv "$captured" "$screenshot"

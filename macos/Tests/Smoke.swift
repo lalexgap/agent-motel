@@ -26,7 +26,8 @@ struct Smoke {
         // owner's way while still being real sheets on this window.
         app.setActivationPolicy(.prohibited)
         let runner = SmokeRunner(delegate: delegate, server: server, token: token,
-                                 bridgeOnly: environment["SMOKE_BRIDGE_ONLY"] == "1", relaunch: environment["SMOKE_PHASE"] == "relaunch")
+                                 bridgeOnly: environment["SMOKE_BRIDGE_ONLY"] == "1", relaunch: environment["SMOKE_PHASE"] == "relaunch",
+                                 composerBenchmark: environment["SMOKE_COMPOSER_BENCHMARK"] == "1")
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000_000)
             print("FAIL smoke test timed out")
@@ -62,6 +63,7 @@ final class SmokeRunner {
     let server: String
     let token: String
     let bridgeOnly: Bool
+    let composerBenchmark: Bool
     /// The second launch, which checks what the first one left (the terminal consent).
     let relaunch: Bool
     var connectionID: String?
@@ -71,12 +73,13 @@ final class SmokeRunner {
     /// Checks where the app or its windows were active or key while another app was frontmost.
     var activationWarnings = 0
 
-    init(delegate: AppDelegate, server: String, token: String, bridgeOnly: Bool, relaunch: Bool) {
+    init(delegate: AppDelegate, server: String, token: String, bridgeOnly: Bool, relaunch: Bool, composerBenchmark: Bool) {
         self.delegate = delegate
         self.server = server
         self.token = token
         self.bridgeOnly = bridgeOnly
         self.relaunch = relaunch
+        self.composerBenchmark = composerBenchmark
     }
 
     /// host:port of the fixture server, as the sheet's server line shows it (smoke.sh only allows
@@ -265,6 +268,43 @@ final class SmokeRunner {
         try png.write(to: screenshot)
         screenshotTaken = true
         print("SCREENSHOT \(screenshot.path)")
+    }
+
+    func timingSummary(_ values: [Double]) -> [String: Double] {
+        let sorted = values.sorted()
+        return [
+            "medianMs": sorted[sorted.count / 2],
+            "p95Ms": sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))],
+            "maxMs": sorted.max() ?? 0,
+        ]
+    }
+
+    func pacedComposerSample(turns: Int, legacy: Bool, containment: String = "") async throws -> [String: Any] {
+        let prepared = try await js("return window.__composerBenchmarkPrepare(turns, containment);", ["turns": turns, "containment": containment])
+        _ = try await js("return await new Promise((resolve) => setTimeout(() => resolve(true), 50));")
+        var handler: [Double] = []
+        var layoutReady: [Double] = []
+        var forcedRender: [Double] = []
+        for sample in 0..<10 {
+            let started = ProcessInfo.processInfo.systemUptime
+            let raw = try await js("return window.__composerBenchmarkStep(legacy);", ["legacy": legacy])
+            let handlerMs = (raw as? NSNumber)?.doubleValue ?? -1
+            _ = try await js("return await new Promise((resolve) => setTimeout(() => resolve(true), 0));")
+            let layoutMs = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            _ = try await web.takeSnapshot(configuration: nil)
+            let frameMs = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            if sample >= 2 {
+                handler.append(handlerMs)
+                layoutReady.append(layoutMs)
+                forcedRender.append(frameMs)
+            }
+        }
+        return [
+            "handler": timingSummary(handler),
+            "layoutReady": timingSummary(layoutReady),
+            "forcedRender": timingSummary(forcedRender),
+            "transcriptScrollHeight": (prepared as? NSNumber)?.doubleValue ?? -1,
+        ]
     }
 
     func cleanupScreenshot(_ path: String) throws {
@@ -493,6 +533,13 @@ final class SmokeRunner {
         let resaved = try object(try await call("connections.save", ["id": id, "name": "Smoke 2", "url": server]), "resave")
         try expect(resaved["name"] as? String == "Smoke 2" && delegate.store.hasToken(id), "rename kept token")
         print("PASS connections.save through the bridge, token in Keychain, never returned to the page")
+
+        if composerBenchmark {
+            try await runComposerBenchmark(id)
+            _ = try await call("connections.remove", ["id": id])
+            connectionID = nil
+            return
+        }
 
         let health = try object(try await call("api.get", ["connection": id, "path": "/api/health"]), "api.get")
         try expect(health["status"] as? Int == 200 && (health["body"] as? [String: Any])?["ok"] as? Bool == true, "health: \(health)")
@@ -748,6 +795,193 @@ final class SmokeRunner {
         connectionID = nil
         print("PASS connections.remove deleted metadata, Keychain item and event stream")
         print("NOTE leaving \(Self.terminalConnectionName) with \"Don't ask again\" for the relaunch check")
+    }
+
+    func runComposerBenchmark(_ id: String) async throws {
+        delegate.loadHome()
+        try await waitFor("document.body && document.body.dataset.ready === 'true' && document.body.dataset.view === 'fleet'",
+                          "fleet view for composer benchmark")
+        try await waitFor("document.querySelectorAll('[data-agent-key]').length > 0", "composer benchmark agent rows")
+        try await openAgent("keeper-log")
+        try await waitFor("document.querySelectorAll('#transcript .turn').length > 0", "composer benchmark transcript")
+        let result = try await js("""
+            const view = document.querySelector('#transcript');
+            const input = document.querySelector('#composer-input');
+            const sizer = document.querySelector('#composer-sizer');
+            const chat = document.querySelector('#am-chat');
+            if (!view || !input || !sizer || !chat || !window.agentTranscript) throw new Error('composer benchmark surface missing');
+
+            const percentile = (values, fraction) => {
+              const sorted = [...values].sort((a, b) => a - b);
+              return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+            };
+            const summarize = (values) => ({
+              medianMs: percentile(values, 0.5),
+              p95Ms: percentile(values, 0.95),
+              maxMs: Math.max(...values),
+            });
+            const entries = (count) => Array.from({ length: count }, (_, index) => ({
+              index,
+              kind: index % 2 ? 'assistant' : 'user',
+              text: `${index % 2 ? 'Measured assistant response' : 'Synthetic user prompt'} ${index}: `
+                + 'harbor light timing fixture '.repeat(index % 2 ? 24 : 8),
+            }));
+            const render = (items) => {
+              view.replaceChildren();
+              window.agentTranscript.renderEntries(view, items, { agentName: 'keeper-log', readBoundary: null });
+              view.scrollTop = view.scrollHeight;
+              return view.offsetHeight;
+            };
+            const type = (dispatchEvents = true) => {
+              input.value = '';
+              input.style.height = '';
+              input.focus();
+              const values = [];
+              for (let index = 0; index < 80; index++) {
+                const start = performance.now();
+                input.value += String.fromCharCode(97 + index % 26);
+                if (dispatchEvents) input.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.value.at(-1), inputType: 'insertText' }));
+                values.push(performance.now() - start);
+              }
+              return summarize(values.slice(10));
+            };
+            const fingerprint = (items) => {
+              const expected = JSON.stringify(items);
+              const values = [];
+              for (let index = 0; index < 80; index++) {
+                const start = performance.now();
+                if (JSON.stringify(items) !== expected) throw new Error('fingerprint changed');
+                values.push(performance.now() - start);
+              }
+              return summarize(values.slice(10));
+            };
+
+            const shortEntries = entries(20);
+            const longEntries = entries(1200);
+            render(shortEntries);
+            const shortInput = type();
+            render(longEntries);
+            const longInput = type();
+            const longAssignment = type(false);
+            view.style.contain = 'layout paint style';
+            const longContainedInput = type();
+            view.style.contain = '';
+            view.style.display = 'none';
+            const longHiddenInput = type();
+            view.style.display = '';
+            render(longEntries);
+            const pollFingerprint = fingerprint(longEntries);
+            const rebuildStart = performance.now();
+            render(longEntries);
+            const rebuildMs = performance.now() - rebuildStart;
+            const dispatch = async (value, options = {}) => {
+              input.value = value;
+              input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', ...options }));
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            };
+            await dispatch('one line');
+            const singleHeight = input.offsetHeight;
+            await dispatch(Array.from({ length: 12 }, (_, index) => `line ${index}`).join('\\n'));
+            const multilineHeight = input.offsetHeight;
+            await dispatch(Array.from({ length: 200 }, (_, index) => `long line ${index} ` + 'x'.repeat(80)).join('\\n'));
+            const cappedHeight = input.offsetHeight;
+            const cap = Math.max(72, Math.round(chat.clientHeight * 0.4));
+            const cappedOverflow = input.style.overflowY === 'auto';
+            const sizingCases = [
+              'one line',
+              'wrapped words '.repeat(80),
+              Array.from({ length: 12 }, (_, index) => `line ${index}`).join('\\n'),
+              Array.from({ length: 200 }, (_, index) => `long line ${index} ` + 'x'.repeat(80)).join('\\n'),
+            ];
+            const sizingDeltas = sizingCases.flatMap((value) => ['hidden', 'auto'].map((overflow) => {
+              input.value = value;
+              input.style.height = 'auto';
+              input.style.overflowY = overflow;
+              const live = input.scrollHeight;
+              sizer.value = value;
+              sizer.style.overflowY = overflow;
+              const mirror = sizer.scrollHeight;
+              return { overflow, live, mirror, delta: mirror - live };
+            }));
+            const sizingMatches = sizingDeltas.every(({ live, mirror }) =>
+              Math.min(live, cap) === Math.min(mirror, cap) && (live > cap) === (mirror > cap));
+            await dispatch(Array.from({ length: 200 }, (_, index) => `long line ${index} ` + 'x'.repeat(80)).join('\\n'));
+            input.scrollTop = Math.floor(input.scrollHeight / 2);
+            const composerScroll = input.scrollTop;
+            input.setSelectionRange(12, 24);
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, data: null, inputType: 'insertText' }));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const selectionPreserved = input.selectionStart === 12 && input.selectionEnd === 24;
+            const composerScrollPreserved = input.scrollTop === composerScroll;
+            view.scrollTop = Math.floor((view.scrollHeight - view.clientHeight) / 2);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const readTop = view.scrollTop;
+            await dispatch('short again');
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const readPositionPreserved = Math.abs(view.scrollTop - readTop) <= 1;
+            view.scrollTop = view.scrollHeight;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            await dispatch('pinned\\n' + 'line\\n'.repeat(10));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const pinPreserved = view.scrollHeight - view.scrollTop - view.clientHeight < 4;
+            await dispatch('synthetic composing draft', { data: 't', isComposing: true });
+            await new Promise((resolve) => setTimeout(resolve, 450));
+            const savedDrafts = JSON.parse(localStorage.getItem('am.desktop.drafts.v1') || '{}');
+            const imeDraftSaved = Object.values(savedDrafts).some((draft) => draft?.text === 'synthetic composing draft');
+            window.__composerBenchmarkPrepare = (count, containment) => {
+              view.style.contain = containment;
+              render(entries(count));
+              input.value = '';
+              input.style.height = '';
+              input.style.overflowY = 'hidden';
+              return view.scrollHeight;
+            };
+            window.__composerBenchmarkStep = (legacy) => {
+              input.value += String.fromCharCode(97 + input.value.length % 26);
+              const start = performance.now();
+              if (legacy) {
+                const scroll = input.scrollTop;
+                const max = Math.max(72, Math.round(chat.clientHeight * 0.4));
+                input.style.height = 'auto';
+                const height = Math.min(input.scrollHeight, max);
+                input.style.height = `${height}px`;
+                input.style.overflowY = input.scrollHeight > max ? 'auto' : 'hidden';
+                input.scrollTop = scroll;
+              } else {
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.value.at(-1), inputType: 'insertText' }));
+              }
+              return performance.now() - start;
+            };
+            return {
+              environment: { userAgent: navigator.userAgent, turnsShort: 20, turnsLong: 1200, inputSamples: 70 },
+              shortInput, longInput, longAssignment, longContainedInput, longHiddenInput, pollFingerprint, rebuildMs,
+              heights: { chat: chat.clientHeight, input: input.offsetHeight, transcript: view.scrollHeight },
+              behavior: {
+                grows: multilineHeight > singleHeight,
+                shrinks: input.offsetHeight < cappedHeight,
+                capped: cappedHeight <= cap && cappedOverflow,
+                sizingMatches,
+                selectionPreserved, composerScrollPreserved, readPositionPreserved, pinPreserved, imeDraftSaved,
+                singleHeight, multilineHeight, cappedHeight, cap, sizingDeltas,
+              },
+            };
+            """)
+        var benchmark = try object(result, "composer benchmark")
+        let behavior = try object(benchmark["behavior"], "composer benchmark behavior")
+        for check in ["grows", "shrinks", "capped", "sizingMatches", "selectionPreserved", "composerScrollPreserved", "readPositionPreserved", "pinPreserved", "imeDraftSaved"] {
+            try expect(behavior[check] as? Bool == true, "composer benchmark failed \(check): \(behavior)")
+        }
+        var paced: [String: Any] = [:]
+        paced["shortLegacy"] = try await pacedComposerSample(turns: 20, legacy: true)
+        paced["shortFinal"] = try await pacedComposerSample(turns: 20, legacy: false)
+        paced["longLegacy"] = try await pacedComposerSample(turns: 1200, legacy: true)
+        paced["longFinal"] = try await pacedComposerSample(turns: 1200, legacy: false)
+        paced["longContainedFinal"] = try await pacedComposerSample(turns: 1200, legacy: false, containment: "layout paint style")
+        paced["longStrictFinal"] = try await pacedComposerSample(turns: 1200, legacy: false, containment: "strict")
+        paced["longStrictLegacy"] = try await pacedComposerSample(turns: 1200, legacy: true, containment: "strict")
+        paced["longLayoutSizeLegacy"] = try await pacedComposerSample(turns: 1200, legacy: true, containment: "layout size")
+        benchmark["paced"] = paced
+        print("COMPOSER_BENCHMARK \(canonical(benchmark))")
     }
 
     // MARK: Write surface
