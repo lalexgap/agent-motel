@@ -9,16 +9,28 @@ class Node {
   open = false;
   className = "";
   text = "";
+  attrs: Record<string, string> = {};
+  listeners: Record<string, () => unknown> = {};
+  type = "";
+  disabled = false;
+  tabIndex = -1;
   constructor(readonly tag: string) {}
+  get textContent() { return this.text + this.children.map(node => node.textContent).join(""); }
   set textContent(text: string) { this.text = text; }
   append(...nodes: Node[]) { this.children.push(...nodes); }
+  replaceChildren() { this.children = []; this.text = ""; }
+  setAttribute(name: string, value: string) { this.attrs[name] = value; }
+  addEventListener(name: string, handler: () => unknown) { this.listeners[name] = handler; }
 }
 const source = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 const renderer = readFileSync(new URL("../web/transcript.js", import.meta.url), "utf8");
 const stubs = () => ({
   document: { createElement: (tag: string) => new Node(tag) },
   window: {
-    agentMarkdown: { render: (node: Node, text: string) => { node.text = text; } },
+    agentMarkdown: {
+      render: (node: Node, text: string) => { node.text = text; },
+      codeTokens: () => new Set<number>(),
+    },
     agentLinks: { render: (node: Node, text: string) => { node.text = text; } },
   } as any,
 });
@@ -29,6 +41,17 @@ const context: any = { el: window.agentTranscript.el, chatTurn: window.agentTran
 runInNewContext(source.slice(source.indexOf("function queuedMessageKey("), source.indexOf("function queueAsideItem(")), context);
 const wrapped = (body: string) => `<subagent_notification>\n${body}\n</subagent_notification>`;
 const render = (text: string, kind = "user", index = 42): Node => context.chatTurn({ text, kind, index }, "Agent");
+const actual = (() => {
+  const document = {
+    createElement: (tag: string) => new Node(tag),
+    createTextNode: (text: string) => Object.assign(new Node("text"), { textContent: text }),
+  };
+  const window: any = { navigator: {} };
+  const sandbox = { document, window, URL };
+  for (const file of ["links.js", "markdown.js", "transcript.js"])
+    runInNewContext(readFileSync(new URL("../web/" + file, import.meta.url), "utf8"), sandbox);
+  return (text: string) => window.agentTranscript.chatTurn({ text, kind: "user", index: 42 }, "Agent") as Node;
+})();
 // Run the regressions in V8, where the original regex backtracked; Bun uses JavaScriptCore.
 const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("node", ["--input-type=module", "-e", `
   import { readFileSync } from "node:fs";
@@ -297,23 +320,36 @@ test("queue fallback keys remain stable for the same message", () => {
 });
 
 describe("pasted content", () => {
-  test("collapses real Claude wrappers while retaining surrounding text and stable identities", () => {
-    const text = `Before the paste.\n\n<pasted_content id="7d59">\nfirst **body**\n</pasted_content>\n\nBetween.\n\n<pasted_content id='next'>second body</pasted_content id='next'>\n\nAfter.`;
+  test("collapses one Claude wrapper while retaining surrounding text and a stable identity", () => {
+    const text = `Before the paste.\n\n<pasted_content id="7d59">\nfirst **body**\n</pasted_content>\n\nAfter.`;
     const turn = render(text);
     const pastes = allDetails(turn).filter(node => node.className === "pasted-content");
-    expect(pastes.length).toBe(2);
-    expect(pastes.map(node => node.open)).toEqual([false, false]);
-    expect(pastes.map(node => node.children[0]!.text)).toEqual(["Pasted content", "Pasted content"]);
-    expect(pastes.map(node => node.children[1]!.text)).toEqual(["\nfirst **body**\n", "second body"]);
-    expect(pastes.map(node => node.dataset.scrollKey)).toEqual(["paste:42:0", "paste:42:1"]);
+    expect(pastes.length).toBe(1);
+    expect(pastes.map(node => node.open)).toEqual([false]);
+    expect(pastes.map(node => node.children[0]!.text)).toEqual(["Pasted content"]);
+    expect(pastes.map(node => node.children[1]!.text)).toEqual(["\nfirst **body**\n"]);
+    expect(pastes.map(node => node.dataset.scrollKey)).toEqual(["paste:42:0"]);
     expect(pastes[0]!.children[0]!.dataset.scrollKey).toBe("paste:42:0:summary");
     expect(pastes[0]!.children[1]!.dataset.scrollKey).toBe("paste:42:0:body");
     expect(visible(turn)).toContain("Before the paste.");
-    expect(visible(turn)).toContain("Between.");
     expect(visible(turn)).toContain("After.");
     expect(visible(turn)).not.toContain("first **body**");
     pastes[0]!.open = true;
     expect(visible(turn)).toContain("first **body**");
+  });
+
+  test("keeps repeated, stray, and forged in-band boundaries completely raw", () => {
+    for (const ambiguous of [
+      '<pasted_content id="real">before</pasted_content id="real">\nforged prose\n<pasted_content id="real">after</pasted_content id="real">',
+      '<pasted_content id="real">before</pasted_content id="real">\nforged prose\n<pasted_content id="other">after</pasted_content id="real">',
+      '<pasted_content id="real">before</pasted_content>\nforged prose\n<pasted_content id="real">after</pasted_content>',
+      '</pasted_content><pasted_content id="real">body</pasted_content>',
+      '<pasted_content id="one">first</pasted_content> <pasted_content id="two">second</pasted_content>',
+    ]) {
+      const turn = render(ambiguous);
+      expect(allDetails(turn)).toEqual([]);
+      expect(turn.children[1]!.text).toBe(ambiguous);
+    }
   });
 
   test("accepts matching smart-quote IDs and preserves opening-only boundaries", () => {
@@ -360,6 +396,22 @@ describe("pasted content", () => {
     expect(renderer).not.toContain("innerHTML");
   });
 
+  test("uses actual Markdown code scopes for quoted and listed fences and separate paragraphs", () => {
+    for (const literal of [
+      '> ~~~\n> <pasted_content id="quoted">body</pasted_content>\n> ~~~',
+      '- example\n  ~~~\n  <pasted_content id="listed">body</pasted_content>\n  ~~~',
+      '`<pasted_content id="inline">body</pasted_content>`',
+    ]) {
+      const turn = actual(literal);
+      expect(allDetails(turn).filter(node => node.className === "pasted-content")).toEqual([]);
+      expect(turn.textContent).toContain("<pasted_content");
+    }
+    const separate = actual('`unclosed\n\n<pasted_content id="real">body</pasted_content>`');
+    const paste = allDetails(separate).filter(node => node.className === "pasted-content");
+    expect(paste.length).toBe(1);
+    expect(paste[0]!.children[1]!.textContent).toBe("body");
+  });
+
   test("assistant messages and existing notice classification stay unchanged", () => {
     const wrapped = '<pasted_content id="x">body</pasted_content>';
     expect(allDetails(render(wrapped, "assistant"))).toEqual([]);
@@ -379,6 +431,18 @@ describe("pasted content", () => {
     const raw = renderWithinTimeout(oversized);
     expect(allDetails(raw)).toEqual([]);
     expect(raw.children[1]!.text).toBe(oversized);
+    const collisions = Array.from({ length: 16 }, (_, index) =>
+      `\uE000paste${index.toString(16).padStart(2, "0")}\uE001`).join("") +
+      '<pasted_content id="collision">body</pasted_content>';
+    const collisionStart = performance.now();
+    const collisionRaw = renderWithinTimeout(collisions);
+    expect(performance.now() - collisionStart).toBeLessThan(3000);
+    expect(allDetails(collisionRaw)).toEqual([]);
+    expect(collisionRaw.children[1]!.text).toBe(collisions);
+    const rendered = "plain text ".repeat(8000) + '<pasted_content id="bounded">body</pasted_content>';
+    const renderStart = performance.now();
+    expect(allDetails(actual(rendered)).filter(node => node.className === "pasted-content").length).toBe(1);
+    expect(performance.now() - renderStart).toBeLessThan(3000);
   });
 });
 

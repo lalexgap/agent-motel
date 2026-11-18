@@ -9,6 +9,23 @@ window.agentMarkdown = {
   tableDivider: /^\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?$/,
   maxDepth: 8,
   maxRender: 100000,
+  codeTokens(text, tokens) {
+    const root = document.createElement("div");
+    this.render(root, text);
+    const found = new Set();
+    const visit = (node) => {
+      const tag = String(node.tagName || node.tag || "").toLowerCase();
+      if (tag === "code") {
+        const content = node.textContent || [...(node.children || [])].map(child => child.textContent || "").join("");
+        tokens.forEach((token, index) => {
+          if (content.includes(token)) found.add(index);
+        });
+      }
+      for (const child of node.children || []) visit(child);
+    };
+    visit(root);
+    return found;
+  },
   render(node, text = "", renderKey = "") {
     text = String(text);
     node.replaceChildren();

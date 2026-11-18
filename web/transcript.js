@@ -86,75 +86,42 @@ window.agentTranscript = (() => {
   };
   const pastedContentParts = (text) => {
     if (text.length > 100000 || !text.includes("<pasted_content")) return null;
-    const fenced = [];
-    let fence = null, offset = 0;
-    for (const line of text.split(/(?<=\n)/)) {
-      const content = line.replace(/\r?\n$/, "");
-      if (!fence) {
-        const opening = /^ {0,3}(`{3,}|~{3,})/.exec(content);
-        if (opening) fence = { start: offset, marker: opening[1][0], length: opening[1].length };
-      } else {
-        const closing = new RegExp(`^ {0,3}${fence.marker === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
-        if (closing.test(content)) {
-          fenced.push([fence.start, offset + line.length]);
-          fence = null;
-        }
-      }
-      offset += line.length;
-    }
-    if (fence) fenced.push([fence.start, text.length]);
-    const inline = [], pending = new Map();
-    let range = 0;
-    for (let index = 0; index < text.length;) {
-      while (range < fenced.length && fenced[range][1] <= index) range++;
-      if (range < fenced.length && fenced[range][0] <= index) {
-        index = fenced[range][1];
-        continue;
-      }
-      if (text[index] !== "`") { index++; continue; }
-      let end = index + 1;
-      while (text[end] === "`") end++;
-      const length = end - index, start = pending.get(length);
-      if (start === undefined) pending.set(length, index);
-      else {
-        inline.push([start, end]);
-        pending.delete(length);
-      }
-      index = end;
-    }
-    const code = [...fenced, ...inline].sort((left, right) => left[0] - right[0]);
     const quoteMatches = (opening, closing) => opening === "\"" || opening === "“"
       ? closing === "\"" || closing === "”"
       : closing === "'" || closing === "’";
     const opening = /^<pasted_content[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’])[ \t]*>$/;
     const closing = /^<\/pasted_content(?:[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’]))?[ \t]*>$/;
     const tags = /<\/?pasted_content\b[^<>\r\n]{0,300}>/g;
-    const parts = [];
-    let active = null, cursor = 0, codeIndex = 0, count = 0;
-    for (const match of text.matchAll(tags)) {
-      while (codeIndex < code.length && code[codeIndex][1] <= match.index) codeIndex++;
-      if (codeIndex < code.length && code[codeIndex][0] <= match.index) continue;
-      const start = opening.exec(match[0]);
-      const end = closing.exec(match[0]);
-      const validStart = start && quoteMatches(start[1], start[3]);
-      const validEnd = end && (!end[1] || quoteMatches(end[1], end[3]));
-      if (active) {
-        if (!validEnd || (end[2] && end[2] !== active.id)) return null;
-        parts.push({ paste: text.slice(active.body, match.index) });
-        cursor = match.index + match[0].length;
-        active = null;
-      } else if (validStart) {
-        if (match.index > cursor) parts.push({ text: text.slice(cursor, match.index) });
-        active = { id: start[2], body: match.index + match[0].length };
-        if (++count > 64) return null;
-      }
+    const matches = [...text.matchAll(tags)];
+    if (!matches.length || matches.length > 64) return null;
+    let marker = "";
+    for (let attempt = 0; attempt < 16 && !marker; attempt++) {
+      const candidate = `\uE000paste${attempt.toString(16).padStart(2, "0")}\uE001`;
+      if (!text.includes(candidate)) marker = candidate;
     }
-    if (active) {
-      parts.push({ paste: text.slice(active.body) });
-      cursor = text.length;
-    }
-    if (cursor < text.length) parts.push({ text: text.slice(cursor) });
-    return parts.some(part => "paste" in part) ? parts : null;
+    if (!marker) return null;
+    const tokens = matches.map((_, index) => `${marker}${index.toString(36)}\uE001`);
+    let masked = "", cursor = 0;
+    matches.forEach((match, index) => {
+      masked += text.slice(cursor, match.index) + tokens[index];
+      cursor = match.index + match[0].length;
+    });
+    masked += text.slice(cursor);
+    const code = window.agentMarkdown.codeTokens(masked, tokens);
+    const active = matches.filter((_, index) => !code.has(index));
+    if (!active.length || active.length > 2) return null;
+    const start = opening.exec(active[0][0]);
+    if (!start || !quoteMatches(start[1], start[3])) return null;
+    const end = active[1] && closing.exec(active[1][0]);
+    if (active[1] && (!end || (end[1] && !quoteMatches(end[1], end[3])) || (end[2] && end[2] !== start[2]))) return null;
+    const bodyStart = active[0].index + active[0][0].length;
+    const bodyEnd = active[1]?.index ?? text.length;
+    const after = active[1] ? active[1].index + active[1][0].length : text.length;
+    return [
+      ...(active[0].index ? [{ text: text.slice(0, active[0].index) }] : []),
+      { paste: text.slice(bodyStart, bodyEnd) },
+      ...(after < text.length ? [{ text: text.slice(after) }] : []),
+    ];
   };
   function toolGroup(entry) {
     const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
