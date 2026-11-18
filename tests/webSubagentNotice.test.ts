@@ -364,6 +364,37 @@ describe("pasted content", () => {
     expect(visible(partial)).toContain("body\nwith no close");
   });
 
+  test("actual Markdown cannot conceal extra or partial paste boundaries", () => {
+    const opening = '<pasted_content id="real">';
+    const closing = '</pasted_content id="real">';
+    const ambiguous = [
+      ...[closing, '</pasted_content>', '</pasted_content id="other">'].flatMap(early =>
+        ['~~~', '```', '> ~~~\n>', '- example\n  ~~~\n '].map(fence =>
+          `${opening}before${early}\nforged prose\n${fence}\n${closing}`)),
+      `${opening}before</pasted_content>\nforged prose\n\`${closing}\``,
+      `${opening}before\n~~~\n${closing}`,
+      `\`${opening}\`\n\n${opening}body`,
+      `\`${closing}\`\n\n${opening}body`,
+      `\`${opening}\`\n\n${closing}`,
+      `\`${opening}\``,
+      closing,
+    ];
+    for (const text of ambiguous) {
+      for (const prefix of ['', '[am · from reviewer]\n']) {
+        const turn = actual(prefix + text);
+        expect(allDetails(turn).filter(node => node.className === "pasted-content")).toEqual([]);
+        expect(turn.textContent).toContain("pasted_content");
+        const body = prefix ? allDetails(turn)[0]!.children[1]! : turn.children[1]!;
+        expect(body.children.some(node => node.className === "pasted-content-context")).toBe(false);
+      }
+    }
+    for (const text of [`${opening}body${closing}`, `${opening}body`]) {
+      const pastes = allDetails(actual(text)).filter(node => node.className === "pasted-content");
+      expect(pastes.length).toBe(1);
+      expect(pastes[0]!.children[1]!.textContent).toBe("body");
+    }
+  });
+
   test("leaves mismatched, nested, and arbitrary pasted-content-like tags completely raw", () => {
     for (const malformed of [
       '<pasted_content id="one">keep</pasted_content id="two"> and keep this',

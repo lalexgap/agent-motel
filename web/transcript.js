@@ -93,7 +93,8 @@ window.agentTranscript = (() => {
     const closing = /^<\/pasted_content(?:[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’]))?[ \t]*>$/;
     const tags = /<\/?pasted_content\b[^<>\r\n]{0,300}>/g;
     const matches = [...text.matchAll(tags)];
-    if (!matches.length || matches.length > 64) return null;
+    // Markdown in the pasted body cannot hide extra in-band boundaries.
+    if (!matches.length || matches.length > 2) return null;
     let marker = "";
     for (let attempt = 0; attempt < 16 && !marker; attempt++) {
       const candidate = `\uE000paste${attempt.toString(16).padStart(2, "0")}\uE001`;
@@ -108,8 +109,8 @@ window.agentTranscript = (() => {
     });
     masked += text.slice(cursor);
     const code = window.agentMarkdown.codeTokens(masked, tokens);
-    const active = matches.filter((_, index) => !code.has(index));
-    if (!active.length || active.length > 2) return null;
+    if (code.size) return null;
+    const active = matches;
     const start = opening.exec(active[0][0]);
     if (!start || !quoteMatches(start[1], start[3])) return null;
     const end = active[1] && closing.exec(active[1][0]);
