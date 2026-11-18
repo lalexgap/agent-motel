@@ -239,6 +239,7 @@ function gitSnapshot(path: string, excludes: string[] = []): unknown {
   const listed = (value: unknown) => typeof value === "string" ? value.split("\0").filter((file) => file && !excluded.has(file)) : value;
   const untracked = listed(command("ls-files", "--others", "--exclude-standard", "-z"));
   const ignored = listed(command("ls-files", "--others", "--ignored", "--exclude-standard", "-z"));
+  const ignoredFiles = new Set(Array.isArray(ignored) ? ignored : []);
   const files = [untracked, ignored].flatMap((value) => Array.isArray(value) ? value : []);
   let remainingBytes = 64 * 1024 * 1024;
   const deadline = Date.now() + GIT_TIMEOUT_MS;
@@ -252,6 +253,9 @@ function gitSnapshot(path: string, excludes: string[] = []): unknown {
       if (stat.isSymbolicLink()) return [file, stat.mode, readlinkSync(target)];
       if (stat.isDirectory() && file.endsWith("/")) return [file, "nested repository"];
       if (!stat.isFile()) throw new Error("loose file is not a regular file");
+      if (ignoredFiles.has(file) && file.split("/").slice(0, -1).includes("node_modules")) {
+        return [file, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs, stat.dev, stat.ino];
+      }
       fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const opened = fstatSync(fd);
       if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error("loose file changed while opening");
@@ -266,8 +270,9 @@ function gitSnapshot(path: string, excludes: string[] = []): unknown {
       const after = fstatSync(fd);
       if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) throw new Error("loose file changed while reading");
       return [file, stat.mode, stat.size, stat.mtimeMs, hash.digest("hex")];
-    } catch {
-      throw new Error(`cannot verify loose file safely for cleanup: ${file}`);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`cannot verify loose file safely for cleanup: ${file}: ${reason}`);
     } finally {
       if (fd !== undefined) closeSync(fd);
     }

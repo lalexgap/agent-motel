@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cleanupAgent, planCleanup } from "../src/cleanup";
 import { reviveAgent } from "../src/commands/resume";
 import { codexDaemonSocket } from "../src/codexDaemon";
@@ -10,6 +10,7 @@ import { ensurePlan } from "../src/plan";
 import { agentsDir } from "../src/paths";
 import { queueAppend, queueDepth } from "../src/queue";
 import { readAgent, writeAgent, type AgentState } from "../src/state";
+import { cleanupForceable, parseCleanupPlan } from "../desktop/src/cleanup";
 
 let home: string;
 let repo: string;
@@ -104,6 +105,75 @@ describe("cleanup", () => {
     expect(existsSync(worktree)).toBe(true);
     await cleanupAgent(readAgent(agent.name)!, { force: true });
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("previews and force-removes ignored dependency content beyond the loose-file hash budget", async () => {
+    const agent = makeAgent();
+    writeFileSync(join(worktree, ".gitignore"), "node_modules/\n");
+    git(worktree, "add", ".gitignore");
+    git(worktree, "commit", "-qm", "ignore dependencies");
+    const dependency = join(worktree, "node_modules", "fixture", "cache.bin");
+    mkdirSync(dirname(dependency), { recursive: true });
+    writeFileSync(dependency, "");
+    truncateSync(dependency, 65 * 1024 * 1024);
+
+    const preview = await planCleanup(agent);
+    expect(preview.blockers).toContainEqual(expect.objectContaining({
+      reason: expect.stringContaining("ignored files: node_modules/"),
+      forceable: true,
+    }));
+    const desktopPlan = parseCleanupPlan(preview, agent.name);
+    expect(desktopPlan).not.toBeNull();
+    expect(cleanupForceable(desktopPlan!)).toBe(true);
+
+    await cleanupAgent(agent, { force: true, expectedToken: preview.token });
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("does not treat an ignored file named node_modules as dependency content", async () => {
+    const agent = makeAgent();
+    writeFileSync(join(worktree, ".gitignore"), "/node_modules\n");
+    git(worktree, "add", ".gitignore");
+    git(worktree, "commit", "-qm", "ignore fixture file");
+    const userFile = join(worktree, "node_modules");
+    writeFileSync(userFile, "");
+    truncateSync(userFile, 65 * 1024 * 1024);
+
+    await expect(planCleanup(agent)).rejects.toThrow(/node_modules: loose file verification limit exceeded/);
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("invalidates an ignored dependency preview when its metadata changes", async () => {
+    const agent = makeAgent();
+    writeFileSync(join(worktree, ".gitignore"), "node_modules/\n");
+    git(worktree, "add", ".gitignore");
+    git(worktree, "commit", "-qm", "ignore dependencies");
+    const dependency = join(worktree, "node_modules", "fixture", "cache.bin");
+    mkdirSync(dirname(dependency), { recursive: true });
+    writeFileSync(dependency, "disposable");
+    const preview = await planCleanup(agent);
+
+    chmodSync(dependency, 0o600);
+
+    await expect(cleanupAgent(agent, { force: true, expectedToken: preview.token })).rejects.toThrow(/plan changed/);
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("keeps content hashing for ignored user files", async () => {
+    const agent = makeAgent();
+    writeFileSync(join(worktree, ".gitignore"), ".env\n");
+    git(worktree, "add", ".gitignore");
+    git(worktree, "commit", "-qm", "ignore local env");
+    const env = join(worktree, ".env");
+    writeFileSync(env, "before");
+    utimesSync(env, 1700000000, 1700000000);
+    const preview = await planCleanup(agent);
+
+    writeFileSync(env, "after!");
+    utimesSync(env, 1700000000, 1700000000);
+
+    await expect(cleanupAgent(agent, { force: true, expectedToken: preview.token })).rejects.toThrow(/plan changed/);
+    expect(existsSync(worktree)).toBe(true);
   });
 
   test("never force-removes a nested repository", async () => {
