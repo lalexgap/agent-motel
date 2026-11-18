@@ -44,6 +44,9 @@ const renderWithinTimeout = (text: string): Node => JSON.parse(execFileSync("nod
 `], { input: JSON.stringify({ renderer, text }), encoding: "utf8", timeout: 3000 }));
 
 function details(turn: Node) { return turn.children.find(node => node.tag === "details"); }
+function allDetails(node: Node): Node[] {
+  return node.children.flatMap(child => [...(child.tag === "details" ? [child] : []), ...allDetails(child)]);
+}
 
 function visible(turn: Node): string {
   const children = turn.tag === "details" && !turn.open ? turn.children.slice(0, 1) : turn.children;
@@ -291,6 +294,92 @@ test("queue fallback keys remain stable for the same message", () => {
   expect(context.queuedMessageKey("queue", undefined, "same text"))
     .toBe(context.queuedMessageKey("queue", undefined, "same text"));
   expect(context.queuedMessageKey("queue", "receipt-1", "changed text")).toBe("queue:receipt-1");
+});
+
+describe("pasted content", () => {
+  test("collapses real Claude wrappers while retaining surrounding text and stable identities", () => {
+    const text = `Before the paste.\n\n<pasted_content id="7d59">\nfirst **body**\n</pasted_content>\n\nBetween.\n\n<pasted_content id='next'>second body</pasted_content id='next'>\n\nAfter.`;
+    const turn = render(text);
+    const pastes = allDetails(turn).filter(node => node.className === "pasted-content");
+    expect(pastes.length).toBe(2);
+    expect(pastes.map(node => node.open)).toEqual([false, false]);
+    expect(pastes.map(node => node.children[0]!.text)).toEqual(["Pasted content", "Pasted content"]);
+    expect(pastes.map(node => node.children[1]!.text)).toEqual(["\nfirst **body**\n", "second body"]);
+    expect(pastes.map(node => node.dataset.scrollKey)).toEqual(["paste:42:0", "paste:42:1"]);
+    expect(pastes[0]!.children[0]!.dataset.scrollKey).toBe("paste:42:0:summary");
+    expect(pastes[0]!.children[1]!.dataset.scrollKey).toBe("paste:42:0:body");
+    expect(visible(turn)).toContain("Before the paste.");
+    expect(visible(turn)).toContain("Between.");
+    expect(visible(turn)).toContain("After.");
+    expect(visible(turn)).not.toContain("first **body**");
+    pastes[0]!.open = true;
+    expect(visible(turn)).toContain("first **body**");
+  });
+
+  test("accepts matching smart-quote IDs and preserves opening-only boundaries", () => {
+    const smart = render('<pasted_content id="7d59”>smart body</pasted_content id="7d59”> tail');
+    expect(allDetails(smart)[0]!.children[1]!.text).toBe("smart body");
+    expect(visible(smart)).toContain("tail");
+
+    const partial = render('Lead <pasted_content id="open-only">body\nwith no close');
+    const paste = allDetails(partial)[0]!;
+    expect(paste.children[1]!.text).toBe("body\nwith no close");
+    paste.open = true;
+    expect(visible(partial)).toContain("body\nwith no close");
+  });
+
+  test("leaves mismatched, nested, and arbitrary pasted-content-like tags completely raw", () => {
+    for (const malformed of [
+      '<pasted_content id="one">keep</pasted_content id="two"> and keep this',
+      '<pasted_content id="outer">before <pasted_content id="inner">inside</pasted_content> after</pasted_content>',
+      '<pasted_content>no id</pasted_content>',
+      '<pasted_content id="bad value">ordinary</pasted_content>',
+      '<pasted_content id="unterminated>ordinary</pasted_content>',
+      '<pasted_content data-id="x">ordinary</pasted_content>',
+    ]) {
+      const turn = render(malformed);
+      expect(allDetails(turn)).toEqual([]);
+      expect(turn.children[1]!.text).toBe(malformed);
+    }
+  });
+
+  test("keeps fenced and inline code literals unchanged and renders malicious bodies as text", () => {
+    const literal = '`<pasted_content id="inline">x</pasted_content>`\n\n```xml\n<pasted_content id="fenced">\ny\n</pasted_content>\n```';
+    expect(allDetails(render(literal))).toEqual([]);
+    expect(render(literal).children[1]!.text).toBe(literal);
+
+    const attack = '<pasted_content id="safe"><img src=x onerror=alert(1)><script>alert(1)</script></pasted_content>';
+    const turn = render(attack);
+    const paste = allDetails(turn)[0]!;
+    expect(paste.children[1]!.text).toBe('<img src=x onerror=alert(1)><script>alert(1)</script>');
+    const tags: string[] = [];
+    const walk = (node: Node) => { tags.push(node.tag); node.children.forEach(walk); };
+    walk(turn);
+    expect(tags).not.toContain("img");
+    expect(tags).not.toContain("script");
+    expect(renderer).not.toContain("innerHTML");
+  });
+
+  test("assistant messages and existing notice classification stay unchanged", () => {
+    const wrapped = '<pasted_content id="x">body</pasted_content>';
+    expect(allDetails(render(wrapped, "assistant"))).toEqual([]);
+    expect(render(wrapped, "assistant").children[1]!.text).toBe(wrapped);
+    const notice = render(task().replace("This result may be interim.", wrapped));
+    expect(notice.className).toBe("turn notice");
+    expect(allDetails(notice).filter(node => node.className === "pasted-content")).toEqual([]);
+  });
+
+  test("bounds pathological candidate and unmatched-backtick scanning", () => {
+    const text = "prefix " + ("`".repeat(99) + " < ").repeat(800) + '<pasted_content id="last">body</pasted_content>';
+    const start = performance.now();
+    const turn = renderWithinTimeout(text);
+    expect(performance.now() - start).toBeLessThan(3000);
+    expect(allDetails(turn).filter(node => node.className === "pasted-content").length).toBe(1);
+    const oversized = '<pasted_content id="large">' + "x".repeat(100000) + "</pasted_content>";
+    const raw = renderWithinTimeout(oversized);
+    expect(allDetails(raw)).toEqual([]);
+    expect(raw.children[1]!.text).toBe(oversized);
+  });
 });
 
 

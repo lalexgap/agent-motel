@@ -84,6 +84,78 @@ window.agentTranscript = (() => {
     search: ["Searched", "time", "times"],
     other: ["Used", "tool", "tools"],
   };
+  const pastedContentParts = (text) => {
+    if (text.length > 100000 || !text.includes("<pasted_content")) return null;
+    const fenced = [];
+    let fence = null, offset = 0;
+    for (const line of text.split(/(?<=\n)/)) {
+      const content = line.replace(/\r?\n$/, "");
+      if (!fence) {
+        const opening = /^ {0,3}(`{3,}|~{3,})/.exec(content);
+        if (opening) fence = { start: offset, marker: opening[1][0], length: opening[1].length };
+      } else {
+        const closing = new RegExp(`^ {0,3}${fence.marker === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
+        if (closing.test(content)) {
+          fenced.push([fence.start, offset + line.length]);
+          fence = null;
+        }
+      }
+      offset += line.length;
+    }
+    if (fence) fenced.push([fence.start, text.length]);
+    const inline = [], pending = new Map();
+    let range = 0;
+    for (let index = 0; index < text.length;) {
+      while (range < fenced.length && fenced[range][1] <= index) range++;
+      if (range < fenced.length && fenced[range][0] <= index) {
+        index = fenced[range][1];
+        continue;
+      }
+      if (text[index] !== "`") { index++; continue; }
+      let end = index + 1;
+      while (text[end] === "`") end++;
+      const length = end - index, start = pending.get(length);
+      if (start === undefined) pending.set(length, index);
+      else {
+        inline.push([start, end]);
+        pending.delete(length);
+      }
+      index = end;
+    }
+    const code = [...fenced, ...inline].sort((left, right) => left[0] - right[0]);
+    const quoteMatches = (opening, closing) => opening === "\"" || opening === "“"
+      ? closing === "\"" || closing === "”"
+      : closing === "'" || closing === "’";
+    const opening = /^<pasted_content[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’])[ \t]*>$/;
+    const closing = /^<\/pasted_content(?:[ \t]+id[ \t]*=[ \t]*(["'“‘])([A-Za-z0-9][A-Za-z0-9._:-]{0,127})(["'”’]))?[ \t]*>$/;
+    const tags = /<\/?pasted_content\b[^<>\r\n]{0,300}>/g;
+    const parts = [];
+    let active = null, cursor = 0, codeIndex = 0, count = 0;
+    for (const match of text.matchAll(tags)) {
+      while (codeIndex < code.length && code[codeIndex][1] <= match.index) codeIndex++;
+      if (codeIndex < code.length && code[codeIndex][0] <= match.index) continue;
+      const start = opening.exec(match[0]);
+      const end = closing.exec(match[0]);
+      const validStart = start && quoteMatches(start[1], start[3]);
+      const validEnd = end && (!end[1] || quoteMatches(end[1], end[3]));
+      if (active) {
+        if (!validEnd || (end[2] && end[2] !== active.id)) return null;
+        parts.push({ paste: text.slice(active.body, match.index) });
+        cursor = match.index + match[0].length;
+        active = null;
+      } else if (validStart) {
+        if (match.index > cursor) parts.push({ text: text.slice(cursor, match.index) });
+        active = { id: start[2], body: match.index + match[0].length };
+        if (++count > 64) return null;
+      }
+    }
+    if (active) {
+      parts.push({ paste: text.slice(active.body) });
+      cursor = text.length;
+    }
+    if (cursor < text.length) parts.push({ text: text.slice(cursor) });
+    return parts.some(part => "paste" in part) ? parts : null;
+  };
   function toolGroup(entry) {
     const group = el("details", "work-group"), summary = el("summary", "work-row work-header");
     const glyph = el("span", "work-icon"), label = el("span", "work-label"), list = el("div", "work-list");
@@ -257,9 +329,33 @@ window.agentTranscript = (() => {
     const peer = disclosure?.peer;
     const turn = el("article", `turn ${peer ? "peer" : disclosure ? "notice" : user ? "user" : "assistant"}`);
     turn.dataset.scrollKey = "turn:" + entry.index;
-    const turnText = (text, suffix = "") => {
+    const turnText = (text, suffix = "", collapsePastes = false) => {
       const body = el("div", "turn-text");
-      window.agentMarkdown.render(body, text, `turn:${entry.index}${suffix}`);
+      const renderKey = `turn:${entry.index}${suffix}`;
+      const parts = collapsePastes && pastedContentParts(String(text));
+      if (!parts) window.agentMarkdown.render(body, text, renderKey);
+      else {
+        let pasteIndex = 0;
+        parts.forEach((part, partIndex) => {
+          if ("text" in part) {
+            if (!part.text) return;
+            const context = el("div", "pasted-content-context");
+            window.agentMarkdown.render(context, part.text, `${renderKey}:part:${partIndex}`);
+            body.append(context);
+            return;
+          }
+          const key = `paste:${entry.index}:${pasteIndex++}`;
+          const paste = el("details", "pasted-content");
+          paste.dataset.scrollKey = key;
+          const summary = el("summary", "pasted-content-summary", "Pasted content");
+          summary.dataset.scrollKey = `${key}:summary`;
+          const content = el("div", "pasted-content-body");
+          content.dataset.scrollKey = `${key}:body`;
+          window.agentMarkdown.render(content, part.paste, `${renderKey}:paste:${pasteIndex - 1}`);
+          paste.append(summary, content);
+          body.append(paste);
+        });
+      }
       return body;
     };
     const label = peer || disclosure?.label || (user ? "You" : agentName);
@@ -269,11 +365,11 @@ window.agentTranscript = (() => {
       message.dataset.scrollKey = "peer:" + entry.index;
       const summary = el("summary", "message-disclosure-summary", "Message from " + peer);
       summary.dataset.scrollKey = "peer-summary:" + entry.index;
-      const body = turnText(disclosure.body);
+      const body = turnText(disclosure.body, "", true);
       body.dataset.scrollKey = "peer-body:" + entry.index;
       message.append(summary, body);
       turn.append(message);
-    } else if (!disclosure) turn.append(turnText(entry.text));
+    } else if (!disclosure) turn.append(turnText(entry.text, "", user));
     else {
       if (disclosure.result) turn.append(el("div", "notice-result", disclosure.result));
       if (disclosure.preview) turn.append(el("div", "notice-preview", disclosure.preview));

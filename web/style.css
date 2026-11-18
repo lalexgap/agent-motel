@@ -1441,6 +1441,14 @@ button, input, textarea, select, .more-actions summary { border-radius: var(--ra
 .message-disclosure-collapse, .message-disclosure[open] .message-disclosure-expand { display: none; }
 .message-disclosure[open] .message-disclosure-collapse { display: block; }
 .message-disclosure > .turn-text { padding: 0 12px 12px; color: var(--chat-text); }
+.pasted-content-context > :first-child { margin-top: 0; }
+.pasted-content-context > :last-child { margin-bottom: 0; }
+.pasted-content { margin: 0.65rem 0; border: 1px solid var(--border); border-radius: 10px; color: var(--fg-muted); }
+.pasted-content-summary { padding: 8px 10px; cursor: pointer; font-size: 13px; }
+.pasted-content-summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 10px; }
+.pasted-content-body { max-height: 32em; padding: 0 10px 10px; overflow: auto; color: var(--chat-text); }
+.pasted-content-body > :first-child { margin-top: 0; }
+.pasted-content-body > :last-child { margin-bottom: 0; }
 .turn.user.queued > .turn-text { background: transparent; border: 1px dashed var(--border-strong); opacity: 0.72; }
 .turn.peer.queued > .message-disclosure { border-style: dashed; opacity: 0.82; }
 .turn.notice.queued { opacity: 0.82; }
