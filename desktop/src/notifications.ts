@@ -3,10 +3,19 @@ import { $ } from "./dom";
 import { parseAgentKey } from "./fleet";
 import { checkNotificationSettings, NOTIFICATION_KINDS, PresenceWriter } from "./notificationPolicy";
 import { changed, state, subscribe } from "./state";
-import type { NotificationSettings, NotificationSettingsPatch } from "./types";
+import { NotificationSettingsController } from "./notificationSettings";
+import type { ApiResponse, NotificationSettings } from "./types";
 
-const loading = new Set<string>();
-let editingConnection: string | null = null;
+const settingsController = new NotificationSettingsController(
+  async (connection) => settingsResponse(await call("api.get", { connection, path: "/api/notifications/settings" })),
+  async (connection, patch) => settingsResponse(await call("notifications.settings", { connection, patch })),
+  (connection, settings) => { state.notificationSettings.set(connection, settings); changed("fleet"); },
+  (view) => {
+    if (view.settings) fill(view.settings);
+    $<HTMLButtonElement>("am-notifications-save").disabled = !view.canSave;
+    result(view.message, view.tone);
+  },
+);
 
 function result(text: string, tone: "" | "ok" | "error" = ""): void {
   const node = $("am-notifications-result");
@@ -14,23 +23,11 @@ function result(text: string, tone: "" | "ok" | "error" = ""): void {
   node.className = tone;
 }
 
-async function loadSettings(connection: string, showError = false): Promise<NotificationSettings | null> {
-  if (loading.has(connection)) return state.notificationSettings.get(connection) ?? null;
-  loading.add(connection);
-  try {
-    const response = await call("api.get", { connection, path: "/api/notifications/settings" });
-    if (response.status < 200 || response.status >= 300) throw new Error(`Server returned HTTP ${response.status}`);
-    const checked = checkNotificationSettings(response.body);
-    if (!checked.ok) throw new Error(checked.error);
-    state.notificationSettings.set(connection, checked.value);
-    changed("fleet");
-    return checked.value;
-  } catch (error) {
-    if (showError) result(error instanceof Error ? error.message : String(error), "error");
-    return null;
-  } finally {
-    loading.delete(connection);
-  }
+function settingsResponse(response: ApiResponse): NotificationSettings {
+  if (response.status < 200 || response.status >= 300) throw new Error(`Server returned HTTP ${response.status}`);
+  const checked = checkNotificationSettings(response.body);
+  if (!checked.ok) throw new Error(checked.error);
+  return checked.value;
 }
 
 function fill(settings: NotificationSettings): void {
@@ -43,13 +40,6 @@ function fill(settings: NotificationSettings): void {
   ($<HTMLTextAreaElement>("am-muted-agents")).value = settings.mutedAgents.join("\n");
 }
 
-async function chooseConnection(connection: string): Promise<void> {
-  editingConnection = connection;
-  result("Loading…");
-  const settings = state.notificationSettings.get(connection) ?? await loadSettings(connection, true);
-  if (settings) { fill(settings); result(""); }
-}
-
 export function openNotificationSettings(): void {
   const select = $<HTMLSelectElement>("am-notifications-connection");
   select.replaceChildren(...[...state.conns.values()].map(({ conn }) => new Option(conn.name, conn.id)));
@@ -58,11 +48,12 @@ export function openNotificationSettings(): void {
   if (!connection) return;
   select.value = connection;
   $("am-notification-settings").hidden = false;
-  void chooseConnection(connection);
+  void settingsController.select(connection);
   $("am-notifications-close").focus();
 }
 
 function closeSettings(): void {
+  settingsController.close();
   $("am-notification-settings").hidden = true;
   $("am-sb-notifications").focus();
 }
@@ -70,7 +61,7 @@ function closeSettings(): void {
 export function notificationSeconds(value: string, scale: number): number {
   const seconds = Number(value) * scale;
   const rounded = Math.round(seconds);
-  if (!Number.isFinite(seconds) || seconds < 0 || rounded > 86_400 || Math.abs(seconds - rounded) > 1e-6) {
+  if (!value.trim() || !Number.isFinite(seconds) || seconds < 0 || rounded > 86_400 || Math.abs(seconds - rounded) > 1e-6) {
     throw new Error("Timing values must be whole seconds from 0 to 86400");
   }
   return rounded;
@@ -81,24 +72,14 @@ function number(id: string, scale: number): number {
 }
 
 async function save(): Promise<void> {
-  if (!editingConnection) return;
-  const patch: NotificationSettingsPatch = {
+  await settingsController.save(() => ({
     enabled: Object.fromEntries(NOTIFICATION_KINDS.map((kind) => [kind,
       document.querySelector<HTMLInputElement>(`[data-notification-kind="${kind}"]`)!.checked])),
     idleMinSeconds: number("am-idle-min", 60),
     idleCooldownSeconds: number("am-idle-cooldown", 60),
     idleCoalesceSeconds: number("am-idle-coalesce", 1),
     mutedAgents: $<HTMLTextAreaElement>("am-muted-agents").value.split(/[\s,]+/).filter(Boolean),
-  };
-  result("Saving…");
-  const response = await call("notifications.settings", { connection: editingConnection, patch });
-  if (response.status < 200 || response.status >= 300) throw new Error(`Server returned HTTP ${response.status}`);
-  const checked = checkNotificationSettings(response.body);
-  if (!checked.ok) throw new Error(checked.error);
-  state.notificationSettings.set(editingConnection, checked.value);
-  fill(checked.value);
-  changed("fleet");
-  result("Saved on this server", "ok");
+  }));
 }
 
 const presence = new PresenceWriter((connection, value) => call("notifications.presence", { connection, ...value }));
@@ -114,16 +95,17 @@ function heartbeat(): void {
 }
 
 export function initNotifications(): void {
+  $<HTMLButtonElement>("am-notifications-save").disabled = true;
   $("am-sb-notifications").addEventListener("click", openNotificationSettings);
   $("am-notifications-close").addEventListener("click", closeSettings);
-  $<HTMLSelectElement>("am-notifications-connection").addEventListener("change", (event) => void chooseConnection((event.target as HTMLSelectElement).value));
+  $<HTMLSelectElement>("am-notifications-connection").addEventListener("change", (event) => void settingsController.select((event.target as HTMLSelectElement).value));
   document.querySelector<HTMLFormElement>(".am-settings-card")!.addEventListener("submit", (event) => {
     event.preventDefault();
-    void save().catch((error: unknown) => result(error instanceof Error ? error.message : String(error), "error"));
+    void save();
   });
   $("am-notification-settings").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeSettings(); });
   subscribe("fleet", () => {
-    for (const id of state.conns.keys()) if (!state.notificationSettings.has(id)) void loadSettings(id);
+    for (const id of state.conns.keys()) if (!state.notificationSettings.has(id)) void settingsController.load(id).catch(() => {});
   });
   subscribe("seen", heartbeat);
   window.addEventListener("focus", heartbeat);
