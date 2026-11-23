@@ -310,7 +310,28 @@ am send server:api "ship it"       # address a specific host
 
 Messages to an unreachable roaming machine use a durable outbox and are collected when it reconnects. For live reverse access, see [Reverse SSH](docs/reverse-ssh.md).
 
-Notifications follow you too: each host journals its notifications (`am notifications` lists them), and the daemon on any machine with a notifier long-polls every remote's journal and shows them locally, labelled with the host — so agents on a headless server reach your laptop's desktop. Anything that piled up while the laptop slept arrives as one summary. Set `relayNotifications: false` to opt out.
+Notifications follow you too: each host journals its notifications (`am notifications history` lists them), and the daemon on any machine with a notifier long-polls every remote's journal and shows them locally, labelled with the host — so agents on a headless server reach your laptop's desktop. Anything that piled up while the laptop slept arrives as one summary. Set `relayNotifications: false` to opt out.
+
+Idle alerts wait for two minutes of work, then collect for one minute so simultaneous finishes become one summary. Each agent has a ten-minute cooldown. Concierge, muted agents, and agents currently viewed in a focused app/web window do not generate idle alerts. A recent decision, PR, or share alert replaces the redundant idle alert. Attention alerts stay immediate; muting an agent affects only idle alerts.
+
+`am notifications` shows the policy for the current host; `am notifications history --json` shows its retained journal. Use `am notifications set idleCooldownSeconds 600` (also `idleMinSeconds` and `idleCoalesceSeconds`), or `am notifications set idle off` (any notification kind accepts `on`/`off`). `am mute <name>` and `am unmute <name>` persist idle-only mutes. Prefix with `am -H <host>` to adjust another host. Notification settings in the web/macOS UI apply to the connected server; each source host owns its policy.
+
+The `notifications` section in `~/.agent-manager/config.json` supports:
+
+```json
+{
+  "notifications": {
+    "enabled": { "attention": true, "idle": true, "share": true, "pr": true, "decision": true },
+    "idleMinSeconds": 120,
+    "idleCooldownSeconds": 600,
+    "idleCoalesceSeconds": 60,
+    "mutedAgents": []
+  }
+}
+```
+
+Explicit legacy `notifyOnIdle` and `idleNotifyMinSeconds` values remain effective until their corresponding new setting is supplied. Focus reports expire after 45 seconds if a window disconnects. Coalescing is per source host and requires its daemon to drain the durable pending queue. Restart the source host’s daemon after upgrading; pending alerts more than ten minutes past their due time are discarded. Policy decisions and sampled focus reports are recorded without message bodies in `notification-policy-audit.jsonl`, capped at 2 MiB; retention depends on activity.
+
 
 ## Web front desk
 

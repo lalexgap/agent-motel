@@ -26,6 +26,7 @@ const state = {
   noticeSource: null,
   detailMode: "terminal",
   refreshPending: false,
+  notificationSettings: null,
 };
 const agentTerminal = createAgentTerminal({
   screen: $("terminal-screen"),
@@ -49,6 +50,7 @@ function scheduleRefresh() {
 }
 function connectEvents() {
   if (!state.authenticated) return;
+  queueNotificationPresence();
   const params = new URLSearchParams();
   const agent = state.subagent?.parent || state.selected;
   if (agent) params.set("agent", agent);
@@ -216,6 +218,131 @@ async function api(path, body, method) {
     throw new Error(data.error || `Request failed (${response.status})`);
   return data;
 }
+const notificationClientId = "web-" + (globalThis.crypto?.randomUUID?.() ||
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`).slice(0, 59);
+let pendingNotificationPresence = null, sendingNotificationPresence = false;
+function notificationPresence(focusedOverride) {
+  const agent = state.selected || undefined;
+  const focused = focusedOverride === false ? false : Boolean(
+    state.authenticated && agent && !$("detail").hidden && !$("notification-settings-dialog").open &&
+    !document.hidden && document.hasFocus(),
+  );
+  return { clientId: notificationClientId, ...(agent ? { agent } : {}), focused };
+}
+async function drainNotificationPresence() {
+  if (sendingNotificationPresence) return;
+  sendingNotificationPresence = true;
+  try {
+    while (pendingNotificationPresence) {
+      const payload = pendingNotificationPresence;
+      pendingNotificationPresence = null;
+      try { await api("/api/notifications/presence", payload); } catch {}
+    }
+  } finally {
+    sendingNotificationPresence = false;
+  }
+}
+function queueNotificationPresence(focusedOverride) {
+  if (!state.authenticated) return;
+  pendingNotificationPresence = notificationPresence(focusedOverride);
+  drainNotificationPresence();
+}
+const notificationKinds = ["attention", "idle", "share", "pr", "decision"];
+function normalizedNotificationSettings(settings) {
+  return {
+    enabled: Object.fromEntries(notificationKinds.map(kind => [kind, settings?.enabled?.[kind] !== false])),
+    idleMinSeconds: Math.max(0, Number(settings?.idleMinSeconds) || 0),
+    idleCooldownSeconds: Math.max(0, Number(settings?.idleCooldownSeconds) || 0),
+    idleCoalesceSeconds: Math.max(0, Number(settings?.idleCoalesceSeconds) || 0),
+    mutedAgents: [...new Set((settings?.mutedAgents || []).filter(name => typeof name === "string"))],
+  };
+}
+function renderNotificationSettings() {
+  const settings = state.notificationSettings;
+  if (!settings) return;
+  for (const kind of notificationKinds) $("notification-kind-" + kind).checked = settings.enabled[kind];
+  $("notification-idle-min").value = String(settings.idleMinSeconds);
+  $("notification-idle-cooldown").value = String(settings.idleCooldownSeconds);
+  $("notification-idle-coalesce").value = String(settings.idleCoalesceSeconds);
+  const muted = new Set(settings.mutedAgents);
+  const names = [...new Set([
+    ...state.rows.filter(row => !row.host && row.name !== "concierge").map(row => row.name),
+    ...settings.mutedAgents,
+  ])].sort((a, b) => a.localeCompare(b));
+  const list = $("notification-muted-agents");
+  list.replaceChildren();
+  if (!names.length) {
+    list.append(el("p", "notification-muted-empty", "No agents are available to mute."));
+    return;
+  }
+  for (const name of names) {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "muted-agent";
+    input.value = name;
+    input.checked = muted.has(name);
+    const label = document.createElement("label");
+    label.title = name;
+    label.append(input, el("span", "", name));
+    list.append(label);
+  }
+}
+async function refreshNotificationSettings() {
+  const settings = normalizedNotificationSettings(await api("/api/notifications/settings"));
+  state.notificationSettings = settings;
+  renderNotificationSettings();
+  renderFleet();
+  return settings;
+}
+async function openNotificationSettings() {
+  const dialog = $("notification-settings-dialog");
+  const status = $("notification-settings-status");
+  status.classList.remove("error");
+  status.textContent = state.notificationSettings ? "" : "Loading settings…";
+  if (state.notificationSettings) renderNotificationSettings();
+  if (!dialog.open) dialog.showModal();
+  queueNotificationPresence(false);
+  $("notification-settings-save").disabled = true;
+  try {
+    await refreshNotificationSettings();
+    status.textContent = "";
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add("error");
+  } finally {
+    $("notification-settings-save").disabled = !state.notificationSettings;
+  }
+}
+$("notification-settings-open").onclick = openNotificationSettings;
+$("notification-settings-close").onclick = () => $("notification-settings-dialog").close();
+$("notification-settings-dialog").onclose = () => queueNotificationPresence();
+$("notification-settings-form").onsubmit = async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const button = $("notification-settings-save"), status = $("notification-settings-status");
+  button.disabled = true;
+  status.classList.remove("error");
+  status.textContent = "Saving…";
+  const patch = {
+    enabled: Object.fromEntries(notificationKinds.map(kind => [kind, $("notification-kind-" + kind).checked])),
+    idleMinSeconds: Number($("notification-idle-min").value),
+    idleCooldownSeconds: Number($("notification-idle-cooldown").value),
+    idleCoalesceSeconds: Number($("notification-idle-coalesce").value),
+    mutedAgents: [...document.querySelectorAll('#notification-muted-agents input[name="muted-agent"]:checked')].map(input => input.value),
+  };
+  try {
+    state.notificationSettings = normalizedNotificationSettings(await api("/api/notifications/settings", patch));
+    renderNotificationSettings();
+    renderFleet();
+    status.textContent = "Settings saved on this server.";
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add("error");
+  } finally {
+    button.disabled = false;
+  }
+};
 function lock() {
   agentTerminal.close();
   closeAgentMenu();
@@ -223,11 +350,13 @@ function lock() {
   state.refreshPending = false;
   state.sessionEpoch++;
   state.authenticated = false;
+  state.notificationSettings = null;
   state.detailVersion++;
   state.rows = [];
   state.lastSeen.clear();
   state.lastRead.clear();
   $("command-dialog").close();
+  $("notification-settings-dialog").close();
   clearConversationSearch();
   $("advanced-results").replaceChildren();
   $("advanced-search-form").reset();
@@ -314,6 +443,7 @@ async function unlock() {
   showOverview();
   notice("");
   state.conciergeKey = (await api("/api/concierge")).key;
+  try { await refreshNotificationSettings(); } catch (error) { notice(error.message, "refresh"); }
   connectEvents();
   await refresh();
   await refreshDock();
@@ -335,6 +465,7 @@ $("login-form").onsubmit = async (event) => {
 };
 $("logout").onclick = async () => {
   try {
+    try { await api("/api/notifications/presence", notificationPresence(false)); } catch {}
     await api("/auth/logout", {});
     lock();
   } catch (error) {
@@ -480,6 +611,12 @@ function renderFleet() {
     label.dataset.provider = provider.toLowerCase();
     const heading = el("span", "side-agent-heading");
     heading.append(dot(row.status), el("span", "side-agent-name", row.name));
+    const notificationsMuted = !row.host && state.notificationSettings?.mutedAgents.includes(row.name);
+    if (notificationsMuted) {
+      const muted = el("span", "side-agent-muted", "Idle muted");
+      muted.title = "Idle notifications muted";
+      heading.append(muted);
+    }
     heading.append(label);
     const age = Date.parse(row.updatedAt || "");
     const reason = row.statusDetail || row.statusReason;
@@ -502,6 +639,7 @@ function renderFleet() {
     button.title = `${row.name} · ${provider}\n${detail.filter(Boolean).join(" · ")}`;
     button.setAttribute("aria-label", [row.name, sidebarStatusName(row),
       subagents ? `${subagents} active subagent${subagents === 1 ? "" : "s"}` : "", provider,
+      notificationsMuted ? "Idle notifications muted" : "",
       reason, row.queued ? `${row.queued} queued` : "", row.openDecisions > 0 ? decisionsBadgeLabel(row) : "",
       Number.isFinite(age) ? `Last updated ${new Date(age).toLocaleString()}` : ""].filter(Boolean).join(", "));
     button.append(heading, metadata);
@@ -1829,6 +1967,7 @@ function renderCommands() {
     ["Pull requests", () => $("prs-nav").click()],
     ["Decisions", () => $("decisions-nav").click()],
     ["Concierge", () => $("concierge-nav").click()],
+    ["Notification settings…", () => $("notification-settings-open").click()],
     ["New agent…", createDialog],
     ...(state.selected ? [["View chat", () => $("chat-tab").click()],
       ["View terminal", () => $("terminal-tab").click()]] : []),
@@ -1872,8 +2011,13 @@ document.addEventListener("keydown", event => {
   }
 });
 document.addEventListener("visibilitychange", () => {
+  queueNotificationPresence();
   if (!document.hidden) refresh();
 });
+window.addEventListener("focus", () => queueNotificationPresence());
+window.addEventListener("blur", () => queueNotificationPresence(false));
+window.addEventListener("pagehide", () => queueNotificationPresence(false));
+setInterval(() => queueNotificationPresence(), 15000);
 setInterval(() => {
   if (!document.hidden) refresh();
 }, 4000);

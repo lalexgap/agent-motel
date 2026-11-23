@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { configFile } from "./paths";
+import { withFileLock } from "./filelock";
+import { writeJsonAtomic } from "./fsutil";
 import { isProvider, type Provider } from "./state";
 
 export function shortHost(host: string): string {
@@ -25,6 +27,7 @@ export interface Config {
   // Minimum length of the work stint, in seconds, before idle is
   // notification-worthy — filters out quick conversational replies.
   idleNotifyMinSeconds: number;
+  notifications: NotificationSettings;
   // Launch agents with remote control: Claude Code Remote Control, or for
   // codex, attached to the app-server daemon. Antigravity defaults off and
   // does not support remote control. Per-agent override via
@@ -177,12 +180,35 @@ export interface Config {
   selfModelSwitchMaxTurns: number;
 }
 
+export type NotificationToggle = "attention" | "idle" | "share" | "pr" | "decision";
+
+export interface NotificationSettings {
+  enabled: Record<NotificationToggle, boolean>;
+  idleMinSeconds: number;
+  idleCooldownSeconds: number;
+  idleCoalesceSeconds: number;
+  mutedAgents: string[];
+}
+
+export type NotificationSettingsPatch = Partial<Omit<NotificationSettings, "enabled">> & {
+  enabled?: Partial<NotificationSettings["enabled"]>;
+};
+
+const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  enabled: { attention: true, idle: true, share: true, pr: true, decision: true },
+  idleMinSeconds: 120,
+  idleCooldownSeconds: 600,
+  idleCoalesceSeconds: 60,
+  mutedAgents: [],
+};
+
 const DEFAULTS: Config = {
   prPollSeconds: 120,
   defaultProvider: "codex",
   conciergeProvider: "codex",
   notifyOnIdle: true,
-  idleNotifyMinSeconds: 30,
+  idleNotifyMinSeconds: DEFAULT_NOTIFICATION_SETTINGS.idleMinSeconds,
+  notifications: DEFAULT_NOTIFICATION_SETTINGS,
   remoteControl: true,
   apiPort: 8787,
   apiBind: "127.0.0.1",
@@ -218,18 +244,139 @@ const DEFAULTS: Config = {
 };
 
 export function loadConfig(): Config {
-  if (!existsSync(configFile())) return { ...DEFAULTS };
-  let stored: Partial<Config>;
+  if (!existsSync(configFile())) return configWithNotifications({});
+  let stored: Partial<Config> & Record<string, unknown>;
   try {
     stored = JSON.parse(readFileSync(configFile(), "utf8"));
   } catch {
-    return { ...DEFAULTS };
+    return configWithNotifications({});
   }
-  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return { ...DEFAULTS };
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return configWithNotifications({});
   for (const key of ["defaultProvider", "conciergeProvider"] as const) {
     if (key in stored && !isProvider(stored[key])) throw new Error(`${key} must be a provider: claude, codex, or antigravity`);
   }
-  return { ...DEFAULTS, ...stored };
+  return configWithNotifications(stored);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizedNotificationSettings(stored: Record<string, unknown>): NotificationSettings {
+  const section = isRecord(stored.notifications) ? stored.notifications : undefined;
+  const enabled = isRecord(section?.enabled) ? section.enabled : {};
+  const legacyIdle = stored.notifyOnIdle;
+  const legacyMin = stored.idleNotifyMinSeconds;
+  return {
+    enabled: {
+      attention: typeof enabled.attention === "boolean" ? enabled.attention : true,
+      idle: typeof enabled.idle === "boolean" ? enabled.idle : typeof legacyIdle === "boolean" ? legacyIdle : true,
+      share: typeof enabled.share === "boolean" ? enabled.share : true,
+      pr: typeof enabled.pr === "boolean" ? enabled.pr : true,
+      decision: typeof enabled.decision === "boolean" ? enabled.decision : true,
+    },
+    idleMinSeconds: validSeconds(section?.idleMinSeconds)
+      ? section.idleMinSeconds
+      : validSeconds(legacyMin) ? legacyMin : DEFAULT_NOTIFICATION_SETTINGS.idleMinSeconds,
+    idleCooldownSeconds: validSeconds(section?.idleCooldownSeconds) ? section.idleCooldownSeconds : DEFAULT_NOTIFICATION_SETTINGS.idleCooldownSeconds,
+    idleCoalesceSeconds: validSeconds(section?.idleCoalesceSeconds) ? section.idleCoalesceSeconds : DEFAULT_NOTIFICATION_SETTINGS.idleCoalesceSeconds,
+    mutedAgents: Array.isArray(section?.mutedAgents)
+      ? [...new Set(section.mutedAgents.filter((value): value is string => validAgentName(value)))].slice(0, 256)
+      : [],
+  };
+}
+
+function configWithNotifications(stored: Record<string, unknown>): Config {
+  const notifications = normalizedNotificationSettings(stored);
+  return {
+    ...DEFAULTS,
+    ...stored,
+    notifications,
+    notifyOnIdle: notifications.enabled.idle,
+    idleNotifyMinSeconds: notifications.idleMinSeconds,
+  } as Config;
+}
+
+function validSeconds(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 86_400;
+}
+
+function validAgentName(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
+function validateNotificationPatch(value: unknown): NotificationSettingsPatch {
+  if (!isRecord(value)) throw new Error("notification settings patch must be an object");
+  const allowed = new Set(["enabled", "idleMinSeconds", "idleCooldownSeconds", "idleCoalesceSeconds", "mutedAgents"]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`unknown notification setting: ${key}`);
+  const patch: NotificationSettingsPatch = {};
+  if ("enabled" in value) {
+    if (!isRecord(value.enabled)) throw new Error("notifications.enabled must be an object");
+    const enabled: Partial<NotificationSettings["enabled"]> = {};
+    const toggles = new Set<NotificationToggle>(["attention", "idle", "share", "pr", "decision"]);
+    for (const [key, setting] of Object.entries(value.enabled)) {
+      if (!toggles.has(key as NotificationToggle)) throw new Error(`unknown notification kind: ${key}`);
+      if (typeof setting !== "boolean") throw new Error(`notifications.enabled.${key} must be boolean`);
+      enabled[key as NotificationToggle] = setting;
+    }
+    patch.enabled = enabled;
+  }
+  for (const key of ["idleMinSeconds", "idleCooldownSeconds", "idleCoalesceSeconds"] as const) {
+    if (!(key in value)) continue;
+    if (!validSeconds(value[key])) throw new Error(`notifications.${key} must be an integer from 0 to 86400`);
+    patch[key] = value[key];
+  }
+  if ("mutedAgents" in value) {
+    if (!Array.isArray(value.mutedAgents) || value.mutedAgents.length > 256 || !value.mutedAgents.every(validAgentName)) {
+      throw new Error("notifications.mutedAgents must contain at most 256 local agent names");
+    }
+    patch.mutedAgents = [...new Set(value.mutedAgents)];
+  }
+  return patch;
+}
+
+export function getNotificationSettings(): NotificationSettings {
+  return loadConfig().notifications;
+}
+
+export function updateNotificationSettings(value: unknown): NotificationSettings {
+  const patch = validateNotificationPatch(value);
+  return withFileLock(`${configFile()}.lock`, () => {
+    let stored: Record<string, unknown> = {};
+    if (existsSync(configFile())) {
+      const parsed = JSON.parse(readFileSync(configFile(), "utf8"));
+      if (!isRecord(parsed)) throw new Error("existing config must be a JSON object");
+      stored = parsed;
+    }
+    const current = normalizedNotificationSettings(stored);
+    const notifications: NotificationSettings = {
+      ...current,
+      ...patch,
+      enabled: { ...current.enabled, ...patch.enabled },
+      mutedAgents: patch.mutedAgents ?? current.mutedAgents,
+    };
+    writeJsonAtomic(configFile(), { ...stored, notifications });
+    return notifications;
+  });
+}
+
+export function setAgentMuted(name: string, muted: boolean): NotificationSettings {
+  if (!validAgentName(name)) throw new Error("invalid local agent name");
+  return withFileLock(`${configFile()}.lock`, () => {
+    let stored: Record<string, unknown> = {};
+    if (existsSync(configFile())) {
+      const parsed = JSON.parse(readFileSync(configFile(), "utf8"));
+      if (!isRecord(parsed)) throw new Error("existing config must be a JSON object");
+      stored = parsed;
+    }
+    const current = normalizedNotificationSettings(stored);
+    const names = new Set(current.mutedAgents);
+    if (muted) names.add(name);
+    else names.delete(name);
+    const notifications = { ...current, mutedAgents: [...names] };
+    writeJsonAtomic(configFile(), { ...stored, notifications });
+    return notifications;
+  });
 }
 
 export function shouldNotifyIdle(opts: {
