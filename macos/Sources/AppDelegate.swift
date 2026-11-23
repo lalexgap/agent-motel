@@ -7,7 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private(set) var webView: WKWebView!
     let store = ConnectionStore()
     private(set) lazy var bridge = Bridge(store: store, confirmation: Confirmation(
-        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.revealForSheet() }))
+        window: { [weak self] in self?.window }, reveal: { [weak self] in self?.revealForSheet() }),
+        nativeFocused: { [weak self] in NSApp.isActive && self?.window?.isKeyWindow == true })
     /// The smoke test runs as an accessory app and must never take focus from the person at the Mac.
     var activatesWindow = true
     /// Off in the smoke test, which must not ask for notification permission.
@@ -46,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             self?.decisionsStatusItem?.button?.title = count > 0 ? "AM · \(count)" : "AM"
             self?.decisionsStatusItem?.button?.toolTip = "\(count) open decisions — click to answer"
         }
+        bridge.focusedAgentChanged = { [weak self] agent in self?.notifier.focusedAgent = agent }
+        notifier.nativeFocused = { [weak self] in NSApp.isActive && self?.window?.isKeyWindow == true }
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -154,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.windowsMenu = menu.items.last?.submenu
         // After "Connections…" and its separator.
         if let appMenu = menu.items.first?.submenu {
-            let notifications = NSMenuItem(title: "Notifications", action: nil, keyEquivalent: "")
+            let notifications = NSMenuItem(title: "Local Notification Delivery", action: nil, keyEquivalent: "")
             notifications.submenu = notifier.makeMenu()
             appMenu.insertItem(notifications, at: 4)
             appMenu.insertItem(.separator(), at: 5)

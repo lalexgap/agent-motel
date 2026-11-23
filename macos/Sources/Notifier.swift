@@ -13,6 +13,8 @@ final class Notifier: NSObject, NSMenuDelegate {
 
     /// Called when a notification about an agent is clicked; `host` is empty when unknown.
     var openAgent: (_ host: String, _ agent: String, _ kind: String) -> Void = { _, _, _ in }
+    var focusedAgent: String?
+    var nativeFocused: () -> Bool = { NSApp.isActive }
     private let defaults: UserDefaults
     private var center: UNUserNotificationCenter { .current() }
     private var authorization: UNAuthorizationStatus = .notDetermined
@@ -45,6 +47,8 @@ final class Notifier: NSObject, NSMenuDelegate {
     /// Handles an `agent-motel:` URL; anything else is ignored.
     func handle(_ url: URL) {
         guard let incoming = NotificationPolicy.parse(url) else { return }
+        if NotificationPolicy.suppressFocusedIdle(kind: incoming.kind, appFocused: nativeFocused(), focusedAgent: focusedAgent,
+                                                   incomingHost: incoming.host, incomingAgent: incoming.agent) { return }
         let calendar = Calendar.current
         let now = calendar.dateComponents([.hour, .minute], from: Date())
         let delivery = NotificationPolicy.delivery(for: incoming.kind, preferences: preferences,
@@ -130,7 +134,7 @@ final class Notifier: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
         for kind in NotificationKind.allCases {
-            let item = NSMenuItem(title: kind.label, action: #selector(toggleKind(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: "Show locally: \(kind.label)", action: #selector(toggleKind(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = kind.rawValue
             item.state = prefs.enabled.contains(kind) ? .on : .off

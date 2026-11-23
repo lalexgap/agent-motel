@@ -14,6 +14,7 @@ import { initPrs } from "./prsView";
 import { parseAgentKey } from "./fleet";
 import { initInspector } from "./inspector";
 import { openFromNotification } from "./notificationOpen";
+import { initNotifications } from "./notifications";
 import { initKeyboard } from "./keyboard";
 import { initRelatedSection } from "./relatedSection";
 import { initSearch } from "./searchView";
@@ -46,6 +47,7 @@ function wire(): void {
   initInspector();
   initSubagentView();
   initSidebar();
+  initNotifications();
   // After the sidebar, so a fleet re-render has replaced the rows before the menu checks its row.
   initContextMenu();
   initStatusbar();

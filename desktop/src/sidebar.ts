@@ -100,6 +100,12 @@ function agentNode(item: AgentItem, now: number): HTMLElement {
   const text = h("div", "am-agent-text");
   const line = h("div", "am-agent-line");
   line.append(h("span", "am-agent-name", row.name));
+  const settings = state.notificationSettings.get(item.connection);
+  if (settings?.mutedAgents.includes(row.host ? `${row.host}:${row.name}` : row.name)) {
+    const muted = h("span", "am-muted", "Muted");
+    muted.title = "Idle notifications muted; other notification types still arrive";
+    line.append(muted);
+  }
   const provider = providerLabel(row.provider);
   line.append(h("span", "am-agent-provider", provider));
   const parts = sidebarMeta(row, now);

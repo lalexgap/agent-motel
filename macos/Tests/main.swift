@@ -841,4 +841,43 @@ check(NotificationPolicy.delivery(for: .attention, preferences: preferences, min
 check(NotificationPolicy.delivery(for: .attention, preferences: preferences, minuteOfDay: 8 * 60) == .alert, "quiet hours end")
 check(NotificationPolicy.inQuietHours(600, start: 540, end: 720) && !NotificationPolicy.inQuietHours(720, start: 540, end: 720), "same-day range")
 check(!NotificationPolicy.inQuietHours(600, start: 600, end: 600), "empty range")
+check(NotificationPolicy.suppressFocusedIdle(kind: .idle, appFocused: true, focusedAgent: "annex:alpha",
+                                             incomingHost: "annex", incomingAgent: "alpha"), "focused remote idle")
+check(!NotificationPolicy.suppressFocusedIdle(kind: .idle, appFocused: true, focusedAgent: nil,
+                                              incomingHost: nil, incomingAgent: nil), "idle summary nil/nil")
+check(!NotificationPolicy.suppressFocusedIdle(kind: .idle, appFocused: false, focusedAgent: "annex:alpha",
+                                              incomingHost: "annex", incomingAgent: "alpha"), "unfocused app")
+check(!NotificationPolicy.suppressFocusedIdle(kind: .idle, appFocused: true, focusedAgent: "alpha",
+                                              incomingHost: nil, incomingAgent: "alpha"), "local agent without owning host")
 print("PASS notification policy (hand-off URL parsing and validation, identifiers, PR links, per-kind preferences, quiet hours)")
+
+let serverBase = "https://am.example.com"
+let settingsWrite = try! NotificationServerPolicy.settings(base: serverBase, patch: [
+    "enabled": ["idle": false], "idleMinSeconds": 120, "mutedAgents": ["alpha", "annex:remote"],
+])
+check(settingsWrite.url.absoluteString == serverBase + "/api/notifications/settings" && settingsWrite.method == .post,
+      "notification settings route")
+let settingsBody = try! JSONSerialization.jsonObject(with: settingsWrite.body!) as! [String: Any]
+check((settingsBody["enabled"] as? [String: Bool])?["idle"] == false && settingsBody["idleMinSeconds"] as? Int == 120,
+      "notification settings body")
+for patch in [
+    ["unknown": true], ["enabled": ["other": true]], ["enabled": ["idle": 1]],
+    ["idleMinSeconds": -1], ["idleCooldownSeconds": 1.5], ["idleCoalesceSeconds": NotificationServerPolicy.maxSeconds + 1],
+    ["mutedAgents": ["../alpha"]],
+] as [[String: Any]] {
+    check((try? NotificationServerPolicy.settings(base: serverBase, patch: patch)) == nil, "accepted notification patch \(patch)")
+}
+let focusedWrite = try! NotificationServerPolicy.presence(base: serverBase, clientID: "macos-client:1", agent: "annex:remote", focused: true)
+let focusedBody = try! JSONSerialization.jsonObject(with: focusedWrite.body!) as! [String: Any]
+check(focusedWrite.url.absoluteString == serverBase + "/api/notifications/presence"
+      && focusedBody["clientId"] as? String == "macos-client:1" && focusedBody["agent"] as? String == "annex:remote"
+      && focusedBody["focused"] as? Bool == true, "focused presence body")
+for client in ["", "has space", String(repeating: "a", count: 65)] {
+    check((try? NotificationServerPolicy.presence(base: serverBase, clientID: client, agent: "alpha", focused: true)) == nil,
+          "accepted client id \(client.debugDescription)")
+}
+check((try? NotificationServerPolicy.presence(base: serverBase, clientID: "client", agent: nil, focused: true)) == nil,
+      "focused presence without agent")
+check((try? NotificationServerPolicy.presence(base: serverBase, clientID: "client", agent: nil, focused: false)) != nil,
+      "blur presence without agent")
+print("PASS notification server writes (fixed routes, strict settings patch, bounded presence identity and focused-agent requirement)")

@@ -144,6 +144,18 @@ export interface ApiResponse {
   body: unknown;
 }
 
+export type NotificationKind = "attention" | "idle" | "share" | "pr" | "decision";
+export interface NotificationSettings {
+  enabled: Record<NotificationKind, boolean>;
+  idleMinSeconds: number;
+  idleCooldownSeconds: number;
+  idleCoalesceSeconds: number;
+  mutedAgents: string[];
+}
+export type NotificationSettingsPatch = Partial<Omit<NotificationSettings, "enabled">> & {
+  enabled?: Partial<NotificationSettings["enabled"]>;
+};
+
 // A confirmed action the user declined: nothing was sent.
 export interface Cancelled {
   cancelled: true;
@@ -175,6 +187,8 @@ export interface BridgeMethods {
   "connections.save": { params: { id?: string; name: string; url: string; token?: string }; result: Connection };
   "connections.remove": { params: { id: string }; result: Record<string, never> };
   "api.get": { params: { connection: string; path: string }; result: ApiResponse };
+  "notifications.settings": { params: { connection: string; patch: NotificationSettingsPatch }; result: ApiResponse };
+  "notifications.presence": { params: { connection: string; agent?: string; focused: boolean }; result: ApiResponse };
   // Fetches the secret capability URL natively and opens it without returning it to the page.
   "decisions.open": { params: AgentParams & { decisionId?: string }; result: Record<string, never> };
   "decisions.answer": { params: AgentParams & { id: string; action: DecisionAction; text: string }; result: ApiResponse };
