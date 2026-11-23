@@ -31,6 +31,7 @@ import { notifyDaemon } from "../daemon";
 import { awaitTurnReply, claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
 import { loadConfig, subagentPermissionWait } from "../config";
 import { queueIdleNotification } from "../notificationPolicy";
+import { spawnIdleNotificationFallback } from "../idleNotificationFallback";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
@@ -989,7 +990,9 @@ export async function hookCommand(event: string): Promise<void> {
         attached: hasAttachedClient(agent.tmuxSession),
         runningSubagents: activeSubagents(name).length,
       });
-      if (pending.queued) await notifyDaemon(name, "idle-pending");
+      if (pending.queued && pending.dueAt && !(await notifyDaemon(name, "idle-pending"))) {
+        spawnIdleNotificationFallback(pending.dueAt);
+      }
     }
   }
 }

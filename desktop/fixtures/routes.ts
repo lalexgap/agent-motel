@@ -341,7 +341,7 @@ export function buildRoutes(fx: Fx): {
   let notificationSettings: NotificationSettings = {
     enabled: { attention: true, idle: true, share: true, pr: true, decision: true },
     idleMinSeconds: 120, idleCooldownSeconds: 600, idleCoalesceSeconds: 60,
-    mutedAgents: ["quiet-river", "annex:remote-build"],
+    mutedAgents: ["quiet-river", "remote-build"],
   };
   const notificationRoutes: Route[] = [
     { method: "GET", path: "/api/notifications/settings", handler: () => json(notificationSettings) },

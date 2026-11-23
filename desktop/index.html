@@ -169,7 +169,7 @@
       <div id="am-notification-settings" class="am-overlay" hidden>
         <form class="am-settings-card" autocomplete="off">
           <div class="am-setup-head"><h1>Notification settings</h1><button id="am-notifications-close" type="button" class="am-chip">Close</button></div>
-          <p>These settings apply only to the connected server selected below, including its remote agents.</p>
+          <p>These settings apply only to the connected server selected below. Select or connect another server to configure that source.</p>
           <label class="am-field">Server<select id="am-notifications-connection"></select></label>
           <fieldset id="am-notification-kinds"><legend>Notify me about</legend>
             <label><input type="checkbox" data-notification-kind="attention" /> Needs attention</label>
@@ -179,12 +179,12 @@
             <label><input type="checkbox" data-notification-kind="pr" /> Pull requests</label>
           </fieldset>
           <div class="am-settings-grid">
-            <label class="am-field">Minimum work before idle (minutes)<input id="am-idle-min" type="number" min="0" max="10080" step="0.25" /></label>
-            <label class="am-field">Idle cooldown (minutes)<input id="am-idle-cooldown" type="number" min="0" max="10080" step="0.25" /></label>
-            <label class="am-field">Coalescing window (seconds)<input id="am-idle-coalesce" type="number" min="0" max="604800" step="1" /></label>
+            <label class="am-field">Minimum work before idle (minutes)<input id="am-idle-min" type="number" min="0" max="1440" step="any" /></label>
+            <label class="am-field">Idle cooldown (minutes)<input id="am-idle-cooldown" type="number" min="0" max="1440" step="any" /></label>
+            <label class="am-field">Coalescing window (seconds)<input id="am-idle-coalesce" type="number" min="0" max="86400" step="1" /></label>
           </div>
-          <label class="am-field">Agents muted for idle notifications<textarea id="am-muted-agents" rows="4" placeholder="agent-name&#10;host:remote-agent" spellcheck="false"></textarea></label>
-          <small>One agent per line. Muting affects idle notifications only; attention, decisions, shares and pull requests still arrive.</small>
+          <label class="am-field">Agents muted for idle notifications<textarea id="am-muted-agents" rows="4" placeholder="local-agent-name" spellcheck="false"></textarea></label>
+          <small>One local agent name from the selected server per line. Muting affects idle notifications only; attention, decisions, shares and pull requests still arrive.</small>
           <div id="am-notifications-result" role="status"></div>
           <div class="am-form-actions"><span class="am-spacer"></span><button id="am-notifications-save" class="primary" type="submit">Save</button></div>
         </form>

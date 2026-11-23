@@ -24,8 +24,8 @@ export interface Config {
   // Notify when an agent goes idle (in addition to the always-on
   // needs-attention notifications).
   notifyOnIdle: boolean;
-  // Minimum length of the work stint, in seconds, before idle is
-  // notification-worthy — filters out quick conversational replies.
+  // Legacy reportTo backstop threshold. Notification settings have their own
+  // idleMinSeconds; keep this independent for existing agent reports.
   idleNotifyMinSeconds: number;
   notifications: NotificationSettings;
   // Launch agents with remote control: Claude Code Remote Control, or for
@@ -207,7 +207,7 @@ const DEFAULTS: Config = {
   defaultProvider: "codex",
   conciergeProvider: "codex",
   notifyOnIdle: true,
-  idleNotifyMinSeconds: DEFAULT_NOTIFICATION_SETTINGS.idleMinSeconds,
+  idleNotifyMinSeconds: 30,
   notifications: DEFAULT_NOTIFICATION_SETTINGS,
   remoteControl: true,
   apiPort: 8787,
@@ -293,7 +293,9 @@ function configWithNotifications(stored: Record<string, unknown>): Config {
     ...stored,
     notifications,
     notifyOnIdle: notifications.enabled.idle,
-    idleNotifyMinSeconds: notifications.idleMinSeconds,
+    idleNotifyMinSeconds: validSeconds(stored.idleNotifyMinSeconds)
+      ? stored.idleNotifyMinSeconds
+      : DEFAULTS.idleNotifyMinSeconds,
   } as Config;
 }
 
@@ -355,7 +357,7 @@ export function updateNotificationSettings(value: unknown): NotificationSettings
       enabled: { ...current.enabled, ...patch.enabled },
       mutedAgents: patch.mutedAgents ?? current.mutedAgents,
     };
-    writeJsonAtomic(configFile(), { ...stored, notifications });
+    writeJsonAtomic(configFile(), { ...stored, notifications }, { mode: 0o600 });
     return notifications;
   });
 }
@@ -374,7 +376,7 @@ export function setAgentMuted(name: string, muted: boolean): NotificationSetting
     if (muted) names.add(name);
     else names.delete(name);
     const notifications = { ...current, mutedAgents: [...names] };
-    writeJsonAtomic(configFile(), { ...stored, notifications });
+    writeJsonAtomic(configFile(), { ...stored, notifications }, { mode: 0o600 });
     return notifications;
   });
 }

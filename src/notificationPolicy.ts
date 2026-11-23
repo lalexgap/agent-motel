@@ -78,7 +78,6 @@ export interface IdlePolicyInput {
   focused?: boolean;
   runningSubagents?: number;
   recentActivityAt?: number;
-  workStartedAt?: number;
   lastIdleAt?: number;
   createdAt?: number;
   dueAt?: number;
@@ -227,10 +226,9 @@ export function idleSuppressionReason(input: IdlePolicyInput): IdlePolicyReason 
   if (input.attached) return "attached";
   if (input.queueDepth && input.queueDepth > 0) return "queued-message";
   if (!Number.isFinite(input.workedSeconds) || input.workedSeconds < settings.idleMinSeconds) return "short-stint";
-  if (input.recentActivityAt !== undefined && (
-    (input.workStartedAt !== undefined && input.recentActivityAt >= input.workStartedAt) ||
-    now - input.recentActivityAt <= settings.idleCoalesceSeconds * 1000
-  )) return "recent-activity";
+  const activityBoundary = input.createdAt ?? now;
+  if (input.recentActivityAt !== undefined &&
+      input.recentActivityAt >= activityBoundary - settings.idleCoalesceSeconds * 1000) return "recent-activity";
   if (input.lastIdleAt !== undefined && now - input.lastIdleAt < settings.idleCooldownSeconds * 1000) return "cooldown";
   if (input.flushing) {
     if (input.status !== "idle") return "working-again";
@@ -254,7 +252,7 @@ export function recordNotificationActivity(agent: string | undefined, kind: Noti
 export function queueIdleNotification(
   input: { agent: AgentState; workedSeconds: number; queueDepth?: number; attached?: boolean; runningSubagents?: number },
   now: number | Date = Date.now(),
-): { queued: boolean; reason?: IdlePolicyReason } {
+): { queued: boolean; dueAt?: string; reason?: IdlePolicyReason } {
   const at = nowMs(now);
   return withFileLock(policyLock(), () => {
     const state = readPolicyState();
@@ -271,7 +269,6 @@ export function queueIdleNotification(
       focused: focusedNotificationAgents(at).has(input.agent.name),
       runningSubagents: input.runningSubagents,
       recentActivityAt: Number.isFinite(recentActivityAt) ? recentActivityAt : undefined,
-      workStartedAt: at - input.workedSeconds * 1000,
       lastIdleAt: Number.isFinite(lastIdleAt) ? lastIdleAt : undefined,
       settings,
       now: at,
@@ -298,7 +295,7 @@ export function queueIdleNotification(
     state.pending.push(pending);
     appendAudit({ at: pending.createdAt, event: "queued", agent: input.agent.name });
     writePolicyState(state);
-    return { queued: true };
+    return { queued: true, dueAt: pending.dueAt };
   });
 }
 
@@ -338,7 +335,6 @@ export function flushIdleNotifications(now: number | Date = Date.now()): IdleNot
           focused: focused.has(pending.agent),
           runningSubagents: activeSubagents(pending.agent).length,
           recentActivityAt: Number.isFinite(recent) ? recent : undefined,
-          workStartedAt: Date.parse(pending.startedAt),
           lastIdleAt: Number.isFinite(lastIdle) ? lastIdle : undefined,
           createdAt: Date.parse(pending.createdAt),
           dueAt,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getNotificationSettings, loadConfig, setAgentMuted, shouldNotifyIdle, subagentPermissionWait, updateNotificationSettings, type Config } from "../src/config";
@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("loadConfig", () => {
   test("defaults when no file exists", () => {
-    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 120, notifications: { enabled: { attention: true, idle: true, share: true, pr: true, decision: true }, idleMinSeconds: 120, idleCooldownSeconds: 600, idleCoalesceSeconds: 60, mutedAgents: [] }, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, subagentPermissionWaitSeconds: 15, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
+    expect(loadConfig()).toEqual({ defaultProvider: "codex", conciergeProvider: "codex", notifyOnIdle: true, idleNotifyMinSeconds: 30, notifications: { enabled: { attention: true, idle: true, share: true, pr: true, decision: true }, idleMinSeconds: 120, idleCooldownSeconds: 600, idleCoalesceSeconds: 60, mutedAgents: [] }, remoteControl: true, apiPort: 8787, apiBind: "127.0.0.1", worktreeByDefault: true, skipPermissions: true, commsMaxPerWindow: 5, commsWindowSeconds: 60, outboxTtlHours: 48, outboxPollSeconds: 2, outboxPollMaxSeconds: 30, tunnelPort: 2222, showUsage: true, gcAgentDays: 7, gcTrashDays: 30, gcMergedDays: 3, gcRemovedDays: 7, gcOrphanDays: 3, gcStaleDays: 30, gcIgnoredDays: 7, gcFileDays: 30, gcAuto: true, gcAutoHour: 4, gcAutoMaxMinutes: 15, gcAutoMaxLoad: 1, gcAutoMaxPressure: 20, permissionWaitSeconds: 120, subagentPermissionWaitSeconds: 15, pretrustClaudeDirs: true, plans: true, decisions: true, decisionsStopMode: "block", prPollSeconds: 120, selfModelSwitchMaxTurns: 2 });
   });
 
   test("file values override defaults, missing keys keep defaults", () => {
@@ -55,6 +55,25 @@ describe("notification settings", () => {
     expect(() => updateNotificationSettings({ nope: true })).toThrow("unknown notification setting");
     expect(() => updateNotificationSettings({ idleMinSeconds: -1 })).toThrow("must be an integer");
     expect(() => updateNotificationSettings({ enabled: { idle: "yes" } })).toThrow("must be boolean");
+  });
+
+  test("keeps the reportTo threshold independent from idle notification settings", () => {
+    expect(loadConfig().idleNotifyMinSeconds).toBe(30);
+    updateNotificationSettings({ idleMinSeconds: 0 });
+    expect(loadConfig().idleNotifyMinSeconds).toBe(30);
+    updateNotificationSettings({ idleMinSeconds: 86_400 });
+    expect(loadConfig().idleNotifyMinSeconds).toBe(30);
+    writeFileSync(configFile(), JSON.stringify({ idleNotifyMinSeconds: 45, notifications: { idleMinSeconds: 0 } }));
+    expect(loadConfig().idleNotifyMinSeconds).toBe(45);
+  });
+
+  test("keeps config private across settings and mute writes", () => {
+    writeFileSync(configFile(), JSON.stringify({ notifyCommand: "inert" }), { mode: 0o600 });
+    chmodSync(configFile(), 0o600);
+    updateNotificationSettings({ idleMinSeconds: 15 });
+    expect(statSync(configFile()).mode & 0o777).toBe(0o600);
+    setAgentMuted("api", true);
+    expect(statSync(configFile()).mode & 0o777).toBe(0o600);
   });
 
   test("refuses to overwrite malformed existing config", () => {

@@ -853,7 +853,7 @@ print("PASS notification policy (hand-off URL parsing and validation, identifier
 
 let serverBase = "https://am.example.com"
 let settingsWrite = try! NotificationServerPolicy.settings(base: serverBase, patch: [
-    "enabled": ["idle": false], "idleMinSeconds": 120, "mutedAgents": ["alpha", "annex:remote"],
+    "enabled": ["idle": false], "idleMinSeconds": 120, "mutedAgents": ["alpha", "remote"],
 ])
 check(settingsWrite.url.absoluteString == serverBase + "/api/notifications/settings" && settingsWrite.method == .post,
       "notification settings route")
@@ -863,7 +863,8 @@ check((settingsBody["enabled"] as? [String: Bool])?["idle"] == false && settings
 for patch in [
     ["unknown": true], ["enabled": ["other": true]], ["enabled": ["idle": 1]],
     ["idleMinSeconds": -1], ["idleCooldownSeconds": 1.5], ["idleCoalesceSeconds": NotificationServerPolicy.maxSeconds + 1],
-    ["mutedAgents": ["../alpha"]],
+    ["mutedAgents": ["../alpha"]], ["mutedAgents": ["annex:alpha"]],
+    ["mutedAgents": (0...256).map { "agent-\($0)" }],
 ] as [[String: Any]] {
     check((try? NotificationServerPolicy.settings(base: serverBase, patch: patch)) == nil, "accepted notification patch \(patch)")
 }

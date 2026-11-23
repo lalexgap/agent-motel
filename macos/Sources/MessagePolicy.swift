@@ -32,7 +32,7 @@ struct WriteRequest: Equatable {
 }
 
 enum NotificationServerPolicy {
-    static let maxSeconds = 7 * 24 * 60 * 60
+    static let maxSeconds = 24 * 60 * 60
     static let kinds = Set(["attention", "idle", "share", "pr", "decision"])
 
     private static func boolean(_ value: Any?) throws -> Bool {
@@ -68,10 +68,13 @@ enum NotificationServerPolicy {
             patch[name] = try seconds(raw[name], name)
         }
         if let value = raw["mutedAgents"] {
-            guard let values = value as? [Any], values.count <= 500 else { throw PolicyError("invalid mutedAgents") }
+            guard let values = value as? [Any], values.count <= 256 else { throw PolicyError("invalid mutedAgents") }
             var agents: [String] = []
             for value in values {
-                let agent = try MessagePolicy.agent(value)
+                guard let agent = value as? String, (1...128).contains(agent.count),
+                      agent.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
+                    throw PolicyError("invalid mutedAgents")
+                }
                 if !agents.contains(agent) { agents.append(agent) }
             }
             patch["mutedAgents"] = agents

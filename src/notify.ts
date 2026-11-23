@@ -98,13 +98,13 @@ export function buildNotifyCommand(
 }
 
 export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind; url?: string }): void {
+  if (!getNotificationSettings().enabled[meta.kind]) return;
   try {
     recordNotificationActivity(meta.agent, meta.kind);
   } catch {
     // Policy bookkeeping is best-effort; attention and other immediate
     // notifications must survive a damaged or temporarily locked state file.
   }
-  if (!getNotificationSettings().enabled[meta.kind]) return;
   const url = notificationPrUrl(meta.url);
   const host = localHostIdentity();
   let id: string | undefined;

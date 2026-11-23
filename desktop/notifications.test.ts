@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { checkNotificationPatch, checkNotificationSettings, PresenceWriter } from "./src/notificationPolicy";
+import { notificationSeconds } from "./src/notifications";
 import { DevBridge } from "./devBridge";
 
 const settings = {
   enabled: { attention: true, idle: true, share: false, pr: true, decision: true },
   idleMinSeconds: 120, idleCooldownSeconds: 600, idleCoalesceSeconds: 60,
-  mutedAgents: ["local-agent", "host.example:remote-agent"],
+  mutedAgents: ["local-agent", "remote-agent"],
 };
 
 describe("notification settings validation", () => {
@@ -15,11 +16,19 @@ describe("notification settings validation", () => {
       .toEqual({ ok: true, value: { enabled: { idle: false }, mutedAgents: ["x"] } });
   });
 
+  test("round-trips every integer-second timing through minute inputs", () => {
+    expect(notificationSeconds(String(1 / 60), 60)).toBe(1);
+    expect(notificationSeconds(String(86_400 / 60), 60)).toBe(86_400);
+    expect(() => notificationSeconds(String(86_401 / 60), 60)).toThrow("0 to 86400");
+    expect(() => notificationSeconds("0.01", 60)).toThrow("whole seconds");
+  });
+
   test("rejects unknown keys, types, bounds and unsafe agents", () => {
     for (const patch of [
       { surprise: true }, { enabled: { other: true } }, { enabled: { idle: 1 } },
-      { idleMinSeconds: -1 }, { idleCooldownSeconds: 1.5 }, { idleCoalesceSeconds: 604_801 },
-      { mutedAgents: ["../agent"] },
+      { idleMinSeconds: -1 }, { idleCooldownSeconds: 1.5 }, { idleCoalesceSeconds: 86_401 },
+      { mutedAgents: ["../agent"] }, { mutedAgents: ["host:agent"] },
+      { mutedAgents: Array.from({ length: 257 }, (_, index) => `agent-${index}`) },
     ]) expect(checkNotificationPatch(patch).ok).toBe(false);
   });
 });

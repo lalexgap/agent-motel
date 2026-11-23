@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updateNotificationSettings, type NotificationSettings } from "../src/config";
@@ -12,6 +12,8 @@ import {
   recordNotificationActivity,
   recordNotificationPresence,
 } from "../src/notificationPolicy";
+import { runIdleNotificationFallback } from "../src/idleNotificationFallback";
+import { notify } from "../src/notify";
 import { writeAgent, type AgentState } from "../src/state";
 
 let home: string;
@@ -28,6 +30,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "am-notification-policy-"));
   process.env.AGENTMGR_HOME = home;
   ensureDirs();
+  writeFileSync(join(home, "config.json"), JSON.stringify({ notifyCommand: "true" }));
   updateNotificationSettings({ idleMinSeconds: 0, idleCooldownSeconds: 0, idleCoalesceSeconds: 60 });
 });
 
@@ -54,13 +57,14 @@ function agent(name: string, at: number, extra: Partial<AgentState> = {}): Agent
 describe("idle timestamp policy", () => {
   const base = { agent: "api", workedSeconds: 180, settings, now: 1_000_000 };
 
-  test("suppresses invalid and short work, mute/focus, cooldown, and notable activity during the stint", () => {
+  test("suppresses invalid and short work, mute/focus, cooldown, and activity near stopping", () => {
     expect(idleSuppressionReason({ ...base, workedSeconds: Number.NaN })).toBe("short-stint");
     expect(idleSuppressionReason({ ...base, workedSeconds: 119 })).toBe("short-stint");
     expect(idleSuppressionReason({ ...base, settings: { ...settings, mutedAgents: ["api"] } })).toBe("muted");
     expect(idleSuppressionReason({ ...base, focused: true })).toBe("focused");
     expect(idleSuppressionReason({ ...base, lastIdleAt: base.now - 599_000 })).toBe("cooldown");
-    expect(idleSuppressionReason({ ...base, workStartedAt: base.now - 180_000, recentActivityAt: base.now - 170_000 })).toBe("recent-activity");
+    expect(idleSuppressionReason({ ...base, recentActivityAt: base.now - 60_000 })).toBe("recent-activity");
+    expect(idleSuppressionReason({ ...base, recentActivityAt: base.now - 60_001 })).toBeNull();
     expect(idleSuppressionReason({ ...base, agent: "concierge" })).toBe("concierge");
   });
 
@@ -76,8 +80,8 @@ describe("durable idle queue", () => {
     const start = Date.parse("2026-01-01T00:00:00.000Z");
     const first = agent("first", start);
     const second = agent("second", start + 30_000);
-    expect(queueIdleNotification({ agent: first, workedSeconds: 180 }, start)).toEqual({ queued: true });
-    expect(queueIdleNotification({ agent: second, workedSeconds: 180 }, start + 30_000)).toEqual({ queued: true });
+    expect(queueIdleNotification({ agent: first, workedSeconds: 180 }, start)).toMatchObject({ queued: true, dueAt: new Date(start + 60_000).toISOString() });
+    expect(queueIdleNotification({ agent: second, workedSeconds: 180 }, start + 30_000)).toMatchObject({ queued: true, dueAt: new Date(start + 60_000).toISOString() });
     expect(flushIdleNotifications(start + 59_999)).toEqual([]);
     expect(flushIdleNotifications(start + 60_000)).toEqual([{
       title: "am: agents idle",
@@ -94,12 +98,75 @@ describe("durable idle queue", () => {
     expect(flushIdleNotifications(start + 60_000)).toEqual([]);
   });
 
+  test("activity hours earlier does not suppress a completed stint", () => {
+    const start = Date.parse("2026-01-01T04:00:00.000Z");
+    recordNotificationActivity("api", "pr", start - 3 * 60 * 60_000);
+    const state = agent("api", start);
+    expect(queueIdleNotification({ agent: state, workedSeconds: 4 * 60 * 60 }, start).queued).toBe(true);
+    expect(flushIdleNotifications(start + 60_000)).toHaveLength(1);
+  });
+
+  test("activity just before stopping suppresses at the coalesce boundary", () => {
+    const start = Date.parse("2026-01-01T04:00:00.000Z");
+    recordNotificationActivity("api", "share", start - 60_000);
+    const state = agent("api", start);
+    expect(queueIdleNotification({ agent: state, workedSeconds: 4 * 60 * 60 }, start)).toEqual({ queued: false, reason: "recent-activity" });
+  });
+
+  test("only enabled notable notifications suppress idle", () => {
+    const start = Date.now();
+    const state = agent("api", start);
+    updateNotificationSettings({ enabled: { pr: false } });
+    notify("PR", "disabled", { agent: "api", kind: "pr" });
+    expect(queueIdleNotification({ agent: state, workedSeconds: 180 }, start).queued).toBe(true);
+    flushIdleNotifications(start + 60_000);
+
+    const secondAt = Date.now();
+    const second = agent("api", secondAt);
+    updateNotificationSettings({ enabled: { pr: true } });
+    notify("PR", "enabled", { agent: "api", kind: "pr" });
+    expect(queueIdleNotification({ agent: second, workedSeconds: 180 }, secondAt))
+      .toEqual({ queued: false, reason: "recent-activity" });
+  });
+
   test("a newer idle transition cannot emit an older stint", () => {
     const start = Date.parse("2026-01-01T00:00:00.000Z");
     const state = agent("api", start);
     queueIdleNotification({ agent: state, workedSeconds: 180 }, start);
     agent("api", start + 30_000);
     expect(flushIdleNotifications(start + 60_000)).toEqual([]);
+  });
+
+  test("one-shot fallback waits for the queue deadline and delivers when the daemon is absent", async () => {
+    const start = Date.parse("2026-01-01T00:00:00.000Z");
+    const state = agent("api", start);
+    const pending = queueIdleNotification({ agent: state, workedSeconds: 180 }, start);
+    const delivered: unknown[] = [];
+    let waited = 0;
+    await runIdleNotificationFallback(pending.dueAt!, {
+      now: () => start,
+      sleep: async (milliseconds) => { waited = milliseconds; },
+      flush: () => flushIdleNotifications(start + 60_000),
+      deliver: (notification) => delivered.push(notification),
+    });
+    expect(waited).toBe(60_000);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test("one-shot fallback does not redeliver a queue already flushed by a recovered daemon", async () => {
+    const start = Date.parse("2026-01-01T00:00:00.000Z");
+    const state = agent("api", start);
+    const pending = queueIdleNotification({ agent: state, workedSeconds: 180 }, start);
+    const daemonDelivery = flushIdleNotifications(start + 60_000);
+    const delivered: unknown[] = [];
+    await runIdleNotificationFallback(pending.dueAt!, {
+      now: () => start + 60_000,
+      sleep: async () => {},
+      flush: () => flushIdleNotifications(start + 60_000),
+      deliver: (notification) => delivered.push(notification),
+    });
+    expect(daemonDelivery).toHaveLength(1);
+    expect(delivered).toEqual([]);
   });
 });
 

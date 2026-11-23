@@ -1,8 +1,14 @@
-import { checkAgent, type Checked } from "./policy";
+import type { Checked } from "./policy";
 import type { NotificationSettings, NotificationSettingsPatch } from "./types";
 
 export const NOTIFICATION_KINDS = ["attention", "idle", "share", "pr", "decision"] as const;
-const MAX_SECONDS = 7 * 24 * 60 * 60;
+const MAX_SECONDS = 24 * 60 * 60;
+const LOCAL_AGENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+const localAgent = (value: unknown): Checked<string> =>
+  typeof value === "string" && LOCAL_AGENT_RE.test(value)
+    ? { ok: true, value }
+    : { ok: false, error: "invalid local agent" };
 
 const integer = (value: unknown, name: string): Checked<number> =>
   typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_SECONDS
@@ -23,10 +29,10 @@ export function checkNotificationSettings(value: unknown): Checked<NotificationS
   if (!min.ok) return min;
   if (!cooldown.ok) return cooldown;
   if (!coalesce.ok) return coalesce;
-  if (!Array.isArray(raw.mutedAgents) || raw.mutedAgents.length > 500) return { ok: false, error: "invalid mutedAgents" };
+  if (!Array.isArray(raw.mutedAgents) || raw.mutedAgents.length > 256) return { ok: false, error: "invalid mutedAgents" };
   const mutedAgents: string[] = [];
   for (const value of raw.mutedAgents) {
-    const agent = checkAgent(value);
+    const agent = localAgent(value);
     if (!agent.ok) return { ok: false, error: "invalid mutedAgents" };
     if (!mutedAgents.includes(agent.value)) mutedAgents.push(agent.value);
   }
@@ -56,10 +62,10 @@ export function checkNotificationPatch(value: unknown): Checked<NotificationSett
     patch[key] = checked.value;
   }
   if (raw.mutedAgents !== undefined) {
-    if (!Array.isArray(raw.mutedAgents) || raw.mutedAgents.length > 500) return { ok: false, error: "invalid mutedAgents" };
+    if (!Array.isArray(raw.mutedAgents) || raw.mutedAgents.length > 256) return { ok: false, error: "invalid mutedAgents" };
     const values: string[] = [];
     for (const rawAgent of raw.mutedAgents) {
-      const agent = checkAgent(rawAgent);
+      const agent = localAgent(rawAgent);
       if (!agent.ok) return { ok: false, error: "invalid mutedAgents" };
       if (!values.includes(agent.value)) values.push(agent.value);
     }

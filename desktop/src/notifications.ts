@@ -67,10 +67,17 @@ function closeSettings(): void {
   $("am-sb-notifications").focus();
 }
 
+export function notificationSeconds(value: string, scale: number): number {
+  const seconds = Number(value) * scale;
+  const rounded = Math.round(seconds);
+  if (!Number.isFinite(seconds) || seconds < 0 || rounded > 86_400 || Math.abs(seconds - rounded) > 1e-6) {
+    throw new Error("Timing values must be whole seconds from 0 to 86400");
+  }
+  return rounded;
+}
+
 function number(id: string, scale: number): number {
-  const value = Number($<HTMLInputElement>(id).value);
-  if (!Number.isFinite(value) || value < 0) throw new Error("Timing values must be zero or greater");
-  return Math.round(value * scale);
+  return notificationSeconds($<HTMLInputElement>(id).value, scale);
 }
 
 async function save(): Promise<void> {

@@ -66,6 +66,7 @@ import { notificationsPollCommand } from "./notifications";
 import { usageCommand } from "./commands/usage";
 import { cancelMessage, deliverCommand } from "./deliver";
 import { runEventsPipe, runForegroundDaemon } from "./daemon";
+import { idleNotificationFallbackCommand } from "./idleNotificationFallback";
 import { runTunnel } from "./tunnel";
 import { roleCommand } from "./commands/role";
 import { localCatalogs, modelsCommand } from "./commands/models";
@@ -1093,6 +1094,9 @@ async function main(): Promise<void> {
     }
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "__flush-idle":
+      await idleNotificationFallbackCommand(requirePositional(args, 0, "idle notification deadline"));
       break;
     case "help":
     case "-h":
