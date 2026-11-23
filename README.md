@@ -330,7 +330,7 @@ The `notifications` section in `~/.agent-manager/config.json` supports:
 }
 ```
 
-Explicit legacy `notifyOnIdle` and `idleNotifyMinSeconds` values remain effective until their corresponding new setting is supplied. Focus reports expire after 45 seconds if a window disconnects. Coalescing is per source host and requires its daemon to drain the durable pending queue. Restart the source host’s daemon after upgrading; pending alerts more than ten minutes past their due time are discarded. Policy decisions and sampled focus reports are recorded without message bodies in `notification-policy-audit.jsonl`, capped at 2 MiB; retention depends on activity.
+Explicit legacy `notifyOnIdle` and `idleNotifyMinSeconds` values remain effective until their corresponding new setting is supplied. Focus reports expire after 45 seconds if a window disconnects. Coalescing is per source host; its daemon drains the durable pending queue, with a detached fallback when unavailable. Restart the source host’s daemon after upgrading; pending alerts more than ten minutes past their due time are discarded. Background children defer completion for up to 24 hours, count toward minimum work, and start a fresh coalescing deadline when finished. Recent notable alerts suppress redundant idle alerts within 60 seconds even when coalescing is zero. Policy decisions and sampled focus reports are recorded without message bodies in `notification-policy-audit.jsonl`, capped at 2 MiB; retention depends on activity.
 
 
 ## Web front desk

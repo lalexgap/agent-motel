@@ -972,23 +972,21 @@ export async function hookCommand(event: string): Promise<void> {
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);
+    const runningSubagents = activeSubagents(name).length;
     if (depth > 0 || needsCodexRecovery(name)) {
       // Prefer the daemon as scheduler; fall back to a detached one-shot
       // delivery process when it isn't running.
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
     } else if (
       event === "stop" &&
-      // A waiting agent (scheduled wake-up, background task) hasn't really
-      // finished — don't ping the human about it. Best-effort: the indicator
-      // may not have rendered yet at hook time.
-      !(pane && paneWaitingInfo(pane).waiting)
+      (runningSubagents > 0 || !(pane && paneWaitingInfo(pane).waiting))
     ) {
       const pending = queueIdleNotification({
         agent,
         workedSeconds,
         queueDepth: depth,
         attached: hasAttachedClient(agent.tmuxSession),
-        runningSubagents: activeSubagents(name).length,
+        runningSubagents,
       });
       if (pending.queued && pending.dueAt && !(await notifyDaemon(name, "idle-pending"))) {
         spawnIdleNotificationFallback(pending.dueAt);

@@ -6,8 +6,8 @@ import { readJsonOrNull, writeJsonAtomic } from "./fsutil";
 import { type NotificationKind } from "./notifications";
 import { baseDir } from "./paths";
 import { queueDepth } from "./queue";
-import { activeSubagents } from "./subagents";
-import { listAgents, type AgentState } from "./state";
+import { readSubagents } from "./subagents";
+import { agentSessionId, listAgents, type AgentState } from "./state";
 import { hasAttachedClient } from "./tmux";
 
 export { getNotificationSettings, setAgentMuted, updateNotificationSettings } from "./config";
@@ -18,6 +18,9 @@ const MAX_PENDING = 256;
 const MAX_TRACKED_AGENTS = 512;
 const MAX_AUDIT_BYTES = 2 * 1024 * 1024;
 const STALE_AFTER_DUE_MS = 10 * 60_000;
+const RECENT_ACTIVITY_MS = 60_000;
+const MAX_DEFERRED_MS = 24 * 60 * 60_000;
+const DEFERRED_POLL_MS = 5_000;
 
 export interface NotificationPresence {
   clientId: string;
@@ -34,6 +37,8 @@ interface PendingIdle {
   startedAt: string;
   statusChangedAt?: string;
   sessionId?: string;
+  agentCreatedAt?: string;
+  deferredSince?: string;
 }
 
 interface PolicyAuditEntry {
@@ -222,13 +227,15 @@ export function idleSuppressionReason(input: IdlePolicyInput): IdlePolicyReason 
   if (!settings.enabled.idle) return "disabled";
   if (input.agent === "concierge" || input.role === "concierge") return "concierge";
   if (settings.mutedAgents.includes(input.agent)) return "muted";
+  if (!Number.isFinite(input.workedSeconds)) return "short-stint";
+  if ((input.runningSubagents ?? 0) > 0 && !input.flushing) return null;
   if (input.focused) return "focused";
   if (input.attached) return "attached";
   if (input.queueDepth && input.queueDepth > 0) return "queued-message";
-  if (!Number.isFinite(input.workedSeconds) || input.workedSeconds < settings.idleMinSeconds) return "short-stint";
+  if (input.workedSeconds < settings.idleMinSeconds) return "short-stint";
   const activityBoundary = input.createdAt ?? now;
   if (input.recentActivityAt !== undefined &&
-      input.recentActivityAt >= activityBoundary - settings.idleCoalesceSeconds * 1000) return "recent-activity";
+      input.recentActivityAt >= activityBoundary - RECENT_ACTIVITY_MS) return "recent-activity";
   if (input.lastIdleAt !== undefined && now - input.lastIdleAt < settings.idleCooldownSeconds * 1000) return "cooldown";
   if (input.flushing) {
     if (input.status !== "idle") return "working-again";
@@ -279,18 +286,17 @@ export function queueIdleNotification(
       writePolicyState(state);
       return { queued: false, reason };
     }
-    const sharedDueAt = state.pending
-      .map((item) => Date.parse(item.dueAt))
-      .filter((value) => Number.isFinite(value) && value > at)
-      .sort((a, b) => a - b)[0];
+    const deferred = (input.runningSubagents ?? 0) > 0;
     const pending: PendingIdle = {
       agent: input.agent.name,
       workedSeconds: input.workedSeconds,
       createdAt: new Date(at).toISOString(),
-      dueAt: new Date(sharedDueAt ?? at + settings.idleCoalesceSeconds * 1000).toISOString(),
+      dueAt: new Date(deferred ? at + DEFERRED_POLL_MS : batchDeadline(state.pending, at, settings)).toISOString(),
       startedAt: new Date(at - input.workedSeconds * 1000).toISOString(),
       statusChangedAt: input.agent.statusChangedAt,
-      sessionId: input.agent.sessionId,
+      sessionId: agentSessionId(input.agent),
+      agentCreatedAt: input.agent.createdAt,
+      ...(deferred ? { deferredSince: new Date(at).toISOString() } : {}),
     };
     state.pending.push(pending);
     appendAudit({ at: pending.createdAt, event: "queued", agent: input.agent.name });
@@ -303,19 +309,32 @@ function agentByName(): Map<string, AgentState> {
   return new Map(listAgents().map((agent) => [agent.name, agent]));
 }
 
+function batchDeadline(pending: PendingIdle[], at: number, settings: NotificationSettings): number {
+  return pending.filter((item) => !item.deferredSince)
+    .map((item) => Date.parse(item.dueAt))
+    .filter((value) => Number.isFinite(value) && value > at)
+    .sort((a, b) => a - b)[0] ?? at + settings.idleCoalesceSeconds * 1000;
+}
+
+export function nextIdleNotificationWake(now = Date.now()): number | undefined {
+  const deadlines = readPolicyState().pending.map((item) =>
+    item.deferredSince ? now + DEFERRED_POLL_MS : Date.parse(item.dueAt)).filter(Number.isFinite);
+  return deadlines.length ? Math.max(now, Math.min(...deadlines)) : undefined;
+}
+
 export function flushIdleNotifications(now: number | Date = Date.now()): IdleNotification[] {
   const at = nowMs(now);
   if (!existsSync(policyFile()) || readPolicyState().pending.length === 0) return [];
-  const settings = getNotificationSettings();
-  const focused = focusedNotificationAgents(at);
-  const agents = agentByName();
   const due: PendingIdle[] = [];
   withFileLock(policyLock(), () => {
+    const settings = getNotificationSettings();
+    const focused = focusedNotificationAgents(at);
+    const agents = agentByName();
     const state = readPolicyState();
     const waiting: PendingIdle[] = [];
     for (const pending of state.pending) {
-      const dueAt = Date.parse(pending.dueAt);
-      if (!Number.isFinite(dueAt) || dueAt > at) {
+      let dueAt = Date.parse(pending.dueAt);
+      if (!pending.deferredSince && Number.isFinite(dueAt) && dueAt > at) {
         waiting.push(pending);
         continue;
       }
@@ -324,8 +343,25 @@ export function flushIdleNotifications(now: number | Date = Date.now()): IdleNot
       if (agent) {
         const recent = Date.parse(state.recentActivityAt[pending.agent] ?? "");
         const lastIdle = Date.parse(state.lastIdleAt[pending.agent] ?? "");
-        if (agent.statusChangedAt !== pending.statusChangedAt || agent.sessionId !== pending.sessionId) reason = "working-again";
-        else reason = idleSuppressionReason({
+        const children = readSubagents(pending.agent);
+        const running = children.some((child) => !child.endedAt);
+        if (agent.status !== "idle" || agent.statusChangedAt !== pending.statusChangedAt || agentSessionId(agent) !== pending.sessionId ||
+            (pending.agentCreatedAt !== undefined && agent.createdAt !== pending.agentCreatedAt)) reason = "working-again";
+        else if (pending.deferredSince && at >= Date.parse(pending.deferredSince) + MAX_DEFERRED_MS) reason = "stale";
+        else if (running) {
+          pending.deferredSince ??= pending.createdAt;
+          waiting.push(pending);
+          continue;
+        } else if (pending.deferredSince) {
+          const completedAt = Math.max(Date.parse(pending.deferredSince), ...children
+            .map((child) => Date.parse(child.endedAt ?? "")).filter(Number.isFinite));
+          pending.workedSeconds = (completedAt - Date.parse(pending.startedAt)) / 1000;
+          pending.createdAt = new Date(completedAt).toISOString();
+          delete pending.deferredSince;
+          dueAt = batchDeadline(state.pending.filter((item) => item !== pending), at, settings);
+          pending.dueAt = new Date(dueAt).toISOString();
+        }
+        if (!reason) reason = idleSuppressionReason({
           agent: pending.agent,
           role: agent.role,
           status: agent.status,
@@ -333,7 +369,7 @@ export function flushIdleNotifications(now: number | Date = Date.now()): IdleNot
           queueDepth: queueDepth(pending.agent),
           attached: hasAttachedClient(agent.tmuxSession),
           focused: focused.has(pending.agent),
-          runningSubagents: activeSubagents(pending.agent).length,
+          runningSubagents: 0,
           recentActivityAt: Number.isFinite(recent) ? recent : undefined,
           lastIdleAt: Number.isFinite(lastIdle) ? lastIdle : undefined,
           createdAt: Date.parse(pending.createdAt),
@@ -345,6 +381,10 @@ export function flushIdleNotifications(now: number | Date = Date.now()): IdleNot
       }
       if (reason) {
         appendAudit({ at: new Date(at).toISOString(), event: "discarded", agent: pending.agent, reason });
+        continue;
+      }
+      if (dueAt > at) {
+        waiting.push(pending);
         continue;
       }
       due.push(pending);
