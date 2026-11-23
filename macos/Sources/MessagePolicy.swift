@@ -31,7 +31,6 @@ struct WriteRequest: Equatable {
     }
 }
 
-/// Builds the only server notification writes available to the bundled page.
 enum NotificationServerPolicy {
     static let maxSeconds = 7 * 24 * 60 * 60
     static let kinds = Set(["attention", "idle", "share", "pr", "decision"])

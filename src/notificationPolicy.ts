@@ -218,7 +218,6 @@ export function focusedNotificationAgents(now: number | Date = Date.now()): Set<
   return new Set(readPresence(at).filter((record) => record.focused && record.agent).map((record) => record.agent!));
 }
 
-// Pure timestamp/status policy shared by enqueue and flush tests.
 export function idleSuppressionReason(input: IdlePolicyInput): IdlePolicyReason | null {
   const { settings, now } = input;
   if (!settings.enabled.idle) return "disabled";
