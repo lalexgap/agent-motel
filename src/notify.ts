@@ -1,5 +1,6 @@
 import { closeSync, constants, openSync, readFileSync, writeSync } from "node:fs";
-import { loadConfig, localHostIdentity, type Config } from "./config";
+import { getNotificationSettings, loadConfig, localHostIdentity, type Config } from "./config";
+import { recordNotificationActivity } from "./notificationPolicy";
 import { tmux } from "./tmux";
 import { notificationPrUrl, recordNotification, type NotificationKind } from "./notifications";
 
@@ -97,6 +98,13 @@ export function buildNotifyCommand(
 }
 
 export function notify(title: string, message: string, meta: { agent?: string; kind: NotificationKind; url?: string }): void {
+  if (!getNotificationSettings().enabled[meta.kind]) return;
+  try {
+    recordNotificationActivity(meta.agent, meta.kind);
+  } catch {
+    // Policy bookkeeping is best-effort; attention and other immediate
+    // notifications must survive a damaged or temporarily locked state file.
+  }
   const url = notificationPrUrl(meta.url);
   const host = localHostIdentity();
   let id: string | undefined;

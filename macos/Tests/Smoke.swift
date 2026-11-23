@@ -180,7 +180,7 @@ final class SmokeRunner {
 
     /// The fixture's log of mutation requests it received, read directly (it is outside /api/, so
     /// the bridge cannot reach it). Bodies are normalised to objects; a missing body is NSNull.
-    func fixtureRequests() async throws -> [[String: Any]] {
+    func fixtureRequests(includePresence: Bool = false) async throws -> [[String: Any]] {
         guard let url = URL(string: server + "/__fixture/requests") else { throw SmokeFailure("bad fixture URL") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 10)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -191,7 +191,7 @@ final class SmokeRunner {
         guard let list = (json as? [[String: Any]]) ?? ((json as? [String: Any])?["requests"] as? [[String: Any]]) else {
             throw SmokeFailure("GET /__fixture/requests returned \(json)")
         }
-        return list.map { entry in
+        return list.filter { includePresence || $0["path"] as? String != "/api/notifications/presence" }.map { entry in
             var entry = entry
             if let text = entry["body"] as? String {
                 entry["body"] = text.isEmpty ? NSNull() : (text.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) } ?? text)
@@ -259,15 +259,15 @@ final class SmokeRunner {
 
     var screenshotTaken = false
 
-    func screenshot() async throws {
+    func screenshot(label: String = "SCREENSHOT", filename: String = "am-macos-smoke.png") async throws {
         let image = try await web.takeSnapshot(configuration: nil)
         guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
             throw SmokeFailure("snapshot could not be encoded")
         }
-        let screenshot = FileManager.default.temporaryDirectory.appendingPathComponent("am-macos-smoke.png")
+        let screenshot = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         try png.write(to: screenshot)
         screenshotTaken = true
-        print("SCREENSHOT \(screenshot.path)")
+        print("\(label) \(screenshot.path)")
     }
 
     func timingSummary(_ values: [Double]) -> [String: Double] {
@@ -736,6 +736,12 @@ final class SmokeRunner {
             try await waitFor("document.querySelectorAll('[data-agent-key]').length > 0", "sidebar rows [data-agent-key]")
             let rows = try await js("return document.querySelectorAll('[data-agent-key]').length;") as? Int ?? 0
             print("PASS sidebar shows \(rows) agent rows")
+            _ = try await js("document.querySelector('#am-sb-notifications').click(); return true;")
+            try await waitFor("!document.querySelector('#am-notification-settings').hidden && document.querySelector('#am-idle-min').value === '2'",
+                              "notification settings pane")
+            try await screenshot(label: "SETTINGS_SCREENSHOT", filename: "am-notification-settings.png")
+            _ = try await js("document.querySelector('#am-notifications-close').click(); return true;")
+            print("PASS notification settings loaded from the connected fixture server and rendered")
             try await openAgent("harbor-lights")
             try await waitFor("document.querySelectorAll('#transcript .turn').length > 0", "#transcript .turn")
             let turns = try await js("return document.querySelectorAll('#transcript .turn').length;") as? Int ?? 0
@@ -768,7 +774,6 @@ final class SmokeRunner {
                 """
             try await waitFor("(\(queuedBubble))?.querySelector('[data-cancel-message]')",
                               "a queued bubble with a Cancel button", ["text": typedQueued], seconds: 10)
-            try await screenshot()
             _ = try await js("(\(queuedBubble)).querySelector('[data-cancel-message]').click(); return true;", ["text": typedQueued])
             try await waitFor("!(\(queuedBubble))", "the cancelled bubble to disappear", ["text": typedQueued], seconds: 10)
             print("PASS composer: queued message to harbor-lights showed a Cancel button and disappeared after cancelling")

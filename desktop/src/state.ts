@@ -4,7 +4,7 @@ import { parseDrafts, parseModePreference, type PendingMessage } from "./compose
 import { agentKey, fleetRows, isConciergeKey, parseAgentKey, type ConnectionFleet, type TreeModel } from "./fleet";
 import { loadAgentViewRaw, loadDraftsRaw, loadPrefs, loadSendModeRaw, saveAgentViewRaw, savePrefs } from "./store";
 import { parseAgentViewMode, type AgentViewMode } from "./terminalModel";
-import type { AgentDetail, AgentRow, AppInfo, Connection, StreamState, SubagentRecord, Transcript } from "./types";
+import type { AgentDetail, AgentRow, AppInfo, Connection, NotificationSettings, StreamState, SubagentRecord, Transcript } from "./types";
 import { Unread } from "./unread";
 
 export interface ConnState {
@@ -63,6 +63,7 @@ export const composer = {
 };
 export const state = {
   conns: new Map<string, ConnState>(),
+  notificationSettings: new Map<string, NotificationSettings>(),
   info: null as AppInfo | null,
   filter: "",
   collapsed: new Set(prefs.collapsed),

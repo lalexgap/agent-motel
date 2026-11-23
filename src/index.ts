@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { notificationSettingsCommand } from "./notificationCommands";
+import { recordNotificationPresence, setAgentMuted } from "./notificationPolicy";
 import { notifyPrEvent, trackPullRequests } from "./prMonitor";
 import { declarePullRequestReady } from "./prReadiness";
 import { prsCommand } from "./commands/prs";
@@ -60,10 +62,11 @@ import { serveCommand, tokenCommand } from "./commands/serve";
 import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { summaryCommand } from "./commands/summary";
-import { notificationsListCommand, notificationsPollCommand } from "./notifications";
+import { notificationsPollCommand } from "./notifications";
 import { usageCommand } from "./commands/usage";
 import { cancelMessage, deliverCommand } from "./deliver";
 import { runEventsPipe, runForegroundDaemon } from "./daemon";
+import { idleNotificationFallbackCommand } from "./idleNotificationFallback";
 import { runTunnel } from "./tunnel";
 import { roleCommand } from "./commands/role";
 import { localCatalogs, modelsCommand } from "./commands/models";
@@ -139,7 +142,12 @@ usage:
                               merged and closed ones
   am summary [--json]         prioritized fleet report: attention, active,
                               idle, exited, and unreachable hosts
-  am notifications [--json] [--limit n]
+  am notifications [settings]  show notification policy for this host
+  am notifications set <setting> <value>
+                              set a kind on/off or an idle timer in seconds
+  am mute <name> / am unmute <name>
+                              persistently mute/unmute idle alerts only
+  am notifications history [--json] [--limit n]
                               recent notifications recorded on this host (the
                               journal the daemon relays to other machines)
   am usage [<name>] [--tokens | --quota-only] [--json] [--claude | --codex]
@@ -366,7 +374,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "cleanup", "rm", "resume", "restart", "transcript", "handoff", "cd", "rename",
-  "report", "comms", "wait", "peek", "subagents", "usage", "plan", "pr",
+  "report", "comms", "wait", "peek", "subagents", "usage", "plan", "pr", "mute", "unmute",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -695,8 +703,20 @@ async function main(): Promise<void> {
       summaryCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
       break;
     case "notifications":
-      notificationsListCommand({ json: !!args.flags.json, limit: numberFlag(args, "limit") });
+      notificationSettingsCommand(args);
       break;
+    case "mute":
+    case "unmute": {
+      const agent = resolveAgent(requirePositional(args, 0, "agent name"));
+      setAgentMuted(agent.name, command === "mute");
+      console.log(`${agent.name}: idle notifications ${command === "mute" ? "muted" : "unmuted"}`);
+      break;
+    }
+    case "__notification-presence": {
+      recordNotificationPresence(JSON.parse(await Bun.stdin.text()));
+      console.log(JSON.stringify({ ok: true }));
+      break;
+    }
     case "__notifications":
       await notificationsPollCommand({
         after: typeof args.flags.after === "string" ? args.flags.after : undefined,
@@ -1074,6 +1094,9 @@ async function main(): Promise<void> {
     }
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "__flush-idle":
+      await idleNotificationFallbackCommand(requirePositional(args, 0, "idle notification deadline"));
       break;
     case "help":
     case "-h":

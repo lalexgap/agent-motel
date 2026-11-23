@@ -17,15 +17,19 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     /// Replaced only by the smoke app so a synthetic capability is captured without launching a browser.
     var decisionsOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     var decisionsCountChanged: (Int) -> Void = { _ in }
+    var focusedAgentChanged: (String?) -> Void = { _ in }
+    private let nativeFocused: () -> Bool
+    private let notificationClientID = "macos-\(UUID().uuidString)"
     private(set) var streams: [String: EventStream] = [:]
     private(set) lazy var terminals = TerminalManager(store: store, confirmation: confirmation) { [weak self] name, payload, delivered in
         guard let self else { return }
         self.emit(name, payload, delivered: delivered)
     }
 
-    init(store: ConnectionStore, confirmation: Confirmation) {
+    init(store: ConnectionStore, confirmation: Confirmation, nativeFocused: @escaping () -> Bool = { false }) {
         self.store = store
         self.confirmation = confirmation
+        self.nativeFocused = nativeFocused
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
@@ -77,6 +81,22 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             return [String: Any]()
         case "api.get":
             return try await get(params)
+        case "notifications.settings":
+            let connection = try savedConnection(params)
+            return try await write(NotificationServerPolicy.settings(base: connection.url, patch: params["patch"]), connection: connection)
+        case "notifications.presence":
+            let connection = try savedConnection(params)
+            guard let requested = params["focused"] as? NSNumber, CFGetTypeID(requested) == CFBooleanGetTypeID() else {
+                throw PolicyError("focused must be a boolean")
+            }
+            let focused = requested.boolValue && nativeFocused()
+            let request = try NotificationServerPolicy.presence(base: connection.url, clientID: notificationClientID,
+                                                                agent: params["agent"], focused: focused)
+            // A plain local name has no source-server host identity and can collide across
+            // connections. Only suppress locally when host:name identifies the owning host.
+            let identifiedAgent = (params["agent"] as? String).flatMap { $0.contains(":") ? $0 : nil }
+            focusedAgentChanged(focused ? identifiedAgent : nil)
+            return try await write(request, connection: connection)
         case "decisions.open":
             return try await openDecisions(params)
         case "decisions.answer":

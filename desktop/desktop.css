@@ -289,6 +289,16 @@ body.am-inspector-docked #am-shell {
   flex: none;
   margin-left: 0;
 }
+.am-muted {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-subtle);
+  font-size: 9px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
 .am-agent-meta .am-agent-context {
   min-width: 0;
   overflow: hidden;
@@ -1231,6 +1241,45 @@ body.am-resizing {
   border-top: 1px solid var(--border);
   white-space: nowrap;
 }
+.am-overlay {
+  position: fixed;
+  inset: 0 0 28px;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 58%);
+}
+.am-overlay[hidden] { display: none; }
+.am-settings-card {
+  width: min(590px, calc(100vw - 32px));
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 45%);
+}
+.am-settings-card h1 { margin: 0; font-size: 20px; }
+.am-settings-card p, .am-settings-card small { margin: 0; color: var(--fg-muted); line-height: 1.45; }
+.am-settings-card select, .am-settings-card textarea {
+  padding: 7px 9px;
+  color: var(--fg-strong);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+#am-notification-kinds { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: 8px; }
+#am-notification-kinds legend { padding: 0 5px; color: var(--fg-muted); font-size: 12.5px; }
+#am-notification-kinds label { display: flex; gap: 6px; align-items: center; font-size: 12.5px; }
+.am-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+#am-notifications-result { min-height: 18px; color: var(--fg-muted); font-size: 12.5px; }
+#am-notifications-result.error { color: var(--danger-text); }
+#am-notifications-result.ok { color: var(--success-text); }
+@media (max-width: 700px) { .am-settings-grid { grid-template-columns: 1fr; } }
 #am-sb-left,
 #am-sb-right {
   display: flex;

@@ -31,6 +31,70 @@ struct WriteRequest: Equatable {
     }
 }
 
+enum NotificationServerPolicy {
+    static let maxSeconds = 24 * 60 * 60
+    static let kinds = Set(["attention", "idle", "share", "pr", "decision"])
+
+    private static func boolean(_ value: Any?) throws -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw PolicyError("notification flags must be booleans")
+        }
+        return number.boolValue
+    }
+
+    private static func seconds(_ value: Any?, _ name: String) throws -> Int {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+              (0...Double(maxSeconds)).contains(number.doubleValue) else {
+            throw PolicyError("\(name) must be an integer from 0 to \(maxSeconds)")
+        }
+        return number.intValue
+    }
+
+    static func settings(base: String, patch value: Any?) throws -> WriteRequest {
+        guard let raw = value as? [String: Any] else { throw PolicyError("patch must be an object") }
+        let allowed = Set(["enabled", "idleMinSeconds", "idleCooldownSeconds", "idleCoalesceSeconds", "mutedAgents"])
+        guard Set(raw.keys).isSubset(of: allowed) else { throw PolicyError("unknown notification setting") }
+        var patch: [String: Any] = [:]
+        if let value = raw["enabled"] {
+            guard let flags = value as? [String: Any], Set(flags.keys).isSubset(of: kinds) else {
+                throw PolicyError("enabled must contain notification kinds only")
+            }
+            var enabled: [String: Bool] = [:]
+            for (kind, value) in flags { enabled[kind] = try boolean(value) }
+            patch["enabled"] = enabled
+        }
+        for name in ["idleMinSeconds", "idleCooldownSeconds", "idleCoalesceSeconds"] where raw[name] != nil {
+            patch[name] = try seconds(raw[name], name)
+        }
+        if let value = raw["mutedAgents"] {
+            guard let values = value as? [Any], values.count <= 256 else { throw PolicyError("invalid mutedAgents") }
+            var agents: [String] = []
+            for value in values {
+                guard let agent = value as? String, (1...128).contains(agent.count),
+                      agent.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
+                    throw PolicyError("invalid mutedAgents")
+                }
+                if !agents.contains(agent) { agents.append(agent) }
+            }
+            patch["mutedAgents"] = agents
+        }
+        return try .json(try ConnectionPolicy.apiURL(base: base, path: "/api/notifications/settings"), patch, timeout: 30)
+    }
+
+    static func presence(base: String, clientID: String, agent value: Any?, focused: Bool) throws -> WriteRequest {
+        guard (1...64).contains(clientID.count),
+              clientID.range(of: #"^[A-Za-z0-9_.:-]+$"#, options: .regularExpression) != nil else {
+            throw PolicyError("invalid notification client id")
+        }
+        let agent = try value.map { try MessagePolicy.agent($0) }
+        guard !focused || agent != nil else { throw PolicyError("focused presence requires an agent") }
+        var body: [String: Any] = ["clientId": clientID, "focused": focused]
+        if let agent { body["agent"] = agent }
+        return try .json(try ConnectionPolicy.apiURL(base: base, path: "/api/notifications/presence"), body, timeout: 15)
+    }
+}
+
 /// The one decisions-page write. Its response contains a secret capability URL, so the bridge
 /// validates and opens it natively instead of returning it to the page.
 enum DecisionsPolicy {

@@ -123,6 +123,15 @@ enum NotificationPolicy {
         return .alert
     }
 
+    /// Immediate local guard for remote agents only. The server remains authoritative; summaries
+    /// and local names lack a reliable owning-host identity and must never be suppressed here.
+    static func suppressFocusedIdle(kind: NotificationKind?, appFocused: Bool, focusedAgent: String?,
+                                    incomingHost: String?, incomingAgent: String?) -> Bool {
+        guard kind == .idle, appFocused, let host = incomingHost, let agent = incomingAgent,
+              let focusedAgent else { return false }
+        return "\(host):\(agent)" == focusedAgent
+    }
+
     /// `[start, end)`, wrapping past midnight when start > end; empty when they are equal.
     static func inQuietHours(_ minute: Int, start: Int, end: Int) -> Bool {
         if start == end { return false }

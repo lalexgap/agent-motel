@@ -79,6 +79,7 @@
         <div id="agent-nav"></div>
         <div class="sidebar-bottom">
           <span id="connection" role="status">Connecting…</span
+          ><button id="notification-settings-open" type="button">Notification settings</button
           ><button id="logout">Sign out ↗</button>
         </div>
         <div id="sidebar-divider" title="Drag to resize; double-click to reset" role="separator" aria-label="Resize agents sidebar" aria-orientation="vertical" tabindex="0"></div>
@@ -625,6 +626,39 @@
       <input id="command-query" type="search" placeholder="Find an agent or command…" aria-label="Find an agent or command" autocomplete="off" />
       <div id="command-results"></div>
       <small>↑ ↓ to navigate · Enter to open · Esc to close</small>
+    </dialog>
+    <dialog id="notification-settings-dialog" aria-labelledby="notification-settings-title">
+      <form id="notification-settings-form">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">THIS SERVER</p>
+            <h2 id="notification-settings-title">Notification settings</h2>
+          </div>
+          <button type="button" id="notification-settings-close" aria-label="Close notification settings">×</button>
+        </div>
+        <p class="notification-server-note">Saved on this connected server only. Other hosts in a remote fleet keep their own settings.</p>
+        <fieldset class="notification-kinds">
+          <legend>Notify me about</legend>
+          <label class="notification-switch"><span><strong>Attention</strong><small>Agents that need input or permission</small></span><input id="notification-kind-attention" type="checkbox" role="switch"></label>
+          <label class="notification-switch"><span><strong>Idle</strong><small>Agents that finish or stop working</small></span><input id="notification-kind-idle" type="checkbox" role="switch"></label>
+          <label class="notification-switch"><span><strong>Shares</strong><small>Files and links shared by agents</small></span><input id="notification-kind-share" type="checkbox" role="switch"></label>
+          <label class="notification-switch"><span><strong>Pull requests</strong><small>Tracked pull request changes</small></span><input id="notification-kind-pr" type="checkbox" role="switch"></label>
+          <label class="notification-switch"><span><strong>Decisions</strong><small>New questions waiting for an answer</small></span><input id="notification-kind-decision" type="checkbox" role="switch"></label>
+        </fieldset>
+        <fieldset class="notification-timing">
+          <legend>Idle timing</legend>
+          <label>Minimum work before idle <span><input id="notification-idle-min" type="number" min="0" max="86400" step="1" inputmode="numeric" required> seconds</span></label>
+          <label>Cooldown between alerts <span><input id="notification-idle-cooldown" type="number" min="0" max="86400" step="1" inputmode="numeric" required> seconds</span></label>
+          <label>Coalesce nearby alerts <span><input id="notification-idle-coalesce" type="number" min="0" max="86400" step="1" inputmode="numeric" required> seconds</span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Muted agents</legend>
+          <p class="notification-mute-note">Muting only suppresses idle notifications. Attention notifications are unaffected unless you turn off Attention above.</p>
+          <div id="notification-muted-agents" class="notification-muted-agents"></div>
+        </fieldset>
+        <p id="notification-settings-status" class="notification-settings-status" role="status"></p>
+        <button id="notification-settings-save" class="primary" type="submit">Save settings</button>
+      </form>
     </dialog>
   </body>
 </html>

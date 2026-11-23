@@ -2,6 +2,8 @@
 // the real route in src/server.ts: the same validation order, statuses, error
 // strings and `reason` values, including the quirks a client has to survive.
 import { checkDecisionAction, checkDecisionAnswerId, checkDecisionsAgent, checkDecisionText, checkMessageText } from "../src/policy";
+import { checkNotificationPatch } from "../src/notificationPolicy";
+import type { NotificationSettings } from "../src/types";
 import type { QueueItem, TranscriptEntry } from "../src/types";
 import { FIXTURE_HOME, FIXTURE_LOCAL_HOST, FIXTURE_REMOTE_HOSTS, REPO, worktree, type FixtureRow } from "./data";
 import { catalogsFor, findCatalog, ROLES, seedWorkspace, selectionError, type Workspace } from "./extras";
@@ -335,6 +337,23 @@ export function buildRoutes(fx: Fx): {
       pendingPermissions: s().permissions.filter((record) => record.row === row && record.state === "pending").length,
     };
   }
+
+  let notificationSettings: NotificationSettings = {
+    enabled: { attention: true, idle: true, share: true, pr: true, decision: true },
+    idleMinSeconds: 120, idleCooldownSeconds: 600, idleCoalesceSeconds: 60,
+    mutedAgents: ["quiet-river", "remote-build"],
+  };
+  const notificationRoutes: Route[] = [
+    { method: "GET", path: "/api/notifications/settings", handler: () => json(notificationSettings) },
+    { method: "POST", path: "/api/notifications/settings", handler: (ctx) => {
+      const checked = checkNotificationPatch(ctx.body);
+      if (!checked.ok) return json({ error: checked.error }, 400);
+      const patch = checked.value;
+      notificationSettings = { ...notificationSettings, ...patch, enabled: { ...notificationSettings.enabled, ...patch.enabled } };
+      return json(notificationSettings);
+    } },
+    { method: "POST", path: "/api/notifications/presence", handler: () => json({ ok: true }) },
+  ];
 
   const readRoutes: Route[] = [
     { method: "GET", path: "/api/health", handler: () => json({ ok: true, name: "am" }) },
@@ -1059,7 +1078,7 @@ export function buildRoutes(fx: Fx): {
   return {
     terminalTarget,
     keyOf,
-    routes: [...readRoutes, ...lifecycleRoutes, ...manageRoutes, ...agentSetupRoutes, ...promptRoutes, ...fileRoutes, ...usageRoutes, ...prRoutes, ...searchRoutes],
+    routes: [...notificationRoutes, ...readRoutes, ...lifecycleRoutes, ...manageRoutes, ...agentSetupRoutes, ...promptRoutes, ...fileRoutes, ...usageRoutes, ...prRoutes, ...searchRoutes],
     flipDrift,
   };
 }

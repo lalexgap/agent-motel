@@ -55,6 +55,7 @@ import {
   type ActionRequest,
   type Checked,
 } from "./src/policy";
+import { checkNotificationPatch } from "./src/notificationPolicy";
 import type { BridgeEventName, BridgeEvents, Connection, DevConfirmation, StreamState, TerminalControl, TerminalOpened } from "./src/types";
 
 interface StoredConnection {
@@ -164,6 +165,7 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 export class DevBridge {
+  private readonly notificationClientId = `desktop-${crypto.randomUUID()}`;
   private connections = new Map<string, StoredConnection>();
   private streams = new Map<string, AbortController>();
   private states = new Map<string, BridgeEvents["events.state"]>();
@@ -227,6 +229,20 @@ export class DevBridge {
       }
       case "api.get":
         return this.apiGet(text(params.connection, "connection"), params.path);
+      case "notifications.settings": {
+        const conn = this.connection(text(params.connection, "connection"));
+        const patch = checked(checkNotificationPatch(params.patch));
+        return this.mutate(conn, "POST", "/api/notifications/settings", JSON.stringify(patch));
+      }
+      case "notifications.presence": {
+        const conn = this.connection(text(params.connection, "connection"));
+        if (typeof params.focused !== "boolean") throw new Error("focused must be a boolean");
+        const agent = params.agent === undefined ? undefined : checked(checkAgent(params.agent));
+        if (params.focused && !agent) throw new Error("focused presence requires an agent");
+        return this.mutate(conn, "POST", "/api/notifications/presence", JSON.stringify({
+          clientId: this.notificationClientId, ...(agent ? { agent } : {}), focused: params.focused,
+        }));
+      }
       case "decisions.open":
         return this.openDecisions(params);
       case "decisions.answer": {

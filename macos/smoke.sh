@@ -88,7 +88,8 @@ if [[ "${SMOKE_COMPOSER_BENCHMARK:-}" == 1 ]]; then
   echo "Composer benchmark passed."
   exit 0
 fi
-captured="$(sed -n 's/^SCREENSHOT //p' build/smoke.log | tail -1)"
+captured="$(sed -n 's/^SETTINGS_SCREENSHOT //p' build/smoke.log | tail -1)"
+[[ -n "$captured" ]] || captured="$(sed -n 's/^SCREENSHOT //p' build/smoke.log | tail -1)"
 if [[ -n "$captured" && -f "$captured" ]]; then
   mv "$captured" "$screenshot"
   echo "Screenshot: $screenshot"

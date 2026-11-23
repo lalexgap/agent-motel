@@ -29,7 +29,9 @@ import {
 } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { awaitTurnReply, claimPrompt, deliveryMark, promptKey, markDelivered, markSessionEnded, markTurnEnded, type DeliveryMark } from "../messages";
-import { loadConfig, shouldNotifyIdle, subagentPermissionWait } from "../config";
+import { loadConfig, subagentPermissionWait } from "../config";
+import { queueIdleNotification } from "../notificationPolicy";
+import { spawnIdleNotificationFallback } from "../idleNotificationFallback";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
@@ -970,24 +972,25 @@ export async function hookCommand(event: string): Promise<void> {
 
   if (effects.drainQueue) {
     const depth = queueDepth(name);
+    const runningSubagents = activeSubagents(name).length;
     if (depth > 0 || needsCodexRecovery(name)) {
       // Prefer the daemon as scheduler; fall back to a detached one-shot
       // delivery process when it isn't running.
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
     } else if (
       event === "stop" &&
-      // A waiting agent (scheduled wake-up, background task) hasn't really
-      // finished — don't ping the human about it. Best-effort: the indicator
-      // may not have rendered yet at hook time.
-      !(pane && paneWaitingInfo(pane).waiting) &&
-      shouldNotifyIdle({
-        config: loadConfig(),
+      (runningSubagents > 0 || !(pane && paneWaitingInfo(pane).waiting))
+    ) {
+      const pending = queueIdleNotification({
+        agent,
         workedSeconds,
         queueDepth: depth,
         attached: hasAttachedClient(agent.tmuxSession),
-      })
-    ) {
-      notify(`am: ${name}`, `finished — idle after ${formatDuration(workedSeconds)}`, { agent: name, kind: "idle" });
+        runningSubagents,
+      });
+      if (pending.queued && pending.dueAt && !(await notifyDaemon(name, "idle-pending"))) {
+        spawnIdleNotificationFallback(pending.dueAt);
+      }
     }
   }
 }

@@ -31,6 +31,8 @@ import { startCodexApprovalWatcher } from "./codexApprovals";
 import { readPermission, refreshPermissions } from "./permissions";
 import { managedServices, serviceAction, servicePid } from "./services";
 import { MODEL_SWITCH_EVENT, modelSwitchOverdue, performModelSwitch } from "./commands/switchModel";
+import { flushIdleNotifications } from "./notificationPolicy";
+import { notify } from "./notify";
 
 export const DELIVERY_DELAY_MS = 500;
 // Deliberately lazy: renderers already derive "dead" live (agentRows checks
@@ -437,6 +439,16 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   const decisionRequests = startDecisionRequests(log);
   const usageLedger = startUsageLedgerJob({ log });
 
+  const flushIdle = () => {
+    try {
+      for (const pending of flushIdleNotifications()) notify(pending.title, pending.message, pending.meta);
+    } catch (error) {
+      log(`idle notification flush failed: ${error}`);
+    }
+  };
+  flushIdle();
+  const idleNotifications = setInterval(flushIdle, 5_000);
+
   const keepalive = setInterval(() => {
     const chunk = encoder.encode(": keepalive\n\n");
     for (const subscriber of subscribers) {
@@ -485,6 +497,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       decisionRequests.stop();
       decisionEvents.stop();
       usageLedger.stop();
+      clearInterval(idleNotifications);
       clearInterval(reconciler);
       clearInterval(keepalive);
       codexApprovals.stop();

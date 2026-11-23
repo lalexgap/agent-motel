@@ -52,6 +52,7 @@ import {
   type AnswerResult,
 } from "./permissions";
 import { loadConfig, localHostIdentity } from "./config";
+import { getNotificationSettings, updateNotificationSettings, recordNotificationPresence } from "./notificationPolicy";
 import {
   AGENT_NAME_RE,
   HOST_RE,
@@ -692,8 +693,57 @@ async function auditedApi(req: Request, parts: string[]): Promise<Response> {
   }
 }
 
+const notificationViewHosts = new Map<string, { host: string; at: number }>();
+
+async function notificationPresenceBody(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).some(key => !["clientId", "agent", "focused"].includes(key))
+    || typeof body.clientId !== "string" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(body.clientId)
+    || typeof body.focused !== "boolean"
+    || (body.agent !== undefined && (typeof body.agent !== "string" || body.agent.length > 192))) {
+    return json({ error: "Expected clientId, optional agent, and focused boolean" }, 400);
+  }
+  const target = body.agent === undefined ? null : parseTarget(encodeURIComponent(body.agent));
+  if (target instanceof Response) return target;
+  if (body.focused && !target) return json({ error: "Focused presence requires an agent" }, 400);
+  const now = Date.now();
+  for (const [id, entry] of notificationViewHosts) if (now - entry.at > 45_000) notificationViewHosts.delete(id);
+  const clientId = `${localHostIdentity().slice(0, 48)}:${body.clientId}`;
+  const previous = notificationViewHosts.get(clientId)?.host;
+  const host = target?.host ?? null;
+  const payload = { clientId, ...(target ? { agent: target.name } : {}), focused: body.focused };
+  try {
+    recordNotificationPresence(host ? { clientId, focused: false } : payload);
+    if (previous && previous !== host) {
+      // Expiry remains the fallback if a formerly selected host is offline.
+      await runRemoteJson(previous, ["__notification-presence"], {
+        stdin: JSON.stringify({ clientId, focused: false }), timeoutMs: 2000,
+      }).catch(() => {});
+    }
+    notificationViewHosts.delete(clientId);
+    if (host) {
+      const result = await runRemoteJson<{ ok: boolean }>(host, ["__notification-presence"], {
+        stdin: JSON.stringify(payload), timeoutMs: 3000,
+      });
+      if (result?.ok !== true) throw new Error("Remote host did not accept notification presence");
+      if (notificationViewHosts.size >= 256) notificationViewHosts.delete(notificationViewHosts.keys().next().value!);
+      notificationViewHosts.set(clientId, { host, at: now });
+    }
+    return json({ ok: true });
+  } catch (error) { return remoteFailure(error); }
+}
+
 async function handleApi(req: Request, parts: string[]): Promise<Response> {
   const method = req.method;
+  if (parts.length === 2 && parts[0] === "notifications") {
+    if (parts[1] === "settings" && method === "GET") return json(getNotificationSettings());
+    if (parts[1] === "settings" && method === "POST") {
+      try { return json(updateNotificationSettings(await req.json())); }
+      catch (error) { return json({ error: (error as Error).message }, 400); }
+    }
+    if (parts[1] === "presence" && method === "POST") return notificationPresenceBody(req);
+  }
   if (parts.length === 1 && parts[0] === "search" && method === "POST") {
     const body = (await req.json().catch(() => null)) as { query?: unknown } | null;
     const query = body?.query;
