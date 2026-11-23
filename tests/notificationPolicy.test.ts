@@ -236,6 +236,32 @@ describe("aggregate completion", () => {
     expect(flushIdleNotifications(start + 240_000)).toMatchObject([{ meta: { agent: "long" }, message: "finished — idle after 3m5s" }]);
   });
 
+  test("late observation delivers completion only within its original stale window", () => {
+    deferred();
+    finish(start + 720_000);
+    expect(flushIdleNotifications(start + 840_000)).toMatchObject([{ meta: { agent: "api" } }]);
+    expect(pendingIdleCount()).toBe(0);
+    expect(flushIdleNotifications(start + 900_000)).toEqual([]);
+  });
+
+  for (const newerBatch of [false, true]) {
+    test(`late observation discards stale completion despite a newer batch: ${newerBatch}`, () => {
+      deferred();
+      finish(start + 720_000);
+      const observedAt = start + 2_400_000;
+      if (newerBatch) {
+        const other = agent("other", observedAt);
+        queueIdleNotification({ agent: other, workedSeconds: 180 }, observedAt);
+      }
+      expect(flushIdleNotifications(observedAt)).toEqual([]);
+      expect(pendingIdleCount()).toBe(newerBatch ? 1 : 0);
+      const deliveries = flushIdleNotifications(observedAt + 60_000);
+      expect(deliveries).toEqual(newerBatch ? [{
+        title: "am: other", message: "finished — idle after 3m0s", meta: { agent: "other", kind: "idle" },
+      }] : []);
+    });
+  }
+
   test("a working parent cannot shorten another agent's batch window", () => {
     deferred();
     const stoppedAt = start + 1000;

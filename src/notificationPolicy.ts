@@ -310,10 +310,11 @@ function agentByName(): Map<string, AgentState> {
 }
 
 function batchDeadline(pending: PendingIdle[], at: number, settings: NotificationSettings): number {
+  const deadline = at + settings.idleCoalesceSeconds * 1000;
   return pending.filter((item) => !item.deferredSince)
     .map((item) => Date.parse(item.dueAt))
-    .filter((value) => Number.isFinite(value) && value > at)
-    .sort((a, b) => a - b)[0] ?? at + settings.idleCoalesceSeconds * 1000;
+    .filter((value) => Number.isFinite(value) && value > at && value <= deadline)
+    .sort((a, b) => a - b)[0] ?? deadline;
 }
 
 export function nextIdleNotificationWake(now = Date.now()): number | undefined {
@@ -358,7 +359,7 @@ export function flushIdleNotifications(now: number | Date = Date.now()): IdleNot
           pending.workedSeconds = (completedAt - Date.parse(pending.startedAt)) / 1000;
           pending.createdAt = new Date(completedAt).toISOString();
           delete pending.deferredSince;
-          dueAt = batchDeadline(state.pending.filter((item) => item !== pending), at, settings);
+          dueAt = batchDeadline(state.pending.filter((item) => item !== pending), completedAt, settings);
           pending.dueAt = new Date(dueAt).toISOString();
         }
         if (!reason) reason = idleSuppressionReason({
